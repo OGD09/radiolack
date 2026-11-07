@@ -25,6 +25,7 @@ from . import __version__
 from .errors import GqrxError, RadioLackError, ReceiverError, StopRequested, StorageError
 from .gqrx import prepare_gqrx_profile
 from .monitor import Monitor, MonitorSettings, console
+from .ownership import command_line, describe, listening_pids
 from .profiles import DEFAULT_PROFILE, ProfileError, builtin_profile_names, load_profile
 from .receiver import (SUPPORTED_SAMPLE_RATES, Bridge, Capture, Endpoint, RtlTcpProcess, parse_endpoint,
                        port_in_use)
@@ -349,10 +350,19 @@ def command_check(args):
     try:
         with socket.create_connection((args.gqrx.host, args.gqrx.port), timeout=1):
             pass
-        line("OK", "Gqrx remote control", f"reachable on {args.gqrx}")
     except OSError:
         line("WARN", "Gqrx remote control", f"not reachable on {args.gqrx}: open Gqrx with the RadioLack "
              "profile and enable Tools > Remote control")
+    else:
+        holders = sorted(listening_pids(args.gqrx.port)) if args.gqrx.is_loopback else []
+        owners = ", ".join(describe(pid) for pid in holders)
+        if not holders:
+            line("OK", "Gqrx remote control", f"reachable on {args.gqrx}")
+        elif all(GQRX_PROFILE_NAME in command_line(pid) for pid in holders):
+            line("OK", "Gqrx remote control", f"reachable on {args.gqrx}: {owners}")
+        else:
+            line("WARN", "Gqrx remote control", f"reachable on {args.gqrx} but held by {owners}, not by a "
+                 f"Gqrx started with {GQRX_PROFILE_NAME}: RadioLack only drives the Gqrx reading its bridge")
     path = store_location(args)
     try:
         data = load_store(path)

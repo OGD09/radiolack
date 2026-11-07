@@ -90,7 +90,7 @@ run `PYTHONPATH=src python3 -m radiolack` from the repository.
 | `scan` | Explore the whole band in overlapping windows (full-band mode). |
 | `watch` | Observe the current Gqrx window only (fixed-window mode; manual tuning allowed). |
 | `stats` | Per-frequency statistics; `--json`, `--sort count\|frequency`, `--limit N`, `--frequency MHZ`. |
-| `check` | Read-only readiness report: tools, USB device, ports, Gqrx reachability, store. |
+| `check` | Read-only readiness report: tools, USB device, ports, Gqrx reachability and the process holding its remote control, store. |
 | `stop` | Send SIGTERM to the RadioLack process holding the store lock and wait (`--timeout`, 15 s). |
 
 Main `scan`/`watch` options (defaults in parentheses):
@@ -155,7 +155,13 @@ RTL-SDR -> rtl_tcp -> RadioLack bridge -> Gqrx (audio, panorama)
 - **Squelch**: one memory per frequency, learned from Gqrx's S-meter (never
   from FFT bins) and invalidated by any gain, rate, filter or mode change.
   Learning ignores meter readings taken while the FFT state is recent,
-  because Gqrx's meter lags the FFT tap: see [docs/squelch.md](docs/squelch.md).
+  because Gqrx's meter lags the FFT tap. A memory above the measured carrier
+  is lowered at once, to the stored noise + 3 dB when that noise is credible:
+  see [docs/squelch.md](docs/squelch.md).
+- **Gqrx identity**: on Linux, before connecting to the remote control,
+  RadioLack checks in `/proc` that the remote-control port belongs to the
+  Gqrx reading its bridge. Another program on that port (for example a
+  second Gqrx) is never driven.
 
 Details: [docs/architecture.md](docs/architecture.md).
 
@@ -185,6 +191,7 @@ Format and field reference: [docs/data-format.md](docs/data-format.md).
 | --- | --- |
 | Gqrx not started, or not reading the bridge | Prints "Waiting for Gqrx to connect to the I/Q bridge" once and waits. |
 | Gqrx remote control disabled or unreachable | Prints "Waiting for Gqrx remote control" once and retries every 2 s. |
+| Remote-control port held by another program (for example a second Gqrx) | Never connects to it: prints "Waiting: the Gqrx remote-control port ... belongs to PID ..." and retries every 2 s. Close that program, then enable Tools > Remote control in the Gqrx reading the bridge. |
 | Gqrx closed or remote control lost | Cancels the current listen without logging it, then reconnects. |
 | No fresh I/Q for 5 s (Gqrx paused, receiver stalled) | Cancels the listen, warns once and waits. |
 | Gain, rate or frequency changed by Gqrx | Cancels the listen; samples are invalidated during settling. |
@@ -273,8 +280,8 @@ part of RadioLack and are rejected by `import`.
 ## Project layout
 
 ```
-src/radiolack/   package: receiver, gqrx, detection, scanning, listening,
-                 squelch, monitor, storage, stats, profiles, cli
+src/radiolack/   package: receiver, gqrx, ownership, detection, scanning,
+                 listening, squelch, monitor, storage, stats, profiles, cli
 src/radiolack/builtin_profiles/   versioned band profiles
 profiles/        example profile; personal profiles (not versioned)
 data/            history, store, logs, generated Gqrx profile (not versioned)

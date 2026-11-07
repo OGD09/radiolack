@@ -103,7 +103,7 @@ the next visit:
 | Field | Meaning |
 | --- | --- |
 | `squelch_dbfs` | Requested squelch for the next visit (dBFS, -150..0). |
-| `source` | `noise` (learned from quiet readings), `signal_fallback` (provisional, from carrier readings) or `carrier_guard` (lowered below a measured carrier). |
+| `source` | `noise` (learned from quiet readings), `signal_fallback` (provisional, from carrier readings) or `carrier_guard` (lowered at once after a carrier measurement: to the stored noise + 3 dB when that noise is at least 6 dB below the carrier, else to carrier - 3 dB). |
 | `noise_floor_dbfs` | Estimated noise from settled quiet meter readings, or `null`. |
 | `noise_measured_at_utc` | When that estimate was made. |
 | `provisional_squelch_dbfs`, `provisional_measured_at_utc` | First provisional setting of a new memory. |

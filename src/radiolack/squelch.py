@@ -14,7 +14,11 @@ Safeguards:
 * a noise estimate is rejected when it is less than ``carrier_separation_db``
   below the carrier level measured at this frequency (this visit or stored);
 * the requested squelch is kept at least ``carrier_headroom_db`` below that
-  carrier level, and an existing memory above it is lowered (carrier guard);
+  carrier level, and an existing memory above its safe target is lowered at
+  once (carrier guard): to the stored noise + ``noise_offset_db`` when that
+  noise sits at least ``carrier_separation_db`` below the carrier, else to
+  the carrier ceiling. Busy channels rarely stay quiet long enough to measure
+  noise, so a ceiling alone would mute weaker stations there;
 * raising the squelch is limited to ``max_raise_db`` per update, while
   lowering it (the safe direction for reception) is immediate.
 
@@ -67,6 +71,8 @@ class SquelchSettings:
 class SquelchUpdate:
     requested_dbfs: float
     reason: str
+    # Noise level the value derives from; None when it derives from the carrier ceiling.
+    noise_dbfs: float | None = None
 
 
 def iso_utc() -> str:
@@ -153,11 +159,11 @@ class SquelchLearner:
         self.noise_samples.append((now, level))
         return self._learn_noise(now)
 
-    def _set(self, value: float, source: str, **fields) -> SquelchUpdate:
+    def _set(self, value: float, source: str, noise: float | None, **fields) -> SquelchUpdate:
         stamp = self.clock_utc()
         self.record.update(squelch_dbfs=value, source=source, updated_at_utc=stamp,
                            learning_version=LEARNING_VERSION, **fields)
-        return SquelchUpdate(value, source)
+        return SquelchUpdate(value, source, noise)
 
     def _guard_carrier(self) -> SquelchUpdate | None:
         settings = self.settings
@@ -165,10 +171,18 @@ class SquelchLearner:
             return None
         carrier = self.carrier_reference
         self.record.update(carrier_meter_dbfs=round(carrier, 1), carrier_measured_at_utc=self.clock_utc())
-        ceiling = round(_clamp(carrier - settings.carrier_headroom_db), 1)
-        if self.record["squelch_dbfs"] - ceiling < settings.min_guard_correction_db:
+        target = _clamp(carrier - settings.carrier_headroom_db)
+        noise = self.record.get("noise_floor_dbfs")
+        # The stored noise counts only when clearly below the carrier: prototype
+        # estimates learned from carrier tails sit close to or above it.
+        if valid_level(noise) and noise <= carrier - settings.carrier_separation_db:
+            target = min(target, _clamp(noise + settings.noise_offset_db))
+        else:
+            noise = None
+        target = round(target, 1)
+        if self.record["squelch_dbfs"] - target < settings.min_guard_correction_db:
             return None
-        return self._set(ceiling, "carrier_guard")
+        return self._set(target, "carrier_guard", noise)
 
     def _learn_noise(self, now: float) -> SquelchUpdate | None:
         settings = self.settings
@@ -196,5 +210,6 @@ class SquelchLearner:
         if target > previous:
             target = min(target, previous + settings.max_raise_db)
         self.last_update = now
-        return self._set(round(target, 1), "noise", noise_floor_dbfs=round(noise, 1),
+        noise = round(noise, 1)
+        return self._set(round(target, 1), "noise", noise, noise_floor_dbfs=noise,
                          noise_measured_at_utc=self.clock_utc())

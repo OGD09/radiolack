@@ -3,7 +3,7 @@
 import unittest
 
 from radiolack.squelch import (ACTIVE, QUIET, TRANSITION, UNKNOWN, FftActivity, SquelchLearner,
-                               SquelchSettings)
+                               SquelchSettings, SquelchUpdate)
 
 from tests.helpers import CONTEXT
 
@@ -40,8 +40,8 @@ def provisional(squelch):
 class PrototypeRuleTests(unittest.TestCase):
     def test_stable_quiet_meter_sets_squelch_three_db_above_noise(self):
         learner = provisional(-46)
-        for when in [0, 0.2, 0.4, 0.6]:
-            learner.observe(-60, QUIET, when)
+        updates = [learner.observe(-60, QUIET, when) for when in [0, 0.2, 0.4, 0.6]]
+        self.assertEqual(updates, [None, None, None, SquelchUpdate(-57, "noise", -60)])
         self.assertEqual(learner.record["squelch_dbfs"], -57)
         self.assertEqual(learner.record["noise_floor_dbfs"], -60)
         self.assertEqual(learner.record["source"], "noise")
@@ -143,9 +143,39 @@ class CarrierGuardTests(unittest.TestCase):
         self.assertEqual(len(updates), 1)
         when, update = updates[0]
         self.assertEqual((when, update.reason, update.requested_dbfs), (1.9, "carrier_guard", -49.5))
+        self.assertIsNone(update.noise_dbfs, "a stored noise above the carrier is not credible")
         self.assertEqual(learner.record["carrier_meter_dbfs"], -46.5)
         self.assertEqual(learner.record["learning_version"], 2)
         self.assertEqual(learner.record["noise_floor_dbfs"], -45.3, "legacy estimate kept, not invented")
+
+    def guard_updates(self, saved, carrier):
+        """Carrier present for the whole visit: no quiet reading, so no noise measurement."""
+        learner = SquelchLearner(CONTEXT, saved["squelch_dbfs"], saved)
+        history = simulate(learner, carrier_until=10.0, lag=0.5, end=10.0, carrier=carrier)
+        return learner, [update for *_, update in history if update is not None]
+
+    def test_guard_lowers_to_a_stored_noise_clearly_below_the_carrier(self):
+        # Shape of 120.775 MHz on hardware: strong busy station, noise stored but never re-measured.
+        saved = {"squelch_dbfs": -28.6, "noise_floor_dbfs": -57.2, "source": "noise",
+                 "receiver_context": CONTEXT, "updated_at_utc": "2026-11-07T10:41:36+00:00"}
+        learner, updates = self.guard_updates(saved, carrier=-28.9)
+        self.assertEqual(updates, [SquelchUpdate(-54.2, "carrier_guard", -57.2)])
+        self.assertEqual(learner.record["noise_floor_dbfs"], -57.2, "the stored estimate is not rewritten")
+        self.assertEqual(learner.record["carrier_meter_dbfs"], -28.9)
+
+    def test_memory_left_at_the_carrier_ceiling_is_lowered_to_the_stored_noise(self):
+        # Value written by the first version of the guard: carrier - 3 dB, far above the noise.
+        saved = {"squelch_dbfs": -31.8, "noise_floor_dbfs": -57.2, "source": "carrier_guard",
+                 "carrier_meter_dbfs": -28.8, "receiver_context": CONTEXT, "learning_version": 2}
+        _, updates = self.guard_updates(saved, carrier=-28.9)
+        self.assertEqual(updates, [SquelchUpdate(-54.2, "carrier_guard", -57.2)])
+
+    def test_guard_leaves_a_squelch_already_near_the_stored_noise(self):
+        saved = {"squelch_dbfs": -54.0, "noise_floor_dbfs": -57.2, "source": "noise",
+                 "receiver_context": CONTEXT}
+        learner, updates = self.guard_updates(saved, carrier=-28.9)
+        self.assertEqual(updates, [], "-54.0 is within the 0.5 dB correction threshold of -54.2")
+        self.assertEqual(learner.record["squelch_dbfs"], -54.0)
 
     def test_noise_learning_never_exceeds_the_carrier_ceiling(self):
         saved = {"squelch_dbfs": -60.0, "source": "noise", "receiver_context": CONTEXT,

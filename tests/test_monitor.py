@@ -14,7 +14,7 @@ from unittest.mock import patch
 from radiolack.detection import ChannelGrid
 from radiolack.errors import GqrxError, ReceiverError, StoreWriteError
 from radiolack.monitor import Monitor, MonitorSettings
-from radiolack.receiver import SETTLE_SECONDS, Frame
+from radiolack.receiver import SETTLE_SECONDS, Endpoint, Frame
 from radiolack.scanning import FIXED_WINDOW_SCAN_INFO
 from radiolack.storage import ObservationStore
 
@@ -42,6 +42,9 @@ class FakeRadio:
         self.paused = False
         self.follows_moves = True
         self.failure = None
+        # Bridge side: no client address skips the Gqrx ownership check.
+        self.listen = Endpoint("127.0.0.1", 1235)
+        self.client_address = None
         self.frame = None
         self.sequence = 0
         self.valid_after = 0.0
@@ -229,7 +232,9 @@ class ListenTests(MonitorTestCase):
         self.run_until(monitor, 3.0)
         self.assertIn("memory reapplied", self.said("LISTEN")[0][1])
         self.assertIn(f"TUNE {CARRIER_HZ} -43.0", self.controls[0].calls)
-        self.assertEqual(len(self.said("SQL GUARD 131.500000 MHz")), 1)
+        # The legacy noise estimate sits above this carrier: only the carrier ceiling is usable.
+        self.assertEqual(len(self.said("SQL GUARD 131.500000 MHz | carrier -46.0 dBFS | no usable stored "
+                                       "noise | squelch -49.0 dBFS")), 1)
         saved = self.store.stations[str(CARRIER_HZ)]
         self.assertEqual((saved["squelch_dbfs"], saved["source"], saved["learning_version"]),
                          (-49.0, "carrier_guard", 2))
@@ -239,6 +244,23 @@ class ListenTests(MonitorTestCase):
         self.assertEqual((event["squelch_dbfs"], event["squelch_source"]), (-49.0, "carrier_guard"))
         self.assertEqual(event["squelch_changes"][0]["reason"], "carrier_guard")
         self.assertTrue(event["quality_flags"]["provisional_squelch"])
+
+    def test_guard_uses_a_stored_noise_clearly_below_the_carrier(self):
+        # Busy channel: the memory sits near the carrier and no quiet period is long enough to
+        # measure noise, but the stored noise is credible because it lies well below the carrier.
+        memory = {"squelch_dbfs": -43.0, "noise_floor_dbfs": -60.0, "source": "noise",
+                  "receiver_context": CONTEXT, "updated_at_utc": "2026-11-07T10:41:36+00:00"}
+        self.store.remember_squelch(CARRIER_HZ, memory)
+        monitor = self.build(FakeRadio())
+        self.run_until(monitor, 10.4)
+        self.assertEqual(len(self.said("SQL GUARD 131.500000 MHz | carrier -46.0 dBFS | stored noise "
+                                       "-60.0 dBFS | squelch -57.0 dBFS")), 1)
+        [event] = self.store.observations
+        self.assertEqual((event["squelch_dbfs"], event["squelch_source"]), (-57.0, "carrier_guard"))
+        # Only the readings that trigger the guard see the carrier below the old -43.0 squelch.
+        self.assertGreater(event["gqrx_measurements"]["meter_above_squelch_fraction_fft_active_settled"], 0.9)
+        saved = self.store.stations[str(CARRIER_HZ)]
+        self.assertEqual((saved["squelch_dbfs"], saved["noise_floor_dbfs"]), (-57.0, -60.0))
 
     def test_cooldown_then_memory_is_reapplied_on_the_next_listen(self):
         monitor = self.build(FakeRadio())
@@ -305,6 +327,24 @@ class InterruptionTests(MonitorTestCase):
         self.assertEqual(len(connected), 1)
         self.assertAlmostEqual(connected[0][0], 4.1)
         self.assertEqual(len(self.said("LISTEN")), 1)
+
+    def test_remote_control_of_another_gqrx_is_never_driven(self):
+        radio = FakeRadio()
+        radio.client_address = ("127.0.0.1", 40000)
+        conflict = ("the Gqrx remote-control port 7356 belongs to PID 10410 (gqrx -c old.conf), "
+                    "not to the Gqrx reading the I/Q bridge (PID 68024)")
+        answers = [conflict, conflict, None]  # the other Gqrx is closed before the third attempt
+        with patch("radiolack.monitor.foreign_remote_control",
+                   side_effect=lambda *ports: answers.pop(0) if answers else None) as check:
+            monitor = self.build(radio)
+            self.run_until(monitor, 4.0)
+            self.assertEqual(self.controls, [], "no connection, hence no command, to the other Gqrx")
+            self.assertEqual(len(self.said(f"Waiting: {conflict}. RadioLack only drives the Gqrx reading its "
+                                           "bridge")), 1)
+            self.run_until(monitor, 4.2)
+        check.assert_called_with(40000, 1235, 7356)
+        self.assertEqual(len(self.controls), 1)
+        self.assertAlmostEqual(self.said("Gqrx connected")[0][0], 4.1)
 
     def test_lost_remote_control_during_a_listen_is_not_logged(self):
         monitor = self.build(FakeRadio())

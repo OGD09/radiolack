@@ -170,6 +170,8 @@ class Bridge(threading.Thread):
         self.source = source
         self.stop_event = threading.Event()
         self.failure = None
+        # Address of the connected Gqrx I/Q client, used to identify its process.
+        self.client_address = None
         family = socket.AF_INET6 if ":" in listen.host else socket.AF_INET
         self.server = socket.socket(family, socket.SOCK_STREAM)
         try:
@@ -240,7 +242,7 @@ class Bridge(threading.Thread):
             while not self.stop_event.is_set():
                 if not select.select([self.server], [], [], 0.2)[0]:
                     continue
-                client, _ = self.server.accept()
+                client, self.client_address = self.server.accept()
                 try:
                     with client:
                         self.relay(client)
@@ -248,6 +250,7 @@ class Bridge(threading.Thread):
                     pass  # Gqrx may reconnect when its input configuration changes.
                 finally:
                     self.capture.reset(False)
+                    self.client_address = None
         except Exception as error:  # Surface any relay failure to the monitor thread.
             self.failure = error
 

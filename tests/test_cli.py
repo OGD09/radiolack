@@ -201,7 +201,15 @@ class CheckCommandTests(CliTestCase):
         with socket.socket() as gqrx:
             gqrx.bind(("127.0.0.1", self.gqrx_port))
             gqrx.listen(1)
-            self.assertIn("reachable on", self.check()[1])
+            # The listener is this test process, not a Gqrx started with the RadioLack profile.
+            code, out, _ = self.check()
+            self.assertEqual(code, 0)
+            self.assertRegex(out, rf"WARN +Gqrx remote control +reachable on 127\.0\.0\.1:{self.gqrx_port} but "
+                                  rf"held by PID {os.getpid()} \(.*not by a Gqrx started with gqrx-radiolack\.conf")
+            with patch.object(cli, "command_line", return_value="gqrx -c /home/u/data/gqrx-radiolack.conf"):
+                out = self.check()[1]
+            self.assertRegex(out, rf"OK +Gqrx remote control +reachable on 127\.0\.0\.1:{self.gqrx_port}: "
+                                  rf"PID {os.getpid()} \(")
         with socket.socket() as busy:
             busy.bind(("127.0.0.1", self.bridge_port))
             busy.listen(1)

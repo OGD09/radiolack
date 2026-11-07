@@ -29,6 +29,7 @@ its S-meter.
 | --- | --- |
 | `receiver` | `rtl_tcp` child process, I/Q bridge thread, frame capture, endpoints and port probes. |
 | `gqrx` | Remote-control client (tune, squelch with read-back, meter, gains, restore) and separate profile creation. |
+| `ownership` | Processes behind local TCP sockets, read from Linux `/proc`: the remote control is driven only when it belongs to the Gqrx reading the bridge. |
 | `detection` | Averaged FFT spectrum, local-noise peak extraction, carrier grid. |
 | `scanning` | Overlapping window plan, coverage check, full-band explorer state. |
 | `listening` | Ten-second listen validation and per-listen telemetry. |

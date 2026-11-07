@@ -17,6 +17,7 @@ from .detection import compute_spectrum, extract_peaks
 from .errors import GqrxProtocolError, ReceiverError
 from .gqrx import GqrxControl
 from .listening import LIMITED_COVERAGE_FRACTION, ListeningWindow
+from .ownership import foreign_remote_control
 from .profiles import Profile
 from .receiver import Endpoint
 from .scanning import FIXED_WINDOW_SCAN_INFO, BandExplorer, usable_span
@@ -55,6 +56,17 @@ def console(text: str):
     print(f"{time.strftime('%H:%M:%S', time.gmtime())}Z {text}", flush=True)
 
 
+def _squelch_line(frequency: int, record: dict, update) -> str:
+    """Console line for a squelch change, with the levels its value comes from."""
+    where = f"{frequency / 1e6:.6f} MHz"
+    if update.reason == "carrier_guard":
+        basis = ("no usable stored noise" if update.noise_dbfs is None
+                 else f"stored noise {update.noise_dbfs:.1f} dBFS")
+        return (f"SQL GUARD {where} | carrier {record['carrier_meter_dbfs']:.1f} dBFS | {basis} | "
+                f"squelch {update.requested_dbfs:.1f} dBFS")
+    return f"SQL LEARNED {where} | noise {update.noise_dbfs:.1f} dBFS | squelch {update.requested_dbfs:.1f} dBFS"
+
+
 class Monitor:
     def __init__(self, settings: MonitorSettings, capture, bridge, store, *, backend=None,
                  control_factory=None, clock=time.monotonic, sleep=time.sleep, emit=console):
@@ -81,6 +93,7 @@ class Monitor:
         self.next_connection = 0.0
         self.next_meter = 0.0
         self.warned_remote = False
+        self.warned_conflict = None
         self.waiting_for_source = False
         self.last_fresh = None
         self.stall_warned = False
@@ -116,9 +129,26 @@ class Monitor:
         self.streaks.clear()
         self.next_connection = now + self.settings.reconnect_interval_s
 
+    def _remote_conflict(self) -> str | None:
+        """Why the remote control must not be driven: it is not the Gqrx reading the bridge."""
+        client = self.bridge.client_address
+        if client is None or not self.settings.gqrx.is_loopback:
+            return None
+        return foreign_remote_control(client[1], self.bridge.listen.port, self.settings.gqrx.port)
+
     def _connect(self, now: float) -> bool:
         if now < self.next_connection:
             return False
+        # Checked before connecting: GqrxControl changes Gqrx settings as soon as it connects.
+        conflict = self._remote_conflict()
+        if conflict is not None:
+            if conflict != self.warned_conflict:
+                self.emit(f"Waiting: {conflict}. RadioLack only drives the Gqrx reading its bridge: close "
+                          "the other program, then enable Tools > Remote control in that Gqrx.")
+                self.warned_conflict = conflict
+            self.next_connection = now + self.settings.reconnect_interval_s
+            return False
+        self.warned_conflict = None
         try:
             self.control = self.control_factory()
         except OSError:
@@ -300,12 +330,7 @@ class Monitor:
         if update is not None:
             if station.confirmed:
                 self.store.remember_squelch(station.frequency, station.learner.record)
-            record = station.learner.record
-            noise = record.get("noise_floor_dbfs")
-            label = "SQL GUARD" if update.reason == "carrier_guard" else "SQL LEARNED"
-            self.emit(f"{label} {station.frequency / 1e6:.6f} MHz | noise "
-                      f"{'unknown' if noise is None else f'{noise:.1f} dBFS'} | squelch "
-                      f"{update.requested_dbfs:.1f} dBFS")
+            self.emit(_squelch_line(station.frequency, station.learner.record, update))
         return True
 
     def _select_candidate(self, peaks, frame, epoch, now):

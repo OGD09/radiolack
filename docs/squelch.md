@@ -49,8 +49,14 @@ which the carrier is measured.
 5. **Changes.** Differences under 1.5 dB are ignored. Raising is limited to
    2 dB per update with at least 2 s between updates; lowering (the safe
    direction for reception) is immediate.
-6. **Carrier guard.** When the memorized squelch is 0.5 dB or more above
-   carrier - 3 dB, it is lowered to that ceiling at once (`carrier_guard`).
+6. **Carrier guard.** Once the carrier level is known, the memorized squelch
+   is lowered at once (`carrier_guard`) when it is 0.5 dB or more above its
+   safe target: the stored noise + 3 dB when that noise is at least 6 dB below
+   the carrier (the same separation as rule 3), else carrier - 3 dB. Busy
+   channels rarely stay quiet for the guard plus 0.5 s, so rule 3 may never
+   run there; a target at carrier - 3 dB alone would mute weaker stations on
+   the same channel. Prototype noise estimates learned from carrier tails sit
+   close to or above the carrier and are ignored by the separation test.
 7. **Application.** During a listen every change is applied, read back and
    recorded in `squelch_changes`. Outside a listen audio stays muted; changes
    are saved for validated stations and applied on the next visit.
@@ -88,6 +94,15 @@ Each new observation records `meter_dbfs_fft_quiet_settled`,
   real carriers;
 - a large `meter_samples_unsettled` with no learning means stations are
   rarely quiet long enough; the guard can be lowered, but not below the lag.
+
+First hardware session (20 minutes, 58 saved listens on 22 frequencies):
+quiet-settled medians stayed between -60 and -54 dBFS, a median of 11.5 dB
+below the active-settled ones, and the active-settled fraction above the
+squelch had a median of 1.0 (never below 0.5). On a busy channel with a
+strong station (120.775 MHz: carrier -28.9 dBFS, stored noise -57.2 dBFS)
+quiet gaps never lasted long enough to measure noise in four listens, and the
+first guard left the squelch at carrier - 3 dB; rule 6 now uses the credible
+stored noise instead (-54.2 dBFS there).
 
 ## Residual risk
 

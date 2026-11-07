@@ -6,10 +6,12 @@ documentation is in README.md; design notes are in docs/.
 ## Layout
 
 - `src/radiolack/`: `receiver` (rtl_tcp child, I/Q bridge, capture),
-  `gqrx` (remote control, separate profile), `detection` (FFT peaks, channel
-  grid), `scanning` (window plan, explorer), `listening` (listen validation,
-  telemetry), `squelch` (learning), `monitor` (main loop), `storage` (store,
-  legacy import), `stats`, `profiles`, `cli`, `errors`.
+  `gqrx` (remote control, separate profile), `ownership` (/proc check that
+  the remote control belongs to the Gqrx reading the bridge), `detection`
+  (FFT peaks, channel grid), `scanning` (window plan, explorer), `listening`
+  (listen validation, telemetry), `squelch` (learning), `monitor` (main
+  loop), `storage` (store, legacy import), `stats`, `profiles`, `cli`,
+  `errors`.
 - `src/radiolack/builtin_profiles/`: versioned band profiles (TOML).
 - `tests/`: hardware-free unit tests; `tests/integration/`: simulated
   rtl_tcp and Gqrx over local sockets.

@@ -8,11 +8,16 @@ Commands for real reception sessions. Nothing here is run by the tests.
   and stop the prototype scripts (`airband-scan.py`, `airband-peaks.py`) and
   any other `rtl_tcp`. Only one program can open the RTL-SDR.
 - Run the read-only readiness report (tools, USB device, ports, Gqrx
-  reachability, store, lock):
+  reachability and the process holding its remote control, store, lock):
 
   ```bash
   radiolack check
   ```
+
+  A `WARN` on the Gqrx remote control naming another program (for example a
+  Gqrx started with an older profile) means that program holds port 7356:
+  close it through its window. RadioLack never drives a Gqrx that does not
+  read its bridge, and the RadioLack Gqrx could not open its remote control.
 
 - Make sure the working store exists (`radiolack import data/airband-peaks.json`),
   or add `--create-store` to start an empty one.
@@ -46,7 +51,9 @@ Console lines (UTC times):
 | --- | --- |
 | `WINDOW n/32 \| ... MHz \| FFT center ...` | A window move was confirmed by the I/Q stream. |
 | `LISTEN f MHz \| margin ... \| squelch ... verified \| memory new/reapplied` | Ten-second listen started. |
-| `SQL GUARD` / `SQL LEARNED` | Squelch lowered below the carrier / learned from noise. |
+| `SQL GUARD f MHz \| carrier ... \| stored noise ... \| squelch ...` | Memorized squelch lowered at once: to the stored noise + 3 dB, or to carrier - 3 dB when no stored noise is credible ("no usable stored noise"). |
+| `SQL LEARNED f MHz \| noise ... \| squelch ...` | Squelch set from a noise level measured during this visit. |
+| `Waiting: the Gqrx remote-control port ... belongs to PID ...` | Another program holds the remote control; RadioLack waits and never drives it. |
 | `SAVED f MHz \| active ... \| validated listens n` | Observation written. |
 | `REJECTED f MHz \| active ...` | Listen completed but not conclusive; nothing written. |
 | `Listen cancelled: ...; not logged.` | Interruption; nothing written. |
