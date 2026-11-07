@@ -1,0 +1,40 @@
+# Example RadioLack band profile (generic template).
+#
+# Copy this file under another name in profiles/ (personal profiles there are
+# not versioned) and pass it with --profile profiles/NAME.toml.
+# Every key is required; unknown keys are rejected so that a typo never
+# silently falls back to a default.
+#
+# The values below only illustrate the format: the airband with a 25 kHz
+# carrier grid instead of the built-in 8.333 kHz one. They are not a verified
+# regional band plan; check official sources before relying on one.
+
+name = "example-airband-25k"
+description = "Example: VHF airband 118-137 MHz, AM 8 kHz, 25 kHz carrier grid"
+
+[band]
+low_hz = 118_000_000           # inclusive
+high_hz = 137_000_000          # exclusive
+
+[demodulation]
+mode = "AM"                    # "AM" or "FM" (Gqrx remote-control names)
+filter_hz = 8_000              # 1000 to 200000; passband is -filter/2 .. +filter/2
+
+[channels]
+origin_hz = 118_000_000        # one carrier of the grid
+spacing_hz = 25_000            # integer, decimal or exact fraction such as "25000/3"
+snap_tolerance_hz = 3_000      # below half the spacing
+
+[detection]
+margin_db = 15.0               # FFT-bin contrast over local noise (not dBm, not SNR)
+confirm_observations = 2       # consecutive observations before a listen
+
+[listening]
+seconds = 10.0                 # listen duration
+min_active_seconds = 1.0       # confirmed RF presence required
+min_observed_seconds = 5.0     # fresh FFT observations required
+cooldown_seconds = 20.0        # delay before the same frequency is selected again
+
+[exploration]
+window_seconds = 1.0           # observation per quiet window in full-band mode
+initial_center_hz = 136_500_000
