@@ -18,6 +18,9 @@ documentation is in README.md; design notes are in docs/.
 
 - Tests: `python3 -m pytest` or `PYTHONPATH=src python3 -m unittest discover -s tests -t .`
 - Run without installing: `PYTHONPATH=src python3 -m radiolack --help`
+- CI: `.github/workflows/tests.yml` (GitHub Actions) runs the unittest
+  command against the installed package on Python 3.11 and 3.15; keep its
+  job and step timeouts and its concurrency cancellation.
 
 ## Safety rules (non-negotiable)
 

@@ -231,6 +231,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 - `tests/test_real_history.py` imports `data/airband-peaks.json` (read-only)
   into a temporary store when the file is present, and is skipped otherwise.
 
+GitHub Actions ([.github/workflows/tests.yml](.github/workflows/tests.yml))
+runs the suite on every push to `main` and every pull request, on Python 3.11
+and 3.15: it installs the package and runs the unittest command without
+`PYTHONPATH`, which also checks that the built-in profiles are packaged. No
+hardware, secret or personal data is involved; `data/` is not versioned, so
+the real-history test is skipped there.
+
 Hardware trials are manual and separate from these tests; see
 [docs/operations.md](docs/operations.md).
 
@@ -273,4 +280,5 @@ profiles/        example profile; personal profiles (not versioned)
 data/            history, store, logs, generated Gqrx profile (not versioned)
 docs/            architecture, data format, squelch, operations
 tests/           hardware-free tests; tests/integration: simulated pipeline
+.github/workflows/   CI: hardware-free tests on Python 3.11 and 3.15
 ```
