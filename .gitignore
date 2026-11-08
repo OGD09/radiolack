@@ -1,11 +1,9 @@
-# Personal observations, imported history, Gqrx profiles, locks and logs.
+# Personal data of the airband explorer (see data/README.md).
 /data/*
 !/data/README.md
 
-# Personal band profiles; only the documented example is versioned.
-/profiles/*
-!/profiles/README.md
-!/profiles/example.toml
+# Personal band profiles of the airband explorer; never versioned.
+/profiles/
 
 *.log
 

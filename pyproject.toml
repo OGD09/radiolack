@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "radiolack"
-version = "0.1.0"
-description = "Receive-only radio exploration: shared rtl_tcp I/Q, FFT peak detection, Gqrx control and observation statistics."
+dynamic = ["version"]
+description = "Receive-only SDR receiver for the amateur radio bands, with a web interface in a desktop window."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24"]
+dependencies = ["aiohttp>=3.8"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
@@ -16,11 +16,14 @@ test = ["pytest>=7"]
 [project.scripts]
 radiolack = "radiolack.cli:main"
 
+[tool.setuptools.dynamic]
+version = {attr = "radiolack.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-radiolack = ["builtin_profiles/*.toml"]
+radiolack = ["web/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
