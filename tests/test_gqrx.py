@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from radiolack.errors import GqrxProtocolError, SquelchVerificationError
-from radiolack.gqrx import GqrxControl, prepare_gqrx_profile
+from radiolack.gqrx import CONFIG_DEMOD_NAMES, GqrxControl, prepare_gqrx_profile
+from radiolack.profiles import SUPPORTED_MODES
 from radiolack.receiver import Endpoint
 
 
@@ -132,6 +133,22 @@ class GqrxProfileTests(unittest.TestCase):
                 prepare_gqrx_profile(path, base=base, **self.arguments())
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(base.read_bytes(), original_base)
+
+    def test_profile_uses_gqrx_demodulator_names(self):
+        # Gqrx 2.15 reads "Narrow FM" from a profile; "FM" is only a remote-control name.
+        self.assertEqual(set(CONFIG_DEMOD_NAMES), set(SUPPORTED_MODES))
+        with tempfile.TemporaryDirectory() as directory:
+            for mode, expected in (("AM", "demod=AM"), ("FM", "demod=Narrow FM")):
+                path = Path(directory) / f"{mode}.conf"
+                prepare_gqrx_profile(path, base=None, **{**self.arguments(), "mode": mode})
+                self.assertIn(expected, path.read_text().splitlines())
+
+    def test_unsupported_mode_is_rejected_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gqrx.conf"
+            with self.assertRaisesRegex(ValueError, "'USB'"):
+                prepare_gqrx_profile(path, base=None, **{**self.arguments(), "mode": "USB"})
+            self.assertFalse(path.exists())
 
     def test_usual_gqrx_profile_is_never_an_output(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -18,6 +18,10 @@ from .errors import GqrxProtocolError, SquelchVerificationError
 from .receiver import Endpoint
 
 GQRX_USUAL_PROFILE = Path.home() / ".config" / "gqrx" / "default.conf"
+# Gqrx profiles store the demodulator under its display name, which differs
+# from the remote-control mode name for narrow FM. Gqrx 2.15 turns any other
+# name into "Demod Off" ("Modulation 'FM' is unknown").
+CONFIG_DEMOD_NAMES = {"AM": "AM", "FM": "Narrow FM"}
 MIN_DBFS, MAX_DBFS = -150.0, 0.0
 SQUELCH_TOLERANCE_DB = 0.11
 PROVISIONAL_LIMITS_DBFS = (-149.0, -1.0)
@@ -176,6 +180,9 @@ def prepare_gqrx_profile(path, *, bridge: Endpoint, remote: Endpoint, sample_rat
     target = Path(path).expanduser().absolute()
     if target == GQRX_USUAL_PROFILE.absolute() or (base is not None and target == Path(base).absolute()):
         raise ValueError(f"Refusing to write Gqrx's usual profile {target}; choose a separate file")
+    if mode not in CONFIG_DEMOD_NAMES:
+        raise ValueError(f"No Gqrx profile demodulator for mode {mode!r}; "
+                         f"supported: {', '.join(CONFIG_DEMOD_NAMES)}")
     config = configparser.ConfigParser(interpolation=None)
     config.optionxform = str
     if base is not None and Path(base).exists():
@@ -188,8 +195,8 @@ def prepare_gqrx_profile(path, *, bridge: Endpoint, remote: Endpoint, sample_rat
         "General": {"configversion": "3", "crashed": "false"},
         "input": {"device": f'"rtl_tcp={bridge}"', "sample_rate": str(sample_rate),
                   "bandwidth": "0", "lnb_lo": "0", "frequency": str(center_hz)},
-        "receiver": {"demod": mode, "filter_low_cut": str(-half), "filter_high_cut": str(half),
-                     "offset": "0"},
+        "receiver": {"demod": CONFIG_DEMOD_NAMES[mode], "filter_low_cut": str(-half),
+                     "filter_high_cut": str(half), "offset": "0"},
         "fft": {"fft_center": "0"},
         "remote_control": {"allowed_hosts": "127.0.0.1" if remote.host == "localhost" else remote.host,
                            "port": str(remote.port), "enabled": "true"},

@@ -85,7 +85,7 @@ run `PYTHONPATH=src python3 -m radiolack` from the repository.
 | --- | --- |
 | `profiles` | List built-in band profiles. |
 | `plan` | Show the full-band window plan and verify grid coverage (edges and DC gaps). |
-| `gqrx-profile` | Create a separate Gqrx profile reading the bridge, with local remote control. |
+| `gqrx-profile` | Create a separate Gqrx profile reading the bridge, with local remote control, in the band profile's mode and filter (`FM` is written as Gqrx's `Narrow FM`). |
 | `import SOURCE` | Import a legacy `pc_repair` FFT journal into the store; `--dry-run` reports only. |
 | `scan` | Explore the whole band in overlapping windows (full-band mode). |
 | `watch` | Observe the current Gqrx window only (fixed-window mode; manual tuning allowed). |

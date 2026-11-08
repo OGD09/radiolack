@@ -17,7 +17,7 @@ low_hz = 118_000_000           # inclusive
 high_hz = 137_000_000          # exclusive
 
 [demodulation]
-mode = "AM"                    # "AM" or "FM" (Gqrx remote-control names)
+mode = "AM"                    # "AM" or "FM" (Gqrx remote-control names; FM is narrow FM)
 filter_hz = 8_000              # 1000 to 200000; passband is -filter/2 .. +filter/2
 
 [channels]
