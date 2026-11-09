@@ -1,8 +1,10 @@
-"""Local web server that serves the Radiolack interface.
+"""Local web server: the Radiolack interface and its data stream.
 
 The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
-desktop window toolkit, which must own it.
+desktop window toolkit, which must own it. The engine runs in that loop and
+streams its frames to each interface over a WebSocket (``/stream``; see
+docs/design/protocol.md).
 """
 
 from __future__ import annotations
@@ -13,34 +15,48 @@ import socket
 import threading
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import WSCloseCode, web
+
+from .engine import Engine, Source
+from .synthetic import SyntheticBand
 
 LOOPBACK_HOST = "127.0.0.1"
+PROTOCOL_VERSION = 1
 WEB_DIR = Path(__file__).with_name("web")
 
 _START_TIMEOUT_S = 10.0
 _STOP_TIMEOUT_S = 10.0
+_CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
+_CLIENT_MESSAGE_LIMIT = 64 * 1024
 
-# The interface is one page with inline scripts and styles. It may only talk
-# to this server, and other pages may not frame it.
+# The page loads its scripts and styles from files served next to it, never
+# inline. It may only talk to this server, and other pages may not frame it.
 CONTENT_SECURITY_POLICY = "; ".join((
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "script-src 'self'",
+    "style-src 'self'",
     "connect-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",
 ))
 
+# Interface files served next to the page: flat lower-case names only, so a
+# request can never reach a file outside WEB_DIR.
+_FILE_TYPES = {".css": "text/css", ".js": "text/javascript"}
+_FILE_ROUTE = r"/{name:[a-z0-9][a-z0-9_-]*\.(?:css|js)}"
 
-def create_app(port: int) -> web.Application:
-    """Build the web application for a server listening on ``port``."""
+
+def create_app(port: int, engine: Engine) -> web.Application:
+    """Build the web application for a server listening on ``port``.
+
+    The application runs ``engine`` from its startup to its cleanup.
+    """
     names = (LOOPBACK_HOST, "localhost")
     allowed_hosts = {f"{name}:{port}" for name in names}
     if port == 80:  # Browsers omit the default port from the Host header.
         allowed_hosts.update(names)
+    allowed_origins = {f"http://{host}" for host in allowed_hosts}
 
     @web.middleware
     async def check_host(request: web.Request, handler):
@@ -49,17 +65,72 @@ def create_app(port: int) -> web.Application:
         if (request.host or "").lower() not in allowed_hosts:
             raise web.HTTPForbidden(text="Unexpected Host header.\n")
         response = await handler(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if not response.prepared:   # a stream has already sent its headers
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
+
+    async def stream(request: web.Request) -> web.StreamResponse:
+        # Any page may open a WebSocket to any address, but browsers always
+        # tell the page's origin: only the interface itself may connect.
+        if request.headers.get("Origin", "").lower() not in allowed_origins:
+            raise web.HTTPForbidden(text="Unexpected Origin header.\n")
+        ws = web.WebSocketResponse(timeout=_CLOSE_TIMEOUT_S, compress=False,
+                                   max_msg_size=_CLIENT_MESSAGE_LIMIT)
+        await ws.prepare(request)
+        try:
+            await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION,
+                                "source": engine.source.kind})
+        except ConnectionResetError:
+            return ws
+        frames = engine.subscribe()
+        sender = asyncio.ensure_future(_send_frames(ws, frames))
+        receiver = asyncio.ensure_future(_ignore_messages(ws))
+        try:
+            await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
+            if not receiver.done():     # the engine stopped, or sending failed
+                await ws.close(code=WSCloseCode.GOING_AWAY, message=b"Radiolack is stopping.")
+        finally:
+            engine.unsubscribe(frames)
+            for task in (sender, receiver):
+                task.cancel()
+            await asyncio.gather(sender, receiver, return_exceptions=True)
+        return ws
+
+    async def stop_streams(_app: web.Application) -> None:
+        engine.close()
+
+    async def run_engine(_app: web.Application):
+        task = asyncio.ensure_future(engine.run())
+        yield
+        engine.close()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     app = web.Application(middlewares=[check_host])
     app.router.add_get("/", _index)
+    app.router.add_get("/stream", stream)
+    app.router.add_get(_FILE_ROUTE, _interface_file)
+    app.on_shutdown.append(stop_streams)
+    app.cleanup_ctx.append(run_engine)
     return app
 
 
+async def _send_frames(ws: web.WebSocketResponse, frames: asyncio.Queue) -> None:
+    """Forward the engine's frames to one client until the engine stops."""
+    while (frame := await frames.get()) is not None:
+        await ws.send_bytes(frame)
+
+
+async def _ignore_messages(ws: web.WebSocketResponse) -> None:
+    """Read the client's messages until it closes: it sends no commands yet."""
+    async for _message in ws:
+        pass
+
+
+# Interface files are read at each request, so that a change shows on reload.
+
 async def _index(request: web.Request) -> web.Response:
-    # Read at each request so that a changed interface shows on reload.
     return web.Response(
         body=(WEB_DIR / "index.html").read_bytes(),
         content_type="text/html",
@@ -68,6 +139,20 @@ async def _index(request: web.Request) -> web.Response:
             "Cache-Control": "no-store",
             "Content-Security-Policy": CONTENT_SECURITY_POLICY,
         },
+    )
+
+
+async def _interface_file(request: web.Request) -> web.Response:
+    path = WEB_DIR / request.match_info["name"]
+    try:
+        body = path.read_bytes()
+    except FileNotFoundError:
+        raise web.HTTPNotFound() from None
+    return web.Response(
+        body=body,
+        content_type=_FILE_TYPES[path.suffix],
+        charset="utf-8",
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -92,10 +177,12 @@ class LocalServer:
 
     The port is bound in the constructor, so a busy port raises ``OSError``
     before anything starts. Use it as a context manager: entering starts the
-    server, leaving stops it.
+    server, leaving stops it. The engine reads ``source``, by default the
+    synthetic band.
     """
 
-    def __init__(self, port: int = 0) -> None:
+    def __init__(self, port: int = 0, source: Source | None = None) -> None:
+        self._source = source
         self._sock = _bind(port)
         self.port: int = self._sock.getsockname()[1]
         self.url = f"http://{LOOPBACK_HOST}:{self.port}/"
@@ -144,7 +231,8 @@ class LocalServer:
             self._ready.set()
 
     async def _serve(self) -> None:
-        runner = web.AppRunner(create_app(self.port), handle_signals=False)
+        engine = Engine(self._source if self._source is not None else SyntheticBand())
+        runner = web.AppRunner(create_app(self.port, engine), handle_signals=False)
         await runner.setup()
         try:
             await web.SockSite(runner, self._sock).start()
@@ -153,4 +241,5 @@ class LocalServer:
             self._ready.set()
             await self._stop_requested.wait()
         finally:
+            engine.close()      # ends the streams, so that no client holds up the shutdown
             await runner.cleanup()

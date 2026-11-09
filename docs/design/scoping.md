@@ -31,6 +31,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-08 | Making the program available to the public is the long-term goal: distributing it so that anyone can install it at home. Opening a receiver to anyone on the internet (a public WebSDR) is not a goal. |
 | 2026-11-08 | The UI mockup is the visual reference. It can still change deeply. |
 | 2026-11-08 | Desktop shell for v0: the system's WebKitGTK through PyGObject, validated by spike 1. Windows and macOS shells are chosen before v4. |
+| 2026-11-09 | UI code: plain JavaScript ES modules served as they are, with no build step. Types are written in JSDoc comments and checked by TypeScript; only that check needs Node. Revisit if the UI needs a framework or npm libraries. |
 
 ## Scope
 
@@ -103,11 +104,12 @@ flowchart LR
   - Server: aiohttp, for HTTP and WebSocket in one dependency. It serves the
     UI files and, per client, spectrum rows (uint8 dB values), audio, state
     updates (JSON) and commands.
-- **UI** (TypeScript, built with Vite). No UI framework at first, like the
-  mockup; revisit if the panels grow complex. WebGL2 spectrum and waterfall,
-  AudioWorklet playback behind a jitter buffer, mouse, keyboard and touch
-  input, translations. The built files ship inside the Python package: users
-  never need Node.
+- **UI** (JavaScript ES modules, served as they are: no build step). Types
+  live in JSDoc comments and TypeScript checks them without producing files;
+  nothing else needs Node. No UI framework at first, like the mockup; revisit
+  if the panels grow complex. WebGL2 spectrum and waterfall, AudioWorklet
+  playback behind a jitter buffer, mouse, keyboard and touch input,
+  translations. The files ship inside the Python package as they are.
 - **Desktop shell**: a native window that shows the UI served by the local
   engine on the loopback interface. On Linux it is the system's WebKitGTK
   through PyGObject (spike 1). Windows and macOS shells are chosen before v4,
@@ -292,16 +294,27 @@ These costs wait for v4:
 
 ## Repository plan
 
-- `rewrite` branch created from `main`; nothing committed yet.
+- `rewrite` branch created from `main` on 2026-11-08.
 - v0 skeleton, 2026-11-08: the airband explorer's package, tests and docs are
   removed from the branch, after [`lessons.md`](lessons.md) kept what the new
   design needs. `radiolack` serves `src/radiolack/web/` (for now a copy of the
   mockup) on 127.0.0.1 and shows it in the native window, or in a browser.
   New `AGENTS.md` and `README.md` keep the safety rules; CI runs the new tests.
-- Proposed next step: a synthetic I/Q source and the display FFT in the
-  engine, streamed over WebSocket to a WebGL2 spectrum and waterfall that
-  replace the mockup's simulated display. Then the rtl_tcp source, and the UI
-  build and browser tests in CI.
+- Live display, 2026-11-09: the engine computes the display FFT (NumPy, 8192
+  bins, about 30 frames/s) of a simulated 2 m band and streams it over a
+  WebSocket ([`protocol.md`](protocol.md)) to the interface, which draws the
+  spectrum and the waterfall with WebGL2 and keeps the mockup's panels and
+  interactions. The interface is plain ES modules, type-checked from their
+  JSDoc. Measured in the native window on the owner's laptop (1280 × 800 CSS
+  px at scale 2; other programs were busy, so CPU figures vary by about
+  ±10 points between runs): 56 to 60 frames/s against 20 for the mockup, a
+  frame callback of about 1 ms, and 1.05 to 1.2 cores for the whole process
+  tree while streaming: about 0.5 in the WebKit web process, 0.3 on the GTK
+  main thread and 0.25 for the synthetic source and the FFT. With the stream
+  open and no frames, the tree takes 0.08 to 0.13 cores; a static page takes
+  0.01.
+- Next step: the rtl_tcp source and the first commands from the interface
+  (tuning, gain, sample rate), then the type check and browser tests in CI.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.

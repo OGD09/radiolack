@@ -10,14 +10,25 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`), `server` (aiohttp
-  on 127.0.0.1, own event loop in a background thread), `window` (GTK 3 and
-  WebKitGTK through PyGObject; the main thread runs GTK), `web/` (interface
-  files, served as they are; for now a copy of the mockup).
+  on 127.0.0.1, own event loop in a background thread; interface files and
+  the `/stream` WebSocket), `engine` (reads a source and shares spectrum
+  frames with clients; idle without clients), `spectrum` (display FFT with
+  NumPy), `synthetic` (simulated 2 m band), `window` (GTK 3 and WebKitGTK
+  through PyGObject; the main thread runs GTK).
+- `src/radiolack/web/`: interface files, served as they are: ES modules, no
+  build step. `stream.js` (stream client), `gl.js`, `spectrum-gl.js` and
+  `waterfall-gl.js` (WebGL2 views) carry JSDoc types; `main.js` still holds
+  the mockup's code under `// @ts-nocheck` and gets types as it is rewritten.
+- `docs/design/protocol.md`: the stream between engine and interface. Change
+  it with the engine, the server and `stream.js`, and raise the protocol
+  version for any incompatible change.
 - `tests/`: unittest tests without hardware; pytest runs them too.
 
 ## Commands
 
 - Tests: `python3 -m pytest` or `PYTHONPATH=src python3 -m unittest discover -s tests -t .`
+- Type check of the interface: `npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json`
+  (needs Node.js; not run by CI yet).
 - Run without installing: `PYTHONPATH=src python3 -m radiolack` (window) or
   `--ui none` (address only).
 - CI: `.github/workflows/tests.yml` (GitHub Actions) runs the unittest
@@ -53,6 +64,10 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 - Code, comments and documentation in English. The interface is in French
   and English, through a translation table from v0.
 - No emoji in the interface; extend the mockup's visual style.
+- The interface's Content-Security-Policy forbids inline scripts and inline
+  style attributes: style through classes or `element.style`.
+- Code that runs every animation frame writes to the DOM only when a value
+  changes: in WebKitGTK, rewriting an unchanged text still repaints.
 - Disk errors stay distinct from receiver errors; recoverable disconnections
   are waiting states, not errors.
 - Keep the server compatible with aiohttp 3.8 (Debian 12) and the latest
