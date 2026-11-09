@@ -32,6 +32,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-08 | The UI mockup is the visual reference. It can still change deeply. |
 | 2026-11-08 | Desktop shell for v0: the system's WebKitGTK through PyGObject, validated by spike 1. Windows and macOS shells are chosen before v4. |
 | 2026-11-09 | UI code: plain JavaScript ES modules served as they are, with no build step. Types are written in JSDoc comments and checked by TypeScript; only that check needs Node. Revisit if the UI needs a framework or npm libraries. |
+| 2026-11-09 | English only: code, identifiers, comments, documentation and the interface. No other language and no translation layer; this replaces the English and French interface planned on 2026-11-08. |
 
 ## Scope
 
@@ -46,7 +47,7 @@ In scope, across the milestones below:
   over bookmarks.
 - Band plans: IARU Region 1 first, then Regions 2 and 3.
 - Remote access: control and audio over the local network.
-- Languages: English and French.
+- Language: English only.
 
 Out of scope:
 
@@ -69,7 +70,7 @@ in [`lessons.md`](lessons.md).
 | Desktop app | Linux x86_64 first. Windows 10/11 and macOS (Apple silicon and Intel) for the public release. Proposed later: a headless mode on Linux arm64 (Raspberry Pi next to the antenna), used only through the web UI. |
 | Remote clients | Safari on iOS and iPadOS, Chrome, Edge and Firefox on desktop and Android, Safari on macOS: current and previous major versions. |
 | Receivers | RTL-SDR (R820T and R828D tuners, RTL-SDR Blog V3 and V4) first, then SoapySDR devices (Airspy, HackRF, SDRplay, LimeSDR, PlutoSDR). |
-| Languages | Follows the system language: French or English, English otherwise. Every UI string goes through a translation table from the first milestone. |
+| Language | English only, whatever the system language. |
 
 ## Architecture
 
@@ -108,8 +109,8 @@ flowchart LR
   live in JSDoc comments and TypeScript checks them without producing files;
   nothing else needs Node. No UI framework at first, like the mockup; revisit
   if the panels grow complex. WebGL2 spectrum and waterfall, AudioWorklet
-  playback behind a jitter buffer, mouse, keyboard and touch input,
-  translations. The files ship inside the Python package as they are.
+  playback behind a jitter buffer, mouse, keyboard and touch input. The
+  files ship inside the Python package as they are.
 - **Desktop shell**: a native window that shows the UI served by the local
   engine on the loopback interface. On Linux it is the system's WebKitGTK
   through PyGObject (spike 1). Windows and macOS shells are chosen before v4,
@@ -177,7 +178,7 @@ Goal: replace Gqrx for the owner's daily listening on 2 m and 70 cm.
 - One VFO: NFM, AM, USB, LSB and CW, filter width, squelch, audio on the
   computer.
 - Bookmarks and the Region 1 band plan for 2 m and 70 cm.
-- Settings panel with persistence; English and French UI.
+- Settings panel with persistence; English interface.
 - Tests without hardware: DSP on synthetic I/Q; engine and server over local
   sockets on ephemeral ports; UI tests in Chromium, Firefox and WebKit
   (Playwright); CI updated with job timeouts and cancellation.
@@ -217,7 +218,7 @@ the code.
 | 1 | Does the native window (WebKitGTK) draw a full-screen WebGL2 waterfall smoothly and play AudioWorklet audio at a low CPU cost on the owner's laptop? | It chooses the desktop shell. | Done: yes, within the limits below. |
 | 2 | How does an iPhone keep listening with the screen locked? | The owner's phone; Safari interrupts Web Audio in the background. | Start of v1 |
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Start of v1 |
-| 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15 % of one core, 23 % with four channels. | v2 |
+| 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | v2 |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
 
 ### Spike 1 result (2026-11-08)
@@ -230,16 +231,16 @@ Chromium ran in app mode. CPU covers the whole process tree.
 
 | Shell | Drawing size (device px) | Frames/s | 95th percentile frame | CPU (one core) | Audio |
 | --- | --- | --- | --- | --- | --- |
-| WebKitGTK, default policy | 3200 × 1662 | 52.2 | 26 ms | 57 % | suspended |
-| WebKitGTK, autoplay allowed | 3200 × 1662 | 50.6 | 28 ms | 82 % | 48 kHz |
-| Chromium | 2760 × 1628 | 57.2 | 19 ms | 84 % | 48 kHz |
-| WebKitGTK, autoplay allowed | 2400 × 1400 | 58.9 | 21 ms | 52 % | 48 kHz |
-| Chromium | 2360 × 1308 | 58.9 | 16.8 ms | 36 % | 48 kHz |
+| WebKitGTK, default policy | 3200 × 1662 | 52.2 | 26 ms | 57% | suspended |
+| WebKitGTK, autoplay allowed | 3200 × 1662 | 50.6 | 28 ms | 82% | 48 kHz |
+| Chromium | 2760 × 1628 | 57.2 | 19 ms | 84% | 48 kHz |
+| WebKitGTK, autoplay allowed | 2400 × 1400 | 58.9 | 21 ms | 52% | 48 kHz |
+| Chromium | 2360 × 1308 | 58.9 | 16.8 ms | 36% | 48 kHz |
 
 - Both shells draw on the GPU. Up to about 3.4 million device pixels both
   keep up with the screen; at 5.3 million WebKitGTK drops to about 51
   frames/s while Chromium holds 57.
-- At the same size Chromium uses less CPU (36 % against 52 % of one core).
+- At the same size Chromium uses less CPU (36% against 52% of one core).
 - WebKitGTK keeps an AudioContext suspended until a user gesture, unless the
   web view is created with a policy that allows autoplay (WebKitGTK website
   policies, which can only be set when the view is created).
@@ -265,7 +266,7 @@ Consequences:
 Public distribution multiplies the work. These choices are cheap now and
 expensive later, so they apply from v0:
 
-- Translations through a table, with no UI text hard-coded in the code.
+- English only in code and interface: no translations to maintain.
 - Band plans by IARU region, with no owner-specific data.
 - Cross-platform code paths only.
 - Secure defaults for remote access.

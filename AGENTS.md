@@ -61,8 +61,11 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 
 ## Conventions
 
-- Code, comments and documentation in English. The interface is in French
-  and English, through a translation table from v0.
+- English only, everywhere in the repository: code, identifiers, comments,
+  documentation, tests and the interface (labels, messages, tooltips,
+  accessibility text). No other language and no translation layer (decided
+  2026-11-09). Chat with the owner may be in French; nothing in French lands
+  in the repository.
 - No emoji in the interface; extend the mockup's visual style.
 - The interface's Content-Security-Policy forbids inline scripts and inline
   style attributes: style through classes or `element.style`.

@@ -32,7 +32,7 @@ engine reuses; the details are in those files.
 
 - Average several Hann-windowed FFTs: eight of 8192 points, about 27 ms of
   samples at 2.4 MS/s.
-- Ignore the filter roll-off (keep bins within 32 % of the sample rate from
+- Ignore the filter roll-off (keep bins within 32% of the sample rate from
   the centre) and 3 kHz around DC.
 - A peak is a local maximum at least 15 dB above the median of the usable
   bins within 50 kHz, and above the median of the whole window. Snap it to the
@@ -46,7 +46,7 @@ engine reuses; the details are in those files.
 - Overlapping windows: first centre at `low + 0.1 * rate`, then steps of
   `0.25 * rate`, last centre at `high - 0.1 * rate`. Check that every channel
   is usable in at least one window, including the DC gap and the edges, for
-  hardware centre offsets of up to 15 % of the rate.
+  hardware centre offsets of up to 15% of the rate.
 - Confirm each move by a frame from the new epoch received at least 0.4 s
   after the request; give up after a timeout.
 
@@ -70,4 +70,4 @@ engine reuses; the details are in those files.
 - Usage errors stop the program before any file, socket or process is
   touched.
 - Load measured on an i7-7500U at 2.4 MS/s: display FFT and one NFM channel
-  take about 15 % of one core, 23 % with four channels.
+  take about 15% of one core, 23% with four channels.

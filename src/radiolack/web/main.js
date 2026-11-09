@@ -26,7 +26,7 @@ const S_TOP = -10;
 const METER_FLOOR = -140;           // reading when the passband holds no signal or no bins
 const AXIS_H = 18;                  // frequency scale under the spectrum, CSS px (#spec-axis in style.css)
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
-const SOURCE_NAMES = { synthetic: 'Source synthétique' };
+const SOURCE_NAMES = { synthetic: 'Synthetic source' };
 const R820T_GAINS = [0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4,
   28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6];
 const MODES = {
@@ -48,17 +48,17 @@ const PALETTES = {
 const SEGMENTS = [
   { from: 144.000e6, to: 144.150e6, label: 'CW / MGM', mode: 'CW', step: 100, rgb: '107,138,253' },
   { from: 144.150e6, to: 144.400e6, label: 'SSB / CW / MGM', mode: 'USB', step: 100, rgb: '176,124,255' },
-  { from: 144.400e6, to: 144.490e6, label: 'Balises', mode: 'CW', step: 100, rgb: '242,179,61' },
-  { from: 144.500e6, to: 144.794e6, label: 'Tous modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
-  { from: 144.794e6, to: 144.990e6, label: 'Numérique', mode: 'NFM', step: 12500, rgb: '60,207,154' },
-  { from: 144.990e6, to: 145.194e6, label: 'Entrées relais', mode: 'NFM', step: 12500, rgb: '255,122,122' },
-  { from: 145.194e6, to: 145.206e6, label: 'Espace', mode: 'NFM', step: 12500, rgb: '226,230,90' },
+  { from: 144.400e6, to: 144.490e6, label: 'Beacons', mode: 'CW', step: 100, rgb: '242,179,61' },
+  { from: 144.500e6, to: 144.794e6, label: 'All modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
+  { from: 144.794e6, to: 144.990e6, label: 'Digital', mode: 'NFM', step: 12500, rgb: '60,207,154' },
+  { from: 144.990e6, to: 145.194e6, label: 'Repeater inputs', mode: 'NFM', step: 12500, rgb: '255,122,122' },
+  { from: 145.194e6, to: 145.206e6, label: 'Space', mode: 'NFM', step: 12500, rgb: '226,230,90' },
   { from: 145.206e6, to: 145.594e6, label: 'FM simplex', mode: 'NFM', step: 12500, rgb: '89,167,255' },
-  { from: 145.594e6, to: 145.794e6, label: 'Sorties relais', mode: 'NFM', step: 12500, rgb: '255,159,90' },
+  { from: 145.594e6, to: 145.794e6, label: 'Repeater outputs', mode: 'NFM', step: 12500, rgb: '255,159,90' },
   { from: 145.794e6, to: 145.806e6, label: 'ISS', mode: 'NFM', step: 12500, rgb: '226,230,90' },
   { from: 145.806e6, to: 146.000e6, label: 'Satellites', mode: 'USB', step: 100, rgb: '226,230,90' },
 ];
-const PANEL_TITLES = { source: 'Source', demod: 'Démodulation et audio', display: 'Affichage', bands: 'Bandes et favoris', scanners: 'Scanners', settings: 'Réglages' };
+const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', settings: 'Settings' };
 const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'settings'];
 
 // ------------------------------------------------------------------ DOM
@@ -103,15 +103,15 @@ const S = {
 };
 const view = { f0: 0, f1: 0 };
 let bookmarks = [
-  { f: 144.050e6, name: 'Appel CW', mode: 'CW', scan: false },
+  { f: 144.050e6, name: 'CW calling', mode: 'CW', scan: false },
   { f: 144.174e6, name: 'FT8', mode: 'USB', scan: false },
-  { f: 144.300e6, name: 'Appel SSB', mode: 'USB', scan: true },
+  { f: 144.300e6, name: 'SSB calling', mode: 'USB', scan: true },
   { f: 144.800e6, name: 'APRS', mode: 'NFM', scan: true },
   { f: 145.3375e6, name: 'Simplex', mode: 'NFM', scan: true },
-  { f: 145.500e6, name: 'Appel FM', mode: 'NFM', scan: true },
-  { f: 145.6125e6, name: 'Relais A', mode: 'NFM', scan: true },
-  { f: 145.6625e6, name: 'Relais B', mode: 'NFM', scan: true },
-  { f: 145.7375e6, name: 'Relais C', mode: 'NFM', scan: true },
+  { f: 145.500e6, name: 'FM calling', mode: 'NFM', scan: true },
+  { f: 145.6125e6, name: 'Repeater A', mode: 'NFM', scan: true },
+  { f: 145.6625e6, name: 'Repeater B', mode: 'NFM', scan: true },
+  { f: 145.7375e6, name: 'Repeater C', mode: 'NFM', scan: true },
   { f: 145.800e6, name: 'ISS', mode: 'NFM', scan: false },
 ];
 let bookmarkCounter = 0;
@@ -588,7 +588,7 @@ function updateMeta() {
   $('#m-mode').textContent = S.mode;
   $('#m-bw').textContent = fmtBw(S.bw);
   const seg = segmentAt(S.vfo);
-  $('#m-seg').textContent = `${seg ? seg.label : 'Hors plan'} · pas ${fmtBw(stepAt(S.vfo))}`;
+  $('#m-seg').textContent = `${seg ? seg.label : 'Outside the plan'} · step ${fmtBw(stepAt(S.vfo))}`;
 }
 
 function sUnits(db) {
@@ -643,7 +643,7 @@ function showHover(e, area) {
       const age = Math.floor(e.clientY - wfWrap.getBoundingClientRect().top);
       if (age >= 0 && age < histFilled) {
         const row = (histHead - age + HIST_ROWS) % HIST_ROWS;
-        txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + bi] * HIST_DB_STEP)} dB · il y a ${fmtAgo((Date.now() - histTime[row]) / 1000)}`;
+        txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + bi] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
       }
     }
   }
@@ -657,16 +657,16 @@ function updateStatus() {
   let text;
   if (streamState === 'open') {
     text = `${SOURCE_NAMES[sourceKind] || `Source ${sourceKind}`} · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz)`
-      + (frameRate ? ` · ${frameRate} i/s` : '');
+      + (frameRate ? ` · ${frameRate} fps` : '');
   } else if (streamState === 'waiting') {
-    text = 'En attente du moteur…';
+    text = 'Waiting for the engine…';
   } else if (streamState === 'incompatible') {
-    text = 'Moteur d’une autre version : rechargez la page';
+    text = 'Engine from another version: reload the page';
   } else {
-    text = 'Connexion au moteur…';
+    text = 'Connecting to the engine…';
   }
   if (gpuError) text = `${gpuError} · ${text}`;
-  $('#status').textContent = `${text}${S.remote ? ' · accès à distance actif' : ''}`;
+  $('#status').textContent = `${text}${S.remote ? ' · remote access on' : ''}`;
 }
 
 // ------------------------------------------------------------------ layout and view
@@ -840,12 +840,12 @@ function renderPeaks() {
     ? rows.slice(0, 40).map((p) => {
       const ago = (now - p.last) / 1000, active = ago < 1.5;
       return `<tr class="${active ? 'active' : ''}">`
-        + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Écouter">${fmtMHz(p.f)}</button></td>`
-        + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'actif' : `il y a ${fmtAgo(ago)}`}</td>`
-        + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignorer</button></td></tr>`;
+        + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Listen">${fmtMHz(p.f)}</button></td>`
+        + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'active' : `${fmtAgo(ago)} ago`}</td>`
+        + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignore</button></td></tr>`;
     }).join('')
-    : '<tr><td colspan="4" class="empty">Aucun pic détecté</td></tr>';
-  $('#pk-excluded').textContent = excluded.length ? `${excluded.length} fréquence(s) ignorée(s).` : '';
+    : '<tr><td colspan="4" class="empty">No peak detected</td></tr>';
+  $('#pk-excluded').textContent = excluded.length ? `${excluded.length} ignored ${excluded.length === 1 ? 'frequency' : 'frequencies'}.` : '';
   $('#pk-restore').hidden = excluded.length === 0;
 }
 
@@ -863,7 +863,7 @@ function memNext(now) {
   syncMem();
 }
 function memStart() {
-  if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'Aucun favori coché.'; return; }
+  if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'No bookmark is checked.'; return; }
   mem.running = true;
   mem.idx = -1;
   memNext(performance.now() / 1000);
@@ -889,10 +889,10 @@ function memTick(now) {
 }
 function userTune() { if (mem.running) memStop(); }
 function syncMem() {
-  $('#mem-start').textContent = mem.running ? 'Arrêter' : 'Démarrer';
+  $('#mem-start').textContent = mem.running ? 'Stop' : 'Start';
   const name = mem.cur ? mem.cur.name : '';
-  let txt = 'Arrêté';
-  if (mem.running) txt = mem.state === 'listen' ? `Écoute : ${name}` : mem.state === 'hang' ? `Attente : ${name}` : `Balayage : ${name}`;
+  let txt = 'Stopped';
+  if (mem.running) txt = mem.state === 'listen' ? `Listening: ${name}` : mem.state === 'hang' ? `Waiting: ${name}` : `Scanning: ${name}`;
   $('#mem-state').textContent = txt;
 }
 function renderMemList() {
@@ -947,7 +947,7 @@ function bindRange(id, key, fmt, after) {
 function syncSource() {
   $('#src-device').value = sourceKind;   // no entry is selected before the engine answers
   $('#src-note').textContent = sourceKind === 'synthetic'
-    ? 'Bande 2 m simulée par le moteur. Les réglages du récepteur viendront avec la source rtl_tcp.' : '';
+    ? '2 m band simulated by the engine. Receiver settings come with the rtl_tcp source.' : '';
   $('#src-center').value = fmtMHz(S.fc);
   $('#src-rate').value = String(S.fs);
   $('#src-gain').max = String(R820T_GAINS.length - 1);
@@ -987,15 +987,15 @@ $('#dm-agc').addEventListener('change', (e) => { S.agc = e.target.value; });
 bindCheck('dm-nr', 'nr');
 bindCheck('dm-notch', 'notch');
 bindCheck('dm-nb', 'blanker');
-bindRange('dm-vol', 'volume', (v) => `${v} %`);
+bindRange('dm-vol', 'volume', (v) => `${v}%`);
 
 // Display
-const avgLabel = (v) => (v === 0 ? 'aucun' : v < 0.4 ? `léger (${v.toFixed(2)})` : v < 0.75 ? `moyen (${v.toFixed(2)})` : `fort (${v.toFixed(2)})`);
+const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` : v < 0.75 ? `medium (${v.toFixed(2)})` : `strong (${v.toFixed(2)})`);
 function drawPalettePreview() { $('#wf-pal-preview').style.background = `linear-gradient(90deg, ${PALETTES[S.palette].join(', ')})`; }
 function syncDisplay() {
   for (const s of syncers) s();
   $('#ds-fft').value = String(S.nb);
-  $('#ds-fft-note').textContent = `Résolution : ${Math.round(binHz())} Hz par point. Taille, fenêtre et cadence sont celles du moteur pour l’instant.`;
+  $('#ds-fft-note').textContent = `Resolution: ${Math.round(binHz())} Hz per bin. Size, window and rate are set by the engine for now.`;
   $('#wf-pal').value = S.palette;
   drawPalettePreview();
   syncAutoDisplay();
@@ -1027,11 +1027,11 @@ bindCheck('wf-auto', 'wfAuto', () => {
 });
 bindRange('wf-min', 'wfMin', fmtDb, () => { S.wfMin = Math.min(S.wfMin, S.wfMax - 5); lutDirty = true; });
 bindRange('wf-max', 'wfMax', fmtDb, () => { S.wfMax = Math.max(S.wfMax, S.wfMin + 5); lutDirty = true; });
-bindRange('wf-speed', 'wfSpeed', (v) => `${v} lignes/s`);
+bindRange('wf-speed', 'wfSpeed', (v) => `${v} lines/s`);
 bindCheck('wf-time', 'timestamps', rebuildStamps);
 bindCheck('ov-plan', 'showPlan', drawBandStrip);
 bindCheck('ov-marks', 'showMarks', renderMarks);
-bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)} %`, () => { layoutPending = true; });
+bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
 
 // Bands and bookmarks
 function renderPlanList() {
@@ -1047,13 +1047,13 @@ function renderBookmarks() {
   $('#bm-list').innerHTML = items.length
     ? items.map(({ b, i }) => `<li class="bm"><button type="button" class="item" data-i="${i}"><span class="name">${escapeHtml(b.name)}</span>`
       + `<span class="num">${fmtMHz(b.f)}</span><span class="tag">${b.mode}</span></button>`
-      + `<button type="button" class="link" data-del="${i}" aria-label="Retirer ${escapeHtml(b.name)}">Retirer</button></li>`).join('')
-    : '<li class="empty">Aucun favori</li>';
+      + `<button type="button" class="link" data-del="${i}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`).join('')
+    : '<li class="empty">No bookmarks</li>';
 }
 function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); }
 function addBookmark(f, mode) {
   bookmarkCounter += 1;
-  bookmarks.push({ f, name: `Favori ${bookmarkCounter}`, mode, scan: true });
+  bookmarks.push({ f, name: `Bookmark ${bookmarkCounter}`, mode, scan: true });
   bookmarks.sort((a, b) => a.f - b.f);
   bookmarksChanged();
 }
@@ -1109,7 +1109,7 @@ bindCheck('st-remote', 'remote', () => {
 });
 $('#st-remote-renew').addEventListener('click', () => {
   $('#st-remote-code').textContent = newRemoteCode();
-  remoteMsg('Nouveau code : les appareils déjà connectés devront le saisir.');
+  remoteMsg('New code: devices already connected must enter it again.');
 });
 $('#st-remote-copy').addEventListener('click', () => {
   const urlEl = $('#st-remote-url');
@@ -1119,10 +1119,10 @@ $('#st-remote-copy').addEventListener('click', () => {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    remoteMsg('Adresse sélectionnée : copiez-la depuis le menu du navigateur.');
+    remoteMsg('Address selected: copy it from the browser menu.');
   };
   if (!navigator.clipboard) { selectUrl(); return; }
-  navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Adresse copiée.'), selectUrl);
+  navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Address copied.'), selectUrl);
 });
 
 for (const b of $$('#toolbar button')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
@@ -1326,7 +1326,7 @@ bandEl.addEventListener('pointermove', (e) => {
   poke();
   showHover(e, 'band');
   const seg = segmentAt(xToF(e.clientX));
-  bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · glisser : hauteur du spectre` : 'Glisser : hauteur du spectre';
+  bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · drag: spectrum height` : 'Drag: spectrum height';
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
@@ -1348,7 +1348,7 @@ function editFreq() {
   input.inputMode = 'decimal';
   input.className = 'freq-input';
   input.value = fmtMHz(S.vfo);
-  input.setAttribute('aria-label', 'Fréquence en MHz');
+  input.setAttribute('aria-label', 'Frequency in MHz');
   freqEl.replaceChildren(input);
   input.focus();
   input.select();
@@ -1446,8 +1446,8 @@ window.addEventListener('pointerdown', poke, { passive: true });   // a tap wake
 window.addEventListener('resize', () => { layoutPending = true; });
 
 const HINTS = {
-  mouse: 'Clic : accorder · Molette : pas · Ctrl + molette : zoom · Clic droit : menu · 1 à 6 : panneaux',
-  touch: 'Toucher : accorder · Pincer : zoom · Glisser : défiler · Appui long : menu',
+  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 6: panels',
+  touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
 };
 function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }
 const onPointerModeChange = () => { syncPointerMode(); layoutPending = true; };
@@ -1467,7 +1467,7 @@ try {
 } catch (error) {
   spectrumView = null;
   waterfallView = null;
-  gpuError = 'WebGL2 indisponible : spectre et cascade non affichés';
+  gpuError = 'WebGL2 unavailable: spectrum and waterfall not shown';
   console.error('Radiolack: the spectrum and waterfall cannot be drawn:', error);
 }
 

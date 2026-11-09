@@ -6,12 +6,12 @@
   in the page. Open it directly in a browser; it has no dependencies and
   makes no network requests.
 -->
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a0c0f">
-<title>Maquette Radiolack</title>
+<title>Radiolack mockup</title>
 <style>
   :root {
     color-scheme: dark;
@@ -263,37 +263,37 @@
   <h1 id="brand">Radiolack</h1>
 
   <div id="readout">
-    <div id="freq" tabindex="0" role="spinbutton" aria-label="Fréquence du VFO" title="Molette sur un chiffre : le modifier · double-clic : saisie directe"></div>
+    <div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div>
     <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
     <div id="smeter" aria-hidden="true"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
   </div>
 
-  <nav id="toolbar" aria-label="Panneaux de réglage">
+  <nav id="toolbar" aria-label="Panels">
     <button type="button" data-panel="source" aria-expanded="false" aria-controls="panel">Source</button>
-    <button type="button" data-panel="demod" aria-expanded="false" aria-controls="panel">Démod</button>
-    <button type="button" data-panel="display" aria-expanded="false" aria-controls="panel">Affichage</button>
-    <button type="button" data-panel="bands" aria-expanded="false" aria-controls="panel">Bandes</button>
+    <button type="button" data-panel="demod" aria-expanded="false" aria-controls="panel">Demod</button>
+    <button type="button" data-panel="display" aria-expanded="false" aria-controls="panel">Display</button>
+    <button type="button" data-panel="bands" aria-expanded="false" aria-controls="panel">Bands</button>
     <button type="button" data-panel="scanners" aria-expanded="false" aria-controls="panel">Scanners</button>
-    <button type="button" data-panel="settings" aria-expanded="false" aria-controls="panel">Réglages</button>
+    <button type="button" data-panel="settings" aria-expanded="false" aria-controls="panel">Settings</button>
   </nav>
 
   <div id="panel" role="region" aria-labelledby="panel-title" hidden>
-    <div class="panel-head"><h2 id="panel-title"></h2><button type="button" class="close" aria-label="Fermer le panneau">×</button></div>
+    <div class="panel-head"><h2 id="panel-title"></h2><button type="button" class="close" aria-label="Close the panel">×</button></div>
 
     <section data-panel="source" hidden>
       <div class="field">
-        <label for="src-device">Récepteur</label>
+        <label for="src-device">Receiver</label>
         <select id="src-device">
-          <option value="rtl">RTL-SDR · rtl_tcp local</option>
-          <option value="rtl-remote">RTL-SDR · rtl_tcp distant</option>
+          <option value="rtl">RTL-SDR · local rtl_tcp</option>
+          <option value="rtl-remote">RTL-SDR · remote rtl_tcp</option>
           <option value="soapy">SoapySDR (Airspy, HackRF, SDRplay…)</option>
-          <option value="file">Fichier I/Q</option>
+          <option value="file">I/Q file</option>
         </select>
         <p class="note" id="src-note"></p>
       </div>
-      <div class="field"><label for="src-center">Fréquence centrale (MHz)</label><input id="src-center" type="text" inputmode="decimal"></div>
+      <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal"></div>
       <div class="field">
-        <label for="src-rate">Échantillonnage</label>
+        <label for="src-rate">Sample rate</label>
         <select id="src-rate">
           <option value="1024000">1.024 MS/s</option>
           <option value="1536000">1.536 MS/s</option>
@@ -302,12 +302,12 @@
           <option value="2880000">2.880 MS/s</option>
         </select>
       </div>
-      <div class="field"><label for="src-gain">Gain du tuner <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1"></div>
-      <div class="field"><label for="src-ppm">Correction de fréquence (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.1"></div>
-      <label class="check"><input id="src-dc" type="checkbox"> Supprimer le pic central</label>
-      <label class="check"><input id="src-agc" type="checkbox"> AGC du tuner</label>
-      <label class="check"><input id="src-bias" type="checkbox"> Alimentation d'antenne (bias-T)</label>
-      <p class="note">Le dongle simulé dérive de +4 ppm. Avec une correction à 0, les signaux apparaissent décalés d'environ 580 Hz.</p>
+      <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1"></div>
+      <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.1"></div>
+      <label class="check"><input id="src-dc" type="checkbox"> Remove the DC spike</label>
+      <label class="check"><input id="src-agc" type="checkbox"> Tuner AGC</label>
+      <label class="check"><input id="src-bias" type="checkbox"> Antenna power (bias-T)</label>
+      <p class="note">The simulated dongle drifts by +4 ppm: with a correction of 0, signals appear about 580 Hz off.</p>
     </section>
 
     <section data-panel="demod" hidden>
@@ -321,12 +321,12 @@
           <button type="button" role="radio" data-mode="CW">CW</button>
         </div>
       </div>
-      <label class="check"><input id="dm-auto" type="checkbox"> Mode et pas selon le plan de bandes</label>
-      <div class="field"><label for="dm-bw">Largeur du filtre <output id="dm-bw-v"></output></label><input id="dm-bw" type="range"></div>
+      <label class="check"><input id="dm-auto" type="checkbox"> Mode and step from the band plan</label>
+      <div class="field"><label for="dm-bw">Filter width <output id="dm-bw-v"></output></label><input id="dm-bw" type="range"></div>
       <div class="field">
-        <label for="dm-step">Pas d'accord</label>
+        <label for="dm-step">Tuning step</label>
         <select id="dm-step">
-          <option value="auto">Automatique</option>
+          <option value="auto">Automatic</option>
           <option value="10">10 Hz</option>
           <option value="100">100 Hz</option>
           <option value="1000">1 kHz</option>
@@ -336,181 +336,180 @@
         </select>
       </div>
       <h3>Squelch</h3>
-      <label class="check"><input id="dm-sql-auto" type="checkbox"> Automatique (bruit + 8 dB)</label>
-      <div class="field"><label for="dm-sql">Seuil <output id="dm-sql-v"></output></label><input id="dm-sql" type="range" min="-130" max="-20" step="1"></div>
+      <label class="check"><input id="dm-sql-auto" type="checkbox"> Automatic (noise + 8 dB)</label>
+      <div class="field"><label for="dm-sql">Threshold <output id="dm-sql-v"></output></label><input id="dm-sql" type="range" min="-130" max="-20" step="1"></div>
       <div class="field">
         <label for="dm-ctcss">CTCSS</label>
         <select id="dm-ctcss">
-          <option value="off">Désactivé</option>
-          <option value="detect">Détection</option>
+          <option value="off">Off</option>
+          <option value="detect">Detect</option>
           <option value="67.0">67.0 Hz</option>
           <option value="88.5">88.5 Hz</option>
           <option value="123.0">123.0 Hz</option>
           <option value="131.8">131.8 Hz</option>
           <option value="162.2">162.2 Hz</option>
         </select>
-        <p class="note">Tonalité : <span id="ctcss-v">—</span></p>
+        <p class="note">Tone: <span id="ctcss-v">—</span></p>
       </div>
-      <h3>Traitement</h3>
+      <h3>Processing</h3>
       <div class="field">
         <label for="dm-agc">AGC</label>
-        <select id="dm-agc"><option value="fast">Rapide</option><option value="slow">Lente</option><option value="off">Désactivée</option></select>
+        <select id="dm-agc"><option value="fast">Fast</option><option value="slow">Slow</option><option value="off">Off</option></select>
       </div>
-      <label class="check"><input id="dm-nr" type="checkbox"> Réduction de bruit</label>
-      <label class="check"><input id="dm-notch" type="checkbox"> Notch automatique</label>
-      <label class="check"><input id="dm-nb" type="checkbox"> Suppresseur d'impulsions</label>
+      <label class="check"><input id="dm-nr" type="checkbox"> Noise reduction</label>
+      <label class="check"><input id="dm-notch" type="checkbox"> Automatic notch</label>
+      <label class="check"><input id="dm-nb" type="checkbox"> Noise blanker</label>
       <h3>Audio</h3>
       <div class="field"><label for="dm-vol">Volume <output id="dm-vol-v"></output></label><input id="dm-vol" type="range" min="0" max="100" step="1"></div>
-      <p class="note">La maquette ne produit pas de son.</p>
+      <p class="note">The mockup makes no sound.</p>
     </section>
 
     <section data-panel="display" hidden>
-      <h3>Spectre</h3>
+      <h3>Spectrum</h3>
       <div class="grid2">
         <div class="field">
-          <label for="ds-fft">Résolution FFT</label>
+          <label for="ds-fft">FFT size</label>
           <select id="ds-fft"><option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option><option value="16384">16384</option></select>
         </div>
         <div class="field">
-          <label for="ds-win">Fenêtre</label>
-          <select id="ds-win"><option value="bh">Blackman-Harris</option><option value="nuttall">Nuttall</option><option value="hann">Hann</option><option value="rect">Rectangulaire</option></select>
+          <label for="ds-win">Window</label>
+          <select id="ds-win"><option value="bh">Blackman-Harris</option><option value="nuttall">Nuttall</option><option value="hann">Hann</option><option value="rect">Rectangular</option></select>
         </div>
       </div>
       <p class="note" id="ds-fft-note"></p>
-      <div class="field"><label for="ds-rate">Rafraîchissement <output id="ds-rate-v"></output></label><input id="ds-rate" type="range" min="5" max="60" step="1"></div>
-      <div class="field"><label for="ds-avg">Moyennage <output id="ds-avg-v"></output></label><input id="ds-avg" type="range" min="0" max="0.95" step="0.05"></div>
-      <label class="check"><input id="ds-fill" type="checkbox"> Remplissage sous la courbe</label>
-      <div class="row"><label class="check"><input id="ds-peak" type="checkbox"> Maintien des crêtes</label><button type="button" class="link" id="ds-peak-clear">Effacer</button></div>
-      <label class="check"><input id="ds-grid" type="checkbox"> Grille</label>
-      <label class="check"><input id="ds-auto" type="checkbox"> Échelle automatique</label>
-      <div class="field"><label for="ds-top">Niveau haut <output id="ds-top-v"></output></label><input id="ds-top" type="range" min="-80" max="0" step="1"></div>
-      <div class="field"><label for="ds-range">Dynamique <output id="ds-range-v"></output></label><input id="ds-range" type="range" min="30" max="140" step="5"></div>
-      <h3>Cascade</h3>
+      <div class="field"><label for="ds-rate">Refresh rate <output id="ds-rate-v"></output></label><input id="ds-rate" type="range" min="5" max="60" step="1"></div>
+      <div class="field"><label for="ds-avg">Averaging <output id="ds-avg-v"></output></label><input id="ds-avg" type="range" min="0" max="0.95" step="0.05"></div>
+      <label class="check"><input id="ds-fill" type="checkbox"> Fill under the trace</label>
+      <div class="row"><label class="check"><input id="ds-peak" type="checkbox"> Peak hold</label><button type="button" class="link" id="ds-peak-clear">Clear</button></div>
+      <label class="check"><input id="ds-grid" type="checkbox"> Grid</label>
+      <label class="check"><input id="ds-auto" type="checkbox"> Automatic scale</label>
+      <div class="field"><label for="ds-top">Top level <output id="ds-top-v"></output></label><input id="ds-top" type="range" min="-80" max="0" step="1"></div>
+      <div class="field"><label for="ds-range">Dynamic range <output id="ds-range-v"></output></label><input id="ds-range" type="range" min="30" max="140" step="5"></div>
+      <h3>Waterfall</h3>
       <div class="field">
         <label for="wf-pal">Palette</label>
-        <select id="wf-pal"><option value="classic">Classique</option><option value="viridis">Viridis</option><option value="amber">Ambre</option><option value="ice">Glace</option><option value="gray">Niveaux de gris</option></select>
+        <select id="wf-pal"><option value="classic">Classic</option><option value="viridis">Viridis</option><option value="amber">Amber</option><option value="ice">Ice</option><option value="gray">Greyscale</option></select>
         <div class="palette-preview" id="wf-pal-preview"></div>
       </div>
-      <label class="check"><input id="wf-auto" type="checkbox"> Contraste automatique</label>
-      <div class="field"><label for="wf-min">Plancher <output id="wf-min-v"></output></label><input id="wf-min" type="range" min="-140" max="-40" step="1"></div>
-      <div class="field"><label for="wf-max">Plafond <output id="wf-max-v"></output></label><input id="wf-max" type="range" min="-110" max="-10" step="1"></div>
-      <div class="field"><label for="wf-speed">Vitesse <output id="wf-speed-v"></output></label><input id="wf-speed" type="range" min="2" max="60" step="1"></div>
-      <label class="check"><input id="wf-time" type="checkbox"> Horodatage</label>
-      <h3>Repères</h3>
-      <label class="check"><input id="ov-plan" type="checkbox"> Plan de bandes</label>
-      <label class="check"><input id="ov-marks" type="checkbox"> Favoris sur le spectre</label>
-      <div class="field"><label for="ov-split">Hauteur du spectre <output id="ov-split-v"></output></label><input id="ov-split" type="range" min="0.12" max="0.8" step="0.01"></div>
-      <p class="note">La cascade garde les niveaux, pas les couleurs : palette, contraste et zoom recolorent tout l'historique.</p>
+      <label class="check"><input id="wf-auto" type="checkbox"> Automatic contrast</label>
+      <div class="field"><label for="wf-min">Floor <output id="wf-min-v"></output></label><input id="wf-min" type="range" min="-140" max="-40" step="1"></div>
+      <div class="field"><label for="wf-max">Ceiling <output id="wf-max-v"></output></label><input id="wf-max" type="range" min="-110" max="-10" step="1"></div>
+      <div class="field"><label for="wf-speed">Speed <output id="wf-speed-v"></output></label><input id="wf-speed" type="range" min="2" max="60" step="1"></div>
+      <label class="check"><input id="wf-time" type="checkbox"> Timestamps</label>
+      <h3>Overlays</h3>
+      <label class="check"><input id="ov-plan" type="checkbox"> Band plan</label>
+      <label class="check"><input id="ov-marks" type="checkbox"> Bookmarks on the spectrum</label>
+      <div class="field"><label for="ov-split">Spectrum height <output id="ov-split-v"></output></label><input id="ov-split" type="range" min="0.12" max="0.8" step="0.01"></div>
+      <p class="note">The waterfall keeps levels, not colours: palette, contrast and zoom recolour its whole history.</p>
     </section>
 
     <section data-panel="bands" hidden>
-      <h3>Bandes</h3>
+      <h3>Bands</h3>
       <div class="segmented" id="band-group">
         <button type="button" disabled>6 m</button>
         <button type="button" aria-pressed="true">2 m</button>
         <button type="button" disabled>70 cm</button>
         <button type="button" disabled>23 cm</button>
       </div>
-      <p class="note">La maquette ne simule que le 2 m.</p>
-      <h3>Plan IARU Région 1 (simplifié)</h3>
+      <p class="note">The mockup simulates only the 2 m band.</p>
+      <h3>IARU Region 1 plan (simplified)</h3>
       <ul class="list" id="plan-list"></ul>
-      <h3>Favoris</h3>
-      <div class="row"><input id="bm-filter" type="search" placeholder="Filtrer" aria-label="Filtrer les favoris"><button type="button" class="btn" id="bm-add">Ajouter le VFO</button></div>
+      <h3>Bookmarks</h3>
+      <div class="row"><input id="bm-filter" type="search" placeholder="Filter" aria-label="Filter the bookmarks"><button type="button" class="btn" id="bm-add">Add current frequency</button></div>
       <ul class="list" id="bm-list"></ul>
-      <div class="row"><button type="button" class="btn" disabled>Importer (CSV, CHIRP)</button></div>
+      <div class="row"><button type="button" class="btn" disabled>Import (CSV, CHIRP)</button></div>
     </section>
 
     <section data-panel="scanners" hidden>
       <div class="segmented" id="scan-tabs">
-        <button type="button" data-tab="peaks">Pics</button>
-        <button type="button" data-tab="sweep">Balayage</button>
-        <button type="button" data-tab="memory">Favoris</button>
+        <button type="button" data-tab="peaks">Peaks</button>
+        <button type="button" data-tab="sweep">Sweep</button>
+        <button type="button" data-tab="memory">Bookmarks</button>
       </div>
       <div data-tab-panel="peaks">
-        <label class="check"><input id="pk-on" type="checkbox"> Détection active</label>
-        <div class="field"><label for="pk-thr">Seuil au-dessus du bruit <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
-        <label class="check"><input id="pk-marks" type="checkbox"> Marquer sur le spectre</label>
+        <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
+        <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
+        <label class="check"><input id="pk-marks" type="checkbox"> Mark on the spectrum</label>
         <table class="peaks">
-          <thead><tr><th>Fréquence</th><th>Marge</th><th>Vu</th><th></th></tr></thead>
+          <thead><tr><th>Frequency</th><th>Margin</th><th>Last seen</th><th></th></tr></thead>
           <tbody id="pk-body"></tbody>
         </table>
-        <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Rétablir</button></p>
+        <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Restore</button></p>
       </div>
       <div data-tab-panel="sweep" hidden>
-        <p class="note">Le balayage enchaîne plusieurs fenêtres de réception pour former un panorama large, puis y cherche les pics. Utile pour le 70 cm (10 MHz) et le 23 cm (60 MHz).</p>
+        <p class="note">The sweep chains several receiver windows into a wide panorama, then looks for peaks in it. Useful on 70 cm (10 MHz) and 23 cm (60 MHz).</p>
         <div class="grid2">
-          <div class="field"><label for="sw-from">De (MHz)</label><input id="sw-from" type="text" value="430.000"></div>
-          <div class="field"><label for="sw-to">À (MHz)</label><input id="sw-to" type="text" value="440.000"></div>
-          <div class="field"><label for="sw-dwell">Temps par fenêtre</label><select id="sw-dwell"><option>0.25 s</option><option selected>0.5 s</option><option>1 s</option></select></div>
-          <div class="field"><label for="sw-thr">Seuil</label><select id="sw-thr"><option>8 dB</option><option selected>12 dB</option><option>18 dB</option></select></div>
+          <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" value="430.000"></div>
+          <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" value="440.000"></div>
+          <div class="field"><label for="sw-dwell">Time per window</label><select id="sw-dwell"><option>0.25 s</option><option selected>0.5 s</option><option>1 s</option></select></div>
+          <div class="field"><label for="sw-thr">Threshold</label><select id="sw-thr"><option>8 dB</option><option selected>12 dB</option><option>18 dB</option></select></div>
         </div>
-        <div class="row"><button type="button" class="btn primary" disabled>Démarrer</button><span class="note">Non simulé dans la maquette.</span></div>
+        <div class="row"><button type="button" class="btn primary" disabled>Start</button><span class="note">Not simulated in the mockup.</span></div>
       </div>
       <div data-tab-panel="memory" hidden>
-        <div class="field"><label for="mem-dwell">Arrêt par canal <output id="mem-dwell-v"></output></label><input id="mem-dwell" type="range" min="0.1" max="1" step="0.05"></div>
-        <div class="field"><label for="mem-resume">Reprise après silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5"></div>
+        <div class="field"><label for="mem-dwell">Dwell per channel <output id="mem-dwell-v"></output></label><input id="mem-dwell" type="range" min="0.1" max="1" step="0.05"></div>
+        <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5"></div>
         <ul class="list" id="mem-list"></ul>
-        <div class="row"><button type="button" class="btn primary" id="mem-start">Démarrer</button><span class="note" id="mem-state"></span></div>
-        <p class="note">Le scan s'arrête sur un canal quand le squelch s'ouvre.</p>
+        <div class="row"><button type="button" class="btn primary" id="mem-start">Start</button><span class="note" id="mem-state"></span></div>
+        <p class="note">The scan stops on a channel when the squelch opens.</p>
       </div>
     </section>
 
     <section data-panel="settings" hidden>
-      <label class="check"><input id="st-autohide" type="checkbox"> Estomper l'interface au repos</label>
-      <label class="check"><input id="st-wake" type="checkbox"> Garder l'écran allumé pendant l'écoute</label>
-      <div class="field"><label for="st-lang">Langue</label><select id="st-lang"><option>Français</option><option disabled>English</option></select></div>
-      <h3>Accès à distance</h3>
-      <label class="check"><input id="st-remote" type="checkbox"> Piloter Radiolack depuis un autre appareil</label>
-      <p class="note">Un téléphone ou une tablette du réseau local ouvre l'adresse dans son navigateur, saisit le code une fois, puis retrouve cette interface et le son. Le récepteur est partagé ; chaque appareil règle son propre volume.</p>
+      <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
+      <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
+      <h3>Remote access</h3>
+      <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
+      <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
       <div id="st-remote-info" hidden>
-        <div class="field"><span class="label">Adresse</span><div class="row"><span class="value" id="st-remote-url">https://192.168.1.20:8443</span><button type="button" class="btn" id="st-remote-copy">Copier</button></div></div>
-        <div class="field"><span class="label">Code d'accès</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">Nouveau code</button></div></div>
-        <p class="note">Appareils connectés : aucun.</p>
+        <div class="field"><span class="label">Address</span><div class="row"><span class="value" id="st-remote-url">https://192.168.1.20:8443</span><button type="button" class="btn" id="st-remote-copy">Copy</button></div></div>
+        <div class="field"><span class="label">Access code</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">New code</button></div></div>
+        <p class="note">Connected devices: none.</p>
         <p class="note" id="st-remote-msg" role="status"></p>
-        <p class="note">Adresse et code d'exemple : la maquette ne lance pas de serveur.</p>
+        <p class="note">Example address and code: the mockup starts no server.</p>
       </div>
-      <p class="note">Désactivé par défaut. Réseau local uniquement ; ces réglages ne se modifient que sur cet ordinateur.</p>
-      <h3>Tactile</h3>
+      <p class="note">Off by default. Local network only; these settings can only be changed on this computer.</p>
+      <h3>Touch</h3>
       <dl class="keys">
-        <dt>Toucher</dt><dd>Accorder</dd>
-        <dt>Glisser</dt><dd>Défiler (vue zoomée)</dd>
-        <dt>Pincer</dt><dd>Zoom</dd>
-        <dt>Appui long</dt><dd>Menu contextuel</dd>
-        <dt>− et +</dt><dd>Pas d'accord, maintenir pour répéter</dd>
-        <dt>Toucher la fréquence</dt><dd>Saisie directe</dd>
+        <dt>Tap</dt><dd>Tune</dd>
+        <dt>Drag</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Pinch</dt><dd>Zoom</dd>
+        <dt>Long press</dt><dd>Context menu</dd>
+        <dt>− and +</dt><dd>Tuning step, hold to repeat</dd>
+        <dt>Tap the frequency</dt><dd>Type a frequency</dd>
       </dl>
-      <h3>Raccourcis</h3>
+      <h3>Shortcuts</h3>
       <dl class="keys">
-        <dt>Clic</dt><dd>Accorder</dd>
-        <dt>Glisser le filtre</dt><dd>Déplacer le VFO</dd>
-        <dt>Glisser un bord</dt><dd>Largeur du filtre</dd>
-        <dt>Molette</dt><dd>Pas d'accord</dd>
-        <dt>Ctrl + molette</dt><dd>Zoom</dd>
-        <dt>Glisser le fond</dt><dd>Défiler (vue zoomée)</dd>
-        <dt>Clic droit</dt><dd>Menu contextuel</dd>
-        <dt>← →</dt><dd>Pas (Maj : ×10)</dd>
-        <dt>+ − 0</dt><dd>Zoom, vue complète</dd>
-        <dt>M</dt><dd>Mode suivant</dd>
-        <dt>1 à 6</dt><dd>Panneaux</dd>
-        <dt>Échap</dt><dd>Fermer</dd>
-        <dt>Double-clic fréquence</dt><dd>Saisie directe</dd>
+        <dt>Click</dt><dd>Tune</dd>
+        <dt>Drag the filter</dt><dd>Move the VFO</dd>
+        <dt>Drag an edge</dt><dd>Filter width</dd>
+        <dt>Wheel</dt><dd>Tuning step</dd>
+        <dt>Ctrl + wheel</dt><dd>Zoom</dd>
+        <dt>Drag the background</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Right-click</dt><dd>Context menu</dd>
+        <dt>← →</dt><dd>Step (Shift: ×10)</dd>
+        <dt>+ − 0</dt><dd>Zoom, full view</dd>
+        <dt>M</dt><dd>Next mode</dd>
+        <dt>1 to 6</dt><dd>Panels</dd>
+        <dt>Esc</dt><dd>Close</dd>
+        <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
       </dl>
-      <p class="note">Radiolack · maquette d'interface · données simulées</p>
+      <p class="note">Radiolack · interface mockup · simulated data</p>
     </section>
   </div>
 
-  <div id="ctx" role="menu" aria-label="Actions sur la fréquence" hidden>
+  <div id="ctx" role="menu" aria-label="Frequency actions" hidden>
     <div class="ctx-title" id="ctx-title"></div>
-    <button type="button" role="menuitem" data-cmd="tune">Accorder ici</button>
-    <button type="button" role="menuitem" data-cmd="bookmark">Ajouter aux favoris</button>
-    <button type="button" role="menuitem" data-cmd="center">Centrer la vue ici</button>
-    <button type="button" role="menuitem" data-cmd="segment">Zoomer sur le segment</button>
-    <button type="button" role="menuitem" data-cmd="ignore">Ignorer pour le scanner</button>
+    <button type="button" role="menuitem" data-cmd="tune">Tune here</button>
+    <button type="button" role="menuitem" data-cmd="bookmark">Add to bookmarks</button>
+    <button type="button" role="menuitem" data-cmd="center">Centre the view here</button>
+    <button type="button" role="menuitem" data-cmd="segment">Zoom to the segment</button>
+    <button type="button" role="menuitem" data-cmd="ignore">Ignore in the scanner</button>
   </div>
 
   <div id="tunepad">
-    <button type="button" id="tune-down" aria-label="Descendre d'un pas">−</button>
-    <button type="button" id="tune-up" aria-label="Monter d'un pas">+</button>
+    <button type="button" id="tune-down" aria-label="One step down">−</button>
+    <button type="button" id="tune-up" aria-label="One step up">+</button>
   </div>
 
   <div id="status"></div>
@@ -570,17 +569,17 @@
   const SEGMENTS = [
     { from: 144.000e6, to: 144.150e6, label: 'CW / MGM', mode: 'CW', step: 100, rgb: '107,138,253' },
     { from: 144.150e6, to: 144.400e6, label: 'SSB / CW / MGM', mode: 'USB', step: 100, rgb: '176,124,255' },
-    { from: 144.400e6, to: 144.490e6, label: 'Balises', mode: 'CW', step: 100, rgb: '242,179,61' },
-    { from: 144.500e6, to: 144.794e6, label: 'Tous modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
-    { from: 144.794e6, to: 144.990e6, label: 'Numérique', mode: 'NFM', step: 12500, rgb: '60,207,154' },
-    { from: 144.990e6, to: 145.194e6, label: 'Entrées relais', mode: 'NFM', step: 12500, rgb: '255,122,122' },
-    { from: 145.194e6, to: 145.206e6, label: 'Espace', mode: 'NFM', step: 12500, rgb: '226,230,90' },
+    { from: 144.400e6, to: 144.490e6, label: 'Beacons', mode: 'CW', step: 100, rgb: '242,179,61' },
+    { from: 144.500e6, to: 144.794e6, label: 'All modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
+    { from: 144.794e6, to: 144.990e6, label: 'Digital', mode: 'NFM', step: 12500, rgb: '60,207,154' },
+    { from: 144.990e6, to: 145.194e6, label: 'Repeater inputs', mode: 'NFM', step: 12500, rgb: '255,122,122' },
+    { from: 145.194e6, to: 145.206e6, label: 'Space', mode: 'NFM', step: 12500, rgb: '226,230,90' },
     { from: 145.206e6, to: 145.594e6, label: 'FM simplex', mode: 'NFM', step: 12500, rgb: '89,167,255' },
-    { from: 145.594e6, to: 145.794e6, label: 'Sorties relais', mode: 'NFM', step: 12500, rgb: '255,159,90' },
+    { from: 145.594e6, to: 145.794e6, label: 'Repeater outputs', mode: 'NFM', step: 12500, rgb: '255,159,90' },
     { from: 145.794e6, to: 145.806e6, label: 'ISS', mode: 'NFM', step: 12500, rgb: '226,230,90' },
     { from: 145.806e6, to: 146.000e6, label: 'Satellites', mode: 'USB', step: 100, rgb: '226,230,90' },
   ];
-  const PANEL_TITLES = { source: 'Source', demod: 'Démodulation et audio', display: 'Affichage', bands: 'Bandes et favoris', scanners: 'Scanners', settings: 'Réglages' };
+  const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', settings: 'Settings' };
   const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'settings'];
 
   // ------------------------------------------------------------------ DOM
@@ -778,15 +777,15 @@
   };
   const view = { f0: 0, f1: 0 };
   let bookmarks = [
-    { f: 144.050e6, name: 'Appel CW', mode: 'CW', scan: false },
+    { f: 144.050e6, name: 'CW calling', mode: 'CW', scan: false },
     { f: 144.174e6, name: 'FT8', mode: 'USB', scan: false },
-    { f: 144.300e6, name: 'Appel SSB', mode: 'USB', scan: true },
+    { f: 144.300e6, name: 'SSB calling', mode: 'USB', scan: true },
     { f: 144.800e6, name: 'APRS', mode: 'NFM', scan: true },
     { f: 145.3375e6, name: 'Simplex', mode: 'NFM', scan: true },
-    { f: 145.500e6, name: 'Appel FM', mode: 'NFM', scan: true },
-    { f: 145.6125e6, name: 'Relais A', mode: 'NFM', scan: true },
-    { f: 145.6625e6, name: 'Relais B', mode: 'NFM', scan: true },
-    { f: 145.7375e6, name: 'Relais C', mode: 'NFM', scan: true },
+    { f: 145.500e6, name: 'FM calling', mode: 'NFM', scan: true },
+    { f: 145.6125e6, name: 'Repeater A', mode: 'NFM', scan: true },
+    { f: 145.6625e6, name: 'Repeater B', mode: 'NFM', scan: true },
+    { f: 145.7375e6, name: 'Repeater C', mode: 'NFM', scan: true },
     { f: 145.800e6, name: 'ISS', mode: 'NFM', scan: false },
   ];
   let bookmarkCounter = 0;
@@ -1257,7 +1256,7 @@
     $('#m-mode').textContent = S.mode;
     $('#m-bw').textContent = fmtBw(S.bw);
     const seg = segmentAt(S.vfo);
-    $('#m-seg').textContent = `${seg ? seg.label : 'Hors plan'} · pas ${fmtBw(stepAt(S.vfo))}`;
+    $('#m-seg').textContent = `${seg ? seg.label : 'Outside the plan'} · step ${fmtBw(stepAt(S.vfo))}`;
   }
 
   function sUnits(db) {
@@ -1311,7 +1310,7 @@
         const age = Math.floor(e.clientY - wfWrap.getBoundingClientRect().top);
         if (age >= 0 && age < histFilled) {
           const row = (histHead - age + HIST_ROWS) % HIST_ROWS;
-          txt += ` · ${Math.round(Q_MIN + hist[row * S.nb + bi] * Q_STEP)} dB · il y a ${fmtAgo((Date.now() - histTime[row]) / 1000)}`;
+          txt += ` · ${Math.round(Q_MIN + hist[row * S.nb + bi] * Q_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
         }
       }
     }
@@ -1322,7 +1321,7 @@
   function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; }
 
   function updateStatus() {
-    $('#status').textContent = `Simulation · RTL-SDR · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz) · ${S.fftRate} i/s${S.remote ? ' · accès à distance actif' : ''}`;
+    $('#status').textContent = `Simulation · RTL-SDR · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz) · ${S.fftRate} fps${S.remote ? ' · remote access on' : ''}`;
   }
 
   // ------------------------------------------------------------------ layout and view
@@ -1498,12 +1497,12 @@
       ? rows.slice(0, 40).map((p) => {
         const ago = (now - p.last) / 1000, active = ago < 1.5;
         return `<tr class="${active ? 'active' : ''}">`
-          + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Écouter">${fmtMHz(p.f)}</button></td>`
-          + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'actif' : `il y a ${fmtAgo(ago)}`}</td>`
-          + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignorer</button></td></tr>`;
+          + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Listen">${fmtMHz(p.f)}</button></td>`
+          + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'active' : `${fmtAgo(ago)} ago`}</td>`
+          + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignore</button></td></tr>`;
       }).join('')
-      : '<tr><td colspan="4" class="empty">Aucun pic détecté</td></tr>';
-    $('#pk-excluded').textContent = excluded.length ? `${excluded.length} fréquence(s) ignorée(s).` : '';
+      : '<tr><td colspan="4" class="empty">No peak detected</td></tr>';
+    $('#pk-excluded').textContent = excluded.length ? `${excluded.length} ignored ${excluded.length === 1 ? 'frequency' : 'frequencies'}.` : '';
     $('#pk-restore').hidden = excluded.length === 0;
   }
 
@@ -1521,7 +1520,7 @@
     syncMem();
   }
   function memStart() {
-    if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'Aucun favori coché.'; return; }
+    if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'No bookmark is checked.'; return; }
     mem.running = true;
     mem.idx = -1;
     memNext(performance.now() / 1000);
@@ -1547,10 +1546,10 @@
   }
   function userTune() { if (mem.running) memStop(); }
   function syncMem() {
-    $('#mem-start').textContent = mem.running ? 'Arrêter' : 'Démarrer';
+    $('#mem-start').textContent = mem.running ? 'Stop' : 'Start';
     const name = mem.cur ? mem.cur.name : '';
-    let txt = 'Arrêté';
-    if (mem.running) txt = mem.state === 'listen' ? `Écoute : ${name}` : mem.state === 'hang' ? `Attente : ${name}` : `Balayage : ${name}`;
+    let txt = 'Stopped';
+    if (mem.running) txt = mem.state === 'listen' ? `Listening: ${name}` : mem.state === 'hang' ? `Waiting: ${name}` : `Scanning: ${name}`;
     $('#mem-state').textContent = txt;
   }
   function renderMemList() {
@@ -1561,9 +1560,9 @@
   function ctcssText() {
     if (S.ctcss === 'off' || !sqlOpen) return '—';
     const tone = repeaters.map((r) => r.toneNear(S.vfo)).find(Boolean);
-    if (!tone) return 'aucune';
+    if (!tone) return 'none';
     if (S.ctcss === 'detect') return `${tone} Hz`;
-    return tone === S.ctcss ? `${tone} Hz (filtre ouvert)` : `${tone} Hz (filtre fermé)`;
+    return tone === S.ctcss ? `${tone} Hz (filter open)` : `${tone} Hz (filter closed)`;
   }
 
   // ------------------------------------------------------------------ panels
@@ -1613,7 +1612,7 @@
   gainEl.max = String(R820T_GAINS.length - 1);
   function syncSource() {
     srcDevice.value = S.device;
-    $('#src-note').textContent = S.device === 'rtl' ? 'RTL-SDR simulé (tuner R820T).' : 'Non simulé dans la maquette.';
+    $('#src-note').textContent = S.device === 'rtl' ? 'Simulated RTL-SDR (R820T tuner).' : 'Not simulated in the mockup.';
     srcCenter.value = fmtMHz(S.fc);
     srcRate.value = String(S.fs);
     gainEl.value = String(S.gainIdx);
@@ -1679,16 +1678,16 @@
   bindCheck('dm-nr', 'nr');
   bindCheck('dm-notch', 'notch');
   bindCheck('dm-nb', 'blanker');
-  bindRange('dm-vol', 'volume', (v) => `${v} %`);
+  bindRange('dm-vol', 'volume', (v) => `${v}%`);
 
   // Display
-  const avgLabel = (v) => (v === 0 ? 'aucun' : v < 0.4 ? `léger (${v.toFixed(2)})` : v < 0.75 ? `moyen (${v.toFixed(2)})` : `fort (${v.toFixed(2)})`);
+  const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` : v < 0.75 ? `medium (${v.toFixed(2)})` : `strong (${v.toFixed(2)})`);
   function drawPalettePreview() { $('#wf-pal-preview').style.background = `linear-gradient(90deg, ${PALETTES[S.palette].join(', ')})`; }
   function syncDisplay() {
     for (const s of syncers) s();
     $('#ds-fft').value = String(S.nb);
     $('#ds-win').value = S.win;
-    $('#ds-fft-note').textContent = `Résolution : ${Math.round(binHz())} Hz par point.`;
+    $('#ds-fft-note').textContent = `Resolution: ${Math.round(binHz())} Hz per bin.`;
     $('#wf-pal').value = S.palette;
     drawPalettePreview();
     syncAutoDisplay();
@@ -1706,7 +1705,7 @@
   }
   $('#ds-fft').addEventListener('change', (e) => { S.nb = Number(e.target.value); resetBuffers(); updateStatus(); syncDisplay(); });
   $('#ds-win').addEventListener('change', (e) => { S.win = e.target.value; kernel = kernelFor(S.win); });
-  bindRange('ds-rate', 'fftRate', (v) => `${v} i/s`, updateStatus);
+  bindRange('ds-rate', 'fftRate', (v) => `${v} fps`, updateStatus);
   bindRange('ds-avg', 'avg', avgLabel);
   bindCheck('ds-fill', 'fill');
   bindCheck('ds-peak', 'peakHold', () => { if (S.peakHold) peakDb.fill(-300); });
@@ -1723,11 +1722,11 @@
   });
   bindRange('wf-min', 'wfMin', fmtDb, () => { S.wfMin = Math.min(S.wfMin, S.wfMax - 5); needWfRedraw = true; });
   bindRange('wf-max', 'wfMax', fmtDb, () => { S.wfMax = Math.max(S.wfMax, S.wfMin + 5); needWfRedraw = true; });
-  bindRange('wf-speed', 'wfSpeed', (v) => `${v} lignes/s`);
+  bindRange('wf-speed', 'wfSpeed', (v) => `${v} lines/s`);
   bindCheck('wf-time', 'timestamps', () => { needWfRedraw = true; });
   bindCheck('ov-plan', 'showPlan', drawBandStrip);
   bindCheck('ov-marks', 'showMarks', renderMarks);
-  bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)} %`, () => { layoutPending = true; });
+  bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
 
   // Bands and bookmarks
   function renderPlanList() {
@@ -1740,13 +1739,13 @@
     $('#bm-list').innerHTML = items.length
       ? items.map(({ b, i }) => `<li class="bm"><button type="button" class="item" data-i="${i}"><span class="name">${escapeHtml(b.name)}</span>`
         + `<span class="num">${fmtMHz(b.f)}</span><span class="tag">${b.mode}</span></button>`
-        + `<button type="button" class="link" data-del="${i}" aria-label="Retirer ${escapeHtml(b.name)}">Retirer</button></li>`).join('')
-      : '<li class="empty">Aucun favori</li>';
+        + `<button type="button" class="link" data-del="${i}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`).join('')
+      : '<li class="empty">No bookmarks</li>';
   }
   function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); }
   function addBookmark(f, mode) {
     bookmarkCounter += 1;
-    bookmarks.push({ f, name: `Favori ${bookmarkCounter}`, mode, scan: true });
+    bookmarks.push({ f, name: `Bookmark ${bookmarkCounter}`, mode, scan: true });
     bookmarks.sort((a, b) => a.f - b.f);
     bookmarksChanged();
   }
@@ -1802,7 +1801,7 @@
   });
   $('#st-remote-renew').addEventListener('click', () => {
     $('#st-remote-code').textContent = newRemoteCode();
-    remoteMsg('Nouveau code : les appareils déjà connectés devront le saisir.');
+    remoteMsg('New code: devices already connected must enter it again.');
   });
   $('#st-remote-copy').addEventListener('click', () => {
     const urlEl = $('#st-remote-url');
@@ -1812,10 +1811,10 @@
       const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
-      remoteMsg('Adresse sélectionnée : copiez-la depuis le menu du navigateur.');
+      remoteMsg('Address selected: copy it from the browser menu.');
     };
     if (!navigator.clipboard) { selectUrl(); return; }
-    navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Adresse copiée.'), selectUrl);
+    navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Address copied.'), selectUrl);
   });
 
   for (const b of $$('#toolbar button')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
@@ -2019,7 +2018,7 @@
     poke();
     showHover(e, 'band');
     const seg = segmentAt(xToF(e.clientX));
-    bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · glisser : hauteur du spectre` : 'Glisser : hauteur du spectre';
+    bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · drag: spectrum height` : 'Drag: spectrum height';
     if (!bandDrag) return;
     const dy = e.clientY - bandDrag.y0;
     if (Math.abs(dy) > 3) bandDrag.moved = true;
@@ -2041,7 +2040,7 @@
     input.inputMode = 'decimal';
     input.className = 'freq-input';
     input.value = fmtMHz(S.vfo);
-    input.setAttribute('aria-label', 'Fréquence en MHz');
+    input.setAttribute('aria-label', 'Frequency in MHz');
     freqEl.replaceChildren(input);
     input.focus();
     input.select();
@@ -2139,8 +2138,8 @@
   window.addEventListener('resize', () => { layoutPending = true; });
 
   const HINTS = {
-    mouse: 'Clic : accorder · Molette : pas · Ctrl + molette : zoom · Clic droit : menu · 1 à 6 : panneaux',
-    touch: 'Toucher : accorder · Pincer : zoom · Glisser : défiler · Appui long : menu',
+    mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 6: panels',
+    touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
   };
   function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }
   const onPointerModeChange = () => { syncPointerMode(); layoutPending = true; };

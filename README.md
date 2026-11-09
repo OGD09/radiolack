@@ -20,6 +20,9 @@ milestones and the decisions are in
 **Receive-only.** Radiolack never transmits. It records no audio, no
 transcription and no raw I/Q.
 
+**English only.** The interface, the code and the documentation are in
+English, with no translations.
+
 ## Requirements
 
 - Python 3.11 or later, aiohttp 3.8 or later and NumPy 1.24 or later.
