@@ -135,7 +135,8 @@ class BrowserTest(unittest.TestCase):
     def wait_for_audio(self, page: Page, frames: int = 3) -> None:
         deadline = time.monotonic() + TIMEOUT_MS / 1000
         while len(self.audio[page]) < frames:
-            self.assertLess(time.monotonic(), deadline, "no audio arrived")
+            self.assertLess(time.monotonic(), deadline,
+                            "no audio arrived (Firefox plays none without a sound server: README.md, Tests)")
             page.wait_for_timeout(100)      # lets Playwright deliver the page's events
 
     def test_audio_starts_with_a_click_and_the_vfo_is_shared(self):

@@ -298,8 +298,18 @@ On a computer without a display or a GPU, such as a server, run the last
 command under `xvfb-run -a` (Debian and Ubuntu: `sudo apt install xvfb`):
 headless Firefox then needs a display to draw with WebGL2.
 
+Firefox plays audio only through a sound server, PipeWire or PulseAudio:
+without one, as on a server, its audio test fails. PulseAudio with only a
+null sink gives it a silent output (Debian and Ubuntu:
+`sudo apt install pulseaudio`), and `pulseaudio --kill` stops it:
+
+```bash
+pulseaudio --start --exit-idle-time=-1 -n --load=module-native-protocol-unix --load=module-null-sink
+```
+
 A second GitHub Actions workflow runs the type check and the browser tests,
-under Xvfb, when the package, the tests or `pyproject.toml` change.
+under Xvfb and with that silent output, when the package, the tests or
+`pyproject.toml` change.
 
 ## Documentation
 

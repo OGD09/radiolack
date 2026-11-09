@@ -388,7 +388,11 @@ These costs wait for v4:
   glibc's mmap and trim thresholds made no measurable difference, so
   Radiolack leaves the allocator alone. Tested on synthetic I/Q, through the
   engine and the server, in three browsers and in the native window; not
-  yet with a receiver.
+  yet with a receiver. On GitHub's runner, which has no sound card or sound
+  server, Firefox kept its audio context suspended, as it does locally with
+  the sound server hidden: its audio library found no output channel, even
+  with a null ALSA device. The workflow therefore starts PulseAudio with
+  only a null sink.
 - Settings and bookmarks, 2026-11-09: the engine restores at start, and
   saves a second after a change and when Radiolack stops, each receiver's
   source and demodulation settings, the bookmarks and the interface's own
