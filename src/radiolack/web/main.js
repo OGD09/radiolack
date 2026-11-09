@@ -6,12 +6,14 @@
 import { EngineStream } from './stream.js';
 import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
+import { loadBandPlan, rangeAt } from './bandplan.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fmtMHz = (hz, dec = 4) => (hz / 1e6).toFixed(dec);
+const fmtEdge = (hz) => (hz / 1e6).toFixed(6).replace(/0{1,3}$/, '');   // MHz, 3 to 6 decimals as needed
 const fmtBw = (hz) => (hz >= 1000 ? `${+(hz / 1000).toFixed(2)} kHz` : `${Math.round(hz)} Hz`);
 const fmtDb = (db) => `${Math.round(db)} dB`;
 const fmtAgo = (s) => (s < 60 ? `${Math.max(0, Math.round(s))} s` : `${Math.floor(s / 60)} min`);
@@ -44,20 +46,8 @@ const PALETTES = {
   ice: ['#000000', '#06142e', '#12407a', '#2a86c8', '#7fd3f5', '#f2fbff'],
   gray: ['#000000', '#ffffff'],
 };
-// Simplified IARU Region 1 2 m band plan, for the mockup only.
-const SEGMENTS = [
-  { from: 144.000e6, to: 144.150e6, label: 'CW / MGM', mode: 'CW', step: 100, rgb: '107,138,253' },
-  { from: 144.150e6, to: 144.400e6, label: 'SSB / CW / MGM', mode: 'USB', step: 100, rgb: '176,124,255' },
-  { from: 144.400e6, to: 144.490e6, label: 'Beacons', mode: 'CW', step: 100, rgb: '242,179,61' },
-  { from: 144.500e6, to: 144.794e6, label: 'All modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
-  { from: 144.794e6, to: 144.990e6, label: 'Digital', mode: 'NFM', step: 12500, rgb: '60,207,154' },
-  { from: 144.990e6, to: 145.194e6, label: 'Repeater inputs', mode: 'NFM', step: 12500, rgb: '255,122,122' },
-  { from: 145.194e6, to: 145.206e6, label: 'Space', mode: 'NFM', step: 12500, rgb: '226,230,90' },
-  { from: 145.206e6, to: 145.594e6, label: 'FM simplex', mode: 'NFM', step: 12500, rgb: '89,167,255' },
-  { from: 145.594e6, to: 145.794e6, label: 'Repeater outputs', mode: 'NFM', step: 12500, rgb: '255,159,90' },
-  { from: 145.794e6, to: 145.806e6, label: 'ISS', mode: 'NFM', step: 12500, rgb: '226,230,90' },
-  { from: 145.806e6, to: 146.000e6, label: 'Satellites', mode: 'USB', step: 100, rgb: '226,230,90' },
-];
+const BAND_PLAN_URL = 'bandplan-europe.json';
+const DEFAULT_STEP = 100;           // tuning step where the band plan gives none, Hz
 const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', settings: 'Settings' };
 const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'settings'];
 
@@ -102,6 +92,8 @@ const S = {
   autoHide: true, keepAwake: false, remote: false,
 };
 const view = { f0: 0, f1: 0 };
+let plan = { name: '', ranges: [] };    // band plan, empty until loaded
+let planState = 'loading';              // 'loading', 'ready' or 'failed'
 let bookmarks = [
   { f: 144.050e6, name: 'CW calling', mode: 'CW', scan: false },
   { f: 144.174e6, name: 'FT8', mode: 'USB', scan: false },
@@ -120,11 +112,13 @@ const gainDb = () => R820T_GAINS[S.gainIdx];
 const fStart = () => S.fc - S.fs / 2;
 const fEnd = () => S.fc + S.fs / 2;
 const binHz = () => S.fs / S.nb;
-const segmentAt = (f) => SEGMENTS.find((s) => f >= s.from && f < s.to) || null;
+const segmentAt = (f) => rangeAt(plan.ranges, f);
+// Strip tooltip: a segment of a band also names its band.
+const rangeTitle = (r) => (r.kind === 'segment' ? `${r.band} · ${r.name}` : r.name);
 function stepAt(f) {
   if (S.step !== 'auto') return Number(S.step);
   const seg = segmentAt(f);
-  return seg ? seg.step : 100;
+  return seg && seg.step ? seg.step : DEFAULT_STEP;
 }
 const snapAt = (f) => { const st = stepAt(f); return Math.round(f / st) * st; };
 function passband() {
@@ -200,6 +194,7 @@ function setCapture(centre, rate, bins) {
   tune(S.vfo);
   syncSource();
   syncDisplay();
+  renderPlanList();
   updateStatus();
 }
 
@@ -526,17 +521,17 @@ function drawBandStrip() {
   ctx.font = `${10 * d}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  for (const s of SEGMENTS) {
-    const x0 = fToX(s.from) * d, x1 = fToX(s.to) * d;
-    if (x1 < 0 || x0 > W) continue;
+  for (const s of plan.ranges) {
+    if (s.to <= view.f0 || s.from >= view.f1) continue;
+    // Clipped to the strip: a range can be thousands of times wider than the view.
+    const a = Math.max(fToX(s.from) * d, 0), b = Math.min(fToX(s.to) * d, W);
     ctx.fillStyle = `rgba(${s.rgb},0.26)`;
-    ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H);
+    ctx.fillRect(a, 0, Math.max(1, b - a), H);
     ctx.fillStyle = `rgba(${s.rgb},0.85)`;
-    ctx.fillRect(x0, H - 2 * d, Math.max(1, x1 - x0), 2 * d);
-    const a = Math.max(x0, 0), b = Math.min(x1, W);
-    if (ctx.measureText(s.label).width + 8 * d < b - a) {
+    ctx.fillRect(a, H - 2 * d, Math.max(1, b - a), 2 * d);
+    if (ctx.measureText(s.name).width + 8 * d < b - a) {
       ctx.fillStyle = 'rgba(230,235,240,0.85)';
-      ctx.fillText(s.label, (a + b) / 2, H / 2 - d);
+      ctx.fillText(s.name, (a + b) / 2, H / 2 - d);
     }
   }
 }
@@ -587,8 +582,9 @@ function renderFreq() {
 function updateMeta() {
   $('#m-mode').textContent = S.mode;
   $('#m-bw').textContent = fmtBw(S.bw);
-  const seg = segmentAt(S.vfo);
-  $('#m-seg').textContent = `${seg ? seg.label : 'Outside the plan'} · step ${fmtBw(stepAt(S.vfo))}`;
+  const seg = segmentAt(S.vfo), step = `step ${fmtBw(stepAt(S.vfo))}`;
+  const where = seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState];
+  $('#m-seg').textContent = where ? `${where} · ${step}` : step;
 }
 
 function sUnits(db) {
@@ -648,7 +644,7 @@ function showHover(e, area) {
     }
   }
   const seg = segmentAt(f);
-  if (seg) txt += ` · ${seg.label}`;
+  if (seg) txt += ` · ${seg.name}`;
   hoverEl.textContent = txt;
 }
 function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; }
@@ -735,7 +731,10 @@ function zoomAt(factor, anchor) {
 }
 function zoomToSegment(seg) {
   if (!seg) return;
-  const pad = (seg.to - seg.from) * 0.08, a = seg.from - pad, b = seg.to + pad, w = b - a;
+  // Only the part inside the captured span can be shown.
+  const from = Math.max(seg.from, fStart()), to = Math.min(seg.to, fEnd());
+  if (!(to > from)) return;
+  const pad = (to - from) * 0.08, a = from - pad, b = to + pad, w = b - a;
   const same = Math.abs(view.f1 - view.f0 - w) < w * 0.05 && Math.abs((view.f0 + view.f1) / 2 - (a + b) / 2) < w * 0.05;
   if (same) setView(fStart(), fEnd()); else setView(a, b);
 }
@@ -753,7 +752,7 @@ function tune(f, opts = {}) {
   f = clamp(Math.round(f), Math.ceil(fStart()), Math.floor(fEnd()));
   const seg = segmentAt(f);
   if (opts.mode) applyMode(opts.mode);
-  else if (S.autoMode && seg && seg !== lastSeg && seg.mode !== S.mode) applyMode(seg.mode);
+  else if (S.autoMode && seg && seg !== lastSeg && seg.mode && seg.mode !== S.mode) applyMode(seg.mode);
   lastSeg = seg;
   S.vfo = f;
   if (!opts.keepView && (f < view.f0 || f > view.f1)) {
@@ -785,7 +784,7 @@ function setBandwidth(bw) {
 // one transmitter into several rows and slow drift (Doppler) is followed.
 function registerPeak(f, width, margin, now) {
   const seg = segmentAt(f);
-  const ch = width >= 4000 && Boolean(seg) && seg.step >= 12500;
+  const ch = width >= 4000 && Boolean(seg && seg.step >= 12500);
   const fq = ch ? Math.round(f / 12500) * 12500 : Math.round(f / 100) * 100;
   if (isExcluded(fq)) return;
   let e = null, best = PEAK_MERGE_HZ;
@@ -1034,12 +1033,41 @@ bindCheck('ov-marks', 'showMarks', renderMarks);
 bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
 
 // Bands and bookmarks
+// The band plan list shows the ranges the engine captures, segments under their band.
 function renderPlanList() {
-  const list = $('#plan-list');
-  list.innerHTML = SEGMENTS.map((s, i) => `<li><button type="button" class="item" data-seg="${i}"><span class="sw"></span>`
-    + `<span class="name">${s.label}</span><span class="num">${fmtMHz(s.from, 3)}–${fmtMHz(s.to, 3)}</span></button></li>`).join('');
+  const list = $('#plan-list'), note = $('#plan-note');
+  if (planState !== 'ready') {
+    list.textContent = '';
+    note.textContent = planState === 'failed' ? 'The band plan could not be loaded.' : '';
+    return;
+  }
+  note.textContent = `Ranges in the received span. ${plan.name}, simplified: national tables are the reference.`;
+  const lo = fStart(), hi = fEnd(), shown = [];
+  let html = '', group = null;
+  plan.ranges.forEach((r, i) => {
+    if (r.kind === 'gap' || r.to <= lo || r.from >= hi) return;
+    const g = r.kind === 'segment' ? r.band : null;
+    if (g !== null && g !== group) html += `<li class="group">${escapeHtml(g)}</li>`;
+    group = g;
+    html += `<li><button type="button" class="item" data-range="${i}"><span class="sw"></span>`
+      + `<span class="name">${escapeHtml(r.name)}</span><span class="num">${fmtEdge(r.from)}–${fmtEdge(r.to)}</span></button></li>`;
+    shown.push(r);
+  });
+  list.innerHTML = html || '<li class="empty">No band plan entry in the received span</li>';
   // Set through the CSSOM: the Content-Security-Policy blocks inline style attributes.
-  list.querySelectorAll('.sw').forEach((sw, i) => { sw.style.background = `rgb(${SEGMENTS[i].rgb})`; });
+  list.querySelectorAll('.sw').forEach((sw, i) => { sw.style.background = `rgb(${shown[i].rgb})`; });
+}
+function loadPlan() {
+  loadBandPlan(BAND_PLAN_URL, MODE_ORDER).then((loaded) => {
+    plan = loaded;
+    planState = 'ready';
+  }, (error) => {
+    console.error(error);
+    planState = 'failed';
+  }).then(() => {
+    renderPlanList();
+    tune(S.vfo, { keepView: true });    // the VFO's range gives its mode and step now
+  });
 }
 function renderBookmarks() {
   const q = $('#bm-filter').value.trim().toLowerCase();
@@ -1057,7 +1085,7 @@ function addBookmark(f, mode) {
   bookmarks.sort((a, b) => a.f - b.f);
   bookmarksChanged();
 }
-$('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-seg]'); if (b) zoomToSegment(SEGMENTS[Number(b.dataset.seg)]); });
+$('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
 $('#bm-filter').addEventListener('input', renderBookmarks);
 $('#bm-add').addEventListener('click', () => addBookmark(S.vfo, S.mode));
 $('#bm-list').addEventListener('click', (e) => {
@@ -1146,7 +1174,7 @@ function touchMenuOrigin(x, y, w, h) {
 function openCtx(x, y, f, touch = false) {
   ctxF = f;
   const seg = segmentAt(f);
-  $('#ctx-title').textContent = `${fmtMHz(f, 4)} MHz${seg ? ` · ${seg.label}` : ''}`;
+  $('#ctx-title').textContent = `${fmtMHz(f, 4)} MHz${seg ? ` · ${seg.name}` : ''}`;
   ctxEl.querySelector('[data-cmd="segment"]').disabled = !seg;
   ctxEl.hidden = false;
   const r = ctxEl.getBoundingClientRect();
@@ -1164,7 +1192,7 @@ ctxEl.addEventListener('click', (e) => {
   if (!b || b.disabled) return;
   const f = snapAt(ctxF), seg = segmentAt(ctxF);
   if (b.dataset.cmd === 'tune') { userTune(); tune(f); }
-  else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg ? seg.mode : S.mode);
+  else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
   else if (b.dataset.cmd === 'ignore') { excluded.push(f); renderPeaks(); }
@@ -1326,7 +1354,7 @@ bandEl.addEventListener('pointermove', (e) => {
   poke();
   showHover(e, 'band');
   const seg = segmentAt(xToF(e.clientX));
-  bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+  bandEl.title = seg ? `${rangeTitle(seg)} · ${fmtEdge(seg.from)}–${fmtEdge(seg.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
@@ -1499,7 +1527,7 @@ resetBuffers();
 layout();
 syncSource();
 syncDisplay();
-renderPlanList();
+loadPlan();
 renderBookmarks();
 renderMemList();
 syncScanTabs();

@@ -1,8 +1,8 @@
 # Radiolack agent guide
 
-Receive-only SDR receiver for the amateur radio bands, being rewritten on the
-`rewrite` branch (Python 3.11+, aiohttp; web interface shown in a native
-window). User documentation is in README.md. Design decisions, milestones and
+Receive-only SDR receiver for every frequency its receivers cover, with
+ham-focused band plans, being rewritten on the `rewrite` branch (Python 3.11+,
+aiohttp; web interface shown in a native window). User documentation is in README.md. Design decisions, milestones and
 open questions are in docs/design/scoping.md: read it before substantive work.
 docs/design/ui-mockup.html is the visual reference, and docs/design/lessons.md
 keeps what the rewrite reuses from the airband explorer, which stays on `main`.
@@ -17,8 +17,10 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   through PyGObject; the main thread runs GTK).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `gl.js`, `spectrum-gl.js` and
-  `waterfall-gl.js` (WebGL2 views) carry JSDoc types; `main.js` still holds
-  the mockup's code under `// @ts-nocheck` and gets types as it is rewritten.
+  `waterfall-gl.js` (WebGL2 views) and `bandplan.js` (band plan loader)
+  carry JSDoc types; `main.js` still holds the mockup's code under
+  `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
+  is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
 - `docs/design/protocol.md`: the stream between engine and interface. Change
   it with the engine, the server and `stream.js`, and raise the protocol
   version for any incompatible change.
@@ -75,5 +77,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   are waiting states, not errors.
 - Keep the server compatible with aiohttp 3.8 (Debian 12) and the latest
   release (CI).
+- The band plan is a simplified guide, not a legal reference: keep
+  `bandplan-europe.json` generic, sourced (docs/design/band-plan.md), one
+  entry per line and in English (ASCII); `tests/test_bandplan.py` checks its
+  structure.
 - Update README.md, and docs/design/ when relevant, with every user-facing
   change.

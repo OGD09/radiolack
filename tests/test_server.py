@@ -3,6 +3,7 @@
 import asyncio
 import html.parser
 import http.client
+import json
 import re
 import socket
 import time
@@ -15,7 +16,13 @@ from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from tests.fakes import FAKE_CENTRE_HZ, FakeSource
 
-FILE_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
+FILE_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+}
+# The band plan file main.js loads.
+BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 # Static imports and re-exports of the interface's own modules.
 MODULE_IMPORT = re.compile(r"""^\s*(?:import|export)\b[^;'"]*?['"](\./[^'"]+)['"]""", re.MULTILINE)
 
@@ -112,9 +119,18 @@ class LocalServerTest(unittest.TestCase):
             pending.extend(spec[2:] for spec in MODULE_IMPORT.findall(body.decode("utf-8")))
         self.assertIn("stream.js", seen)
 
+    def test_serves_the_band_plan_the_interface_loads(self):
+        name = BAND_PLAN_URL.search(get(self.server, "/main.js")[2].decode("utf-8")).group(1)
+        status, headers, body = get(self.server, f"/{name}")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], FILE_TYPES[".json"])
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(json.loads(body)["format"], 1)
+
     def test_serves_nothing_outside_the_interface_files(self):
         paths = ("/server.py", "/../server.py", "/%2e%2e/server.py", "/..%2fserver.py",
-                 "/web/main.js", "/MAIN.JS", "/main.js.map", "/missing.js", "/index.html")
+                 "/web/main.js", "/MAIN.JS", "/main.js.map", "/missing.js", "/missing.json", "/index.html")
         for path in paths:
             with self.subTest(path=path):
                 self.assertEqual(get(self.server, path)[0], 404)

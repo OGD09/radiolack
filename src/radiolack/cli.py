@@ -27,7 +27,7 @@ def _port(text: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radiolack",
-        description="Receive-only SDR receiver for the amateur radio bands.",
+        description="Receive-only SDR receiver.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

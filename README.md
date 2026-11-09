@@ -1,10 +1,12 @@
 # Radiolack
 
-Receive-only SDR receiver for the amateur radio bands. Radiolack reads I/Q
-samples from an SDR receiver, shows a full-screen spectrum and waterfall,
-demodulates the signal and scans the bands. It is a desktop application whose
-interface is a web page, so that a phone, a tablet or another computer will be
-able to control it and listen to it over the local network.
+Receive-only SDR receiver. Radiolack reads I/Q samples from an SDR receiver,
+shows a full-screen spectrum and waterfall, demodulates the signal and scans
+the bands. It covers every frequency its receiver tunes, and a colour strip
+under the spectrum names what each range is used for, with detailed plans
+inside the amateur bands. It is a desktop application whose interface is a
+web page, so that a phone, a tablet or another computer will be able to
+control it and listen to it over the local network.
 
 **Status: early rewrite.** No receiver is supported yet: the engine simulates
 a 2 m band (synthetic I/Q computed in memory), computes its spectrum and
@@ -84,6 +86,22 @@ while its page is hidden, in a background browser tab for instance.
 Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
 the port cannot be used, 2 for invalid options.
 
+## Band plan
+
+The strip under the spectrum shows what each range is used for, from 9 kHz to
+6.425 GHz: broadcasting, aviation, shipping, mobile networks, satellites,
+short-range devices, amateur bands and more. Inside the amateur bands it
+follows the IARU Region 1 band plans, simplified. Hovering the strip names a
+range and its edges, and clicking it zooms to the range. With Demod > "Mode
+and step from the band plan", tuning into a range selects its usual mode, and
+the Automatic tuning step follows the plan. The Bands panel lists the ranges
+of the received span. Display > "Band plan" hides the strip.
+
+The plan is a simplified table for Europe (ITU Region 1): a guide, not a legal
+reference. National tables differ and are the reference, and local law may
+forbid listening to some services or disclosing what they carry. Its format
+and sources are in [docs/design/band-plan.md](docs/design/band-plan.md).
+
 ## Tests
 
 ```bash
@@ -112,6 +130,8 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
   architecture, milestones, spikes and open questions.
 - [docs/design/protocol.md](docs/design/protocol.md): the stream between the
   engine and the interface.
+- [docs/design/band-plan.md](docs/design/band-plan.md): the band plan's
+  scope, sources and file format.
 - [docs/design/ui-mockup.html](docs/design/ui-mockup.html): the validated
   visual reference, with simulated data; it opens directly in a browser.
 - [docs/design/lessons.md](docs/design/lessons.md): what the rewrite reuses

@@ -43,8 +43,8 @@ CONTENT_SECURITY_POLICY = "; ".join((
 
 # Interface files served next to the page: flat lower-case names only, so a
 # request can never reach a file outside WEB_DIR.
-_FILE_TYPES = {".css": "text/css", ".js": "text/javascript"}
-_FILE_ROUTE = r"/{name:[a-z0-9][a-z0-9_-]*\.(?:css|js)}"
+_FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
+_FILE_ROUTE = r"/{name:[a-z0-9][a-z0-9_-]*\.(?:css|js|json)}"
 
 
 def create_app(port: int, engine: Engine) -> web.Application:

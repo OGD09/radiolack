@@ -144,6 +144,7 @@ input:disabled, select:disabled { opacity: 0.45; }
 .list .item > .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .list li.bm { display: flex; align-items: center; gap: 4px; }
 .list li.bm > .item { flex: 1; min-width: 0; }
+.list li.group { padding: 8px 6px 2px; font-size: 11px; color: var(--muted); }
 .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
 .tag { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }

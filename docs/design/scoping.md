@@ -10,9 +10,11 @@ keeps the current Gqrx-driven airband tool.
 
 ## Purpose
 
-Radiolack becomes a standalone, receive-only SDR program for the amateur radio
-bands. It reads I/Q samples from an SDR receiver, shows a full-screen spectrum
-and waterfall, demodulates and plays the signal, and scans the bands for
+Radiolack becomes a standalone, receive-only SDR program for every frequency
+its receiver covers, with a ham-focused interface: a band plan strip names
+what each range is used for, with detailed plans inside the amateur bands. It
+reads I/Q samples from an SDR receiver, shows a full-screen spectrum and
+waterfall, demodulates and plays the signal, and scans the bands for
 activity. It runs as a desktop application and can let a phone, a tablet or
 another computer control it and listen to it over the local network. It
 depends on no other radio program, only on receiver drivers.
@@ -33,19 +35,23 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-08 | Desktop shell for v0: the system's WebKitGTK through PyGObject, validated by spike 1. Windows and macOS shells are chosen before v4. |
 | 2026-11-09 | UI code: plain JavaScript ES modules served as they are, with no build step. Types are written in JSDoc comments and checked by TypeScript; only that check needs Node. Revisit if the UI needs a framework or npm libraries. |
 | 2026-11-09 | English only: code, identifiers, comments, documentation and the interface. No other language and no translation layer; this replaces the English and French interface planned on 2026-11-08. |
+| 2026-11-09 | All frequencies: Radiolack tunes and labels the whole range of its receivers, not only the amateur bands. The band plan covers 9 kHz to 6.425 GHz with a simplified European table (ITU Region 1 allocations named by their main use) and simplified IARU Region 1 plans inside the amateur bands ([`band-plan.md`](band-plan.md)). This replaces "for the amateur bands" (2026-11-08) and answers the open question on tuning. |
 
 ## Scope
 
 In scope, across the milestones below:
 
 - Receivers: RTL-SDR through rtl_tcp first, then SoapySDR devices.
+- Frequencies: the whole range of the receiver; the band plan covers 9 kHz to
+  6.425 GHz.
 - Display: spectrum and waterfall with zoom and pan, palettes, averaging, peak
   hold, a band plan strip and bookmarks on the spectrum.
 - Reception: one VFO (NFM, AM, USB, LSB, CW) with filter width, squelch and
   AGC. More VFOs only if a later need shows up.
 - Scanners: peak detection, sweep across several receiver windows, memory scan
   over bookmarks.
-- Band plans: IARU Region 1 first, then Regions 2 and 3.
+- Band plans: Europe first (ITU Region 1, with the IARU Region 1 amateur
+  plans), then the other regions.
 - Remote access: control and audio over the local network.
 - Language: English only.
 
@@ -177,7 +183,8 @@ Goal: replace Gqrx for the owner's daily listening on 2 m and 70 cm.
   touch).
 - One VFO: NFM, AM, USB, LSB and CW, filter width, squelch, audio on the
   computer.
-- Bookmarks and the Region 1 band plan for 2 m and 70 cm.
+- Bookmarks and the band plan: all frequencies, with the IARU Region 1 plans
+  inside the amateur bands.
 - Settings panel with persistence; English interface.
 - Tests without hardware: DSP on synthetic I/Q; engine and server over local
   sockets on ephemeral ports; UI tests in Chromium, Firefox and WebKit
@@ -206,7 +213,7 @@ the code.
   store separate from the protected airband history. v1 and v2 can swap if the
   scanners matter more than remote access.
 - v3, receivers and bands: SoapySDR devices, HF (direct sampling, RTL-SDR Blog
-  V4), band plans for IARU Regions 2 and 3.
+  V4), band plans for the other regions.
 - v4, public release: Windows and macOS builds, installers, code signing,
   updates, user documentation, licence, accessibility review, public
   repository.
@@ -267,7 +274,7 @@ Public distribution multiplies the work. These choices are cheap now and
 expensive later, so they apply from v0:
 
 - English only in code and interface: no translations to maintain.
-- Band plans by IARU region, with no owner-specific data.
+- Band plans by region, with no owner-specific data.
 - Cross-platform code paths only.
 - Secure defaults for remote access.
 - Dependencies whose licences fit the licence chosen for Radiolack.
@@ -288,10 +295,11 @@ These costs wait for v4:
 1. Licence: GPL-3.0-or-later matches most SDR software (Gqrx, SDR++, SDRangel)
    and makes it simple to ship GPL drivers such as librtlsdr. A permissive
    licence is possible but needs more care when bundling those drivers.
-2. Tuning: strictly limited to the amateur bands, or free tuning with a
-   ham-focused interface? And are there plans for HF hardware?
-3. Recording: the repository forbids recording audio and raw I/Q today, while
+2. Recording: the repository forbids recording audio and raw I/Q today, while
    most SDR programs offer it. Keep the rule, or allow recording on demand?
+3. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
+   WFM demodulator, but the scope lists NFM, AM, USB, LSB and CW only. Add WFM
+   to v0, or later?
 
 ## Repository plan
 
@@ -314,6 +322,11 @@ These costs wait for v4:
   main thread and 0.25 for the synthetic source and the FFT. With the stream
   open and no frames, the tree takes 0.08 to 0.13 cores; a static page takes
   0.01.
+- Band plan, 2026-11-09: the strip, the readouts and the Bands panel read a
+  band plan file served with the interface ([`band-plan.md`](band-plan.md)):
+  198 bands from 9 kHz to 6.425 GHz, 81 segments inside them, checked by the
+  tests and against the sources it names. The engine still captures the
+  simulated 2 m band only.
 - Next step: the rtl_tcp source and the first commands from the interface
   (tuning, gain, sample rate), then the type check and browser tests in CI.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never

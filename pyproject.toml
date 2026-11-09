@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "radiolack"
 dynamic = ["version"]
-description = "Receive-only SDR receiver for the amateur radio bands, with a web interface in a desktop window."
+description = "Receive-only SDR receiver with a web interface in a desktop window."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.8", "numpy>=1.24"]
