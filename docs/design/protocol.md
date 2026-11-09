@@ -1,6 +1,6 @@
 # Interface protocol
 
-How the engine and the interface talk. Protocol version 2, 2026-11-09.
+How the engine and the interface talk. Protocol version 3, 2026-11-09.
 
 The interface opens one WebSocket to `/stream` on the server that served it.
 The server accepts the connection only when its `Host` header names the
@@ -14,7 +14,7 @@ handshake, so a page from another site cannot read the stream.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 2}
+   {"type": "hello", "protocol": 3}
    ```
 
 2. Then the source state, a JSON text message, sent again whenever it
@@ -47,21 +47,44 @@ handshake, so a page from another site cannot read the stream.
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
    | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. |
 
-3. Binary spectrum frames, about 30 per second while the source streams.
-   Each frame is a 32-byte little-endian header followed by one byte per FFT
+3. Then the demodulation settings, a JSON text message, sent again whenever
+   they change, whichever interface changed them. They are the same for
+   every interface, apart from `acknowledged`:
+
+   ```json
+   {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
+    "squelch_db": -80.0, "squelch_auto": true, "modes": ["NFM", "AM", "USB", "LSB", "CW"],
+    "audio_modes": ["NFM"], "acknowledged": 0}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `frequency_hz` | The VFO, a whole number of Hz. It starts a quarter of the span above the centre frequency. When the span changes, a VFO left outside it moves to its nearest edge; a VFO set outside the span reads nothing and stays silent. |
+   | `mode` | One of `modes`. |
+   | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM and CW, above it for USB, below it for LSB. |
+   | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
+   | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. |
+   | `modes` | The modes the engine takes. |
+   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. Only `NFM` for now. |
+   | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
+
+4. Binary spectrum frames, about 30 per second while the source streams.
+   Each frame is a 40-byte little-endian header followed by one byte per FFT
    bin:
 
    | Offset | Type | Field |
    | --- | --- | --- |
    | 0 | uint8 | kind: 1, a spectrum frame |
-   | 1 | uint8 | frame format version: 1 |
-   | 2 | uint16 | reserved, 0 |
+   | 1 | uint8 | frame format version: 2 |
+   | 2 | uint16 | flags: bit 0 set while the squelch is open; the other bits are 0 |
    | 4 | uint32 | sequence number, wrapping at 2^32 |
    | 8 | float64 | centre frequency, Hz |
    | 16 | float64 | sample rate, Hz: the width of the frame |
    | 24 | float32 | level of code 0, dBFS |
    | 28 | float32 | level step per code, dB |
-   | 32 | uint8[] | one code per bin, lowest frequency first |
+   | 32 | float32 | channel level, dBFS: NaN when nothing is received there |
+   | 36 | float32 | squelch threshold in use, dBFS: NaN while unknown |
+   | 40 | uint8[] | one code per bin, lowest frequency first |
 
    With `n` bins, bin `i` is centred on `centre - rate / 2 + i * rate / n`,
    and code `c` stands for `level0 + c * step` dBFS. Code 0 also stands for
@@ -72,19 +95,55 @@ handshake, so a page from another site cannot read the stream.
    it is on. The interface smooths successive frames for its spectrum trace
    and its waterfall.
 
-4. An error, to one interface only, when the engine refuses a message from
-   it:
+   The channel level is the mean power, over the same samples, in the VFO's
+   channel: a full-scale carrier on the VFO reads 0 dBFS. It is NaN when
+   the VFO lies outside the span. The squelch opens once the power averaged
+   over 10 ms reaches the threshold and closes 3 dB below it; the flag gives
+   its state at the end of the samples. The threshold is `squelch_db`, or
+   the automatic one, which is NaN while the engine has no noise estimate
+   (the VFO outside the span); the squelch then stays closed.
+
+5. Binary audio frames, about 30 per second, only to an interface that asked
+   for audio (`audio` message). Each frame is a 16-byte little-endian header
+   followed by 16-bit samples:
+
+   | Offset | Type | Field |
+   | --- | --- | --- |
+   | 0 | uint8 | kind: 2, an audio frame |
+   | 1 | uint8 | audio format version: 1 |
+   | 2 | uint16 | reserved, 0 |
+   | 4 | uint32 | position of the first sample, counted at the audio rate, wrapping at 2^32 |
+   | 8 | float64 | audio rate, Hz |
+   | 16 | int16[] | mono samples, full scale 32767 |
+
+   The audio rate is 12 kHz for the usual receiver rates; at an unusual
+   sample rate it comes within 0.5% of it, such as 12026.2 Hz at
+   2345678 Hz. A frame follows the previous one when its position is the
+   previous position plus the previous number of samples; otherwise samples
+   are missing, such as frames the engine dropped for a slow client.
+
+   In NFM the audio is the FM discriminator's output, full scale at 5 kHz of
+   deviation, with a 750 µs de-emphasis (unit gain at 1 kHz), a high-pass
+   filter at 280 Hz that removes CTCSS tones and a low-pass filter at
+   3.5 kHz. It is silent while the squelch is closed, with 5 ms fades, and
+   in the modes not in `audio_modes`. It lags its samples by about 40 ms:
+   the filters' delay and the squelch's look-ahead.
+
+6. An error, to one interface only, when the engine refuses a message from
+   it. `command` is the message's type, or null when it is not a JSON
+   object of a known type:
 
    ```json
-   {"type": "error", "message": "the receiver tunes from 24 to 1766 MHz"}
+   {"type": "error", "command": "source", "message": "the receiver tunes from 24 to 1766 MHz"}
    ```
 
 What is waiting for an interface goes out in this order: the source state
-when it changed, then errors, then frames. A client that reads too slowly
-loses its oldest frames: the engine keeps the latest four for it and never
-slows down for one client; it keeps its latest state, and up to eight
-errors. When Radiolack stops, the server closes the stream with code 1001
-(going away).
+when it changed, then the demodulation settings when they changed, then
+errors, then audio frames, then spectrum frames. A client that reads too
+slowly loses its oldest frames: the engine keeps the latest four spectrum
+frames and fifteen audio frames (half a second) for it and never slows down
+for one client; it keeps its latest states, and up to eight errors. When
+Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
 
@@ -110,6 +169,40 @@ answers the sender with an error. It also answers with an error any text
 message that is not a JSON object of a known type. Binary messages are
 ignored, and messages may be up to 64 KiB.
 
+A `demod` message changes the demodulation settings it names, the same way:
+
+```json
+{"type": "demod", "id": 12, "frequency_hz": 145500000, "mode": "NFM"}
+```
+
+| Field | Value |
+| --- | --- |
+| `frequency_hz` | The VFO in Hz, from 1 Hz to 100 GHz, rounded to the Hz. Outside the span it reads nothing. |
+| `mode` | One of `modes`. |
+| `bandwidth_hz` | From 100 to 25000 Hz. |
+| `squelch_db` | From -160 to 0 dBFS. |
+| `squelch_auto` | `true` or `false`. |
+| `id` | Optional: a whole number from 1 to 2^53 - 1, which the engine returns in `acknowledged`. |
+
+The engine handles an `id` even when it refuses the changes: the sender then
+receives the settings, unchanged, before the error. An interface that sends
+changes faster than the settings come back, while the VFO is dragged for
+instance, gives each message a higher `id` and ignores settings whose
+`acknowledged` is lower than its last one: they would undo its latest change
+on screen. Settings that carry its last `id` include every change before it,
+from any interface. A refused `id`, which is not such a number, refuses the
+whole message.
+
+An `audio` message starts or stops the audio frames for this interface; they
+are off when the stream opens:
+
+```json
+{"type": "audio", "on": true}
+```
+
+The engine demodulates audio only while at least one interface asked for it,
+but always measures the channel for the spectrum frames.
+
 While an `rtl_sdr` or `rtl_tcp` source waits, changes are kept and sent when
 it connects. Until its first connection the tuner is unknown: `range_hz`
 spans every frequency an rtl_tcp command can carry, any gain passes, and the
@@ -127,17 +220,26 @@ source brings both within what the tuner can do once it connects.
 - The interface ignores binary frames until the hello, and any frame of
   another kind or format version, without bins, or whose centre, rate, level
   or step is not a finite number; the rate and the step must also be
-  positive. It ignores a source state with a missing or malformed field, and
-  leaves out settings it does not know.
+  positive. It ignores audio frames while it has not asked for audio, and
+  those with an odd number of sample bytes or a rate that is not a positive
+  number. It ignores a source state or demodulation settings with a missing
+  or malformed field, and leaves out source settings it does not know.
+- The interface asks for audio while it can play it, with its volume above
+  0. It keeps about 150 ms buffered, follows the engine's clock within 0.5%,
+  fills a gap of up to 0.5 s with silence, and starts again, buffering
+  first, after a longer gap, a change of audio rate or running dry.
 - A hello with another protocol version stops the interface, which asks for a
   reload: the page and the engine come from different versions.
 - When the stream drops, the interface shows a waiting state and reconnects
   after 250 ms, then after twice as long each time, up to 4 s.
-- While its page is hidden, the interface closes the stream; it opens it
-  again when the page shows.
+- While its page is hidden, the interface closes the stream, unless it plays
+  audio; it opens it again when the page shows.
 
 ## Versions
 
+- 3 (2026-11-09): the demodulation settings, the `demod` and `audio`
+  messages, audio frames, the channel level and squelch in spectrum frames
+  (frame format 2), and the command's type in errors.
 - 2 (2026-11-09): the source state, the `source` message from the interface,
   and errors. The hello no longer names the source: the state does.
 - 1 (2026-11-09): hello and spectrum frames.

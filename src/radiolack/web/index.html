@@ -104,7 +104,7 @@
       <div class="field"><label for="dm-sql">Threshold <output id="dm-sql-v"></output></label><input id="dm-sql" type="range" min="-130" max="-20" step="1"></div>
       <div class="field">
         <label for="dm-ctcss">CTCSS</label>
-        <select id="dm-ctcss">
+        <select id="dm-ctcss" disabled>
           <option value="off">Off</option>
           <option value="detect">Detect</option>
           <option value="67.0">67.0 Hz</option>
@@ -118,14 +118,15 @@
       <h3>Processing</h3>
       <div class="field">
         <label for="dm-agc">AGC</label>
-        <select id="dm-agc"><option value="fast">Fast</option><option value="slow">Slow</option><option value="off">Off</option></select>
+        <select id="dm-agc" disabled><option value="fast">Fast</option><option value="slow">Slow</option><option value="off">Off</option></select>
       </div>
-      <label class="check"><input id="dm-nr" type="checkbox"> Noise reduction</label>
-      <label class="check"><input id="dm-notch" type="checkbox"> Automatic notch</label>
-      <label class="check"><input id="dm-nb" type="checkbox"> Noise blanker</label>
+      <label class="check"><input id="dm-nr" type="checkbox" disabled> Noise reduction</label>
+      <label class="check"><input id="dm-notch" type="checkbox" disabled> Automatic notch</label>
+      <label class="check"><input id="dm-nb" type="checkbox" disabled> Noise blanker</label>
+      <p class="note">CTCSS and processing are not applied yet.</p>
       <h3>Audio</h3>
       <div class="field"><label for="dm-vol">Volume <output id="dm-vol-v"></output></label><input id="dm-vol" type="range" min="0" max="100" step="1"></div>
-      <p class="note">No audio yet.</p>
+      <p class="note" id="dm-audio-note" role="status" hidden></p>
     </section>
 
     <section data-panel="display" hidden>

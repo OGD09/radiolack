@@ -3,9 +3,10 @@
 The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
 desktop window toolkit, which must own it. The engine runs in that loop and
-streams its frames and its source state to each interface over a WebSocket
-(``/stream``; see docs/design/protocol.md), which also carries the
-interfaces' changes to the source settings.
+streams its frames, its audio, its source state and its demodulation
+settings to each interface over a WebSocket (``/stream``; see
+docs/design/protocol.md), which also carries the interfaces' changes and
+their requests for audio.
 """
 
 from __future__ import annotations
@@ -24,13 +25,14 @@ from .engine import Engine, Source, Subscription
 from .synthetic import SyntheticBand
 
 LOOPBACK_HOST = "127.0.0.1"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 WEB_DIR = Path(__file__).with_name("web")
 
 _START_TIMEOUT_S = 10.0
 _STOP_TIMEOUT_S = 10.0
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
+_MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 
 log = logging.getLogger(__name__)
 
@@ -136,28 +138,46 @@ async def _receive(ws: web.WebSocketResponse, engine: Engine, subscription: Subs
     async for message in ws:
         if message.type is not WSMsgType.TEXT:
             continue
+        kind: str | None = None
         try:
-            refusal = _apply_command(engine, message.data)
+            kind, refusal = _apply_command(engine, subscription, message.data)
         except Exception:
             log.exception("a command from the interface failed")
             refusal = "the command failed"
         if refusal is not None:
-            subscription.reply({"type": "error", "message": refusal})
+            subscription.reply({"type": "error", "command": kind, "message": refusal})
 
 
-def _apply_command(engine: Engine, text: str) -> str | None:
-    """Apply one command from an interface; returns why it was refused, or None."""
+def _apply_command(engine: Engine, subscription: Subscription, text: str) -> tuple[str | None, str | None]:
+    """Apply one command from an interface: returns its type, if known, and
+    why it was refused, or None."""
     try:
         command = json.loads(text)
     except (ValueError, RecursionError):
-        return "a command must be a JSON object"
-    if not isinstance(command, dict) or command.get("type") != "source":
-        return "unknown command"
+        return None, "a command must be a JSON object"
+    if not isinstance(command, dict) or command.get("type") not in ("source", "demod", "audio"):
+        return None, "unknown command"
+    kind = command["type"]
+    changes = {key: value for key, value in command.items() if key != "type"}
     try:
-        engine.configure({key: value for key, value in command.items() if key != "type"})
+        if kind == "source":
+            engine.configure(changes)
+        elif kind == "demod":
+            change_id = changes.pop("id", None)
+            if change_id is not None and (isinstance(change_id, bool) or not isinstance(change_id, int)
+                                          or not 0 < change_id <= _MAX_CHANGE_ID):
+                return kind, "a change id must be a whole number from 1"
+            engine.configure_demod(changes, subscription, change_id)
+        else:
+            on = changes.pop("on", None)
+            if changes:
+                return kind, f"unknown audio setting: {next(iter(changes))}"
+            if not isinstance(on, bool):
+                return kind, "audio must be turned on or off: true or false"
+            engine.set_audio(subscription, on)
     except ValueError as error:
-        return str(error)
-    return None
+        return kind, str(error)
+    return kind, None
 
 
 # Interface files are read at each request, so that a change shows on reload.

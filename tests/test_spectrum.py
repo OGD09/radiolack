@@ -1,11 +1,13 @@
-"""Tests for the display spectrum: levels, frequencies and the frame format."""
+"""Tests for the display spectrum: levels, frequencies, the noise level
+around the VFO and the frame format."""
 
+import math
 import unittest
 
 import numpy as np
 
-from radiolack.spectrum import (DB_MIN, DB_STEP, FRAME_HEADER, FRAME_KIND_SPECTRUM, FRAME_VERSION,
-                                SpectrumAnalyzer, blackman_harris, encode_frame)
+from radiolack.spectrum import (DB_MIN, DB_STEP, FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM,
+                                FRAME_VERSION, SpectrumAnalyzer, blackman_harris, encode_frame)
 
 RATE = 2_400_000.0
 SIZE = 1024
@@ -50,7 +52,7 @@ class SpectrumAnalyzerTest(unittest.TestCase):
         self.assertEqual(codes.tolist(), [0, 0, 10, 255, 255])
 
     def test_frame_has_one_code_per_bin(self):
-        codes = self.analyzer.frame(tone(0.0, 0.1, 5 * SIZE))
+        codes = self.analyzer.codes(self.analyzer.power(tone(0.0, 0.1, 5 * SIZE)))
         self.assertEqual((codes.dtype, codes.shape), (np.uint8, (SIZE,)))
 
     def test_rejects_bad_settings_and_short_blocks(self):
@@ -58,18 +60,45 @@ class SpectrumAnalyzerTest(unittest.TestCase):
             with self.subTest(**settings), self.assertRaises(ValueError):
                 SpectrumAnalyzer(**settings)
         with self.assertRaises(ValueError):
-            self.analyzer.frame(np.zeros(SIZE - 1, np.complex64))
+            self.analyzer.power(np.zeros(SIZE - 1, np.complex64))
+
+
+class NoiseDensityTest(unittest.TestCase):
+    def setUp(self):
+        self.analyzer = SpectrumAnalyzer()
+        density = 1e-6 / RATE
+        rng = np.random.default_rng(5)
+        count = 4 * self.analyzer.fft_size
+        noise = (rng.standard_normal(2 * count) * math.sqrt(density * RATE / 2)).astype(np.float32)
+        noise = noise.view(np.complex64) + tone(300_000.0, 0.01, count)     # a signal does not move it
+        self.power = self.analyzer.power(noise)
+        self.density = density
+
+    def test_reads_the_noise_power_per_hertz_around_the_vfo(self):
+        for offset in (300_000.0, -1_000_000.0, RATE / 2 - 10_000.0):
+            with self.subTest(offset=offset):
+                estimate = self.analyzer.noise_density(self.power, 4 * self.analyzer.fft_size, offset, RATE)
+                self.assertAlmostEqual(10 * math.log10(estimate / self.density), 0.0, delta=0.3)
+
+    def test_needs_bins_around_the_vfo(self):
+        self.assertIsNone(self.analyzer.noise_density(self.power, 4 * self.analyzer.fft_size, RATE, RATE))
 
 
 class FrameEncodingTest(unittest.TestCase):
     def test_header_then_codes(self):
         codes = np.arange(8, dtype=np.uint8)
         frame = encode_frame(2 ** 32 + 5, 145e6, 2.4e6, -160.0, 0.625, codes)
-        self.assertEqual(FRAME_HEADER.size, 32)
-        self.assertEqual(len(frame), 32 + 8)
-        self.assertEqual(FRAME_HEADER.unpack_from(frame),
-                         (FRAME_KIND_SPECTRUM, FRAME_VERSION, 0, 5, 145e6, 2.4e6, -160.0, 0.625))
-        self.assertEqual(frame[32:], codes.tobytes())
+        self.assertEqual((FRAME_HEADER.size, FRAME_VERSION), (40, 2))
+        self.assertEqual(len(frame), 40 + 8)
+        *header, level, squelch = FRAME_HEADER.unpack_from(frame)
+        self.assertEqual(header, [FRAME_KIND_SPECTRUM, FRAME_VERSION, 0, 5, 145e6, 2.4e6, -160.0, 0.625])
+        self.assertTrue(math.isnan(level) and math.isnan(squelch))   # unknown
+        self.assertEqual(frame[40:], codes.tobytes())
+
+    def test_header_carries_the_channel_meter(self):
+        frame = encode_frame(1, 145e6, 2.4e6, -160.0, 0.625, np.zeros(4, np.uint8), -52.25, -60.5, True)
+        self.assertEqual(FRAME_HEADER.unpack_from(frame)[2], FLAG_SQUELCH_OPEN)
+        self.assertEqual(FRAME_HEADER.unpack_from(frame)[8:], (-52.25, -60.5))
 
 
 if __name__ == "__main__":

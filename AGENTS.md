@@ -12,18 +12,21 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--rtl-sdr`,
   `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
   background thread; interface files and the `/stream` WebSocket), `engine`
-  (reads a source, removes the DC offset, shares spectrum frames and the
-  source state with clients, passes their changes to the source; idle
-  without clients), `spectrum`
-  (display FFT with NumPy), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  (reads a source, removes the DC offset, shares spectrum frames, the source
+  state and the demodulation settings with clients, sends audio to those
+  that ask, passes their changes on; idle without clients), `spectrum`
+  (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
+  and overlap-save FFT filters that shift and resample), `demod` (one VFO:
+  channel level, squelch, NFM audio at 12 kHz), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, `RtlSdrSource` runs rtl_tcp itself while it
   connects; a lost server is a waiting state), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
-  build step. `stream.js` (stream client), `gl.js`, `spectrum-gl.js` and
-  `waterfall-gl.js` (WebGL2 views) and `bandplan.js` (band plan loader)
-  carry JSDoc types; `main.js` still holds the mockup's code under
+  build step. `stream.js` (stream client), `audio.js` and
+  `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
+  `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views) and `bandplan.js`
+  (band plan loader) carry JSDoc types; `main.js` still holds the mockup's code under
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
 - `docs/design/protocol.md`: the stream between engine and interface. Change

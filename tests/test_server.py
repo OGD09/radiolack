@@ -15,6 +15,7 @@ import aiohttp
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
+from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource
 
@@ -25,6 +26,8 @@ FILE_TYPES = {
 }
 # The band plan file main.js loads.
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
+# The audio worklet audio.js loads.
+WORKLET_URL = re.compile(r"^const WORKLET_URL = '([a-z0-9-]+\.js)';$", re.MULTILINE)
 # Static imports and re-exports of the interface's own modules.
 MODULE_IMPORT = re.compile(r"""^\s*(?:import|export)\b[^;'"]*?['"](\./[^'"]+)['"]""", re.MULTILINE)
 
@@ -130,6 +133,14 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(json.loads(body)["format"], 1)
 
+    def test_serves_the_audio_worklet_the_interface_loads(self):
+        name = WORKLET_URL.search(get(self.server, "/audio.js")[2].decode("utf-8")).group(1)
+        status, headers, body = get(self.server, f"/{name}")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], FILE_TYPES[".js"])
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn(b"registerProcessor(", body)
+
     def test_serves_nothing_outside_the_interface_files(self):
         paths = ("/server.py", "/../server.py", "/%2e%2e/server.py", "/..%2fserver.py",
                  "/web/main.js", "/MAIN.JS", "/main.js.map", "/missing.js", "/missing.json", "/index.html")
@@ -166,12 +177,19 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         """Open the stream: await the result, or use it with ``async with``."""
         return self.session.ws_connect(self.url, origin=origin, **kwargs)
 
-    async def test_sends_hello_then_the_source_state_then_spectrum_frames(self):
+    async def start(self, ws) -> None:
+        """Read the messages a stream starts with: hello, source state, settings."""
+        for kind in ("hello", "source", "demod"):
+            self.assertEqual((await ws.receive_json(timeout=5))["type"], kind)
+
+    async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 2})
-            self.assertEqual(PROTOCOL_VERSION, 2)
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 3})
+            self.assertEqual(PROTOCOL_VERSION, 3)
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
+            settings = await ws.receive_json(timeout=5)
+            self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
             for _ in range(3):
                 message = await ws.receive(timeout=5)
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
@@ -182,29 +200,71 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_refused_change_gets_an_error_for_its_sender_only(self):
         async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
             for ws in (sender, other):
-                await ws.receive_json(timeout=5)    # hello
-                await ws.receive_json(timeout=5)    # source state
+                await self.start(ws)
             await sender.send_json({"type": "source", "centre_hz": 433e6})
             self.assertEqual(await next_text(sender), {
-                "type": "error", "message": "the test source cannot change its settings"})
+                "type": "error", "command": "source", "message": "the test source cannot change its settings"})
             await self.assert_no_text(other)
+
+    async def test_a_demodulation_change_reaches_every_client_and_is_acknowledged(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "demod", "id": 5, "frequency_hz": 145_010_000})
+            for ws, acknowledged in ((sender, 5), (other, 0)):
+                state = await next_text(ws)
+                self.assertEqual((state["type"], state["frequency_hz"], state["acknowledged"]),
+                                 ("demod", 145_010_000.0, acknowledged))
+            await sender.send_json({"type": "demod", "id": 6, "mode": "WFM"})
+            state = await next_text(sender)
+            self.assertEqual((state["type"], state["mode"], state["acknowledged"]), ("demod", "NFM", 6))
+            error = await next_text(sender)
+            self.assertEqual((error["type"], error["command"]), ("error", "demod"))
+            await self.assert_no_text(other)
+
+    async def test_audio_flows_to_a_client_that_asks(self):
+        async with self.connect(self.origin) as ws:
+            await self.start(ws)
+            await ws.send_json({"type": "audio", "on": True})
+            while (message := await ws.receive(timeout=5)).data[0] != FRAME_KIND_AUDIO:
+                self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
+            kind, version, _, _, rate = AUDIO_HEADER.unpack_from(message.data)
+            self.assertEqual((kind, version, rate), (FRAME_KIND_AUDIO, AUDIO_VERSION, 12_000.0))
+            self.assertEqual((len(message.data) - AUDIO_HEADER.size) % 2, 0)
+            await ws.send_json({"type": "audio", "on": False})
+            await ws.send_str("[1]")    # its error marks the point after which audio stopped
+            self.assertEqual((await next_text(ws))["message"], "unknown command")
+            deadline = time.monotonic() + 0.3
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    message = await ws.receive(timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                self.assertNotEqual(message.data[0], FRAME_KIND_AUDIO)
 
     async def test_malformed_commands_get_an_error(self):
         commands = {
-            "not json": "a command must be a JSON object",
-            "[" * 60000: "a command must be a JSON object",
-            "[1]": "unknown command",
-            '{"type": "tune"}': "unknown command",
-            '{"type": "source", "volume": 3}': "the test source cannot change its settings",
+            "not json": (None, "a command must be a JSON object"),
+            "[" * 60000: (None, "a command must be a JSON object"),
+            "[1]": (None, "unknown command"),
+            '{"type": "tune"}': (None, "unknown command"),
+            '{"type": "source", "volume": 3}': ("source", "the test source cannot change its settings"),
+            '{"type": "demod", "volume": 3}': ("demod", "unknown demodulator setting: volume"),
+            '{"type": "demod", "id": 0, "mode": "AM"}': ("demod", "a change id must be a whole number from 1"),
+            '{"type": "demod", "id": 1.5}': ("demod", "a change id must be a whole number from 1"),
+            '{"type": "demod", "id": true}': ("demod", "a change id must be a whole number from 1"),
+            '{"type": "demod", "id": 9007199254740992}': ("demod", "a change id must be a whole number from 1"),
+            '{"type": "audio"}': ("audio", "audio must be turned on or off: true or false"),
+            '{"type": "audio", "on": 1}': ("audio", "audio must be turned on or off: true or false"),
+            '{"type": "audio", "on": true, "volume": 3}': ("audio", "unknown audio setting: volume"),
         }
         async with self.connect(self.origin) as ws:
-            await ws.receive_json(timeout=5)
-            await ws.receive_json(timeout=5)
+            await self.start(ws)
             await ws.send_bytes(b"ignored")
-            for command, error in commands.items():
+            for command, (kind, error) in commands.items():
                 with self.subTest(command=command[:20]):
                     await ws.send_str(command)
-                    self.assertEqual(await next_text(ws), {"type": "error", "message": error})
+                    self.assertEqual(await next_text(ws), {"type": "error", "command": kind, "message": error})
 
     async def assert_no_text(self, ws, duration: float = 0.3):
         """Only frames arrive on ``ws`` for a while."""

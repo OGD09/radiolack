@@ -1,9 +1,11 @@
 // @ts-nocheck -- code from the mockup; it gets JSDoc types as it is rewritten.
 /*
  * Radiolack web interface: spectrum and waterfall fed by the engine stream,
- * drawn with WebGL2, with the mockup's panels and interactions around them.
+ * drawn with WebGL2, the VFO's audio, and the mockup's panels and
+ * interactions around them.
  */
 import { EngineStream } from './stream.js';
+import { AudioOutput } from './audio.js';
 import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
@@ -25,7 +27,7 @@ const HIST_DB_STEP = 0.625;
 const HIST_ROWS = 1400;             // waterfall lines kept for re-rendering
 const S_ZERO = -104;                // S-meter bar range (mock calibration: S9 = -50 dB)
 const S_TOP = -10;
-const METER_FLOOR = -140;           // reading when the passband holds no signal or no bins
+const METER_FLOOR = -140;           // reading when the VFO's channel lies outside the received band
 const AXIS_H = 18;                  // frequency scale under the spectrum, CSS px (#spec-axis in style.css)
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
 const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
@@ -129,6 +131,7 @@ function passband() {
 let frameLin, avgLin, avgDb, peakDb, wfAcc, hist, histTime;
 let wfCount = 0, histHead = -1, histFilled = 0, avgPrimed = false, levelsPrimed = false, frameCounter = 0;
 let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
+let meterSqlDb = null;              // the squelch threshold in use, from the frames; null while unknown
 const autoWf = { min: -101, max: -57 };
 const floorSample = new Float32Array(1024);
 const PEAK_MERGE_HZ = 1500;         // detections closer than this update the same entry
@@ -160,11 +163,15 @@ function resetBuffers() {
 }
 
 // ------------------------------------------------------------------ engine stream
-// The display is the stream's only use for now: it closes while the page is
-// hidden, and the engine idles without clients.
+// The stream closes while the page is hidden, unless the audio plays, and
+// the engine idles without clients.
 let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
+let demodError = '';        // why the engine refused this interface's last demodulation change
+let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
+let audioState = 'off';     // audio.js AudioState
+let audioWanted = false;    // the engine sends this interface audio
 let pendingTune = null;     // { centre, previous, f, opts }: where the VFO goes once frames come from centre
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
@@ -179,6 +186,7 @@ function onFrame(frame) {
   }
   for (let i = 0; i < nb; i += 1) frameLin[i] = codeToLin[codes[i]];
   integrateFrame();
+  updateMeter(frame);
   frameCounter += 1;
   if (frameCounter % 3 === 0) estimateFloor();
   autoAdjust();
@@ -197,7 +205,7 @@ function setCapture(centre, rate, bins) {
     pendingTune = null;
     tune(pending.f, pending.opts);
   } else {
-    tune(S.vfo);
+    showVfo();          // the engine keeps the VFO inside the new span
   }
   syncSource();
   syncDisplay();
@@ -216,8 +224,13 @@ function countFrame(now) {
   if (rate !== frameRate) { frameRate = rate; updateStatus(); }
 }
 
+const audio = new AudioOutput((state) => {
+  audioState = state;
+  syncAudio();
+});
 const stream = new EngineStream({
   onFrame,
+  onAudio: (frame) => audio.play(frame),
   onSource: (state) => {
     source = state;
     sourceError = '';
@@ -226,19 +239,37 @@ const stream = new EngineStream({
     syncSource();
     updateStatus();
   },
-  onError: (message) => {
+  onDemod: applyDemod,
+  onError: (message, command) => {
+    if (command === 'demod' || command === 'audio') {
+      demodError = message;     // the engine's settings came back before the error
+      syncAudioNote();
+      return;
+    }
     sourceError = message;
     pendingTune = null;
     syncSource();       // the controls show the engine's settings again
   },
   onState: (state) => {
     streamState = state;
-    if (state !== 'open') { rateSince = 0; frameRate = 0; }
+    if (state !== 'open') { rateSince = 0; frameRate = 0; audio.reset(); }
     syncSource();
     updateStatus();
   },
 });
-function syncStream() { if (document.hidden) stream.stop(); else stream.start(); }
+function syncStream() { if (document.hidden && !audioWanted) stream.stop(); else stream.start(); }
+
+// The engine sends audio while this interface can play it with the volume up.
+function syncAudio() {
+  const wanted = audioState === 'running' && S.volume > 0;
+  if (wanted !== audioWanted) {
+    audioWanted = wanted;
+    if (!wanted) audio.reset();
+    stream.setAudio(wanted);
+    syncStream();
+  }
+  syncAudioNote();
+}
 
 function integrateFrame() {
   const nb = S.nb, a = avgPrimed ? S.avg : 0;
@@ -253,25 +284,15 @@ function integrateFrame() {
   }
   wfCount += 1;
   avgPrimed = true;
-  updateMeter();
 }
 
-function updateMeter() {
-  const [lo, hi] = passband();
-  const bin = binHz(), f0 = fStart();
-  const a = clamp(Math.floor((lo - f0) / bin), 0, S.nb);
-  const b = clamp(Math.ceil((hi - f0) / bin), 0, S.nb);
-  if (b <= a) {                     // passband outside the captured span
-    meterDb = METER_FLOOR;
-    sqlOpen = false;
-    return;
-  }
-  let p = 0;
-  for (let i = a; i < b; i += 1) p += frameLin[i];
-  const db = Math.max(METER_FLOOR, 10 * Math.log10(p + 1e-30));
+// The engine measures the VFO's channel: the meter follows its level, fast
+// up and slower down, and shows its squelch.
+function updateMeter(frame) {
+  const db = frame.levelDb === null ? METER_FLOOR : Math.max(METER_FLOOR, frame.levelDb);
   meterDb += (db - meterDb) * (db > meterDb ? 0.6 : 0.15);
-  if (S.sqlAuto) S.sql = Math.round(floorDb + 10 * Math.log10(Math.max(1, b - a)) + 8);
-  sqlOpen = meterDb > S.sql;
+  meterSqlDb = frame.squelchDb;
+  sqlOpen = frame.squelchOpen;
 }
 
 // Noise floor: median level of the central bins. The first estimate also
@@ -614,13 +635,22 @@ function sUnits(db) {
   return `S9+${Math.floor(over / 10) * 10}`;
 }
 
-let lastMeterText = 0;
+let lastMeterText = 0, shownFill = '', shownOpen = null, shownSql;
 function updateMeterUi(ts) {
-  const frac = clamp((meterDb - S_ZERO) / (S_TOP - S_ZERO), 0, 1);
-  meterFill.style.transform = `scaleX(${frac})`;
-  meterFill.classList.toggle('open', sqlOpen);
-  meterSql.style.left = `${clamp((S.sql - S_ZERO) / (S_TOP - S_ZERO), 0, 1) * 100}%`;
-  vfoEl.classList.toggle('open', sqlOpen);
+  // Written only when they change: in WebKitGTK, rewriting a style still repaints.
+  const fill = `scaleX(${clamp((meterDb - S_ZERO) / (S_TOP - S_ZERO), 0, 1).toFixed(3)})`;
+  if (fill !== shownFill) { shownFill = fill; meterFill.style.transform = fill; }
+  if (sqlOpen !== shownOpen) {
+    shownOpen = sqlOpen;
+    meterFill.classList.toggle('open', sqlOpen);
+    vfoEl.classList.toggle('open', sqlOpen);
+  }
+  const sql = meterSqlDb === null ? null : `${(clamp((meterSqlDb - S_ZERO) / (S_TOP - S_ZERO), 0, 1) * 100).toFixed(1)}%`;
+  if (sql !== shownSql) {
+    shownSql = sql;
+    meterSql.hidden = sql === null;
+    if (sql !== null) meterSql.style.left = sql;
+  }
   if (ts - lastMeterText > 120) {
     lastMeterText = ts;
     const text = `${sUnits(meterDb)} · ${Math.round(meterDb)} dB`, el = $('#s-text');
@@ -768,42 +798,79 @@ function zoomToSegment(seg) {
 }
 
 // ------------------------------------------------------------------ tuning
+// The VFO, mode, filter width and squelch are the engine's, shared by every
+// interface: a change made here shows at once and goes to the engine, and
+// the engine's settings show as they come, from any interface.
 let lastSeg;
 function applyMode(mode) {
   if (!MODES[mode]) return;
   S.mode = mode;
   S.bw = MODES[mode].bw;
 }
+const demodSnapshot = () => ({ vfo: S.vfo, mode: S.mode, bw: S.bw, sql: S.sql, sqlAuto: S.sqlAuto });
+// Send the engine the settings changed since `before`.
+function sendDemod(before) {
+  const changes = {};
+  if (S.vfo !== before.vfo) changes.frequencyHz = S.vfo;
+  if (S.mode !== before.mode) changes.mode = S.mode;
+  if (S.bw !== before.bw) changes.bandwidthHz = S.bw;
+  if (S.sql !== before.sql) changes.squelchDb = S.sql;
+  if (S.sqlAuto !== before.sqlAuto) changes.squelchAuto = S.sqlAuto;
+  if (Object.keys(changes).length) stream.sendDemod(changes);
+}
+// Show the VFO's settings, bringing the VFO into view unless keepView.
+function showVfo(keepView = false) {
+  if (!keepView && (S.vfo < view.f0 || S.vfo > view.f1)) {
+    const span = view.f1 - view.f0;
+    setView(S.vfo - span / 2, S.vfo + span / 2);
+  }
+  updateOverlays();
+  syncDemod();
+}
 // The VFO stays within the span the engine captures; tuneAnywhere asks for another span.
 function tune(f, opts = {}) {
   if (!Number.isFinite(f)) return;
+  const before = demodSnapshot();
   f = clamp(Math.round(f), Math.ceil(fStart()), Math.floor(fEnd()));
   const seg = segmentAt(f);
   if (opts.mode) applyMode(opts.mode);
   else if (S.autoMode && seg && seg !== lastSeg && seg.mode && seg.mode !== S.mode) applyMode(seg.mode);
   lastSeg = seg;
   S.vfo = f;
-  if (!opts.keepView && (f < view.f0 || f > view.f1)) {
-    const span = view.f1 - view.f0;
-    setView(f - span / 2, f + span / 2);
-  }
-  updateOverlays();
-  syncDemod();
+  sendDemod(before);
+  showVfo(opts.keepView);
 }
 function stepTune(dir, mult = 1) {
   userTune();
   tune(snapAt(S.vfo) + dir * stepAt(S.vfo) * mult);
 }
 function setMode(mode) {
+  const before = demodSnapshot();
   applyMode(mode);
-  syncDemod();
-  updateOverlays();
+  sendDemod(before);
+  showVfo(true);
 }
 function setBandwidth(bw) {
+  const before = demodSnapshot();
   const m = MODES[S.mode];
   S.bw = clamp(Math.round(bw / m.step) * m.step, m.min, m.max);
-  syncDemod();
-  updateOverlays();
+  sendDemod(before);
+  showVfo(true);
+}
+// The engine's settings, after a change from any interface. The band plan's
+// mode applies only when the user tunes into another range.
+function applyDemod(state) {
+  if (!MODES[state.mode]) return;
+  S.vfo = state.frequencyHz;
+  S.mode = state.mode;
+  S.bw = state.bandwidthHz;
+  S.sql = state.squelchDb;
+  S.sqlAuto = state.squelchAuto;
+  audioModes = state.audioModes;
+  demodError = '';
+  lastSeg = segmentAt(S.vfo);
+  showVfo();
+  syncAudioNote();
 }
 
 // ------------------------------------------------------------------ scanners
@@ -1093,17 +1160,46 @@ function syncDemod() {
   $('#dm-step').value = S.step;
   syncSql();
 }
+// The threshold set by hand, or the automatic one in use. Also refreshed
+// while the panel is open: only what changed is written.
 function syncSql() {
-  sqlEl.value = String(S.sql);
-  sqlEl.disabled = S.sqlAuto;
-  $('#dm-sql-v').textContent = fmtDb(S.sql);
+  const autoEl = $('#dm-sql-auto'), out = $('#dm-sql-v');
+  const db = S.sqlAuto ? meterSqlDb : S.sql;
+  if (autoEl.checked !== S.sqlAuto) autoEl.checked = S.sqlAuto;
+  if (sqlEl.disabled !== S.sqlAuto) sqlEl.disabled = S.sqlAuto;
+  if (db !== null && sqlEl.value !== String(Math.round(db))) sqlEl.value = String(Math.round(db));
+  const text = db === null ? '—' : fmtDb(db);
+  if (out.textContent !== text) out.textContent = text;
+}
+// Why this interface plays nothing, if it does not.
+function syncAudioNote() {
+  let text = '';
+  if (demodError) text = `Change refused: ${demodError}.`;
+  else if (!audioModes.includes(S.mode)) text = `${S.mode} is not demodulated yet: only ${audioModes.join(' and ')} plays.`;
+  else if (audioState === 'blocked') text = 'Audio starts with a click or a key press on the page.';
+  else if (audioState === 'failed') text = 'Audio cannot play in this browser.';
+  const el = $('#dm-audio-note');
+  if (el.textContent !== text) el.textContent = text;
+  el.hidden = !text;
 }
 for (const b of $$('#mode-group button')) b.addEventListener('click', () => setMode(b.dataset.mode));
 bindCheck('dm-auto', 'autoMode');
 bwEl.addEventListener('input', () => setBandwidth(Number(bwEl.value)));
 $('#dm-step').addEventListener('change', (e) => { S.step = e.target.value; updateMeta(); });
-bindCheck('dm-sql-auto', 'sqlAuto', syncSql);
-sqlEl.addEventListener('input', () => { S.sql = Number(sqlEl.value); $('#dm-sql-v').textContent = fmtDb(S.sql); });
+$('#dm-sql-auto').addEventListener('change', (e) => {
+  const before = demodSnapshot();
+  S.sqlAuto = e.target.checked;
+  // By hand, the threshold starts where the automatic one stood.
+  if (!S.sqlAuto && meterSqlDb !== null) S.sql = clamp(Math.round(meterSqlDb), Number(sqlEl.min), Number(sqlEl.max));
+  sendDemod(before);
+  syncSql();
+});
+sqlEl.addEventListener('input', () => {
+  const before = demodSnapshot();
+  S.sql = Number(sqlEl.value);
+  sendDemod(before);
+  syncSql();
+});
 $('#dm-ctcss').value = S.ctcss;
 $('#dm-ctcss').addEventListener('change', (e) => { S.ctcss = e.target.value; });
 $('#dm-agc').value = S.agc;
@@ -1111,7 +1207,10 @@ $('#dm-agc').addEventListener('change', (e) => { S.agc = e.target.value; });
 bindCheck('dm-nr', 'nr');
 bindCheck('dm-notch', 'notch');
 bindCheck('dm-nb', 'blanker');
-bindRange('dm-vol', 'volume', (v) => `${v}%`);
+bindRange('dm-vol', 'volume', (v) => `${v}%`, () => {
+  audio.setVolume(S.volume / 100);
+  syncAudio();
+});
 
 // Display
 const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` : v < 0.75 ? `medium (${v.toFixed(2)})` : `strong (${v.toFixed(2)})`);
@@ -1191,7 +1290,8 @@ function loadPlan() {
     planState = 'failed';
   }).then(() => {
     renderPlanList();
-    tune(S.vfo, { keepView: true });    // the VFO's range gives its mode and step now
+    lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
+    updateOverlays();
   });
 }
 function renderBookmarks() {
@@ -1657,10 +1757,12 @@ renderBookmarks();
 renderMemList();
 syncScanTabs();
 updateStatus();
-tune(S.vfo);
+showVfo();
 syncPointerMode();
 poke();
 setTimeout(() => hintEl.classList.add('gone'), 9000);
 document.addEventListener('visibilitychange', syncStream);
 syncStream();
+audio.setVolume(S.volume / 100);
+audio.start();
 requestAnimationFrame(loop);

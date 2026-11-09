@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import time
 import unittest
 from collections.abc import Iterator
 
@@ -24,6 +25,8 @@ ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 BROWSERS = ("chromium", "firefox", "webkit")
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
 SOURCE_PANEL = '#toolbar button[data-panel="source"]'
+DEMOD_PANEL = '#toolbar button[data-panel="demod"]'
+AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 # WebKit 27.2 (Playwright 1.64) refuses its own stylesheet for every <select>
 # under the interface's style-src 'self': a WebKit bug without visible effect,
@@ -64,8 +67,11 @@ class BrowserTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def interfaces(self, browser: str, url: str, count: int) -> Iterator[list[Page]]:
-        """``count`` interfaces at ``url``, each with the Source panel open."""
+        """``count`` interfaces at ``url``, each with the Source panel open:
+        a click, which lets the audio start. ``self.audio[page]`` counts the
+        audio frames each one receives."""
         errors: list[str] = []
+        self.audio: dict[Page, list[int]] = {}
 
         def console(message) -> None:
             if message.type != "error":
@@ -81,6 +87,11 @@ class BrowserTest(unittest.TestCase):
                 stack.callback(context.close)
                 page = context.new_page()
                 page.set_default_timeout(TIMEOUT_MS)
+                self.audio[page] = received = []
+                page.on("websocket", lambda socket, received=received: socket.on(
+                    "framereceived",
+                    lambda payload: received.append(1) if isinstance(payload, bytes) and payload[:1] == bytes(
+                        [AUDIO_FRAME]) else None))
                 page.on("console", console)
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(url)
@@ -113,6 +124,29 @@ class BrowserTest(unittest.TestCase):
                 expect(second.locator("#src-dc")).not_to_be_checked()
                 second.locator("#src-dc").check()
                 expect(first.locator("#src-dc")).to_be_checked()
+
+    def wait_for_audio(self, page: Page, frames: int = 3) -> None:
+        deadline = time.monotonic() + TIMEOUT_MS / 1000
+        while len(self.audio[page]) < frames:
+            self.assertLess(time.monotonic(), deadline, "no audio arrived")
+            page.wait_for_timeout(100)      # lets Playwright deliver the page's events
+
+    def test_audio_starts_with_a_click_and_the_vfo_is_shared(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.wait_for_audio(page)
+                    expect(page.locator("#m-mode")).to_have_text("NFM")
+                first.locator(DEMOD_PANEL).click()
+                first.locator('#mode-group button[data-mode="AM"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("AM")
+                    expect(page.locator("#m-bw")).to_have_text("8 kHz")
+                expect(first.locator("#dm-audio-note")).to_have_text("AM is not demodulated yet: only NFM plays.")
+                first.locator('#mode-group button[data-mode="NFM"]').click()
+                expect(second.locator("#m-mode")).to_have_text("NFM")
+                expect(first.locator("#dm-audio-note")).to_be_hidden()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_frequency_correction_is_whole_and_shared(self):

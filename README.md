@@ -14,9 +14,10 @@ simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
 spectrum and the waterfall with WebGL2. The Source panel sets the receiver's
 centre frequency, sample rate, gain and frequency correction, and turns the
-removal of the DC spike on or off; antenna power comes next. Nothing is
-demodulated yet, so there is no audio,
-and levels are in dBFS, so the S-meter is not calibrated. Bookmarks and
+removal of the DC spike on or off; antenna power comes next. The engine
+demodulates NFM and the interface plays its audio; AM, USB, LSB and CW are
+not demodulated yet, nor are the Demod panel's CTCSS and processing settings
+applied. Levels are in dBFS, so the S-meter is not calibrated. Bookmarks and
 settings are not saved yet, and the remote access switch is only the
 mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
 milestones and the decisions are in
@@ -84,12 +85,14 @@ answers only requests addressed to 127.0.0.1 or localhost, which keeps web
 pages from reaching it through DNS rebinding. The desktop window stays on the
 interface: it opens no other page and no new window.
 
-The interface receives the spectrum and the receiver state from the engine,
-and sends its changes, over a WebSocket on the same address
+The interface receives the spectrum, the audio, the receiver state and the
+demodulation settings from the engine, and sends its changes, over a
+WebSocket on the same address
 ([docs/design/protocol.md](docs/design/protocol.md)), which the server
 accepts only from the interface's own origin. The engine computes nothing
 while no interface is connected, and the interface closes its stream while
-its page is hidden, in a background browser tab for instance.
+its page is hidden, in a background browser tab for instance, unless it
+plays audio.
 
 Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
 the port cannot be used or when `--rtl-sdr` finds no rtl_tcp installed, 2
@@ -171,6 +174,28 @@ With either option:
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
   Fitipower FC0012 and FC0013, FCI FC2580. HF through direct sampling or an
   upconverter and antenna power (bias-T) are not supported yet.
+
+## Demodulation and audio
+
+The engine demodulates one VFO, which every interface shows: a click on the
+spectrum, the wheel, the keyboard or a bookmark tunes it, and a change made
+in one interface shows in the others, the last change winning. The Demod
+panel sets the mode, the filter width and the squelch. NFM is the only mode
+demodulated so far; in the others the S-meter still measures the channel,
+but the audio is silent. NFM audio is de-emphasized, its CTCSS tone is
+removed and its band stops at 3.5 kHz.
+
+The squelch is automatic by default: it opens 8 dB above the noise around
+the VFO, which the engine estimates from the spectrum, and closes 3 dB
+lower. Unticking "Automatic" sets the threshold by hand, starting from where
+the automatic one stood. The S-meter shows the channel's level in dBFS and
+the threshold, and its bar changes colour while the squelch is open.
+
+Each interface plays the audio itself, at its own volume, about a quarter of
+a second after the antenna; at volume 0 it receives none. The desktop window
+plays it as soon as it opens. A web browser may hold it until the first
+click or key press on the page, and the Demod panel then says so. Nothing is
+recorded.
 
 ## Band plan
 
@@ -264,10 +289,13 @@ Radiolack, a Gqrx-driven explorer of the VHF airband. Its personal data in
 src/radiolack/
   cli.py        command line
   server.py     local web server (aiohttp): interface files and the stream
-  engine.py     reads a source, removes its DC offset and shares spectrum
-                frames with the interfaces
+  engine.py     reads a source, removes its DC offset, shares spectrum
+                frames and the demodulation settings with the interfaces,
+                and sends audio to those that ask
+  demod.py      one VFO: channel level, squelch and NFM audio
+  dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you
-  spectrum.py   display FFT
+  spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
   window.py     desktop window (GTK 3 and WebKitGTK)
   web/          interface: ES modules served as they are, no build step

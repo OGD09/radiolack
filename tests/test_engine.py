@@ -1,16 +1,19 @@
-"""Tests for the engine: frames and source state for every client, idle
-without clients, changes passed to the source, DC removal, clean stop."""
+"""Tests for the engine: frames, source state and demodulation settings for
+every client, audio for the clients that ask, idle without clients, changes
+passed to the source, DC removal, clean stop."""
 
 import asyncio
 import unittest
 
 import numpy as np
 
+from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack.engine import Engine, Subscription
-from radiolack.spectrum import FRAME_HEADER
+from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
+FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 
 
 async def next_message(subscription: Subscription):
@@ -26,8 +29,12 @@ async def next_frame(subscription: Subscription) -> bytes | None:
 
 def level_db(frame: bytes, index: int) -> float:
     """The level of bin ``index`` of a frame, in dBFS."""
-    *_, db_min, db_step = FRAME_HEADER.unpack_from(frame)
+    db_min, db_step = FRAME_HEADER.unpack_from(frame)[6:8]
     return db_min + frame[FRAME_HEADER.size + index] * db_step
+
+
+def is_audio(message) -> bool:
+    return isinstance(message, bytes) and message[0] == FRAME_KIND_AUDIO
 
 
 def waiting(subscription: Subscription) -> list:
@@ -62,13 +69,18 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.assertEqual(self.source.reads, reads)
 
-    async def test_a_new_client_first_gets_the_source_state(self):
+    async def test_a_new_client_first_gets_the_source_state_then_the_settings(self):
         subscription = self.engine.subscribe()
         self.assertEqual(subscription.get_nowait(), {
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
             "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
             "dc_removal": True, "settable": ["dc_removal"],
+        })
+        self.assertEqual(subscription.get_nowait(), {
+            "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
+            "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "modes": list(MODES),
+            "audio_modes": ["NFM"], "acknowledged": 0,
         })
         self.assertIsInstance(await next_message(subscription), bytes)
 
@@ -78,7 +90,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             sequences = []
             for _ in range(3):
                 frame = await next_frame(subscription)
-                _, _, _, sequence, centre, rate, db_min, db_step = FRAME_HEADER.unpack_from(frame)
+                kind, version, _, sequence, centre, rate, db_min, db_step, *_ = FRAME_HEADER.unpack_from(frame)
+                self.assertEqual((kind, version), (FRAME_KIND_SPECTRUM, 2))
                 sequences.append(sequence)
                 self.assertEqual((centre, rate), (FAKE_CENTRE_HZ, FAKE_RATE_HZ))
                 codes = np.frombuffer(frame, np.uint8, offset=FRAME_HEADER.size)
@@ -90,6 +103,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_slow_client_keeps_only_the_latest_frames(self):
         subscription = self.engine.subscribe()
         self.assertEqual(subscription.get_nowait()["type"], "source")
+        self.assertEqual(subscription.get_nowait()["type"], "demod")
         while self.source.reads < 12:
             await asyncio.sleep(0.01)
         frames = waiting(subscription)
@@ -133,7 +147,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_refused_change_changes_nothing(self):
         subscription = self.engine.subscribe()
-        subscription.get_nowait()
+        waiting(subscription)
         refused = (
             ({"dc_removal": "off"}, "DC removal must be true or false"),
             ({"dc_removal": None}, "DC removal must be true or false"),
@@ -155,6 +169,83 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await next_message(self.engine.subscribe()))
         self.assertTrue(self.source.closed)
         await asyncio.wait_for(self.engine.wait_closed(), timeout=5)
+
+
+class DemodulationTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.source = FakeSource()
+        self.engine = Engine(self.source)
+        self.task = asyncio.ensure_future(self.engine.run())
+
+    async def asyncTearDown(self):
+        self.engine.close()
+        await asyncio.wait_for(self.task, timeout=5)
+
+    async def test_a_change_reaches_every_client_and_is_acknowledged_to_its_sender(self):
+        sender, other = self.engine.subscribe(), self.engine.subscribe()
+        waiting(sender), waiting(other)
+        self.engine.configure_demod({"frequency_hz": 145_010_000, "bandwidth_hz": 12_500}, sender, 7)
+        for subscription, acknowledged in ((sender, 7), (other, 0)):
+            state = subscription.get_nowait()
+            self.assertEqual((state["type"], state["frequency_hz"], state["bandwidth_hz"], state["acknowledged"]),
+                             ("demod", 145_010_000.0, 12_500.0, acknowledged))
+        # Later states tell the sender the same acknowledgement.
+        self.engine.configure_demod({"squelch_auto": False})
+        self.assertEqual(sender.get_nowait()["acknowledged"], 7)
+
+    async def test_a_refused_change_changes_nothing_but_is_acknowledged(self):
+        sender, other = self.engine.subscribe(), self.engine.subscribe()
+        waiting(sender), waiting(other)
+        with self.assertRaisesRegex(ValueError, "the mode must be one of"):
+            self.engine.configure_demod({"bandwidth_hz": 6_000, "mode": "WFM"}, sender, 3)
+        state = sender.get_nowait()
+        self.assertEqual((state["mode"], state["bandwidth_hz"], state["acknowledged"]), ("NFM", 10_000.0, 3))
+        self.assertFalse(any(isinstance(message, dict) for message in waiting(other)))
+
+    async def test_frames_carry_the_channel_level_and_squelch(self):
+        subscription = self.engine.subscribe()
+        for threshold, is_open in ((-30.0, True), (-10.0, False)):
+            with self.subTest(threshold=threshold):
+                self.engine.configure_demod({"frequency_hz": FAKE_TONE_HZ, "squelch_auto": False,
+                                             "squelch_db": threshold})
+                for _ in range(20):     # frames computed before the change come first
+                    if FRAME_HEADER.unpack_from(await next_frame(subscription))[9] == threshold:
+                        break
+                # The next frame, clear of the filters' response to the new VFO.
+                _, _, flags, *_, level, squelch = FRAME_HEADER.unpack_from(await next_frame(subscription))
+                self.assertEqual(squelch, threshold)
+                self.assertAlmostEqual(level, -20.0, delta=0.1)
+                self.assertEqual(bool(flags & FLAG_SQUELCH_OPEN), is_open)
+
+    async def test_audio_goes_only_to_the_clients_that_ask(self):
+        listener, other = self.engine.subscribe(), self.engine.subscribe()
+        self.engine.set_audio(listener, True)
+        frames = []
+        while len(frames) < 5:
+            message = await next_message(listener)
+            if is_audio(message):
+                frames.append(message)
+        position = None
+        for frame in frames:
+            kind, version, _, start, rate = AUDIO_HEADER.unpack_from(frame)
+            self.assertEqual((kind, version, rate), (FRAME_KIND_AUDIO, AUDIO_VERSION, 12_000.0))
+            if position is not None:
+                self.assertEqual(start, position)
+            position = start + (len(frame) - AUDIO_HEADER.size) // 2
+        self.assertFalse(any(is_audio(message) for message in waiting(other)))
+        self.engine.set_audio(listener, False)
+        reads = self.source.reads
+        while self.source.reads < reads + 3:
+            await asyncio.sleep(0.01)
+        self.assertFalse(any(is_audio(message) for message in waiting(listener)))
+
+    async def test_a_new_span_brings_the_vfo_inside_it(self):
+        subscription = self.engine.subscribe()
+        await next_frame(subscription)
+        self.source.centre_hz = 146_000_000.0
+        while not isinstance(message := await next_message(subscription), dict) or message["type"] != "demod":
+            pass
+        self.assertEqual(message["frequency_hz"], 146_000_000.0 - FAKE_RATE_HZ / 2)
 
 
 class DcRemovalTest(unittest.IsolatedAsyncioTestCase):
@@ -197,7 +288,7 @@ class EngineSourceTest(unittest.IsolatedAsyncioTestCase):
         subscription = engine.subscribe()
         with self.assertLogs("radiolack.engine", "ERROR") as logs:
             await asyncio.wait_for(engine.run(), timeout=5)
-        self.assertIn("the display engine stopped", logs.output[0])
+        self.assertIn("the engine stopped", logs.output[0])
         frames = []
         while (frame := await next_frame(subscription)) is not None:
             frames.append(frame)

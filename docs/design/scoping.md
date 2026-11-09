@@ -362,7 +362,31 @@ These costs wait for v4:
   WebGL2: without a GPU it refuses Mesa's software renderer and needs a
   display, so the tests set its `webgl.force-enabled` preference and the
   workflow runs them under Xvfb, as checked locally with the GPU hidden.
-- Next step: demodulation and audio on the computer, starting with NFM.
+- NFM and audio on the computer, 2026-11-09: the engine demodulates one VFO
+  (protocol version 3). Overlap-save FFT filters shift the VFO to 0 Hz and
+  bring the rate to 48 kHz, exactly for the usual receiver rates (2.4 MS/s
+  by 1/50, 2.048 MS/s by 3/128), then keep the mode's channel, whose power
+  each spectrum frame carries with the squelch's state. NFM goes through a
+  discriminator, a 750 µs de-emphasis, a high-pass filter against CTCSS
+  tones and a 3.5 kHz low-pass filter, to 16-bit PCM at 12 kHz for the
+  interfaces that ask. The squelch, automatic (8 dB above the noise that the
+  spectrum shows around the VFO) or set by hand, gates the discriminator's
+  output with a 10 ms look-ahead and 5 ms fades: gating after the long audio
+  filter let a burst of noise through at each close. The interface plays the
+  audio with an AudioWorklet that keeps about 150 ms buffered, follows the
+  engine's clock within 0.5% and resamples with a 16-tap windowed sinc
+  (images below -89 dB). The VFO, mode, filter width and squelch are shared
+  by every interface; the volume is each interface's own. In the native
+  window the audio starts by itself; browsers start it on the first click or
+  key press. On the owner's laptop (i7-7500U, other programs busy) the
+  channel takes 1.8 ms per block of 1/30 s at 2.4 MS/s, 2.2 ms with the
+  audio, about 6% of one core; the engine's process measured 38 to 44% of
+  one core with the synthetic band, against 31 to 38% before. Raising
+  glibc's mmap and trim thresholds made no measurable difference, so
+  Radiolack leaves the allocator alone. Tested on synthetic I/Q, through the
+  engine and the server, in three browsers and in the native window; not
+  yet with a receiver.
+- Next step: AM, USB, LSB and CW audio.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.
