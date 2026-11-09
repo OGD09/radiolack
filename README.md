@@ -198,17 +198,42 @@ python3 -m pytest
 PYTHONPATH=src python3 -m unittest discover -s tests -t .
 ```
 
-The tests need no receiver and open no window or browser; their servers
-listen on ephemeral ports. GitHub Actions runs them against the installed
-package on Python 3.11 and 3.15.
+The tests need no receiver and open no window or browser (the browser tests
+below run only on request); their servers listen on ephemeral ports. GitHub
+Actions runs them against the installed package on Python 3.11 and 3.15.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
-without producing any file. The check needs Node.js, downloads TypeScript on
-its first run and does not run in CI yet:
+without producing any file. The check needs Node.js and downloads TypeScript
+on its first run:
 
 ```bash
 npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 ```
+
+The browser tests drive the interface in headless Chromium, Firefox and
+WebKit through Playwright, against the simulated band and the fake rtl_tcp
+program: the stream, the Source panel, and a change made in one interface
+showing in another. They launch browsers, so they run only when
+`RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
+pins Playwright's version, in the virtual environment of
+[Installation](#installation), and Playwright's browsers: about 900 MB in
+`~/.cache/ms-playwright`. On a system that lacks their libraries,
+`.venv/bin/python -m playwright install-deps` installs them, with sudo.
+
+```bash
+.venv/bin/pip install -e ".[browser]"
+```
+
+```bash
+.venv/bin/python -m playwright install --only-shell chromium firefox webkit
+```
+
+```bash
+RADIOLACK_BROWSER_TESTS=1 .venv/bin/python -m unittest tests.test_browser -v
+```
+
+A second GitHub Actions workflow runs the type check and the browser tests
+when the package, the tests or `pyproject.toml` change.
 
 ## Documentation
 

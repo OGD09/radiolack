@@ -36,6 +36,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-09 | UI code: plain JavaScript ES modules served as they are, with no build step. Types are written in JSDoc comments and checked by TypeScript; only that check needs Node. Revisit if the UI needs a framework or npm libraries. |
 | 2026-11-09 | English only: code, identifiers, comments, documentation and the interface. No other language and no translation layer; this replaces the English and French interface planned on 2026-11-08. |
 | 2026-11-09 | All frequencies: Radiolack tunes and labels the whole range of its receivers, not only the amateur bands. The band plan covers 9 kHz to 6.425 GHz with a simplified European table (ITU Region 1 allocations named by their main use) and simplified IARU Region 1 plans inside the amateur bands ([`band-plan.md`](band-plan.md)). This replaces "for the amateur bands" (2026-11-08) and answers the open question on tuning. |
+| 2026-11-09 | Browser tests (Playwright: Chromium, Firefox and WebKit) run headless and only on request (`RADIOLACK_BROWSER_TESTS=1`), as CI does; the usual test commands launch no browser. |
 
 ## Scope
 
@@ -349,7 +350,17 @@ These costs wait for v4:
   by every interface: it takes each block's mean off the samples before the
   FFT, which also removes a signal exactly on the centre frequency, and will
   apply to demodulation too. Tested with the fakes; not yet with a receiver.
-- Next step: the type check and browser tests in CI.
+- Type check and browser tests in CI, 2026-11-09: a second workflow, which
+  runs only when the package, the tests or `pyproject.toml` change, checks
+  the interface's types and runs Playwright tests in headless Chromium,
+  Firefox and WebKit against the simulated band and the fake rtl_tcp
+  program: the stream, the Source panel, and a change made in one interface
+  showing in another. WebKit 27.2 refuses its own stylesheet for each
+  `<select>` under the interface's policy, without visible effect
+  (WebKitGTK 2.50 does not): the tests ignore that one message in WebKit.
+  Run locally, also with software rendering as on a runner without a GPU;
+  not yet on GitHub, where `rewrite` has not been pushed.
+- Next step: demodulation and audio on the computer, starting with NFM.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.

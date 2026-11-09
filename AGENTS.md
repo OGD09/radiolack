@@ -30,17 +30,24 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   it with the engine, the server and `stream.js`, and raise the protocol
   version for any incompatible change.
 - `tests/`: unittest tests without hardware; pytest runs them too.
+  `test_browser.py` drives the interface in headless browsers, on request.
 
 ## Commands
 
 - Tests: `python3 -m pytest` or `PYTHONPATH=src python3 -m unittest discover -s tests -t .`
 - Type check of the interface: `npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json`
-  (needs Node.js; not run by CI yet).
+  (needs Node.js).
+- Browser tests: `RADIOLACK_BROWSER_TESTS=1 python3 -m unittest tests.test_browser -v`,
+  with the `browser` extra (Playwright, pinned in pyproject.toml) and its
+  browsers installed (README.md, Tests).
 - Run without installing: `PYTHONPATH=src python3 -m radiolack` (window) or
   `--ui none` (address only).
-- CI: `.github/workflows/tests.yml` (GitHub Actions) runs the unittest
-  command against the installed package on Python 3.11 and 3.15; keep its job
-  and step timeouts and its concurrency cancellation.
+- CI (GitHub Actions): `.github/workflows/tests.yml` runs the unittest
+  command against the installed package on Python 3.11 and 3.15;
+  `.github/workflows/interface.yml` runs the type check and the browser tests
+  when the package, the tests or pyproject.toml change. Keep their job and
+  step timeouts, their concurrency cancellation and the path filters. The
+  TypeScript version appears in interface.yml, README.md and here.
 
 ## Safety rules (non-negotiable)
 
@@ -55,7 +62,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,
-  7356 or 8443), and never open a window or a browser.
+  7356 or 8443), and never open a window. Only `tests/test_browser.py`
+  launches browsers: headless, and only when `RADIOLACK_BROWSER_TESTS=1` is
+  set, as in CI.
 - The server listens on 127.0.0.1 only. Listening on other interfaces belongs
   to remote access (v1): off by default, HTTPS and access code, never turned
   on implicitly.
