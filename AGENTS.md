@@ -54,8 +54,10 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   command against the installed package on Python 3.11 and 3.15;
   `.github/workflows/interface.yml` runs the type check and the browser tests
   when the package, the tests or pyproject.toml change. Keep their job and
-  step timeouts, their concurrency cancellation and the path filters. The
-  TypeScript version appears in interface.yml, README.md and here.
+  step timeouts, their concurrency cancellation, the path filters and the
+  cache of the browsers' system packages (the runners' Ubuntu mirror is at
+  times too slow for them). The TypeScript version appears in
+  interface.yml, README.md and here.
 
 ## Safety rules (non-negotiable)
 

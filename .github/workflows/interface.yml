@@ -82,18 +82,43 @@ jobs:
         timeout-minutes: 5
         run: python -m playwright install --only-shell chromium firefox webkit
 
+      # The runners' Ubuntu mirror is at times very slow (about 100 kB/s,
+      # while the other downloads run at full speed): its 139 MB of packages
+      # then outlast the step below. So the packages are cached, one set per
+      # runner image, and a newer image starts from the previous set.
+      - name: Name the runner image
+        id: image
+        timeout-minutes: 1
+        run: |
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-${{ steps.image.outputs.os }}-${{ steps.image.outputs.version }}-${{ hashFiles('pyproject.toml', '.github/workflows/interface.yml') }}
+          restore-keys: apt-${{ steps.image.outputs.os }}-
+
       # Xvfb gives headless Firefox the display it needs for WebGL2 on a
       # runner without a GPU (FIREFOX_PREFS in tests/test_browser.py), and
       # PulseAudio the sound output it needs for audio on a runner without a
-      # sound card.
+      # sound card. apt takes the cached packages instead of downloading
+      # them, then the current ones are kept for the next runs.
       - name: Install the browsers' system libraries, Xvfb and PulseAudio
         timeout-minutes: 5
         env:
           DEBIAN_FRONTEND: noninteractive
           NEEDRESTART_MODE: a
         run: |
+          mkdir -p ~/apt-archives
+          sudo find ~/apt-archives -name '*.deb' -exec cp -t /var/cache/apt/archives {} +
           python -m playwright install-deps chromium firefox webkit
           sudo -E apt-get install -y --no-install-recommends xvfb xauth pulseaudio
+          sudo apt-get autoclean
+          rm -rf ~/apt-archives
+          mkdir ~/apt-archives
+          find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -t ~/apt-archives {} +
+          echo "$(ls ~/apt-archives | wc -l) packages kept for the next runs"
 
       # Only a null sink, a silent output paced like a sound card: without a
       # sound server, Firefox keeps the interface's audio context suspended.
