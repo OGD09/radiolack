@@ -88,7 +88,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.get_nowait(), {
             "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
             "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "modes": list(MODES),
-            "audio_modes": ["NFM"], "acknowledged": 0,
+            "audio_modes": list(MODES), "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})

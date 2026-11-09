@@ -151,10 +151,9 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#m-mode")).to_have_text("AM")
                     expect(page.locator("#m-bw")).to_have_text("8 kHz")
-                expect(first.locator("#dm-audio-note")).to_have_text("AM is not demodulated yet: only NFM plays.")
+                expect(first.locator("#dm-audio-note")).to_be_hidden()     # AM plays too
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
-                expect(first.locator("#dm-audio-note")).to_be_hidden()
 
     def test_bookmarks_are_shared(self):
         for browser in BROWSERS:

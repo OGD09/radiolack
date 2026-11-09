@@ -20,7 +20,7 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   aside), `bookmarks` (bookmarks and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:
-  channel level, squelch, NFM audio at 12 kHz), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, `RtlSdrSource` runs rtl_tcp itself while it
   connects; a lost server is a waiting state), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread

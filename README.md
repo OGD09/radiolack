@@ -15,9 +15,9 @@ engine computes the spectrum and streams it to the interface, which draws the
 spectrum and the waterfall with WebGL2. The Source panel sets the receiver's
 centre frequency, sample rate, gain and frequency correction, and turns the
 removal of the DC spike on or off; antenna power comes next. The engine
-demodulates NFM and the interface plays its audio; AM, USB, LSB and CW are
-not demodulated yet, nor are the Demod panel's CTCSS and processing settings
-applied. Levels are in dBFS, so the S-meter is not calibrated. Settings and
+demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
+Demod panel's CTCSS and processing settings do nothing yet. Levels are in
+dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next. The remote access switch is
 only the mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
 milestones and the decisions are in
@@ -181,16 +181,23 @@ With either option:
 The engine demodulates one VFO, which every interface shows: a click on the
 spectrum, the wheel, the keyboard or a bookmark tunes it, and a change made
 in one interface shows in the others, the last change winning. The Demod
-panel sets the mode, the filter width and the squelch. NFM is the only mode
-demodulated so far; in the others the S-meter still measures the channel,
-but the audio is silent. NFM audio is de-emphasized, its CTCSS tone is
-removed and its band stops at 3.5 kHz.
+panel sets the mode, the filter width and the squelch, and every mode
+plays. NFM audio is de-emphasized, its CTCSS tone is removed and its band
+stops at 3.5 kHz. AM audio follows the carrier's level: its loudness depends
+on the modulation, not on the signal's strength. USB and LSB keep their own
+sideband, and CW sounds a carrier on the VFO at 700 Hz, through a filter
+centred on the VFO, 500 Hz wide by default. A slow AGC brings SSB and CW
+signals to the same level: it takes the gain down as soon as a signal
+arrives and lets it come back at 10 dB per second. AM, SSB and CW audio runs
+from 100 Hz to 5 kHz.
 
 The squelch is automatic by default: it opens 8 dB above the noise around
 the VFO, which the engine estimates from the spectrum, and closes 3 dB
 lower. Unticking "Automatic" sets the threshold by hand, starting from where
 the automatic one stood. The S-meter shows the channel's level in dBFS and
-the threshold, and its bar changes colour while the squelch is open.
+the threshold, and its bar changes colour while the squelch is open. In
+SSB, whose level follows the voice, the squelch closes between words: a
+threshold set by hand below the noise keeps it open.
 
 Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
@@ -342,7 +349,7 @@ src/radiolack/
                 the settings
   store.py      settings and bookmarks files
   bookmarks.py  bookmarks and their checks
-  demod.py      one VFO: channel level, squelch and NFM audio
+  demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you
   spectrum.py   display FFT, and the noise level around the VFO

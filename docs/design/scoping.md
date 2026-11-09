@@ -408,7 +408,30 @@ These costs wait for v4:
   A saved setting the receiver refuses keeps its default. The Bands panel
   adds, renames and removes the engine's bookmarks, which every interface
   shows. The tests run with a temporary settings folder.
-- Next step: AM, USB, LSB and CW audio.
+- AM, SSB and CW audio, 2026-11-09: every mode plays; the protocol does not
+  change, as `audio_modes` now lists all five. AM divides the envelope by
+  the carrier's level, the higher of its averages over the 10 ms before and
+  the 10 ms after each sample: the result is the modulation whatever the
+  signal's strength, with no carrier left to thump at the squelch's gate,
+  even where a carrier starts or stops at once (one average centred on the
+  sample overshot by a third there). USB and LSB take the channel's real
+  part, whose filter already keeps one sideband (the other comes out 88 dB
+  lower); so does CW, the front filter putting the VFO at 700 Hz, so that a
+  carrier on the VFO sounds at that pitch through a filter centred on the
+  VFO. Their AGC follows the channel's power averaged over 10 ms, 10 ms
+  ahead of the audio within the squelch's look-ahead, so that a sudden
+  signal comes out without overshoot, and lets the gain come back at
+  10 dB per second: a steady signal comes out at 0.4 of full scale from
+  -30 to -80 dBFS. The AGC has this one speed; the Demod panel's AGC choice
+  stays inactive. Through the synthetic band, the SSB contact plays in USB
+  and vanishes in LSB, and the CW beacons sound at 700 Hz. Every mode costs
+  about what NFM does: 3.6 to 4.0 ms per block of 1/30 s at 2.4 MS/s with
+  the audio on the owner's laptop, CW the most, against 3.6 ms for NFM in
+  the same run (other programs busy: the NFM entry measured 2.2 ms). Tested
+  on synthetic I/Q and the synthetic band, and in three browsers; not yet
+  with a receiver.
+- Next step: a desktop launcher, then the owner's check of v0 on their
+  computer.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.

@@ -54,7 +54,7 @@ handshake, so a page from another site cannot read the stream.
    ```json
    {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
     "squelch_db": -80.0, "squelch_auto": true, "modes": ["NFM", "AM", "USB", "LSB", "CW"],
-    "audio_modes": ["NFM"], "acknowledged": 0}
+    "audio_modes": ["NFM", "AM", "USB", "LSB", "CW"], "acknowledged": 0}
    ```
 
    | Field | Meaning |
@@ -65,7 +65,7 @@ handshake, so a page from another site cannot read the stream.
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
    | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. |
    | `modes` | The modes the engine takes. |
-   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. Only `NFM` for now. |
+   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All five for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
 
 4. Then the bookmarks, a JSON text message, sent again whenever they
@@ -167,9 +167,16 @@ handshake, so a page from another site cannot read the stream.
    In NFM the audio is the FM discriminator's output, full scale at 5 kHz of
    deviation, with a 750 µs de-emphasis (unit gain at 1 kHz), a high-pass
    filter at 280 Hz that removes CTCSS tones and a low-pass filter at
-   3.5 kHz. It is silent while the squelch is closed, with 5 ms fades, and
-   in the modes not in `audio_modes`. It lags its samples by about 40 ms:
-   the filters' delay and the squelch's look-ahead.
+   3.5 kHz. In AM it is the envelope over the carrier's level, less one:
+   the modulation, 0.8 of full scale at 100%, whatever the signal's
+   strength. In USB and LSB it is the channel's real part, and in CW too,
+   with the VFO at 700 Hz in the channel, so that a carrier on the VFO
+   sounds at 700 Hz; an AGC brings a steady signal to 0.4 of full scale and
+   lets the gain come back at 10 dB per second. AM, USB, LSB and CW audio
+   runs from 100 Hz to 5 kHz. The audio is silent while the squelch is
+   closed, with 5 ms fades, and in the modes not in `audio_modes`. It lags
+   its samples by the filters' delay and the squelch's look-ahead: about
+   40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
 
 9. An error, to one interface only, when the engine refuses a message from
    it. `command` is the message's type, or null when it is not a JSON

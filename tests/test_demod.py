@@ -1,13 +1,13 @@
 """Tests for the demodulator on synthetic signals: channel level, squelch,
-NFM audio and its frames, and the settings."""
+the audio of each mode and its frames, and the settings."""
 
 import math
 import unittest
 
 import numpy as np
 
-from radiolack.demod import (AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, DemodSettings, Demodulator,
-                             Meter, channel_taps)
+from radiolack.demod import (AGC_LEVEL, AM_LEVEL, AUDIO_HEADER, AUDIO_VERSION, CW_PITCH_HZ, FRAME_KIND_AUDIO,
+                             DemodSettings, Demodulator, Meter, channel_taps)
 
 RATE = 2_400_000.0
 CENTRE = 145_000_000.0
@@ -25,6 +25,19 @@ def fm(seconds: float, level_db: float, tones=(), rate: float = RATE) -> np.ndar
     for frequency, deviation in tones:
         phase += deviation / frequency * np.sin(2 * np.pi * frequency * t)
     return (10 ** (level_db / 20) * np.exp(1j * phase)).astype(np.complex64)
+
+
+def carrier(seconds: float, level_db: float, offset_hz: float = 0.0) -> np.ndarray:
+    """An unmodulated carrier ``offset_hz`` from the VFO."""
+    t = np.arange(round(seconds * RATE)) / RATE
+    return (10 ** (level_db / 20) * np.exp(2j * np.pi * (OFFSET + offset_hz) * t)).astype(np.complex64)
+
+
+def am(seconds: float, level_db: float, depth: float, frequency_hz: float = 1_000.0) -> np.ndarray:
+    """A carrier of ``level_db`` on the VFO, amplitude-modulated by a tone at ``depth``."""
+    t = np.arange(round(seconds * RATE)) / RATE
+    envelope = 10 ** (level_db / 20) * (1 + depth * np.sin(2 * np.pi * frequency_hz * t))
+    return (envelope * np.exp(2j * np.pi * OFFSET * t)).astype(np.complex64)
 
 
 def noise(seconds: float, level_db: float) -> np.ndarray:
@@ -65,6 +78,13 @@ def channel_noise_db(level_db: float, bandwidth_hz: float = 10_000.0) -> float:
 
 VFO = DemodSettings(frequency_hz=CENTRE + OFFSET)
 ALWAYS_OPEN = DemodSettings(frequency_hz=CENTRE + OFFSET, squelch_auto=False, squelch_db=-160.0)
+WIDTHS = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0}   # the interface's
+
+
+def open_in(mode: str) -> DemodSettings:
+    """``mode`` at the interface's filter width, with the squelch always open."""
+    return DemodSettings(frequency_hz=CENTRE + OFFSET, mode=mode, bandwidth_hz=WIDTHS[mode],
+                         squelch_auto=False, squelch_db=-160.0)
 
 
 class NfmTest(unittest.TestCase):
@@ -78,20 +98,92 @@ class NfmTest(unittest.TestCase):
         self.assertLess(tone_amplitude(steady, 100.0), 0.01 * tone_amplitude(steady, 1_000.0))
         self.assertTrue(all(meter.open for meter in meters))
 
-    def test_other_modes_are_metered_but_silent(self):
-        meters, sound = run(fm(0.5, -40.0, [(1_000.0, 3_000.0)]),
-                            DemodSettings(frequency_hz=CENTRE + OFFSET, mode="AM", squelch_auto=False,
-                                          squelch_db=-160.0))
-        self.assertAlmostEqual(meters[-1].level_db, -40.0, delta=0.1)
-        self.assertTrue(meters[-1].open)
-        self.assertFalse(np.any(np.concatenate(sound)))
-
     def test_sideband_filters_keep_their_side(self):
         for mode, kept in (("USB", 1), ("LSB", -1)):
             with self.subTest(mode=mode):
                 taps = channel_taps(mode, 2_700.0, 48_000.0)
                 self.assertAlmostEqual(response_db(taps, kept * 1_350.0, 48_000.0), 0.0, delta=0.05)
                 self.assertLess(response_db(taps, -kept * 1_350.0, 48_000.0), -60.0)
+
+    def test_the_cw_filter_moves_with_the_vfo_to_the_cw_pitch(self):
+        taps = channel_taps("CW", 500.0, 48_000.0)
+        self.assertAlmostEqual(response_db(taps, CW_PITCH_HZ, 48_000.0), 0.0, delta=0.05)
+        for outside in (CW_PITCH_HZ - 600.0, CW_PITCH_HZ + 600.0, -CW_PITCH_HZ):
+            self.assertLess(response_db(taps, outside, 48_000.0), -60.0)
+
+
+class AmTest(unittest.TestCase):
+    def test_the_modulation_comes_out_whatever_the_carrier_level(self):
+        for level in (-40.0, -60.0):
+            with self.subTest(level=level):
+                meters, sound = run(am(1.0, level, 0.5) + noise(1.0, -50.0), open_in("AM"))
+                steady = np.concatenate(sound)[3_000:]
+                self.assertAlmostEqual(tone_amplitude(steady, 1_000.0), 0.5 * AM_LEVEL, delta=0.02)
+                self.assertLess(abs(steady.mean()), 0.005)      # no carrier left
+                self.assertAlmostEqual(meters[-1].level_db, level + 10 * math.log10(1.125), delta=0.3)
+
+    def test_a_carrier_that_starts_and_stops_at_once_makes_no_thump(self):
+        density = 10 ** (-34.0 / 10) / RATE     # the automatic squelch's noise; the signal has none
+        settings = DemodSettings(frequency_hz=CENTRE + OFFSET, mode="AM", bandwidth_hz=WIDTHS["AM"])
+        silence = np.zeros(round(0.5 * RATE), np.complex64)
+        meters, sound = run(np.concatenate((silence, am(1.0, -40.0, 0.5), silence)), settings, noise_density=density)
+        self.assertEqual([meter.open for meter in meters], [False] * 15 + [True] * 30 + [False] * 15)
+        self.assertAlmostEqual(tone_amplitude(np.concatenate(sound[20:40]), 1_000.0), 0.5 * AM_LEVEL, delta=0.01)
+        self.assertLess(np.abs(np.concatenate(sound)).max(), 0.5 * AM_LEVEL * 1.05)
+        self.assertFalse(np.any(np.concatenate(sound[:15] + sound[48:])))
+
+
+class SidebandTest(unittest.TestCase):
+    def test_each_sideband_mode_hears_its_side_only(self):
+        for mode, side in (("USB", 1), ("LSB", -1)):
+            with self.subTest(mode=mode):
+                signal = carrier(1.0, -50.0, side * 1_000.0) + carrier(1.0, -50.0, -side * 1_500.0)
+                _, sound = run(signal, open_in(mode))
+                steady = np.concatenate(sound)[3_000:]
+                self.assertAlmostEqual(tone_amplitude(steady, 1_000.0), AGC_LEVEL, delta=0.01)
+                self.assertLess(tone_amplitude(steady, 1_500.0), 1e-3 * AGC_LEVEL)
+
+    def test_cw_sounds_a_carrier_at_the_pitch_plus_its_offset(self):
+        for offset in (0.0, 200.0, -200.0):
+            with self.subTest(offset=offset):
+                _, sound = run(carrier(1.0, -50.0, offset), open_in("CW"))
+                steady = np.concatenate(sound)[3_000:]
+                self.assertAlmostEqual(tone_amplitude(steady, CW_PITCH_HZ + offset), AGC_LEVEL, delta=0.01)
+        _, sound = run(carrier(1.0, -50.0, 1_000.0), open_in("CW"))     # outside the 500 Hz filter
+        self.assertLess(np.abs(np.concatenate(sound)[3_000:]).max(), 1e-3)
+
+
+class AgcTest(unittest.TestCase):
+    def test_any_steady_signal_comes_out_at_the_same_level(self):
+        for level in (-30.0, -80.0):
+            with self.subTest(level=level):
+                _, sound = run(carrier(1.0, level, 1_000.0), open_in("USB"))
+                self.assertAlmostEqual(tone_amplitude(np.concatenate(sound)[3_000:], 1_000.0), AGC_LEVEL,
+                                       delta=0.01)
+
+    def test_takes_a_sudden_signal_at_once_and_a_weaker_one_back_slowly(self):
+        signal = np.concatenate((np.zeros(round(0.5 * RATE), np.complex64), carrier(0.5, -30.0, 1_000.0),
+                                 carrier(3.0, -50.0, 1_000.0)))
+        _, sound = run(signal, open_in("USB"))
+        audio = np.concatenate(sound)
+        second = round(AUDIO_RATE)
+        self.assertLess(np.abs(audio[:second // 2]).max(), 1e-6)     # silence before the signal
+        self.assertLess(np.abs(audio[second // 2:second]).max(), 1.05 * AGC_LEVEL)   # no overshoot
+        # 20 dB weaker: the gain comes back at 10 dB per second.
+        just_after = audio[second + second // 10:second + second // 5]
+        self.assertAlmostEqual(tone_amplitude(just_after, 1_000.0), 0.1 * AGC_LEVEL * 10 ** 0.025, delta=0.01)
+        self.assertAlmostEqual(tone_amplitude(audio[-second // 2:], 1_000.0), AGC_LEVEL, delta=0.01)
+
+
+class ModeChangeTest(unittest.TestCase):
+    def test_the_audio_goes_on_through_mode_changes(self):
+        demodulator = Demodulator()
+        signal = am(0.2, -40.0, 0.5)
+        for mode in ("NFM", "AM", "USB", "LSB", "CW", "NFM"):
+            with self.subTest(mode=mode):
+                meters, sound = run(signal, open_in(mode), demodulator=demodulator)
+                self.assertEqual(len(np.concatenate(sound)), 0.2 * AUDIO_RATE)
+                self.assertTrue(meters[-1].open)
 
 
 class LevelTest(unittest.TestCase):
