@@ -5,6 +5,7 @@ subprocesses run without any display.
 """
 
 import contextlib
+import functools
 import io
 import os
 import re
@@ -20,6 +21,7 @@ from unittest import mock
 
 import radiolack
 from radiolack import cli
+from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST
 
 PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
@@ -53,7 +55,43 @@ class ParserTest(unittest.TestCase):
 
     def test_defaults(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual((args.ui, args.port), ("window", 0))
+        self.assertEqual((args.ui, args.port, args.rtl_sdr, args.rtl_tcp), ("window", 0, None, None))
+
+    def test_rtl_sdr_devices(self):
+        for argv, device in ((["--rtl-sdr"], "0"), (["--rtl-sdr", "1"], "1"),
+                             (["--rtl-sdr", "00000001"], "00000001")):
+            with self.subTest(argv=argv):
+                self.assertEqual(cli.build_parser().parse_args(argv).rtl_sdr, device)
+
+    def test_rejects_invalid_receivers_and_two_receivers(self):
+        for argv in (["--rtl-sdr", ""], ["--rtl-sdr", " "], ["--rtl-sdr", "--rtl-tcp"],
+                     ["--rtl-tcp", "--rtl-sdr"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(argv)
+                self.assertEqual(raised.exception.code, 2)
+
+    def test_rtl_tcp_addresses(self):
+        # Parsed only: nothing connects to these addresses.
+        addresses = {
+            None: (LOOPBACK_HOST, 1234),
+            "40000": (LOOPBACK_HOST, 40000),
+            "radio.example": ("radio.example", 1234),
+            "192.0.2.10:40000": ("192.0.2.10", 40000),
+            "[::1]": ("::1", 1234),
+            "[::1]:40000": ("::1", 40000),
+        }
+        for value, address in addresses.items():
+            with self.subTest(value=value):
+                argv = ["--rtl-tcp"] if value is None else ["--rtl-tcp", value]
+                self.assertEqual(cli.build_parser().parse_args(argv).rtl_tcp, address)
+
+    def test_rejects_invalid_rtl_tcp_addresses(self):
+        for value in ("", "0", "65536", "host:", ":40000", "host:port", "::1", "[::1", "[::1]40000", "[]:40000"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(["--rtl-tcp", value])
+                self.assertEqual(raised.exception.code, 2)
 
     def test_version(self):
         out = io.StringIO()
@@ -72,6 +110,42 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("cannot listen on 127.0.0.1:", err)
+
+    def test_rtl_tcp_source_connects_only_once_an_interface_listens(self):
+        with socket.socket() as rtl_tcp:
+            rtl_tcp.bind((LOOPBACK_HOST, 0))
+            rtl_tcp.listen()
+            rtl_tcp.setblocking(False)
+            address = f"{LOOPBACK_HOST}:{rtl_tcp.getsockname()[1]}"
+            with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+                code, out, err = run_main("--ui", "none", "--rtl-tcp", address)
+            self.assertEqual((code, err), (0, ""))
+            source = server.call_args.kwargs["source"]
+            self.assertIsInstance(source, RtlTcpSource)
+            self.assertEqual(source.address, address)
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
+
+    def test_rtl_sdr_source_starts_nothing_until_an_interface_listens(self):
+        # A program that does not exist: nothing could open a real receiver.
+        safe_source = functools.partial(RtlSdrSource, program=("/nonexistent/rtl_tcp",))
+        with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/rtl_tcp"), \
+                mock.patch.object(cli, "RtlSdrSource", side_effect=safe_source) as created, \
+                mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none", "--rtl-sdr", "1")
+        self.assertEqual((code, err), (0, ""))
+        created.assert_called_once_with("1")
+        source = server.call_args.kwargs["source"]
+        self.assertIsInstance(source, RtlSdrSource)
+        self.assertEqual((source.device, source.status), ("1", "idle"))
+
+    def test_rtl_sdr_needs_rtl_tcp_installed(self):
+        with mock.patch.object(cli.shutil, "which", return_value=None), \
+                mock.patch.object(cli, "LocalServer") as server:
+            code, out, err = run_main("--ui", "none", "--rtl-sdr")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("rtl_tcp is not installed", err)
+        server.assert_not_called()
 
     def test_window_shows_served_interface(self):
         shown = []

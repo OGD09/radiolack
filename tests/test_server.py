@@ -4,6 +4,7 @@ import asyncio
 import html.parser
 import http.client
 import json
+import os
 import re
 import socket
 import time
@@ -12,9 +13,10 @@ from pathlib import PurePosixPath
 
 import aiohttp
 
+from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
-from tests.fakes import FAKE_CENTRE_HZ, FakeSource
+from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource
 
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -164,16 +166,55 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         """Open the stream: await the result, or use it with ``async with``."""
         return self.session.ws_connect(self.url, origin=origin, **kwargs)
 
-    async def test_sends_hello_then_spectrum_frames(self):
+    async def test_sends_hello_then_the_source_state_then_spectrum_frames(self):
         async with self.connect(self.origin) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "hello", "protocol": PROTOCOL_VERSION, "source": "test"})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 2})
+            self.assertEqual(PROTOCOL_VERSION, 2)
+            state = await ws.receive_json(timeout=5)
+            self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             for _ in range(3):
                 message = await ws.receive(timeout=5)
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
                 kind, _, _, _, centre, *_ = FRAME_HEADER.unpack_from(message.data)
                 self.assertEqual((kind, centre), (FRAME_KIND_SPECTRUM, FAKE_CENTRE_HZ))
                 self.assertEqual(len(message.data), FRAME_HEADER.size + 8192)
+
+    async def test_a_refused_change_gets_an_error_for_its_sender_only(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await ws.receive_json(timeout=5)    # hello
+                await ws.receive_json(timeout=5)    # source state
+            await sender.send_json({"type": "source", "centre_hz": 433e6})
+            self.assertEqual(await next_text(sender), {
+                "type": "error", "message": "the test source cannot change its settings"})
+            await self.assert_no_text(other)
+
+    async def test_malformed_commands_get_an_error(self):
+        commands = {
+            "not json": "a command must be a JSON object",
+            "[" * 60000: "a command must be a JSON object",
+            "[1]": "unknown command",
+            '{"type": "tune"}': "unknown command",
+            '{"type": "source", "volume": 3}': "the test source cannot change its settings",
+        }
+        async with self.connect(self.origin) as ws:
+            await ws.receive_json(timeout=5)
+            await ws.receive_json(timeout=5)
+            await ws.send_bytes(b"ignored")
+            for command, error in commands.items():
+                with self.subTest(command=command[:20]):
+                    await ws.send_str(command)
+                    self.assertEqual(await next_text(ws), {"type": "error", "message": error})
+
+    async def assert_no_text(self, ws, duration: float = 0.3):
+        """Only frames arrive on ``ws`` for a while."""
+        deadline = time.monotonic() + duration
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                message = await ws.receive(timeout=remaining)
+            except asyncio.TimeoutError:
+                return
+            self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
 
     async def test_accepts_the_localhost_origin(self):
         origin = f"http://localhost:{self.server.port}"
@@ -208,6 +249,100 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 3.0)
         await asyncio.wait_for(reader, timeout=5)
         self.assertEqual(ws.close_code, aiohttp.WSCloseCode.GOING_AWAY)
+
+
+async def next_text(ws) -> dict:
+    """The next JSON message, skipping frames."""
+    while True:
+        message = await ws.receive(timeout=5)
+        if message.type == aiohttp.WSMsgType.TEXT:
+            return json.loads(message.data)
+        if message.type != aiohttp.WSMsgType.BINARY:
+            raise AssertionError(f"the stream ended: {message}")
+
+
+async def next_frame_centre(ws) -> float:
+    """The centre frequency of the next frame, skipping JSON messages."""
+    while True:
+        message = await ws.receive(timeout=5)
+        if message.type == aiohttp.WSMsgType.BINARY:
+            return FRAME_HEADER.unpack_from(message.data)[4]
+        if message.type != aiohttp.WSMsgType.TEXT:
+            raise AssertionError(f"the stream ended: {message}")
+
+
+class RtlTcpStreamTest(unittest.IsolatedAsyncioTestCase):
+    """The whole path, from a fake rtl_tcp server to two interfaces."""
+
+    async def asyncSetUp(self):
+        self.fake = FakeRtlTcp(chunk_bytes=8000)
+        await self.fake.__aenter__()
+        self.addAsyncCleanup(self.fake.__aexit__, None, None, None)
+        self.server = LocalServer(source=RtlTcpSource(LOOPBACK_HOST, self.fake.port, idle_s=0.5))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    def connect(self):
+        return self.session.ws_connect(f"{self.server.url}stream",
+                                       origin=f"http://{LOOPBACK_HOST}:{self.server.port}")
+
+    async def test_a_change_from_one_interface_retunes_the_receiver_for_all(self):
+        async with self.connect() as first, self.connect() as second:
+            for ws in (first, second):
+                self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
+                self.assertEqual((await ws.receive_json(timeout=5))["kind"], "rtl_tcp")
+                self.assertEqual(await next_frame_centre(ws), 145e6)
+            await first.send_json({"type": "source", "centre_hz": 433_000_000, "gain_db": 30, "ppm": -3,
+                                   "dc_removal": False})
+            for ws in (first, second):
+                while (state := await next_text(ws))["centre_hz"] != 433e6:
+                    pass
+                self.assertEqual(
+                    (state["status"], state["tuner"], state["gain_db"], state["ppm"], state["dc_removal"]),
+                    ("streaming", "Rafael Micro R820T", 29.7, -3, False))
+                while await next_frame_centre(ws) != 433e6:
+                    pass
+            self.assertIn((0x01, 433_000_000), self.fake.commands)
+            self.assertIn((0x04, 297), self.fake.commands)
+            self.assertIn((0x05, 2**32 - 3), self.fake.commands)
+
+    async def test_hangs_up_once_no_interface_listens(self):
+        async with self.connect() as ws:
+            await next_frame_centre(ws)
+            self.assertEqual(self.fake.open_connections, 1)
+        deadline = time.monotonic() + 5
+        while self.fake.open_connections:
+            self.assertLess(time.monotonic(), deadline, "rtl_tcp is still connected")
+            await asyncio.sleep(0.05)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX processes and signals")
+class RtlSdrStreamTest(unittest.IsolatedAsyncioTestCase):
+    """The server's event loop, in its own thread, runs the fake rtl_tcp
+    program for an interface, and stops it before the server stops."""
+
+    async def asyncSetUp(self):
+        self.runs = FakeRtlTcpRuns(self)
+        self.server = LocalServer(source=RtlSdrSource(program=FAKE_RTL_TCP))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    async def test_stopping_the_server_stops_rtl_tcp(self):
+        async with self.session.ws_connect(f"{self.server.url}stream",
+                                           origin=f"http://{LOOPBACK_HOST}:{self.server.port}") as ws:
+            self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
+            state = await ws.receive_json(timeout=5)
+            self.assertEqual((state["kind"], state["address"]), ("rtl_sdr", None))
+            self.assertEqual(await next_frame_centre(ws), 145e6)
+            [(pid, _)] = self.runs.started()
+            await asyncio.to_thread(self.server.stop)
+        self.assertEqual(self.runs.stopping(), {pid})
+        with self.assertRaises(ProcessLookupError):     # ended, and its exit status collected
+            os.kill(pid, 0)
 
 
 class LocalServerLifecycleTest(unittest.TestCase):

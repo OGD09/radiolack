@@ -327,8 +327,29 @@ These costs wait for v4:
   198 bands from 9 kHz to 6.425 GHz, 81 segments inside them, checked by the
   tests and against the sources it names. The engine still captures the
   simulated 2 m band only.
-- Next step: the rtl_tcp source and the first commands from the interface
-  (tuning, gain, sample rate), then the type check and browser tests in CI.
+- rtl_tcp source, 2026-11-09: `radiolack --rtl-tcp [ADDRESS]` reads an
+  RTL-SDR receiver through an rtl_tcp server that the user runs. The source
+  state (connection, tuner, settings) reaches every interface, which can set
+  the centre frequency, the sample rate and the gain (protocol version 2); a
+  typed frequency or a bookmark outside the span moves the span. A refused,
+  silent or lost connection is a waiting state, retried by itself, and the
+  source hangs up while no interface listens. Tested against a fake rtl_tcp
+  server; not yet with a receiver.
+- Managed rtl_tcp, 2026-11-09: `radiolack --rtl-sdr [DEVICE]` runs rtl_tcp
+  itself, on 127.0.0.1 and a free port, for each connection, and stops it
+  when the source hangs up or Radiolack stops, so that the receiver stays
+  free for other programs while no interface listens; on Linux, setpriv has
+  the kernel stop it should Radiolack die first. A receiver that rtl_tcp
+  cannot open (none found, in use, no permission) is a waiting state with
+  that reason. Tested with a fake rtl_tcp program; not yet with a receiver.
+- Frequency correction and DC removal, 2026-11-09: the Source panel sets the
+  receiver's correction in whole ppm, -100 to +100 (rtl_tcp command 5, sent
+  at each connection like the other settings, with 0.4 s of settling after a
+  change). DC removal is the engine's own setting, on by default and shared
+  by every interface: it takes each block's mean off the samples before the
+  FFT, which also removes a signal exactly on the centre frequency, and will
+  apply to demodulation too. Tested with the fakes; not yet with a receiver.
+- Next step: the type check and browser tests in CI.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.

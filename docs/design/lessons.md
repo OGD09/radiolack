@@ -19,13 +19,21 @@ engine reuses; the details are in those files.
   0.4 s of samples after each change. A retune counts as done only when a
   frame from the new epoch arrives.
 - Buffers stay bounded; when one is full, stop reading and let TCP
-  backpressure slow the sender. Never queue without limit.
+  backpressure slow the sender. Never queue without limit. The rewrite's
+  rtl_tcp source reads everything instead, keeps the latest 0.5 s of samples
+  and hangs up once nothing reads: rtl_tcp queues up to 500 buffers of
+  256 KiB (about 130 MB) for a client that stops reading, so backpressure
+  would only move stale samples into rtl_tcp.
 - Managed child: `rtl_tcp -a 127.0.0.1 -p <port> -f <Hz> -s <rate> -g <dB>
   -d <index> -n 10`, on a loopback address only, its output kept in a log.
   Known messages give the user a hint: "No supported devices found" (no
   dongle), "usb_claim_interface error" (another program holds the dongle),
   "Failed to open rtlsdr device", "Address already in use". Stop only the
-  child Radiolack started: terminate, wait 3 s, then kill.
+  child Radiolack started: terminate, wait 3 s, then kill. The rewrite runs
+  `rtl_tcp -a 127.0.0.1 -p <free port> -n 10 -d <device>` for each
+  connection and sends the settings as commands, as to any rtl_tcp; it keeps
+  the end of rtl_tcp's stderr in memory for those hints, and logs the
+  messages it does not know.
 - Sample rates used: 1.024, 1.8, 2.048 and 2.4 MS/s.
 
 ## Peak detection (for the peak scanner)

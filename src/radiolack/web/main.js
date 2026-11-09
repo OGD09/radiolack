@@ -28,9 +28,8 @@ const S_TOP = -10;
 const METER_FLOOR = -140;           // reading when the passband holds no signal or no bins
 const AXIS_H = 18;                  // frequency scale under the spectrum, CSS px (#spec-axis in style.css)
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
-const SOURCE_NAMES = { synthetic: 'Synthetic source' };
-const R820T_GAINS = [0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4,
-  28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6];
+const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
+const FIRST_MANUAL_GAIN_DB = 30;    // offered when automatic gain is turned off before any manual gain
 const MODES = {
   NFM: { bw: 10000, min: 4000, max: 25000, step: 500 },
   AM: { bw: 8000, min: 3000, max: 15000, step: 500 },
@@ -83,7 +82,6 @@ const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input i
 const S = {
   fc: 145.0e6, fs: 2.4e6, nb: 8192,            // the engine's capture, updated by its frames
   vfo: 145.5e6, mode: 'NFM', bw: 10000, autoMode: true, step: 'auto',
-  gainIdx: 17, ppm: 0, dcRemove: true, tunerAgc: false, biasT: false,   // receiver settings: shown, not sent yet
   avg: 0.6, fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
   showPlan: true, showMarks: true, split: 0.4,
@@ -108,7 +106,6 @@ let bookmarks = [
 ];
 let bookmarkCounter = 0;
 
-const gainDb = () => R820T_GAINS[S.gainIdx];
 const fStart = () => S.fc - S.fs / 2;
 const fEnd = () => S.fc + S.fs / 2;
 const binHz = () => S.fs / S.nb;
@@ -165,7 +162,10 @@ function resetBuffers() {
 // ------------------------------------------------------------------ engine stream
 // The display is the stream's only use for now: it closes while the page is
 // hidden, and the engine idles without clients.
-let streamState = 'connecting', sourceKind = '', frameRate = 0, rateFrames = 0, rateSince = 0;
+let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
+let source = null;          // the engine's source state (stream.js SourceState), once received
+let sourceError = '';       // why the engine refused this interface's last change
+let pendingTune = null;     // { centre, previous, f, opts }: where the VFO goes once frames come from centre
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
 
@@ -185,13 +185,20 @@ function onFrame(frame) {
   countFrame(performance.now());
 }
 
-// The engine changed its capture: the VFO stays inside the new span.
+// The engine changed its capture: the VFO goes where a retune asked for it,
+// or stays inside the new span.
 function setCapture(centre, rate, bins) {
   S.fc = centre;
   S.fs = rate;
   S.nb = bins;
   resetBuffers();
-  tune(S.vfo);
+  const pending = pendingTune;
+  if (pending && pending.centre === centre) {
+    pendingTune = null;
+    tune(pending.f, pending.opts);
+  } else {
+    tune(S.vfo);
+  }
   syncSource();
   syncDisplay();
   renderPlanList();
@@ -210,11 +217,24 @@ function countFrame(now) {
 }
 
 const stream = new EngineStream({
-  onHello: (hello) => { sourceKind = hello.source; syncSource(); updateStatus(); },
   onFrame,
+  onSource: (state) => {
+    source = state;
+    sourceError = '';
+    // A centre that is neither the requested one nor the previous one: another change won.
+    if (pendingTune && state.centreHz !== pendingTune.centre && state.centreHz !== pendingTune.previous) pendingTune = null;
+    syncSource();
+    updateStatus();
+  },
+  onError: (message) => {
+    sourceError = message;
+    pendingTune = null;
+    syncSource();       // the controls show the engine's settings again
+  },
   onState: (state) => {
     streamState = state;
     if (state !== 'open') { rateSince = 0; frameRate = 0; }
+    syncSource();
     updateStatus();
   },
 });
@@ -651,9 +671,17 @@ function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent 
 
 function updateStatus() {
   let text;
-  if (streamState === 'open') {
-    text = `${SOURCE_NAMES[sourceKind] || `Source ${sourceKind}`} · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz)`
-      + (frameRate ? ` · ${frameRate} fps` : '');
+  if (streamState === 'open' && source) {
+    const name = SOURCE_NAMES[source.kind] || `Source ${source.kind}`;
+    const where = source.address ? ` at ${source.address}` : '';
+    if (source.status === 'waiting') {
+      text = `Waiting for ${name}${where}: ${source.detail}…`;
+    } else if (source.status !== 'streaming') {
+      text = `Connecting to ${name}${where}…`;
+    } else {
+      text = `${name} · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz)`
+        + (frameRate ? ` · ${frameRate} fps` : '');
+    }
   } else if (streamState === 'waiting') {
     text = 'Waiting for the engine…';
   } else if (streamState === 'incompatible') {
@@ -746,7 +774,7 @@ function applyMode(mode) {
   S.mode = mode;
   S.bw = MODES[mode].bw;
 }
-// The engine cannot retune yet: the VFO stays within the span it captures.
+// The VFO stays within the span the engine captures; tuneAnywhere asks for another span.
 function tune(f, opts = {}) {
   if (!Number.isFinite(f)) return;
   f = clamp(Math.round(f), Math.ceil(fStart()), Math.floor(fEnd()));
@@ -941,21 +969,118 @@ function bindRange(id, key, fmt, after) {
   return el;
 }
 
-// Source: what the engine captures. The receiver settings are shown read-only
-// until the engine takes commands.
+// Source: what the engine captures, and the receiver settings it takes. The
+// engine's state is the reference: a change shows once the engine sends it
+// back, to every interface. The source is chosen when Radiolack starts, DC
+// removal is the engine's own setting for any source, and antenna power comes
+// with a later step.
+let manualGainDb = null;    // the last manual gain, offered again when automatic gain is turned off
+const nearestIndex = (values, v) => values.reduce((best, x, i) => (Math.abs(x - v) < Math.abs(values[best] - v) ? i : best), 0);
+function sourceNote() {
+  if (!source) return '';
+  let text = '';
+  if (source.kind === 'synthetic') {
+    text = '2 m band simulated by the engine. Start Radiolack with --rtl-sdr to use the RTL-SDR receiver '
+      + 'plugged into this computer, or with --rtl-tcp for one served by rtl_tcp.';
+  } else if (source.kind === 'rtl_sdr' || source.kind === 'rtl_tcp') {
+    const where = source.kind === 'rtl_sdr' ? 'on this computer, through rtl_tcp run by Radiolack'
+      : `through rtl_tcp at ${source.address}`;
+    text = `${source.tuner || 'RTL-SDR receiver'} ${where}.`;
+    if (source.status === 'waiting') text += ` Waiting: ${source.detail}. Radiolack tries again by itself.`;
+    else if (source.status !== 'streaming') text += ' Connecting…';
+  }
+  if (sourceError) text += ` Change refused: ${sourceError}.`;
+  return text.trim();
+}
+function selectRate(select, rateHz) {
+  const value = String(rateHz);
+  if (!Array.from(select.options).some((o) => o.value === value)) select.add(new Option(`${(rateHz / 1e6).toFixed(3)} MS/s`, value));
+  select.value = value;
+}
 function syncSource() {
-  $('#src-device').value = sourceKind;   // no entry is selected before the engine answers
-  $('#src-note').textContent = sourceKind === 'synthetic'
-    ? '2 m band simulated by the engine. Receiver settings come with the rtl_tcp source.' : '';
-  $('#src-center').value = fmtMHz(S.fc);
-  $('#src-rate').value = String(S.fs);
-  $('#src-gain').max = String(R820T_GAINS.length - 1);
-  $('#src-gain').value = String(S.gainIdx);
-  $('#src-gain-v').textContent = `${gainDb().toFixed(1)} dB`;
-  $('#src-ppm').value = String(S.ppm);
-  $('#src-dc').checked = S.dcRemove;
-  $('#src-agc').checked = S.tunerAgc;
-  $('#src-bias').checked = S.biasT;
+  const settable = new Set(streamState === 'open' && source ? source.settable : []);
+  $('#src-device').value = source ? source.kind : '';   // no entry is selected before the engine answers
+  $('#src-note').textContent = sourceNote();
+  const centreEl = $('#src-center');
+  if (document.activeElement !== centreEl) centreEl.value = fmtMHz(source ? source.centreHz : S.fc);
+  centreEl.disabled = !settable.has('centre_hz');
+  const rateEl = $('#src-rate');
+  selectRate(rateEl, source ? source.rateHz : S.fs);
+  rateEl.disabled = !settable.has('sample_rate_hz');
+  const gains = source ? source.gainsDb : [];
+  const gainSettable = settable.has('gain_db') && gains.length > 0;
+  const auto = !source || source.gainDb === null;
+  if (!auto) manualGainDb = source.gainDb;
+  const gainEl = $('#src-gain');
+  gainEl.max = String(Math.max(0, gains.length - 1));
+  gainEl.value = String(gains.length ? nearestIndex(gains, manualGainDb ?? FIRST_MANUAL_GAIN_DB) : 0);
+  gainEl.disabled = !gainSettable || auto;
+  $('#src-gain-v').textContent = !source || !source.settable.includes('gain_db') ? '' : auto ? 'automatic' : `${source.gainDb.toFixed(1)} dB`;
+  const agcEl = $('#src-agc');
+  agcEl.checked = Boolean(source && source.settable.includes('gain_db') && auto);
+  agcEl.disabled = !gainSettable;
+  const ppmEl = $('#src-ppm');
+  if (document.activeElement !== ppmEl) ppmEl.value = String(source?.ppm ?? 0);
+  ppmEl.disabled = !settable.has('ppm');
+  const dcEl = $('#src-dc');
+  dcEl.checked = Boolean(source?.dcRemoval);
+  dcEl.disabled = !settable.has('dc_removal');
+}
+// Gain the slider points at, in dB, or undefined.
+const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] : undefined);
+$('#src-center').addEventListener('change', (e) => {
+  const hz = Math.round(parseFloat(e.target.value.replace(',', '.')) * 1e6);
+  if (!source || !Number.isFinite(hz) || hz === source.centreHz) { syncSource(); return; }
+  const previous = source.centreHz;
+  if (stream.sendSource({ centreHz: hz })) {
+    userTune();
+    pendingTune = { centre: hz, previous, f: hz + (S.vfo - S.fc), opts: {} };   // the VFO keeps its place in the span
+  } else {
+    syncSource();
+  }
+});
+$('#src-rate').addEventListener('change', (e) => { if (!stream.sendSource({ rateHz: Number(e.target.value) })) syncSource(); });
+$('#src-gain').addEventListener('input', () => { const g = sliderGain(); if (g !== undefined) $('#src-gain-v').textContent = `${g.toFixed(1)} dB`; });
+$('#src-gain').addEventListener('change', () => { const g = sliderGain(); if (g === undefined || !stream.sendSource({ gainDb: g })) syncSource(); });
+$('#src-agc').addEventListener('change', (e) => {
+  const gainDb = e.target.checked ? null : sliderGain();
+  if (gainDb === undefined || !stream.sendSource({ gainDb })) syncSource();
+});
+$('#src-ppm').addEventListener('change', (e) => {
+  const el = e.target;
+  // Whole ppm within the field's range, as the receiver takes them.
+  const ppm = clamp(Math.round(el.valueAsNumber), Number(el.min), Number(el.max));
+  if (source && Number.isFinite(ppm) && ppm !== source.ppm && stream.sendSource({ ppm })) {
+    el.value = String(ppm);
+  } else {
+    el.value = String(source?.ppm ?? 0);
+    syncSource();
+  }
+});
+$('#src-dc').addEventListener('change', (e) => { if (!stream.sendSource({ dcRemoval: e.target.checked })) syncSource(); });
+
+// Tune to f, asking the engine for another span when f lies outside the
+// current one: f then sits a quarter of the span above the centre, clear of
+// the DC spike. A source that cannot retune keeps the VFO within its span.
+function tuneAnywhere(f, opts = {}) {
+  if (!Number.isFinite(f)) return;
+  const inside = f >= fStart() && f <= fEnd();
+  if (!inside && streamState === 'open' && source && source.settable.includes('centre_hz')) {
+    const [lo, hi] = source.rangeHz;
+    const centre = Math.round(clamp(f - source.rateHz / 4, lo, hi));
+    const previous = source.centreHz;
+    if (centre !== previous && stream.sendSource({ centreHz: centre })) {
+      pendingTune = { centre, previous, f: Math.round(f), opts };
+      return;
+    }
+  }
+  tune(f, opts);
+}
+// Whether the source can show f: its centre range, widened by half a span.
+function reachable(f) {
+  if (!source) return f >= fStart() && f <= fEnd();
+  const half = (source.settable.includes('centre_hz') ? source.rateHz : S.fs) / 2;
+  return f >= source.rangeHz[0] - half && f <= source.rangeHz[1] + half;
 }
 
 // Demodulation
@@ -1091,7 +1216,7 @@ $('#bm-add').addEventListener('click', () => addBookmark(S.vfo, S.mode));
 $('#bm-list').addEventListener('click', (e) => {
   const go = e.target.closest('button[data-i]');
   const del = e.target.closest('button[data-del]');
-  if (go) { const b = bookmarks[Number(go.dataset.i)]; if (b) { userTune(); tune(b.f, { mode: b.mode }); } }
+  if (go) { const b = bookmarks[Number(go.dataset.i)]; if (b) { userTune(); tuneAnywhere(b.f, { mode: b.mode }); } }
   if (del) { bookmarks.splice(Number(del.dataset.del), 1); bookmarksChanged(); }
 });
 
@@ -1388,7 +1513,7 @@ function editFreq() {
     if (apply) {
       const v = parseFloat(input.value.replace(',', '.'));
       const hz = v < 1e5 ? v * 1e6 : v;
-      if (Number.isFinite(hz) && hz >= 24e6 && hz <= 1766e6) { userTune(); tune(hz); }
+      if (Number.isFinite(hz) && reachable(hz)) { userTune(); tuneAnywhere(hz); }
     }
     renderFreq();
     freqEl.focus();

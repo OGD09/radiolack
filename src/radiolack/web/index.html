@@ -49,8 +49,8 @@
         <label for="src-device">Receiver</label>
         <select id="src-device" disabled>
           <option value="synthetic">Synthetic band (2 m)</option>
-          <option value="rtl">RTL-SDR · local rtl_tcp</option>
-          <option value="rtl-remote">RTL-SDR · remote rtl_tcp</option>
+          <option value="rtl_sdr">RTL-SDR · this computer</option>
+          <option value="rtl_tcp">RTL-SDR · rtl_tcp</option>
           <option value="soapy">SoapySDR (Airspy, HackRF, SDRplay…)</option>
           <option value="file">I/Q file</option>
         </select>
@@ -68,7 +68,7 @@
         </select>
       </div>
       <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1" disabled></div>
-      <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.1" disabled></div>
+      <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="1" value="0" disabled></div>
       <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
       <label class="check"><input id="src-agc" type="checkbox" disabled> Tuner AGC</label>
       <label class="check"><input id="src-bias" type="checkbox" disabled> Antenna power (bias-T)</label>

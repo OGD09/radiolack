@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .engine import FixedSource
+
 CENTRE_HZ = 145_000_000.0
 SAMPLE_RATE_HZ = 2_400_000.0
 NOISE_DBFS = -34.0          # noise power over the whole band
@@ -70,8 +72,9 @@ class Emitter:
     doppler_hz: float = 0.0     # shift from +doppler to -doppler over each transmission
 
 
-class SyntheticBand:
-    """Simulated band read like a receiver: complex64 samples in full-scale units."""
+class SyntheticBand(FixedSource):
+    """Simulated band read like a receiver: complex64 samples in full-scale units.
+    Its centre frequency and sample rate cannot change."""
 
     kind = "synthetic"
 

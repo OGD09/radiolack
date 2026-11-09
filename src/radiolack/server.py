@@ -3,31 +3,36 @@
 The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
 desktop window toolkit, which must own it. The engine runs in that loop and
-streams its frames to each interface over a WebSocket (``/stream``; see
-docs/design/protocol.md).
+streams its frames and its source state to each interface over a WebSocket
+(``/stream``; see docs/design/protocol.md), which also carries the
+interfaces' changes to the source settings.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import socket
 import threading
 from pathlib import Path
 
-from aiohttp import WSCloseCode, web
+from aiohttp import WSCloseCode, WSMsgType, web
 
-from .engine import Engine, Source
+from .engine import Engine, Source, Subscription
 from .synthetic import SyntheticBand
 
 LOOPBACK_HOST = "127.0.0.1"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 WEB_DIR = Path(__file__).with_name("web")
 
 _START_TIMEOUT_S = 10.0
 _STOP_TIMEOUT_S = 10.0
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
+
+log = logging.getLogger(__name__)
 
 # The page loads its scripts and styles from files served next to it, never
 # inline. It may only talk to this server, and other pages may not frame it.
@@ -79,19 +84,18 @@ def create_app(port: int, engine: Engine) -> web.Application:
                                    max_msg_size=_CLIENT_MESSAGE_LIMIT)
         await ws.prepare(request)
         try:
-            await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION,
-                                "source": engine.source.kind})
+            await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION})
         except ConnectionResetError:
             return ws
-        frames = engine.subscribe()
-        sender = asyncio.ensure_future(_send_frames(ws, frames))
-        receiver = asyncio.ensure_future(_ignore_messages(ws))
+        subscription = engine.subscribe()
+        sender = asyncio.ensure_future(_send(ws, subscription))
+        receiver = asyncio.ensure_future(_receive(ws, engine, subscription))
         try:
             await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
             if not receiver.done():     # the engine stopped, or sending failed
                 await ws.close(code=WSCloseCode.GOING_AWAY, message=b"Radiolack is stopping.")
         finally:
-            engine.unsubscribe(frames)
+            engine.unsubscribe(subscription)
             for task in (sender, receiver):
                 task.cancel()
             await asyncio.gather(sender, receiver, return_exceptions=True)
@@ -106,6 +110,7 @@ def create_app(port: int, engine: Engine) -> web.Application:
         engine.close()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        await engine.wait_closed()      # such as rtl_tcp stopped, before Radiolack ends
 
     app = web.Application(middlewares=[check_host])
     app.router.add_get("/", _index)
@@ -116,16 +121,43 @@ def create_app(port: int, engine: Engine) -> web.Application:
     return app
 
 
-async def _send_frames(ws: web.WebSocketResponse, frames: asyncio.Queue) -> None:
-    """Forward the engine's frames to one client until the engine stops."""
-    while (frame := await frames.get()) is not None:
-        await ws.send_bytes(frame)
+async def _send(ws: web.WebSocketResponse, subscription: Subscription) -> None:
+    """Forward the engine's messages to one client until the engine stops."""
+    while (message := await subscription.get()) is not None:
+        if isinstance(message, bytes):
+            await ws.send_bytes(message)
+        else:
+            await ws.send_json(message)
 
 
-async def _ignore_messages(ws: web.WebSocketResponse) -> None:
-    """Read the client's messages until it closes: it sends no commands yet."""
-    async for _message in ws:
-        pass
+async def _receive(ws: web.WebSocketResponse, engine: Engine, subscription: Subscription) -> None:
+    """Apply the client's commands until it closes the stream. A refused
+    command gets an error message, for this client only."""
+    async for message in ws:
+        if message.type is not WSMsgType.TEXT:
+            continue
+        try:
+            refusal = _apply_command(engine, message.data)
+        except Exception:
+            log.exception("a command from the interface failed")
+            refusal = "the command failed"
+        if refusal is not None:
+            subscription.reply({"type": "error", "message": refusal})
+
+
+def _apply_command(engine: Engine, text: str) -> str | None:
+    """Apply one command from an interface; returns why it was refused, or None."""
+    try:
+        command = json.loads(text)
+    except (ValueError, RecursionError):
+        return "a command must be a JSON object"
+    if not isinstance(command, dict) or command.get("type") != "source":
+        return "unknown command"
+    try:
+        engine.configure({key: value for key, value in command.items() if key != "type"})
+    except ValueError as error:
+        return str(error)
+    return None
 
 
 # Interface files are read at each request, so that a change shows on reload.
@@ -178,7 +210,7 @@ class LocalServer:
     The port is bound in the constructor, so a busy port raises ``OSError``
     before anything starts. Use it as a context manager: entering starts the
     server, leaving stops it. The engine reads ``source``, by default the
-    synthetic band.
+    synthetic band, and closes it when the server stops.
     """
 
     def __init__(self, port: int = 0, source: Source | None = None) -> None:

@@ -9,12 +9,17 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 
 ## Layout
 
-- `src/radiolack/`: `cli` (entry point: `--ui`, `--port`), `server` (aiohttp
-  on 127.0.0.1, own event loop in a background thread; interface files and
-  the `/stream` WebSocket), `engine` (reads a source and shares spectrum
-  frames with clients; idle without clients), `spectrum` (display FFT with
-  NumPy), `synthetic` (simulated 2 m band), `window` (GTK 3 and WebKitGTK
-  through PyGObject; the main thread runs GTK).
+- `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--rtl-sdr`,
+  `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
+  background thread; interface files and the `/stream` WebSocket), `engine`
+  (reads a source, removes the DC offset, shares spectrum frames and the
+  source state with clients, passes their changes to the source; idle
+  without clients), `spectrum`
+  (display FFT with NumPy), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  rtl_tcp the user runs, `RtlSdrSource` runs rtl_tcp itself while it
+  connects; a lost server is a waiting state), `synthetic` (simulated 2 m
+  band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
+  runs GTK).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `gl.js`, `spectrum-gl.js` and
   `waterfall-gl.js` (WebGL2 views) and `bandplan.js` (band plan loader)
@@ -42,7 +47,11 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 - Everything is receive-only: never add transmit features.
 - Never open the SDR receiver, start `rtl_tcp` or tune real hardware unless
   the user asks for it in the current conversation. Running the interface
-  without a receiver is fine.
+  without a receiver is fine. `radiolack --rtl-sdr` starts rtl_tcp, which
+  opens the receiver, as soon as an interface opens (the default window
+  included), and `radiolack --rtl-tcp` tunes the receiver behind a running
+  rtl_tcp: tests and checks use the fake rtl_tcp server of `tests/fakes.py`
+  or the fake rtl_tcp program `tests/fake_rtl_tcp.py` instead.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,

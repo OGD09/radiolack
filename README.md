@@ -8,12 +8,15 @@ inside the amateur bands. It is a desktop application whose interface is a
 web page, so that a phone, a tablet or another computer will be able to
 control it and listen to it over the local network.
 
-**Status: early rewrite.** No receiver is supported yet: the engine simulates
-a 2 m band (synthetic I/Q computed in memory), computes its spectrum and
-streams it to the interface, which draws the spectrum and the waterfall with
-WebGL2. Nothing is demodulated yet, so there is no audio. The receiver
-settings are shown but cannot be changed, tuning stays within the simulated
-band, and levels are in dBFS, so the S-meter is not calibrated. Bookmarks and
+**Status: early rewrite.** Radiolack reads an RTL-SDR receiver through
+rtl_tcp, which it runs itself for a receiver plugged into this computer, or
+simulates a 2 m band (synthetic I/Q computed in memory). The
+engine computes the spectrum and streams it to the interface, which draws the
+spectrum and the waterfall with WebGL2. The Source panel sets the receiver's
+centre frequency, sample rate, gain and frequency correction, and turns the
+removal of the DC spike on or off; antenna power comes next. Nothing is
+demodulated yet, so there is no audio,
+and levels are in dBFS, so the S-meter is not calibrated. Bookmarks and
 settings are not saved yet, and the remote access switch is only the
 mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
 milestones and the decisions are in
@@ -33,6 +36,8 @@ English, with no translations.
   Without them, Radiolack shows its interface in a web browser instead.
 - The interface draws with WebGL2. Without it, its status line says so and
   the spectrum and the waterfall stay empty.
+- For an RTL-SDR receiver: rtl_tcp, which comes with librtlsdr. Debian and
+  Ubuntu: `sudo apt install rtl-sdr`.
 - Windows and macOS are planned for the public release.
 
 ## Installation
@@ -68,6 +73,8 @@ opens the interface in a desktop window. Closing the window stops Radiolack.
 | `--ui browser` | Opens the interface in the default web browser. |
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
+| `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the simulated band, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default 127.0.0.1:1234), instead of the simulated band. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -77,14 +84,93 @@ answers only requests addressed to 127.0.0.1 or localhost, which keeps web
 pages from reaching it through DNS rebinding. The desktop window stays on the
 interface: it opens no other page and no new window.
 
-The interface receives the spectrum from the engine over a WebSocket on the
-same address ([docs/design/protocol.md](docs/design/protocol.md)), which the
-server accepts only from the interface's own origin. The engine computes
-nothing while no interface is connected, and the interface closes its stream
-while its page is hidden, in a background browser tab for instance.
+The interface receives the spectrum and the receiver state from the engine,
+and sends its changes, over a WebSocket on the same address
+([docs/design/protocol.md](docs/design/protocol.md)), which the server
+accepts only from the interface's own origin. The engine computes nothing
+while no interface is connected, and the interface closes its stream while
+its page is hidden, in a background browser tab for instance.
 
 Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
-the port cannot be used, 2 for invalid options.
+the port cannot be used or when `--rtl-sdr` finds no rtl_tcp installed, 2
+for invalid options.
+
+## RTL-SDR receivers
+
+Radiolack reads RTL-SDR receivers through rtl_tcp. For a receiver plugged
+into this computer, Radiolack runs rtl_tcp itself:
+
+```bash
+radiolack --rtl-sdr
+```
+
+- Radiolack starts rtl_tcp, on 127.0.0.1 and a free port, when an interface
+  opens, and stops it once no interface is open, or when Radiolack stops:
+  the receiver then stays free for other programs, such as Gqrx. On Linux,
+  should Radiolack end without stopping rtl_tcp, killed for instance, the
+  system stops it (through setpriv, from util-linux).
+- `--rtl-sdr 1` reads the second receiver, and `--rtl-sdr SERIAL` the one
+  with that serial number, as rtl_tcp's `-d` option takes them.
+- When rtl_tcp cannot open the receiver, the status line says why: no
+  receiver found, in use by another program, or no permission (the udev
+  rules of the rtl-sdr package give it). Radiolack tries again by itself,
+  so plugging the receiver in or closing the other program is enough.
+
+For a receiver behind an rtl_tcp that you run, on this computer or another
+one, start rtl_tcp first, then Radiolack:
+
+```bash
+rtl_tcp -a 127.0.0.1
+```
+
+```bash
+radiolack --rtl-tcp
+```
+
+`--rtl-tcp` alone reads rtl_tcp's default address, 127.0.0.1:1234.
+`--rtl-tcp PORT`, `--rtl-tcp HOST` and `--rtl-tcp HOST:PORT` read another
+one, with an IPv6 address in brackets (`[::1]:1234`). rtl_tcp has no access
+control: anyone who reaches it can use the receiver, so keep it on
+127.0.0.1, or on a network you trust when the receiver is on another
+computer.
+
+With either option:
+
+- At each connection, Radiolack sends its own settings, since rtl_tcp keeps
+  those of its previous client: 145 MHz, 2.4 MS/s, automatic gain and no
+  frequency correction at first, then the latest ones.
+- The Source panel names the tuner and sets the centre frequency, the sample
+  rate (1.024 to 2.88 MS/s), the gain and the frequency correction. "Tuner
+  AGC" gives automatic gain; otherwise the gain is one of those the tuner
+  offers. The frequency correction, in whole ppm from -100 to +100, makes up
+  for a receiver whose clock is off, which shifts every signal by as many
+  millionths of its frequency (10 ppm: 1.45 kHz at 145 MHz): set it so that
+  a known signal sits on its frequency. A change shows in every open
+  interface; a refused one, such as a frequency the tuner cannot reach, shows
+  its reason in the panel.
+- "Remove the DC spike", on when Radiolack starts, takes the receiver's
+  constant offset off the samples before the spectrum is computed; without
+  it, the offset shows as a spike at the centre frequency. A signal exactly
+  on the centre frequency goes with it. Every open interface shares this
+  setting, which the engine applies to any source.
+- Typing a frequency outside the received span, or choosing a bookmark there,
+  moves the span so that the frequency sits a quarter of the span above its
+  centre, clear of the receiver's DC spike. Other ways of tuning stay within
+  the span.
+- After a change of frequency, sample rate or frequency correction, the
+  display waits 0.4 s for the receiver to settle.
+- When rtl_tcp cannot be reached, stops sending or drops the connection, the
+  status line says why and Radiolack tries again by itself, keeping its
+  settings: after half a second at first, then waiting longer each time, up
+  to 5 s between attempts. rtl_tcp serves one program at a time: while
+  another one uses it, Radiolack waits.
+- While no interface is open, Radiolack hangs up, which leaves rtl_tcp free
+  for another program, and connects again when an interface opens. The
+  first samples then take a moment, a little longer with `--rtl-sdr`, which
+  starts rtl_tcp again.
+- Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
+  Fitipower FC0012 and FC0013, FCI FC2580. HF through direct sampling or an
+  upconverter and antenna power (bias-T) are not supported yet.
 
 ## Band plan
 
@@ -149,7 +235,9 @@ Radiolack, a Gqrx-driven explorer of the VHF airband. Its personal data in
 src/radiolack/
   cli.py        command line
   server.py     local web server (aiohttp): interface files and the stream
-  engine.py     reads a source and shares spectrum frames with the interfaces
+  engine.py     reads a source, removes its DC offset and shares spectrum
+                frames with the interfaces
+  rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you
   spectrum.py   display FFT
   synthetic.py  simulated 2 m band
   window.py     desktop window (GTK 3 and WebKitGTK)
