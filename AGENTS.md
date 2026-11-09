@@ -13,8 +13,11 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
   background thread; interface files and the `/stream` WebSocket), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
-  state and the demodulation settings with clients, sends audio to those
-  that ask, passes their changes on; idle without clients), `spectrum`
+  state, the demodulation settings and the bookmarks with clients, sends
+  audio to those that ask, passes their changes on, restores and saves the
+  settings; idle without clients), `store` (settings and bookmarks files in
+  `$XDG_CONFIG_HOME/radiolack`: whole-file writes, unreadable files set
+  aside), `bookmarks` (bookmarks and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:
   channel level, squelch, NFM audio at 12 kHz), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
@@ -34,6 +37,8 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   version for any incompatible change.
 - `tests/`: unittest tests without hardware; pytest runs them too.
   `test_browser.py` drives the interface in headless browsers, on request.
+  `tests/__init__.py` points `XDG_CONFIG_HOME` at a temporary folder for the
+  whole run, which the programs the tests start inherit.
 
 ## Commands
 
@@ -75,6 +80,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   never write, replace, regenerate or delete anything there, above all
   `data/airband-peaks.json`. `profiles/` holds personal files: leave them
   untouched and untracked.
+- `~/.config/radiolack` (or `$XDG_CONFIG_HOME/radiolack`) holds the owner's
+  settings and bookmarks: never read, write or delete it. A check that runs
+  Radiolack sets `XDG_CONFIG_HOME` to a temporary folder.
 - Never modify or delete anything in `~/code/pc_repair`.
 - Do not record audio, transcriptions or raw I/Q (open question in
   scoping.md; the rule holds until the user decides otherwise).

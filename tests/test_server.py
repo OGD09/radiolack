@@ -7,9 +7,10 @@ import json
 import os
 import re
 import socket
+import tempfile
 import time
 import unittest
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import aiohttp
 
@@ -17,8 +18,11 @@ from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
+from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource
 
+# The states a stream starts with, after hello, in this order.
+STATES = ("source", "demod", "bookmarks", "preferences", "storage")
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -178,18 +182,22 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         return self.session.ws_connect(self.url, origin=origin, **kwargs)
 
     async def start(self, ws) -> None:
-        """Read the messages a stream starts with: hello, source state, settings."""
-        for kind in ("hello", "source", "demod"):
-            self.assertEqual((await ws.receive_json(timeout=5))["type"], kind)
+        """Read the messages a stream starts with: hello, then the states."""
+        await read_start(self, ws)
 
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 3})
-            self.assertEqual(PROTOCOL_VERSION, 3)
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 4})
+            self.assertEqual(PROTOCOL_VERSION, 4)
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             settings = await ws.receive_json(timeout=5)
             self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": []})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "preferences", "values": {}})
+            # Without a settings folder, nothing is saved.
+            self.assertEqual(await ws.receive_json(timeout=5),
+                             {"type": "storage", "directory": None, "saving": False, "problem": ""})
             for _ in range(3):
                 message = await ws.receive(timeout=5)
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
@@ -221,6 +229,40 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             error = await next_text(sender)
             self.assertEqual((error["type"], error["command"]), ("error", "demod"))
             await self.assert_no_text(other)
+
+    async def test_a_bookmark_change_reaches_every_client(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "bookmark", "action": "add", "frequency_hz": 145_500_000,
+                                    "name": "Calling", "mode": "NFM", "scan": False})
+            for ws in (sender, other):
+                self.assertEqual(await next_text(ws), {"type": "bookmarks", "bookmarks": [
+                    {"id": 1, "frequency_hz": 145_500_000.0, "name": "Calling", "mode": "NFM", "scan": False}]})
+            await sender.send_json({"type": "bookmark", "action": "remove", "id": 1})
+            for ws in (sender, other):
+                self.assertEqual(await next_text(ws), {"type": "bookmarks", "bookmarks": []})
+            await other.send_json({"type": "bookmark", "action": "remove", "id": 1})
+            self.assertEqual(await next_text(other), {
+                "type": "error", "command": "bookmark",
+                "message": "no such bookmark: another interface may have removed it"})
+            await self.assert_no_text(sender)
+
+    async def test_preferences_are_kept_for_the_next_interfaces(self):
+        values = {"palette": "gray", "volume": 0.5, "showPlan": False, "top": None}
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "preferences", "values": values})
+            await sender.send_json({"type": "preferences", "values": [1]})
+            # The first answer is the refusal: open interfaces keep their own preferences.
+            self.assertEqual(await next_text(sender), {
+                "type": "error", "command": "preferences", "message": "the preferences must be a JSON object"})
+            await self.assert_no_text(other)
+        async with self.connect(self.origin) as later:
+            for kind in ("hello", "source", "demod", "bookmarks"):
+                self.assertEqual((await later.receive_json(timeout=5))["type"], kind)
+            self.assertEqual(await later.receive_json(timeout=5), {"type": "preferences", "values": values})
 
     async def test_audio_flows_to_a_client_that_asks(self):
         async with self.connect(self.origin) as ws:
@@ -257,6 +299,16 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "audio"}': ("audio", "audio must be turned on or off: true or false"),
             '{"type": "audio", "on": 1}': ("audio", "audio must be turned on or off: true or false"),
             '{"type": "audio", "on": true, "volume": 3}': ("audio", "unknown audio setting: volume"),
+            '{"type": "bookmark", "action": "rename"}': (
+                "bookmark", 'a bookmark action is "add", "change" or "remove"'),
+            '{"type": "bookmark", "action": "add", "name": "A", "mode": "NFM"}': (
+                "bookmark", "a bookmark needs a frequency"),
+            '{"type": "preferences"}': ("preferences", "the preferences must be a JSON object"),
+            '{"type": "preferences", "values": {}, "theme": "dark"}': (
+                "preferences", "unknown preferences field: theme"),
+            '{"type": "preferences", "values": {"palette": [1]}}': (
+                "preferences", "the preference 'palette' must be a number, true or false, a text of at most "
+                               "100 characters or null"),
         }
         async with self.connect(self.origin) as ws:
             await self.start(ws)
@@ -309,6 +361,63 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 3.0)
         await asyncio.wait_for(reader, timeout=5)
         self.assertEqual(ws.close_code, aiohttp.WSCloseCode.GOING_AWAY)
+
+
+class SavedSettingsTest(unittest.IsolatedAsyncioTestCase):
+    """Settings, bookmarks and preferences outlive the server that kept them."""
+
+    async def asyncSetUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    def serve(self) -> LocalServer:
+        server = LocalServer(source=FakeSource(), store=Store(self.directory))
+        server.start()
+        self.addCleanup(server.stop)
+        return server
+
+    def connect(self, server: LocalServer):
+        return self.session.ws_connect(f"{server.url}stream", origin=f"http://{LOOPBACK_HOST}:{server.port}")
+
+    async def test_a_restarted_server_starts_from_them(self):
+        values = {"palette": "gray", "volume": 0.5}
+        bookmark = {"frequency_hz": 145_500_000.0, "name": "Calling", "mode": "NFM", "scan": True}
+        first = self.serve()
+        async with self.connect(first) as ws:
+            states = await read_start(self, ws)
+            self.assertEqual(states["storage"], {"type": "storage", "directory": Store(self.directory).location,
+                                                 "saving": True, "problem": ""})
+            # Commands apply in order: the last answer comes once all three apply.
+            await ws.send_json({"type": "preferences", "values": values})
+            await ws.send_json({"type": "demod", "id": 1, "frequency_hz": 145_010_000, "squelch_auto": False})
+            await ws.send_json({"type": "bookmark", "action": "add", **bookmark})
+            while (await next_text(ws))["type"] != "bookmarks":
+                pass
+        await asyncio.to_thread(first.stop)     # saves what changed less than a second ago
+        settings = json.loads((self.directory / SETTINGS_FILE).read_text("utf-8"))
+        self.assertEqual((settings["version"], settings["interface"]), (1, values))
+        self.assertEqual(settings["receivers"]["test"]["demod"]["frequency_hz"], 145_010_000.0)
+        self.assertEqual(json.loads((self.directory / BOOKMARKS_FILE).read_text("utf-8")),
+                         {"version": 1, "bookmarks": [bookmark]})
+
+        second = self.serve()
+        async with self.connect(second) as ws:
+            states = await read_start(self, ws)
+        self.assertEqual((states["demod"]["frequency_hz"], states["demod"]["squelch_auto"],
+                          states["demod"]["acknowledged"]), (145_010_000.0, False, 0))
+        self.assertEqual(states["bookmarks"]["bookmarks"], [{"id": 1, **bookmark}])
+        self.assertEqual(states["preferences"]["values"], values)
+        self.assertEqual((states["storage"]["saving"], states["storage"]["problem"]), (True, ""))
+
+
+async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:
+    """Read the messages a stream starts with, hello then the states; return
+    the states by type."""
+    test.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
+    states = [await ws.receive_json(timeout=5) for _ in STATES]
+    test.assertEqual(tuple(state["type"] for state in states), STATES)
+    return {state["type"]: state for state in states}
 
 
 async def next_text(ws) -> dict:

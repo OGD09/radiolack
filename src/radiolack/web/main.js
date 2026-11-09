@@ -94,19 +94,7 @@ const S = {
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
-let bookmarks = [
-  { f: 144.050e6, name: 'CW calling', mode: 'CW', scan: false },
-  { f: 144.174e6, name: 'FT8', mode: 'USB', scan: false },
-  { f: 144.300e6, name: 'SSB calling', mode: 'USB', scan: true },
-  { f: 144.800e6, name: 'APRS', mode: 'NFM', scan: true },
-  { f: 145.3375e6, name: 'Simplex', mode: 'NFM', scan: true },
-  { f: 145.500e6, name: 'FM calling', mode: 'NFM', scan: true },
-  { f: 145.6125e6, name: 'Repeater A', mode: 'NFM', scan: true },
-  { f: 145.6625e6, name: 'Repeater B', mode: 'NFM', scan: true },
-  { f: 145.7375e6, name: 'Repeater C', mode: 'NFM', scan: true },
-  { f: 145.800e6, name: 'ISS', mode: 'NFM', scan: false },
-];
-let bookmarkCounter = 0;
+let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan }
 
 const fStart = () => S.fc - S.fs / 2;
 const fEnd = () => S.fc + S.fs / 2;
@@ -169,6 +157,8 @@ let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
 let demodError = '';        // why the engine refused this interface's last demodulation change
+let bookmarkNote = '';      // why this interface's last bookmark change did not happen
+let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
@@ -240,10 +230,29 @@ const stream = new EngineStream({
     updateStatus();
   },
   onDemod: applyDemod,
+  onBookmarks: (list) => {
+    bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan }));
+    bookmarksChanged();
+  },
+  onPreferences: applyPreferences,
+  onStorage: (state) => {
+    storage = state;
+    syncStorage();
+    updateStatus();
+  },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
       demodError = message;     // the engine's settings came back before the error
       syncAudioNote();
+      return;
+    }
+    if (command === 'bookmark') {
+      bookmarkNote = `Change refused: ${message}.`;
+      syncBookmarkNote();
+      return;
+    }
+    if (command === 'preferences') {
+      console.error('Radiolack: the engine did not keep the preferences:', message);
       return;
     }
     sourceError = message;
@@ -720,6 +729,7 @@ function updateStatus() {
     text = 'Connecting to the engine…';
   }
   if (gpuError) text = `${gpuError} · ${text}`;
+  if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
   $('#status').textContent = `${text}${S.remote ? ' · remote access on' : ''}`;
 }
 
@@ -990,8 +1000,11 @@ function syncMem() {
   $('#mem-state').textContent = txt;
 }
 function renderMemList() {
-  $('#mem-list').innerHTML = bookmarks.map((b, i) => `<li><label class="check"><input type="checkbox" data-i="${i}"${b.scan ? ' checked' : ''}>`
-    + `<span>${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span></label></li>`).join('');
+  const list = $('#mem-list'), refocus = focusedIn(list);
+  list.innerHTML = bookmarks.map((b) => `<li><label class="check"><input type="checkbox" data-id="${b.id}"${b.scan ? ' checked' : ''}>`
+    + `<span>${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span></label></li>`).join('')
+    || '<li class="empty">No bookmarks</li>';
+  focusAgain(list, refocus);
 }
 
 // ------------------------------------------------------------------ panels
@@ -1019,6 +1032,7 @@ function closePanel() {
 function togglePanel(name) { if (openName === name) closePanel(); else openPanel(name); }
 
 const syncers = [];
+const rangeInputs = new Map();      // key of S → the range input that sets it
 function bindCheck(id, key, after) {
   const el = $(`#${id}`);
   const sync = () => { el.checked = Boolean(S[key]); };
@@ -1032,6 +1046,7 @@ function bindRange(id, key, fmt, after) {
   const sync = () => { el.value = String(S[key]); if (out) out.textContent = fmt(S[key]); };
   sync();
   syncers.push(sync);
+  rangeInputs.set(key, el);
   el.addEventListener('input', () => { S[key] = Number(el.value); if (out) out.textContent = fmt(S[key]); if (after) after(); });
   return el;
 }
@@ -1294,30 +1309,114 @@ function loadPlan() {
     updateOverlays();
   });
 }
+// Bookmarks belong to the engine: changes go to it, and every interface
+// shows them once the engine sends them back. Edit turns a bookmark's row
+// into a field for its name and a Remove link; leaving the row saves the name.
+const BOOKMARK_NAME_MAX = 60;       // as the engine's bookmarks.py
+let editing = null;                 // { id, text } while a bookmark is edited
+let editRow = null;                 // its row: one that a new list replaced changes nothing
 function renderBookmarks() {
+  if (editing && !bookmarks.some((b) => b.id === editing.id)) editing = null;     // removed meanwhile
+  const list = $('#bm-list'), refocus = focusedIn(list);
+  const oldField = editRow && editRow.querySelector('input');
+  editRow = null;
   const q = $('#bm-filter').value.trim().toLowerCase();
-  const items = bookmarks.map((b, i) => ({ b, i })).filter(({ b }) => !q || b.name.toLowerCase().includes(q) || fmtMHz(b.f).includes(q));
-  $('#bm-list').innerHTML = items.length
-    ? items.map(({ b, i }) => `<li class="bm"><button type="button" class="item" data-i="${i}"><span class="name">${escapeHtml(b.name)}</span>`
-      + `<span class="num">${fmtMHz(b.f)}</span><span class="tag">${b.mode}</span></button>`
-      + `<button type="button" class="link" data-del="${i}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`).join('')
+  const edited = (b) => editing !== null && b.id === editing.id;
+  const items = bookmarks.filter((b) => edited(b) || !q || b.name.toLowerCase().includes(q) || fmtMHz(b.f).includes(q));
+  list.innerHTML = items.length
+    ? items.map((b) => (edited(b)
+      ? `<li class="bm" data-editing><input type="text" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${fmtMHz(b.f)} MHz">`
+        + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`
+      : `<li class="bm"><button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${fmtMHz(b.f)} MHz · ${b.mode}`)}">`
+        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span><span class="tag">${escapeHtml(b.mode)}</span></button>`
+        + `<button type="button" class="link" data-edit="${b.id}" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
     : '<li class="empty">No bookmarks</li>';
+  const row = list.querySelector('li[data-editing]');
+  const field = row && row.querySelector('input');
+  if (row) {
+    editRow = row;
+    field.value = editing.text;
+    field.addEventListener('input', () => { if (row === editRow) editing.text = field.value; });
+    field.addEventListener('keydown', (e) => {
+      e.stopPropagation();      // Escape cancels the new name, not the panel
+      if (e.key === 'Enter') { e.preventDefault(); finishEdit(true, true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false, true); }
+    });
+    row.addEventListener('focusout', (e) => { if (row === editRow && !row.contains(e.relatedTarget)) finishEdit(true, false); });
+  }
+  const target = refocus && list.querySelector(refocus);
+  if (target) target.focus();
+  else if (field) {
+    field.focus();
+    if (oldField) field.setSelectionRange(oldField.selectionStart, oldField.selectionEnd); else field.select();
+  }
+}
+// The new name goes to the engine, unless empty or unchanged. Finished from
+// the keyboard, the focus returns to the bookmark's Edit link.
+function finishEdit(save, keyboard) {
+  const r = editing;
+  editing = null;
+  const b = r && bookmarks.find((x) => x.id === r.id);
+  const name = r ? r.text.replace(/\s+/g, ' ').trim() : '';
+  if (save && b && name && name !== b.name) sendBookmark(() => stream.changeBookmark(b.id, { name }));
+  renderBookmarks();
+  const link = keyboard && r && $(`#bm-list [data-edit="${r.id}"]`);
+  if (link) link.focus();
+}
+// A rebuilt list keeps the keyboard focus: the control that had it, found
+// again by its data attribute.
+function focusedIn(list) {
+  const el = document.activeElement;
+  if (!el || !list.contains(el)) return null;
+  const name = ['id', 'edit', 'del'].find((n) => el.dataset[n]);
+  return name ? `[data-${name}="${el.dataset[name]}"]` : null;
+}
+function focusAgain(list, selector) {
+  const el = selector && list.querySelector(selector);
+  if (el) el.focus();
+}
+// Send a bookmark command: every interface receives the bookmarks once the engine applies it.
+function sendBookmark(send) {
+  const sent = send();
+  bookmarkNote = sent ? '' : 'Not connected to the engine: the bookmarks did not change.';
+  syncBookmarkNote();
+  return sent;
+}
+function syncBookmarkNote() {
+  const el = $('#bm-note');
+  el.textContent = bookmarkNote;
+  el.hidden = !bookmarkNote;
 }
 function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); }
+// A new bookmark is named "Bookmark" and the first number no other one uses.
 function addBookmark(f, mode) {
-  bookmarkCounter += 1;
-  bookmarks.push({ f, name: `Bookmark ${bookmarkCounter}`, mode, scan: true });
-  bookmarks.sort((a, b) => a.f - b.f);
-  bookmarksChanged();
+  const names = new Set(bookmarks.map((b) => b.name));
+  let n = 1;
+  while (names.has(`Bookmark ${n}`)) n += 1;
+  sendBookmark(() => stream.addBookmark({ frequencyHz: Math.round(f), name: `Bookmark ${n}`, mode }));
 }
 $('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
 $('#bm-filter').addEventListener('input', renderBookmarks);
 $('#bm-add').addEventListener('click', () => addBookmark(S.vfo, S.mode));
+// While a bookmark is edited, pressing a button of the list leaves the focus
+// where it is: leaving the row would save the name and rebuild the list
+// under the pointer, and the click would be lost.
+$('#bm-list').addEventListener('mousedown', (e) => { if (editing && e.target.closest('button')) e.preventDefault(); });
 $('#bm-list').addEventListener('click', (e) => {
-  const go = e.target.closest('button[data-i]');
-  const del = e.target.closest('button[data-del]');
-  if (go) { const b = bookmarks[Number(go.dataset.i)]; if (b) { userTune(); tuneAnywhere(b.f, { mode: b.mode }); } }
-  if (del) { bookmarks.splice(Number(del.dataset.del), 1); bookmarksChanged(); }
+  const button = e.target.closest('button');
+  const id = button && (button.dataset.id || button.dataset.edit || button.dataset.del);
+  const b = id && bookmarks.find((x) => String(x.id) === id);
+  if (!b) return;
+  if (button.dataset.del) {
+    editing = null;             // the new name goes with the bookmark
+    renderBookmarks();
+    sendBookmark(() => stream.removeBookmark(b.id));
+    if (e.detail === 0) $('#bm-add').focus();     // pressed from the keyboard: the focus stays in the panel
+    return;
+  }
+  if (editing) finishEdit(true, false);
+  if (button.dataset.id) { userTune(); tuneAnywhere(b.f, { mode: b.mode }); }
+  else { editing = { id: b.id, text: b.name }; renderBookmarks(); }
 });
 
 // Scanners
@@ -1340,7 +1439,11 @@ $('#pk-body').addEventListener('click', (e) => {
 $('#pk-restore').addEventListener('click', () => { excluded.length = 0; renderPeaks(); });
 bindRange('mem-dwell', 'memDwell', (v) => `${Math.round(v * 1000)} ms`);
 bindRange('mem-resume', 'memResume', (v) => `${v} s`);
-$('#mem-list').addEventListener('change', (e) => { const b = bookmarks[Number(e.target.dataset.i)]; if (b) b.scan = e.target.checked; });
+$('#mem-list').addEventListener('change', (e) => {
+  const b = bookmarks.find((x) => String(x.id) === e.target.dataset.id);
+  // Not sent: the box shows the bookmark's setting again.
+  if (b && !sendBookmark(() => stream.changeBookmark(b.id, { scan: e.target.checked }))) renderMemList();
+});
 $('#mem-start').addEventListener('click', () => { if (mem.running) memStop(); else memStart(); });
 
 // Settings
@@ -1377,6 +1480,74 @@ $('#st-remote-copy').addEventListener('click', () => {
   if (!navigator.clipboard) { selectUrl(); return; }
   navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Address copied.'), selectUrl);
 });
+
+// Where the engine saves the settings and bookmarks, and what went wrong with its files.
+function syncStorage() {
+  let text = '';
+  if (storage && storage.directory === null) text = 'Settings and bookmarks are not saved.';
+  else if (storage) text = `Settings and bookmarks are saved in ${storage.directory}.`;
+  if (storage && storage.problem) text += ` ${storage.problem}`;
+  $('#st-storage').textContent = text;
+}
+
+// ------------------------------------------------------------------ preferences
+// This interface's own settings. The engine keeps them for the next start,
+// as the page's address, and with it the browser's storage, changes with
+// the port. They leave out the engine's settings (VFO, mode, filter,
+// squelch, receiver), the settings that have no effect yet (CTCSS, AGC,
+// noise reduction, notch, blanker, keeping the screen on), and remote
+// access, which never turns on by itself.
+const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
+  'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
+  'peakOn', 'peakThr', 'peakMarks', 'memDwell', 'memResume', 'autoHide'];
+const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
+const PREFERENCES_SAVE_MS = 1000;
+let preferencesLoaded = false;      // the engine's applied: nothing is saved before
+let savedPreferences = '';          // as last sent, in JSON
+
+function preferencesNow() { return Object.fromEntries(PREFERENCES.map((key) => [key, S[key]])); }
+// A saved value replaces the default when it has the same type and its control takes it.
+function preferenceValue(key, value) {
+  if (typeof value !== typeof S[key]) return undefined;
+  if (typeof value === 'number') {
+    const el = rangeInputs.get(key);
+    return el && Number.isFinite(value) ? clamp(value, Number(el.min), Number(el.max)) : undefined;
+  }
+  if (typeof value === 'string') {
+    const el = PREFERENCE_SELECTS[key] && $(PREFERENCE_SELECTS[key]);
+    return el && Array.from(el.options).some((o) => o.value === value) ? value : undefined;
+  }
+  return value;
+}
+// The engine sends its preferences at each connection: only the first ones
+// apply, as this interface's own then stand.
+function applyPreferences(values) {
+  if (preferencesLoaded) return;
+  preferencesLoaded = true;
+  for (const key of PREFERENCES) {
+    const value = Object.hasOwn(values, key) ? preferenceValue(key, values[key]) : undefined;
+    if (value !== undefined) S[key] = value;
+  }
+  S.wfMin = Math.min(S.wfMin, S.wfMax - 5);     // as the waterfall controls keep them
+  savedPreferences = JSON.stringify(preferencesNow());
+  syncDisplay();
+  syncDemod();
+  updateMeta();
+  lutDirty = true;
+  layoutPending = true;
+  rebuildStamps();
+  drawBandStrip();
+  renderMarks();
+  audio.setVolume(S.volume / 100);
+  syncAudio();
+  poke();
+}
+// Changed preferences go to the engine, which writes them to the disk soon after.
+function savePreferences() {
+  if (!preferencesLoaded) return;
+  const values = preferencesNow(), json = JSON.stringify(values);
+  if (json !== savedPreferences && stream.savePreferences(values)) savedPreferences = json;
+}
 
 for (const b of $$('#toolbar button')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
 $('#panel .close').addEventListener('click', closePanel);
@@ -1761,7 +1932,9 @@ showVfo();
 syncPointerMode();
 poke();
 setTimeout(() => hintEl.classList.add('gone'), 9000);
-document.addEventListener('visibilitychange', syncStream);
+document.addEventListener('visibilitychange', () => { savePreferences(); syncStream(); });
+window.addEventListener('pagehide', savePreferences);
+setInterval(savePreferences, PREFERENCES_SAVE_MS);
 syncStream();
 audio.setVolume(S.volume / 100);
 audio.start();

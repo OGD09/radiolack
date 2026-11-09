@@ -3,10 +3,10 @@
 The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
 desktop window toolkit, which must own it. The engine runs in that loop and
-streams its frames, its audio, its source state and its demodulation
-settings to each interface over a WebSocket (``/stream``; see
-docs/design/protocol.md), which also carries the interfaces' changes and
-their requests for audio.
+streams its frames, its audio, its source state, its demodulation settings
+and its bookmarks to each interface over a WebSocket (``/stream``; see
+docs/design/protocol.md), which also carries the interfaces' changes, their
+preferences and their requests for audio.
 """
 
 from __future__ import annotations
@@ -22,10 +22,11 @@ from pathlib import Path
 from aiohttp import WSCloseCode, WSMsgType, web
 
 from .engine import Engine, Source, Subscription
+from .store import Store
 from .synthetic import SyntheticBand
 
 LOOPBACK_HOST = "127.0.0.1"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 WEB_DIR = Path(__file__).with_name("web")
 
 _START_TIMEOUT_S = 10.0
@@ -33,6 +34,7 @@ _STOP_TIMEOUT_S = 10.0
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
+_COMMANDS = ("source", "demod", "audio", "bookmark", "preferences")
 
 log = logging.getLogger(__name__)
 
@@ -155,7 +157,7 @@ def _apply_command(engine: Engine, subscription: Subscription, text: str) -> tup
         command = json.loads(text)
     except (ValueError, RecursionError):
         return None, "a command must be a JSON object"
-    if not isinstance(command, dict) or command.get("type") not in ("source", "demod", "audio"):
+    if not isinstance(command, dict) or command.get("type") not in _COMMANDS:
         return None, "unknown command"
     kind = command["type"]
     changes = {key: value for key, value in command.items() if key != "type"}
@@ -168,6 +170,13 @@ def _apply_command(engine: Engine, subscription: Subscription, text: str) -> tup
                                           or not 0 < change_id <= _MAX_CHANGE_ID):
                 return kind, "a change id must be a whole number from 1"
             engine.configure_demod(changes, subscription, change_id)
+        elif kind == "bookmark":
+            engine.edit_bookmarks(changes)
+        elif kind == "preferences":
+            values = changes.pop("values", None)
+            if changes:
+                return kind, f"unknown preferences field: {next(iter(changes))}"
+            engine.set_preferences(values)
         else:
             on = changes.pop("on", None)
             if changes:
@@ -230,11 +239,13 @@ class LocalServer:
     The port is bound in the constructor, so a busy port raises ``OSError``
     before anything starts. Use it as a context manager: entering starts the
     server, leaving stops it. The engine reads ``source``, by default the
-    synthetic band, and closes it when the server stops.
+    synthetic band, and closes it when the server stops. With a ``store``,
+    the engine starts from the saved settings and saves their changes.
     """
 
-    def __init__(self, port: int = 0, source: Source | None = None) -> None:
+    def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None) -> None:
         self._source = source
+        self._store = store
         self._sock = _bind(port)
         self.port: int = self._sock.getsockname()[1]
         self.url = f"http://{LOOPBACK_HOST}:{self.port}/"
@@ -283,7 +294,7 @@ class LocalServer:
             self._ready.set()
 
     async def _serve(self) -> None:
-        engine = Engine(self._source if self._source is not None else SyntheticBand())
+        engine = Engine(self._source if self._source is not None else SyntheticBand(), store=self._store)
         runner = web.AppRunner(create_app(self.port, engine), handle_signals=False)
         await runner.setup()
         try:

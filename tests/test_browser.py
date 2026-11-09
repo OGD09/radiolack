@@ -13,12 +13,15 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import tempfile
 import time
 import unittest
 from collections.abc import Iterator
+from pathlib import Path
 
 from radiolack.rtltcp import RtlSdrSource
 from radiolack.server import LocalServer
+from radiolack.store import Store
 from tests.fakes import FAKE_RTL_TCP, FakeRtlTcpRuns
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
@@ -26,6 +29,10 @@ BROWSERS = ("chromium", "firefox", "webkit")
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
 SOURCE_PANEL = '#toolbar button[data-panel="source"]'
 DEMOD_PANEL = '#toolbar button[data-panel="demod"]'
+DISPLAY_PANEL = '#toolbar button[data-panel="display"]'
+BANDS_PANEL = '#toolbar button[data-panel="bands"]'
+SETTINGS_PANEL = '#toolbar button[data-panel="settings"]'
+PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 # WebKit 27.2 (Playwright 1.64) refuses its own stylesheet for every <select>
@@ -58,9 +65,9 @@ class BrowserTest(unittest.TestCase):
             cls.browsers[name] = browser
         expect.set_options(timeout=TIMEOUT_MS)
 
-    def serve(self, source: RtlSdrSource | None = None) -> str:
+    def serve(self, source: RtlSdrSource | None = None, store: Store | None = None) -> str:
         """The address of a server started for this test."""
-        server = LocalServer(source=source)
+        server = LocalServer(source=source, store=store)
         server.start()
         self.addCleanup(server.stop)
         return server.url
@@ -147,6 +154,63 @@ class BrowserTest(unittest.TestCase):
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
                 expect(first.locator("#dm-audio-note")).to_be_hidden()
+
+    def test_bookmarks_are_shared(self):
+        for browser in BROWSERS:
+            url = self.serve()      # no bookmark yet
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                first.locator(BANDS_PANEL).click()
+                expect(first.locator("#bm-list .empty")).to_have_text("No bookmarks")
+                first.locator("#bm-add").click()
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
+                first.locator("#bm-list button[data-edit]").click()
+                name = first.locator("#bm-list input")
+                expect(name).to_be_focused()
+                name.fill("Not kept")
+                name.press("Escape")        # cancels the new name, and leaves the panel open
+                expect(first.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
+                expect(first.locator("#panel")).to_be_visible()
+                expect(first.locator("#bm-list button[data-edit]")).to_be_focused()
+                first.locator("#bm-list button[data-edit]").click()
+                name.fill("  Calling ")
+                name.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["Calling"])
+                    expect(page.locator("#marks .mark")).to_have_text(["Calling"])
+                expect(first.locator("#bm-list button[data-edit]")).to_be_focused()
+                second.locator(BANDS_PANEL).click()
+                second.locator("#bm-list button[data-edit]").click()
+                second.locator("#bm-list input").fill("FM calling")
+                second.locator("#bm-filter").click()       # leaving the row saves the name
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["FM calling"])
+                second.locator("#bm-list button[data-edit]").click()
+                second.locator("#bm-list button[data-del]").click()     # while the name's field has the focus
+                for page in (first, second):
+                    expect(page.locator("#bm-list .empty")).to_have_text("No bookmarks")
+                    expect(page.locator("#marks .mark")).to_have_count(0)
+                expect(first.locator("#bm-note")).to_be_hidden()
+
+    def test_preferences_are_kept_for_the_next_interfaces_but_not_remote_access(self):
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            url = self.serve(store=Store(directory))    # no preference yet
+            with self.subTest(browser=browser):
+                with self.interfaces(browser, url, 1) as [page]:
+                    page.locator(SETTINGS_PANEL).click()
+                    expect(page.locator("#st-storage")).to_have_text(
+                        f"Settings and bookmarks are saved in {Store(directory).location}.")
+                    page.locator("#st-remote").check()
+                    page.locator(DISPLAY_PANEL).click()
+                    page.locator("#wf-pal").select_option("gray")
+                    page.locator("#ds-grid").uncheck()
+                    page.wait_for_timeout(2 * PREFERENCES_SAVE_MS)
+                with self.interfaces(browser, url, 1) as [page]:
+                    expect(page.locator("#wf-pal")).to_have_value("gray")
+                    expect(page.locator("#ds-grid")).not_to_be_checked()
+                    expect(page.locator("#st-remote")).not_to_be_checked()
+                    expect(page.locator("#status")).not_to_contain_text("remote access")
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_frequency_correction_is_whole_and_shared(self):

@@ -17,9 +17,9 @@ centre frequency, sample rate, gain and frequency correction, and turns the
 removal of the DC spike on or off; antenna power comes next. The engine
 demodulates NFM and the interface plays its audio; AM, USB, LSB and CW are
 not demodulated yet, nor are the Demod panel's CTCSS and processing settings
-applied. Levels are in dBFS, so the S-meter is not calibrated. Bookmarks and
-settings are not saved yet, and the remote access switch is only the
-mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
+applied. Levels are in dBFS, so the S-meter is not calibrated. Settings and
+bookmarks are kept from one start to the next. The remote access switch is
+only the mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
 milestones and the decisions are in
 [docs/design/scoping.md](docs/design/scoping.md).
 
@@ -85,8 +85,9 @@ answers only requests addressed to 127.0.0.1 or localhost, which keeps web
 pages from reaching it through DNS rebinding. The desktop window stays on the
 interface: it opens no other page and no new window.
 
-The interface receives the spectrum, the audio, the receiver state and the
-demodulation settings from the engine, and sends its changes, over a
+The interface receives the spectrum, the audio, the receiver state, the
+demodulation settings and the bookmarks from the engine, and sends its
+changes, over a
 WebSocket on the same address
 ([docs/design/protocol.md](docs/design/protocol.md)), which the server
 accepts only from the interface's own origin. The engine computes nothing
@@ -197,6 +198,40 @@ plays it as soon as it opens. A web browser may hold it until the first
 click or key press on the page, and the Demod panel then says so. Nothing is
 recorded.
 
+## Settings and bookmarks
+
+Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
+(`$XDG_CONFIG_HOME/radiolack` when that variable is set):
+
+- `settings.json` holds each receiver's settings: the Source panel's and the
+  demodulation settings (VFO, mode, filter width, squelch). The simulated
+  band, each `--rtl-sdr` device and each `--rtl-tcp` address have their own.
+  It also holds the interface's own settings: the display, waterfall and
+  overlay settings, the volume, the tuning step, the band plan's choice of
+  mode and the scanners' settings. Remote access is never saved: it is off
+  at each start.
+- `bookmarks.json` holds the bookmarks.
+
+Every interface shows the same bookmarks and receiver settings. An
+interface opens with the own settings of the interface that changed one
+last; changing them in one interface leaves the other open ones as they
+are. A change reaches the disk a few seconds later at most, and when
+Radiolack stops.
+
+The Bands panel adds a bookmark at the VFO, renames or removes one, and
+tunes to one with its mode; the spectrum's context menu adds one anywhere.
+The memory scan of the Scanners panel stops on the bookmarks ticked there.
+
+Settings > Storage says where the files are and what went wrong with them;
+the status line adds "changes not saved" while some changes do not reach
+the disk. Each file is written whole, through a temporary file, so that a
+crash or a power cut leaves the previous version. A file that Radiolack
+cannot read as its own, damaged or edited by hand with a mistake, is renamed
+`settings.json.invalid-<date>-<time>` (or `bookmarks.json…`) and Radiolack
+starts without it. A file that cannot be opened, or that a newer Radiolack
+wrote, is left as it is and not saved until the next start. To start again
+from the defaults, delete the folder while Radiolack is stopped.
+
 ## Band plan
 
 The strip under the spectrum shows what each range is used for, from 9 kHz to
@@ -224,7 +259,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 ```
 
 The tests need no receiver and open no window or browser (the browser tests
-below run only on request); their servers listen on ephemeral ports. GitHub
+below run only on request); their servers listen on ephemeral ports, and
+they use a temporary settings folder, never yours. GitHub
 Actions runs them against the installed package on Python 3.11 and 3.15.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
@@ -237,8 +273,9 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 
 The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band and the fake rtl_tcp
-program: the stream, the Source panel, and a change made in one interface
-showing in another. They launch browsers, so they run only when
+program: the stream, the Source panel, a change made in one interface
+showing in another, the bookmarks and the saved interface settings. They
+launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
 [Installation](#installation), and Playwright's browsers: about 900 MB in
@@ -290,8 +327,11 @@ src/radiolack/
   cli.py        command line
   server.py     local web server (aiohttp): interface files and the stream
   engine.py     reads a source, removes its DC offset, shares spectrum
-                frames and the demodulation settings with the interfaces,
-                and sends audio to those that ask
+                frames, the demodulation settings and the bookmarks with
+                the interfaces, sends audio to those that ask, and saves
+                the settings
+  store.py      settings and bookmarks files
+  bookmarks.py  bookmarks and their checks
   demod.py      one VFO: channel level, squelch and NFM audio
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you

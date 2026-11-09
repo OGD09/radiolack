@@ -1,7 +1,8 @@
 """Tests for the command line: options, interface choice, signals and exit codes.
 
 No test opens a window or a browser: in-process tests replace them, and the
-subprocesses run without any display.
+subprocesses run without any display. Radiolack runs with the test run's own
+settings folder (tests/__init__.py), never the owner's.
 """
 
 import contextlib
@@ -13,6 +14,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.request
@@ -23,6 +25,7 @@ import radiolack
 from radiolack import cli
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST
+import tests     # tests/__init__.py gives the test run a settings folder of its own
 
 PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
 URL_LINE = re.compile(r"Radiolack is running at (http://127\.0\.0\.1:\d+/) ")
@@ -110,6 +113,15 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("cannot listen on 127.0.0.1:", err)
+
+    def test_saves_in_the_settings_folder(self):
+        with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none")
+        self.assertEqual((code, err), (0, ""))
+        directory = server.call_args.kwargs["store"].directory
+        self.assertEqual(directory, Path(os.environ["XDG_CONFIG_HOME"]) / "radiolack")
+        # tests/__init__.py: the test run has a settings folder of its own.
+        self.assertTrue(directory.is_relative_to(tempfile.gettempdir()))
 
     def test_rtl_tcp_source_connects_only_once_an_interface_listens(self):
         with socket.socket() as rtl_tcp:

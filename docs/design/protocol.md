@@ -1,6 +1,6 @@
 # Interface protocol
 
-How the engine and the interface talk. Protocol version 3, 2026-11-09.
+How the engine and the interface talk. Protocol version 4, 2026-11-09.
 
 The interface opens one WebSocket to `/stream` on the server that served it.
 The server accepts the connection only when its `Host` header names the
@@ -14,7 +14,7 @@ handshake, so a page from another site cannot read the stream.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 3}
+   {"type": "hello", "protocol": 4}
    ```
 
 2. Then the source state, a JSON text message, sent again whenever it
@@ -68,7 +68,49 @@ handshake, so a page from another site cannot read the stream.
    | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. Only `NFM` for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
 
-4. Binary spectrum frames, about 30 per second while the source streams.
+4. Then the bookmarks, a JSON text message, sent again whenever they
+   change, whichever interface changed them:
+
+   ```json
+   {"type": "bookmarks", "bookmarks": [
+     {"id": 2, "frequency_hz": 145500000.0, "name": "FM calling", "mode": "NFM", "scan": true}]}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `id` | Names the bookmark in `bookmark` messages while the engine runs; the engine numbers the bookmarks again at each start. |
+   | `frequency_hz` | A whole number of Hz, from 1 Hz to 100 GHz. |
+   | `name` | 1 to 60 characters on one line. |
+   | `mode` | One of the demodulation settings' `modes`. |
+   | `scan` | Whether the memory scan stops on it. |
+
+   They come in frequency order, then by name, ignoring case: at most 2000.
+
+5. Then the preferences, a JSON text message sent once: the latest that an
+   interface gave the engine (`preferences` message), kept for the next
+   start. They are the interface's own settings, which the engine stores
+   without knowing their meaning: up to 100 values, named by 1 to 40
+   characters, each a number, true or false, a text of at most 100
+   characters or null.
+
+   ```json
+   {"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
+   ```
+
+6. Then the storage state, a JSON text message, sent again whenever it
+   changes:
+
+   ```json
+   {"type": "storage", "directory": "~/.config/radiolack", "saving": true, "problem": ""}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `directory` | The settings folder, `~` standing for the home folder; null when the engine saves nothing (a server started without a settings folder, as in tests). |
+   | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
+   | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
+
+7. Binary spectrum frames, about 30 per second while the source streams.
    Each frame is a 40-byte little-endian header followed by one byte per FFT
    bin:
 
@@ -103,7 +145,7 @@ handshake, so a page from another site cannot read the stream.
    the automatic one, which is NaN while the engine has no noise estimate
    (the VFO outside the span); the squelch then stays closed.
 
-5. Binary audio frames, about 30 per second, only to an interface that asked
+8. Binary audio frames, about 30 per second, only to an interface that asked
    for audio (`audio` message). Each frame is a 16-byte little-endian header
    followed by 16-bit samples:
 
@@ -129,7 +171,7 @@ handshake, so a page from another site cannot read the stream.
    in the modes not in `audio_modes`. It lags its samples by about 40 ms:
    the filters' delay and the squelch's look-ahead.
 
-6. An error, to one interface only, when the engine refuses a message from
+9. An error, to one interface only, when the engine refuses a message from
    it. `command` is the message's type, or null when it is not a JSON
    object of a known type:
 
@@ -137,9 +179,10 @@ handshake, so a page from another site cannot read the stream.
    {"type": "error", "command": "source", "message": "the receiver tunes from 24 to 1766 MHz"}
    ```
 
-What is waiting for an interface goes out in this order: the source state
-when it changed, then the demodulation settings when they changed, then
-errors, then audio frames, then spectrum frames. A client that reads too
+What is waiting for an interface goes out in this order: the source state,
+the demodulation settings, the bookmarks and the storage state, each when it
+changed (and the preferences at the start), then errors, then audio frames,
+then spectrum frames. A client that reads too
 slowly loses its oldest frames: the engine keeps the latest four spectrum
 frames and fifteen audio frames (half a second) for it and never slows down
 for one client; it keeps its latest states, and up to eight errors. When
@@ -193,6 +236,35 @@ on screen. Settings that carry its last `id` include every change before it,
 from any interface. A refused `id`, which is not such a number, refuses the
 whole message.
 
+A `bookmark` message adds, changes or removes one bookmark:
+
+```json
+{"type": "bookmark", "action": "add", "frequency_hz": 145500000, "name": "FM calling", "mode": "NFM", "scan": true}
+{"type": "bookmark", "action": "change", "id": 2, "name": "Calling"}
+{"type": "bookmark", "action": "remove", "id": 2}
+```
+
+`add` needs `frequency_hz`, `name` and `mode`; `scan` is true unless given.
+`change` names a bookmark by its `id` and sets the fields it gives, and
+`remove` takes only the `id`. The fields take the values listed under the
+bookmarks message: the frequency is rounded to the Hz, and a name loses its
+spaces at both ends and keeps single spaces between words. The engine
+refuses the whole message, changing nothing, when a field is missing,
+unknown or invalid, when the `id` is unknown (another interface may have
+removed the bookmark) or when there are already 2000 bookmarks. Otherwise
+every interface receives the bookmarks.
+
+A `preferences` message gives the engine this interface's preferences,
+which replace the ones it kept:
+
+```json
+{"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
+```
+
+The engine saves them and sends them to the interfaces that connect later;
+open interfaces receive nothing, so each keeps its own. It refuses values
+that do not fit the preferences message.
+
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
 
@@ -222,8 +294,13 @@ source brings both within what the tuner can do once it connects.
   or step is not a finite number; the rate and the step must also be
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
-  number. It ignores a source state or demodulation settings with a missing
-  or malformed field, and leaves out source settings it does not know.
+  number. It ignores a source state, demodulation settings, bookmarks or a
+  storage state with a missing or malformed field, and leaves out source
+  settings it does not know and preferences that are not numbers, true or
+  false, texts or null.
+- The interface applies the preferences of its page's first connection
+  only: after a reconnection, its own stand. It gives the engine its
+  preferences within a second of a change, and when its page hides.
 - The interface asks for audio while it can play it, with its volume above
   0. It keeps about 150 ms buffered, follows the engine's clock within 0.5%,
   fills a gap of up to 0.5 s with silence, and starts again, buffering
@@ -237,6 +314,8 @@ source brings both within what the tuner can do once it connects.
 
 ## Versions
 
+- 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
+  the `bookmark` and `preferences` messages.
 - 3 (2026-11-09): the demodulation settings, the `demod` and `audio`
   messages, audio frames, the channel level and squelch in spectrum frames
   (frame format 2), and the command's type in errors.

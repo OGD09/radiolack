@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from . import __version__, window
 from .rtltcp import RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource
 from .server import LOOPBACK_HOST, LocalServer
+from .store import Store, settings_dir
 
 RTL_TCP_ADDRESS = (LOOPBACK_HOST, 1234)     # where rtl_tcp listens by default
 
@@ -64,7 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radiolack",
         description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it shows a "
-                    "simulated 2 m band.",
+                    "simulated 2 m band. Settings and bookmarks are saved in "
+                    "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -103,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.rtl_tcp is not None:
         source = RtlTcpSource(*args.rtl_tcp)
     try:
-        server = LocalServer(args.port, source=source)
+        server = LocalServer(args.port, source=source, store=Store(settings_dir()))
     except OSError as error:
         print(f"radiolack: cannot listen on {LOOPBACK_HOST}:{args.port}: "
               f"{error.strerror or error}", file=sys.stderr)

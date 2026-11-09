@@ -183,6 +183,7 @@
       <h3>Bookmarks</h3>
       <div class="row"><input id="bm-filter" type="search" placeholder="Filter" aria-label="Filter the bookmarks"><button type="button" class="btn" id="bm-add">Add current frequency</button></div>
       <ul class="list" id="bm-list"></ul>
+      <p class="note" id="bm-note" role="status" hidden></p>
       <div class="row"><button type="button" class="btn" disabled>Import (CSV, CHIRP)</button></div>
     </section>
 
@@ -224,6 +225,8 @@
     <section data-panel="settings" hidden>
       <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
       <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
+      <h3>Storage</h3>
+      <p class="note" id="st-storage" role="status"></p>
       <h3>Remote access</h3>
       <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
       <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>

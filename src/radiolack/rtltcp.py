@@ -173,6 +173,11 @@ class RtlTcpSource:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"{host}:{self.port}"
 
+    @property
+    def settings_key(self) -> str:
+        """The engine saves settings per rtl_tcp address."""
+        return f"{self.kind} {self.address}"
+
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples, or ``None`` when they did not arrive
         within a short wait: the source is connecting, or waiting to retry."""
@@ -398,6 +403,12 @@ class RtlSdrSource(RtlTcpSource):
         self._program = tuple(program)
         self._stop_s = stop_s
         self._child: _Child | None = None      # the rtl_tcp of the current connection
+
+    @property
+    def settings_key(self) -> str:
+        """The engine saves settings per receiver, as given: rtl_tcp's port
+        changes at each start."""
+        return f"{self.kind} {self.device}"
 
     def describe(self) -> dict[str, Any]:
         # rtl_tcp listens on another port at each start: of no use to an interface.

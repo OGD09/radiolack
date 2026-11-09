@@ -1,19 +1,27 @@
 """Tests for the engine: frames, source state and demodulation settings for
 every client, audio for the clients that ask, idle without clients, changes
-passed to the source, DC removal, clean stop."""
+passed to the source, DC removal, bookmarks and preferences, saved settings,
+clean stop."""
 
 import asyncio
+import json
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack.engine import Engine, Subscription
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
+from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
+STATES = ("source", "demod", "bookmarks", "preferences", "storage")     # what a new client gets first
 
 
 async def next_message(subscription: Subscription):
@@ -69,7 +77,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.assertEqual(self.source.reads, reads)
 
-    async def test_a_new_client_first_gets_the_source_state_then_the_settings(self):
+    async def test_a_new_client_first_gets_the_states_then_the_frames(self):
         subscription = self.engine.subscribe()
         self.assertEqual(subscription.get_nowait(), {
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
@@ -82,6 +90,11 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "modes": list(MODES),
             "audio_modes": ["NFM"], "acknowledged": 0,
         })
+        self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
+        self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
+        # Without a store, nothing is saved.
+        self.assertEqual(subscription.get_nowait(),
+                         {"type": "storage", "directory": None, "saving": False, "problem": ""})
         self.assertIsInstance(await next_message(subscription), bytes)
 
     async def test_every_client_gets_the_frames(self):
@@ -102,8 +115,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_slow_client_keeps_only_the_latest_frames(self):
         subscription = self.engine.subscribe()
-        self.assertEqual(subscription.get_nowait()["type"], "source")
-        self.assertEqual(subscription.get_nowait()["type"], "demod")
+        for kind in STATES:
+            self.assertEqual(subscription.get_nowait()["type"], kind)
         while self.source.reads < 12:
             await asyncio.sleep(0.01)
         frames = waiting(subscription)
@@ -294,6 +307,168 @@ class EngineSourceTest(unittest.IsolatedAsyncioTestCase):
             frames.append(frame)
         self.assertLessEqual(len(frames), 2)
         self.assertTrue(source.closed)
+
+
+CALLING = {"frequency_hz": 145_500_000.0, "name": "FM calling", "mode": "NFM", "scan": True}
+
+
+class PersistenceTest(unittest.IsolatedAsyncioTestCase):
+    """The engine with a store in a temporary folder."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "radiolack"
+
+    def write(self, name: str, content: dict) -> None:
+        self.directory.mkdir(exist_ok=True)
+        (self.directory / name).write_text(json.dumps({"version": 1, **content}), encoding="utf-8")
+
+    def read(self, name: str) -> dict:
+        return json.loads((self.directory / name).read_text(encoding="utf-8"))
+
+    def engine(self, **options) -> Engine:
+        engine = Engine(FakeSource(), store=Store(self.directory), **options)
+        self.addAsyncCleanup(self.stop, engine)
+        return engine
+
+    @staticmethod
+    async def stop(engine: Engine) -> None:
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+    async def saved(self, name: str, check) -> dict:
+        """The file once ``check`` holds for its content."""
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                content = self.read(name)
+            except FileNotFoundError:
+                content = None
+            if content is not None and check(content):
+                return content
+            self.assertLess(time.monotonic(), deadline, f"{name} holds {content}")
+            await asyncio.sleep(0.01)
+
+    async def test_starts_from_what_was_saved_for_its_receiver(self):
+        demod = {"frequency_hz": 145_010_000.0, "mode": "AM", "bandwidth_hz": 8_000.0, "squelch_db": -70.0,
+                 "squelch_auto": False}
+        self.write(SETTINGS_FILE, {"receivers": {"test": {"source": {"dc_removal": False}, "demod": demod},
+                                                 "rtl_sdr 0": {"source": {"ppm": -4}}},
+                                   "interface": {"volume": 40, "palette": "classic"}})
+        self.write(BOOKMARKS_FILE, {"bookmarks": [CALLING]})
+        engine = self.engine()
+        self.assertFalse(engine.state()["dc_removal"])
+        self.assertEqual({key: engine.demod_state()[key] for key in demod}, demod)
+        self.assertEqual(engine.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
+        self.assertEqual(engine.preferences_state(),
+                         {"type": "preferences", "values": {"volume": 40, "palette": "classic"}})
+        self.assertEqual(engine.storage_state(),
+                         {"type": "storage", "directory": str(self.directory), "saving": True, "problem": ""})
+
+    async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
+        self.write(SETTINGS_FILE, {"receivers": {"test": {
+            "source": {"dc_removal": "no", "centre_hz": 433e6},    # the test source has no centre to set
+            "demod": {"frequency_hz": 145_010_000, "mode": "WFM", "squelch_db": None}}},
+            "interface": {"volume": 40, "nested": {"a": 1}, "": 1, "text": "x" * 101}})
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine = self.engine()
+        self.assertEqual(len(logs.output), 4)   # DC removal, mode, squelch and some preferences
+        self.assertTrue(engine.state()["dc_removal"])
+        state = engine.demod_state()
+        self.assertEqual((state["frequency_hz"], state["mode"], state["squelch_db"]), (145_010_000.0, "NFM", -80.0))
+        self.assertEqual(engine.preferences_state()["values"], {"volume": 40})
+
+    async def test_saves_changes_a_moment_later_and_keeps_the_other_receivers(self):
+        other = {"source": {"ppm": -4, "gain_db": 40.2}, "demod": {"mode": "NFM"}}
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_sdr 0": other}})
+        engine = self.engine(save_delay_s=0.05)
+        engine.configure({"dc_removal": False})
+        engine.configure_demod({"frequency_hz": 145_010_000, "mode": "USB"})
+        engine.edit_bookmarks({"action": "add", **CALLING})
+        engine.set_preferences({"volume": 25, "palette": "ice", "autoMode": False})
+        settings = await self.saved(SETTINGS_FILE, lambda content: content.get("interface"))
+        self.assertEqual(settings["version"], 1)
+        self.assertEqual(settings["receivers"]["rtl_sdr 0"], other)
+        self.assertEqual(settings["receivers"]["test"]["source"], {"dc_removal": False})
+        self.assertEqual((settings["receivers"]["test"]["demod"]["frequency_hz"],
+                          settings["receivers"]["test"]["demod"]["mode"]), (145_010_000.0, "USB"))
+        self.assertEqual(settings["interface"], {"volume": 25, "palette": "ice", "autoMode": False})
+        bookmarks = await self.saved(BOOKMARKS_FILE, lambda content: content["bookmarks"])
+        self.assertEqual(bookmarks, {"version": 1, "bookmarks": [CALLING]})
+        engine.edit_bookmarks({"action": "change", "id": 1, "name": "Calling"})
+        await self.saved(BOOKMARKS_FILE, lambda content: content["bookmarks"][0]["name"] == "Calling")
+
+    async def test_saves_the_last_changes_when_it_stops(self):
+        engine = Engine(FakeSource(), store=Store(self.directory), save_delay_s=60)
+        engine.configure_demod({"mode": "CW"})
+        engine.edit_bookmarks({"action": "add", **CALLING})
+        self.assertFalse(self.directory.exists())
+        await self.stop(engine)
+        self.assertEqual(self.read(SETTINGS_FILE)["receivers"]["test"]["demod"]["mode"], "CW")
+        self.assertEqual(self.read(BOOKMARKS_FILE)["bookmarks"], [CALLING])
+        again = self.engine()
+        self.assertEqual((again.demod_state()["mode"], len(again.bookmarks_state()["bookmarks"])), ("CW", 1))
+
+    async def test_nothing_is_written_until_something_changes(self):
+        self.write(SETTINGS_FILE, {"receivers": {"test": {"source": {"dc_removal": True}}}})
+        before = (self.directory / SETTINGS_FILE).read_bytes()
+        engine = self.engine(save_delay_s=0.01)
+        engine.configure({"dc_removal": True})     # the same value
+        await self.stop(engine)
+        self.assertEqual((self.directory / SETTINGS_FILE).read_bytes(), before)
+        self.assertFalse((self.directory / BOOKMARKS_FILE).exists())
+
+    async def test_a_failed_save_reaches_the_clients_until_a_save_works(self):
+        engine = self.engine(save_delay_s=0.01)
+        subscription = engine.subscribe()
+        self.assertTrue(waiting(subscription)[-1]["saving"])
+
+        async def storage_state() -> dict:
+            while True:
+                states = [message for message in waiting(subscription)
+                          if isinstance(message, dict) and message["type"] == "storage"]
+                if states:
+                    return states[-1]
+                await asyncio.sleep(0.01)
+
+        full = OSError(28, "No space left on device")
+        with self.assertLogs("radiolack.store", "WARNING"), mock.patch("radiolack.store.os.replace", side_effect=full):
+            engine.configure_demod({"mode": "AM"})
+            state = await asyncio.wait_for(storage_state(), timeout=5)
+        self.assertEqual((state["saving"], state["problem"]),
+                         (False, "settings.json cannot be saved: No space left on device."))
+        engine.configure_demod({"mode": "CW"})
+        state = await asyncio.wait_for(storage_state(), timeout=5)
+        self.assertEqual((state["saving"], state["problem"]), (True, ""))
+
+    async def test_bookmark_changes_reach_every_client(self):
+        engine = self.engine()
+        subscriptions = [engine.subscribe() for _ in range(2)]
+        for subscription in subscriptions:
+            waiting(subscription)
+        engine.edit_bookmarks({"action": "add", **CALLING})
+        for subscription in subscriptions:
+            self.assertEqual(subscription.get_nowait(),
+                             {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
+        with self.assertRaisesRegex(ValueError, "no such bookmark"):
+            engine.edit_bookmarks({"action": "remove", "id": 2})
+        for subscription in subscriptions:
+            self.assertEqual(waiting(subscription), [])
+
+    async def test_preferences_go_to_the_next_clients_only(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        waiting(subscription)
+        engine.set_preferences({"volume": 30})
+        self.assertEqual(waiting(subscription), [])
+        later = engine.subscribe()
+        self.assertEqual(waiting(later)[3], {"type": "preferences", "values": {"volume": 30}})
+        for values in ([1], {"volume": [30]}, {"volume": float("inf")}, {"big": 2 ** 60},
+                       {f"name {n}": n for n in range(101)}):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "preference"):
+                engine.set_preferences(values)
+        self.assertEqual(engine.preferences_state()["values"], {"volume": 30})
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 /*
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
- * state and the demodulation settings from the engine, and takes this
- * interface's changes and its request for audio to it
- * (docs/design/protocol.md). It reconnects by itself after a disconnection.
+ * state, the demodulation settings, the bookmarks, the saved preferences and
+ * the storage state from the engine, and takes this interface's changes, its
+ * preferences and its request for audio to it (docs/design/protocol.md). It
+ * reconnects by itself after a disconnection.
  */
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 const FRAME_KIND_SPECTRUM = 1;
 const FRAME_VERSION = 2;
 const HEADER_BYTES = 40;
@@ -17,7 +18,7 @@ const RETRY_FIRST_MS = 250;
 const RETRY_MAX_MS = 4000;
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
 
 /**
  * @typedef {object} SpectrumFrame
@@ -62,7 +63,41 @@ const COMMANDS = ['source', 'demod', 'audio'];
  * @property {boolean} [squelchAuto]
  */
 
-/** @typedef {'source' | 'demod' | 'audio'} Command */
+/**
+ * A named frequency with a mode, shared by every interface. Its id lasts as
+ * long as the engine runs.
+ * @typedef {object} Bookmark
+ * @property {number} id
+ * @property {number} frequencyHz
+ * @property {string} name
+ * @property {string} mode
+ * @property {boolean} scan     the memory scan stops here
+ */
+
+/**
+ * Fields of a bookmark to set; the others stay as they are.
+ * @typedef {object} BookmarkFields
+ * @property {number} [frequencyHz]
+ * @property {string} [name]
+ * @property {string} [mode]
+ * @property {boolean} [scan]
+ */
+
+/**
+ * An interface's own settings, by name, which the engine keeps for the next
+ * interfaces: numbers, true or false, short texts or null.
+ * @typedef {Record<string, number | boolean | string | null>} Preferences
+ */
+
+/**
+ * Where the engine saves the settings and bookmarks.
+ * @typedef {object} StorageState
+ * @property {string | null} directory  the settings folder; null: nothing is saved
+ * @property {boolean} saving           changes reach the disk
+ * @property {string} problem           what went wrong with the files, or ""
+ */
+
+/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences'} Command */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -117,6 +152,9 @@ const COMMANDS = ['source', 'demod', 'audio'];
  * @property {(frame: AudioFrame) => void} onAudio     while this interface asks for audio
  * @property {(source: SourceState) => void} onSource  sent first, then at every change
  * @property {(demod: DemodState) => void} onDemod     sent next, then at every change this interface has not overtaken
+ * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
+ * @property {(values: Preferences) => void} onPreferences  sent next, once per connection: the latest saved
+ * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -233,6 +271,69 @@ export function decodeSource(message) {
   };
 }
 
+/**
+ * Decode a bookmarks message. Returns null when an entry is missing a field
+ * or holds a malformed one.
+ * @param {any} message  a parsed JSON message of type "bookmarks"
+ * @returns {Bookmark[] | null}
+ */
+export function decodeBookmarks(message) {
+  if (!Array.isArray(message.bookmarks)) return null;
+  /** @type {Bookmark[]} */
+  const bookmarks = [];
+  for (const b of message.bookmarks) {
+    const valid = b !== null && typeof b === 'object' && Number.isSafeInteger(b.id) && b.id > 0
+      && typeof b.frequency_hz === 'number' && Number.isFinite(b.frequency_hz)
+      && typeof b.name === 'string' && typeof b.mode === 'string' && typeof b.scan === 'boolean';
+    if (!valid) return null;
+    bookmarks.push({ id: b.id, frequencyHz: b.frequency_hz, name: b.name, mode: b.mode, scan: b.scan });
+  }
+  return bookmarks;
+}
+
+/**
+ * Decode a preferences message. Returns null unless its values are a JSON
+ * object; values that are not numbers, true or false, texts or null are left
+ * out.
+ * @param {any} message  a parsed JSON message of type "preferences"
+ * @returns {Preferences | null}
+ */
+export function decodePreferences(message) {
+  const values = message.values;
+  if (values === null || typeof values !== 'object' || Array.isArray(values)) return null;
+  // fromEntries defines own properties: a "__proto__" entry cannot change the prototype.
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value === null
+    || typeof value === 'boolean' || typeof value === 'string'
+    || (typeof value === 'number' && Number.isFinite(value))));
+}
+
+/**
+ * Decode a storage message. Returns null when a field is missing or
+ * malformed.
+ * @param {any} message  a parsed JSON message of type "storage"
+ * @returns {StorageState | null}
+ */
+export function decodeStorage(message) {
+  const m = message;
+  const valid = (m.directory === null || typeof m.directory === 'string') && typeof m.saving === 'boolean'
+    && typeof m.problem === 'string';
+  return valid ? { directory: m.directory, saving: m.saving, problem: m.problem } : null;
+}
+
+/**
+ * The fields of a bookmark command, named as the engine names them.
+ * @param {BookmarkFields} fields
+ */
+function bookmarkFields(fields) {
+  /** @type {Record<string, string | number | boolean>} */
+  const message = {};
+  if (fields.frequencyHz !== undefined) message.frequency_hz = fields.frequencyHz;
+  if (fields.name !== undefined) message.name = fields.name;
+  if (fields.mode !== undefined) message.mode = fields.mode;
+  if (fields.scan !== undefined) message.scan = fields.scan;
+  return message;
+}
+
 /** The address of the stream on the server that served this page. */
 function streamUrl() {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -282,8 +383,6 @@ export class EngineStream {
    * @returns {boolean}
    */
   sendSource(changes) {
-    const socket = this.#socket;
-    if (!socket || !this.#greeted || socket.readyState !== WebSocket.OPEN) return false;
     /** @type {Record<string, string | number | boolean | null>} */
     const message = { type: 'source' };
     if (changes.centreHz !== undefined) message.centre_hz = changes.centreHz;
@@ -291,8 +390,7 @@ export class EngineStream {
     if (changes.gainDb !== undefined) message.gain_db = changes.gainDb;
     if (changes.ppm !== undefined) message.ppm = changes.ppm;
     if (changes.dcRemoval !== undefined) message.dc_removal = changes.dcRemoval;
-    socket.send(JSON.stringify(message));
-    return true;
+    return this.#send(message);
   }
 
   /**
@@ -304,19 +402,58 @@ export class EngineStream {
    * @returns {boolean}
    */
   sendDemod(changes) {
-    const socket = this.#socket;
-    if (!socket || !this.#greeted || socket.readyState !== WebSocket.OPEN) return false;
-    this.#lastChangeId += 1;
     /** @type {Record<string, string | number | boolean>} */
-    const message = { type: 'demod', id: this.#lastChangeId };
+    const message = { type: 'demod', id: this.#lastChangeId + 1 };
     if (changes.frequencyHz !== undefined) message.frequency_hz = changes.frequencyHz;
     if (changes.mode !== undefined) message.mode = changes.mode;
     if (changes.bandwidthHz !== undefined) message.bandwidth_hz = changes.bandwidthHz;
     if (changes.squelchDb !== undefined) message.squelch_db = changes.squelchDb;
     if (changes.squelchAuto !== undefined) message.squelch_auto = changes.squelchAuto;
-    socket.send(JSON.stringify(message));
+    if (!this.#send(message)) return false;
+    this.#lastChangeId += 1;
     this.#awaitedId = this.#lastChangeId;
     return true;
+  }
+
+  /**
+   * Ask the engine to add a bookmark. Every interface then receives the
+   * bookmarks, or this one an error. Returns false, sending nothing, when
+   * the stream is not open.
+   * @param {{frequencyHz: number, name: string, mode: string, scan?: boolean}} bookmark
+   * @returns {boolean}
+   */
+  addBookmark(bookmark) {
+    return this.#send({ type: 'bookmark', action: 'add', ...bookmarkFields(bookmark) });
+  }
+
+  /**
+   * Ask the engine to change some fields of a bookmark, as `addBookmark`.
+   * @param {number} id
+   * @param {BookmarkFields} changes
+   * @returns {boolean}
+   */
+  changeBookmark(id, changes) {
+    return this.#send({ type: 'bookmark', action: 'change', id, ...bookmarkFields(changes) });
+  }
+
+  /**
+   * Ask the engine to remove a bookmark, as `addBookmark`.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  removeBookmark(id) {
+    return this.#send({ type: 'bookmark', action: 'remove', id });
+  }
+
+  /**
+   * Give the engine this interface's preferences, which the next interfaces
+   * start with; open interfaces keep theirs. Returns false, sending nothing,
+   * when the stream is not open.
+   * @param {Preferences} values
+   * @returns {boolean}
+   */
+  savePreferences(values) {
+    return this.#send({ type: 'preferences', values });
   }
 
   /**
@@ -327,10 +464,7 @@ export class EngineStream {
   setAudio(on) {
     if (on === this.#audio) return;
     this.#audio = on;
-    const socket = this.#socket;
-    if (socket && this.#greeted && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'audio', on }));
-    }
+    this.#send({ type: 'audio', on });     // when not open, #hello sends it once greeted
   }
 
   /** Disconnect and stop retrying; the engine idles once no client listens. */
@@ -340,6 +474,18 @@ export class EngineStream {
     const socket = this.#socket;
     this.#socket = null;
     if (socket) socket.close(1000);
+  }
+
+  /**
+   * Send a command, once the engine greeted this interface.
+   * @param {Record<string, unknown>} command
+   * @returns {boolean} false, sending nothing, when the stream is not open
+   */
+  #send(command) {
+    const socket = this.#socket;
+    if (!socket || !this.#greeted || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(command));
+    return true;
   }
 
   #connect() {
@@ -402,6 +548,15 @@ export class EngineStream {
     } else if (message.type === 'demod') {
       const demod = decodeDemod(message);
       if (demod && demod.acknowledged >= this.#awaitedId) this.#handlers.onDemod(demod);
+    } else if (message.type === 'bookmarks') {
+      const bookmarks = decodeBookmarks(message);
+      if (bookmarks) this.#handlers.onBookmarks(bookmarks);
+    } else if (message.type === 'preferences') {
+      const values = decodePreferences(message);
+      if (values) this.#handlers.onPreferences(values);
+    } else if (message.type === 'storage') {
+      const storage = decodeStorage(message);
+      if (storage) this.#handlers.onStorage(storage);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);

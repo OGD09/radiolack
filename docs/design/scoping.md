@@ -37,6 +37,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-09 | English only: code, identifiers, comments, documentation and the interface. No other language and no translation layer; this replaces the English and French interface planned on 2026-11-08. |
 | 2026-11-09 | All frequencies: Radiolack tunes and labels the whole range of its receivers, not only the amateur bands. The band plan covers 9 kHz to 6.425 GHz with a simplified European table (ITU Region 1 allocations named by their main use) and simplified IARU Region 1 plans inside the amateur bands ([`band-plan.md`](band-plan.md)). This replaces "for the amateur bands" (2026-11-08) and answers the open question on tuning. |
 | 2026-11-09 | Browser tests (Playwright: Chromium, Firefox and WebKit) run headless and only on request (`RADIOLACK_BROWSER_TESTS=1`), as CI does; the usual test commands launch no browser. |
+| 2026-11-09 | Persistence: the engine saves everything, in `$XDG_CONFIG_HOME/radiolack` (`settings.json` and `bookmarks.json`, each with a format version), including the interface's own settings: the page's origin, and with it the browser's storage, changes with the port at each start. Receiver settings are saved per receiver (the simulated band, each `--rtl-sdr` device, each `--rtl-tcp` address). Until remote access, one set of interface settings is kept, that of the interface that changed one last, which the next interface opens with; open interfaces keep their own. v1 keeps them per device. Remote access is never saved. A file Radiolack cannot read is set aside, never overwritten. |
 
 ## Scope
 
@@ -131,7 +132,8 @@ flowchart LR
   squelch, gain and scanners. A change from any client reaches the others at
   once, and the last change wins.
 - View settings stay on each device: zoom, palette, panel layout, volume and
-  mute.
+  mute. The engine keeps the latest for the next interface to open (one set
+  in v0, one per device from v1).
 - The engine sends audio only to clients that turned it on, and encodes each
   format once whatever the number of clients.
 - Settings live in the engine. Security settings (remote access, access code)
@@ -200,7 +202,8 @@ remembers its settings, and when every test passes in CI.
 - Settings > Remote access as in the mockup: HTTPS, access code, connected
   devices.
 - Remote clients: the same UI, touch input, shared receiver, a volume per
-  device; PCM audio on the local network, Opus for slower links.
+  device; PCM audio on the local network, Opus for slower links. The engine
+  keeps each device's interface settings apart (v0 keeps one set).
 - iPhone: listening with the screen on; listening with the screen locked
   according to spike 2.
 
@@ -386,6 +389,21 @@ These costs wait for v4:
   Radiolack leaves the allocator alone. Tested on synthetic I/Q, through the
   engine and the server, in three browsers and in the native window; not
   yet with a receiver.
+- Settings and bookmarks, 2026-11-09: the engine restores at start, and
+  saves a second after a change and when Radiolack stops, each receiver's
+  source and demodulation settings, the bookmarks and the interface's own
+  settings (protocol version 4: bookmarks, preferences and storage state).
+  Files are written whole through a temporary file, synced, then renamed;
+  writes run outside the event loop, and only for a file whose content
+  changed. A file that is not valid JSON of a known version is renamed
+  aside and Radiolack starts from the defaults; one that cannot be opened,
+  or comes from a newer version, is left alone and not written until the
+  next start; a failed write is tried again at the next change. These disk
+  problems reach the interfaces apart from the receiver's state: Settings >
+  Storage names them and the status line says when changes are not saved.
+  A saved setting the receiver refuses keeps its default. The Bands panel
+  adds, renames and removes the engine's bookmarks, which every interface
+  shows. The tests run with a temporary settings folder.
 - Next step: AM, USB, LSB and CW audio.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
