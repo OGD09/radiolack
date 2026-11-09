@@ -82,16 +82,20 @@ jobs:
         timeout-minutes: 5
         run: python -m playwright install --only-shell chromium firefox webkit
 
-      - name: Install the browsers' system libraries
+      # Xvfb gives headless Firefox the display it needs for WebGL2 on a
+      # runner without a GPU (FIREFOX_PREFS in tests/test_browser.py).
+      - name: Install the browsers' system libraries and Xvfb
         timeout-minutes: 5
         env:
           DEBIAN_FRONTEND: noninteractive
           NEEDRESTART_MODE: a
-        run: python -m playwright install-deps chromium firefox webkit
+        run: |
+          python -m playwright install-deps chromium firefox webkit
+          sudo -E apt-get install -y --no-install-recommends xvfb xauth
 
       # Only the browser tests: the Tests workflow runs the others.
       - name: Run the browser tests
         timeout-minutes: 5
         env:
           RADIOLACK_BROWSER_TESTS: "1"
-        run: python -m unittest tests.test_browser -v
+        run: xvfb-run -a python -m unittest tests.test_browser -v

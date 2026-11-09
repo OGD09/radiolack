@@ -358,8 +358,10 @@ These costs wait for v4:
   showing in another. WebKit 27.2 refuses its own stylesheet for each
   `<select>` under the interface's policy, without visible effect
   (WebKitGTK 2.50 does not): the tests ignore that one message in WebKit.
-  Run locally, also with software rendering as on a runner without a GPU;
-  not yet on GitHub, where `rewrite` has not been pushed.
+  On GitHub's runner (Ubuntu 26.04, no GPU), Firefox first refused
+  WebGL2: without a GPU it refuses Mesa's software renderer and needs a
+  display, so the tests set its `webgl.force-enabled` preference and the
+  workflow runs them under Xvfb, as checked locally with the GPU hidden.
 - Next step: demodulation and audio on the computer, starting with NFM.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

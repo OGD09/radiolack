@@ -232,8 +232,12 @@ pins Playwright's version, in the virtual environment of
 RADIOLACK_BROWSER_TESTS=1 .venv/bin/python -m unittest tests.test_browser -v
 ```
 
-A second GitHub Actions workflow runs the type check and the browser tests
-when the package, the tests or `pyproject.toml` change.
+On a computer without a display or a GPU, such as a server, run the last
+command under `xvfb-run -a` (Debian and Ubuntu: `sudo apt install xvfb`):
+headless Firefox then needs a display to draw with WebGL2.
+
+A second GitHub Actions workflow runs the type check and the browser tests,
+under Xvfb, when the package, the tests or `pyproject.toml` change.
 
 ## Documentation
 

@@ -30,6 +30,10 @@ DOT = "\N{MIDDLE DOT}"  # the status line's separator
 # which WebKitGTK 2.50 does not have. WebKit words a refused inline style the
 # same way, but Chromium and Firefox report those in their own words.
 WEBKIT_SELECT_REFUSAL = "Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'"
+# Without a GPU, as on a CI runner, Firefox refuses WebGL2 on Mesa's software
+# renderer: this preference lifts that refusal. Firefox then also needs a
+# display, which xvfb-run gives where there is none.
+FIREFOX_PREFS = {"webgl.force-enabled": True}
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
@@ -45,7 +49,8 @@ class BrowserTest(unittest.TestCase):
         cls.addClassCleanup(playwright.stop)
         cls.browsers = {}
         for name in BROWSERS:
-            browser = getattr(playwright, name).launch()    # headless
+            options = {"firefox_user_prefs": FIREFOX_PREFS} if name == "firefox" else {}
+            browser = getattr(playwright, name).launch(**options)   # headless
             cls.addClassCleanup(browser.close)
             cls.browsers[name] = browser
         expect.set_options(timeout=TIMEOUT_MS)
