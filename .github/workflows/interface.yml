@@ -121,7 +121,7 @@ jobs:
           rm -rf ~/apt-archives
           mkdir ~/apt-archives
           find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -t ~/apt-archives {} +
-          echo "$(ls ~/apt-archives | wc -l) packages kept for the next runs"
+          echo "$(find ~/apt-archives -maxdepth 1 -name '*.deb' | wc -l) packages kept for the next runs"
 
       # Only a null sink, a silent output paced like a sound card: without a
       # sound server, Firefox keeps the interface's audio context suspended.

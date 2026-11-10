@@ -97,7 +97,8 @@ the history under the tag `v0.1.0`.
   its SHA256SUMS and, for a public repository, an attestation, from the
   `release` environment. Dependabot (`.github/dependabot.yml`) updates the
   actions and Playwright weekly, after a seven-day cooldown. Keep: every
-  action pinned to a full commit with its version in a comment; checkouts
+  action pinned to a full commit with its version in a comment, and this
+  repository's workflows called through `$/`, not `./`; checkouts
   with `persist-credentials: false`; read-only permissions except the
   publish job's; `${{ }}` values passed to scripts through `env`, never
   inside `run`; job and step timeouts; concurrency cancellation, with

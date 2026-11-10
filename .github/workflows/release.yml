@@ -63,26 +63,28 @@ jobs:
           esac
           echo "$TAG: an annotated tag of version $version, on $MAIN"
 
+  # "$/": GitHub's self-repository syntax, this repository at the run's
+  # commit.
   tests:
     name: Tests
     needs: version
     permissions:
       contents: read
-    uses: ./.github/workflows/tests.yml
+    uses: $/.github/workflows/tests.yml
 
   interface:
     name: Interface
     needs: version
     permissions:
       contents: read
-    uses: ./.github/workflows/interface.yml
+    uses: $/.github/workflows/interface.yml
 
   package:
     name: Package
     needs: version
     permissions:
       contents: read
-    uses: ./.github/workflows/package.yml
+    uses: $/.github/workflows/package.yml
 
   publish:
     name: Publish
