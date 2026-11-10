@@ -54,3 +54,22 @@ Description: Receive-only SDR receiver with band plans
 Filename: pool/main/r/radiolack/radiolack_0.4.0_all.deb
 Size: 101708
 SHA256: 322a386ca1897cb7ae17fbfa2da5d37e5871f8d9637f572c459ff45c31f7629a
+
+Package: radiolack
+Version: 0.4.1
+Architecture: all
+Maintainer: OGD09 <46905152+OGD09@users.noreply.github.com>
+Installed-Size: 437
+Depends: python3 (>= 3.11), python3-aiohttp (>= 3.8), python3-numpy (>= 1:1.24), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0, ca-certificates
+Recommends: rtl-sdr
+Section: hamradio
+Priority: optional
+Description: Receive-only SDR receiver with band plans
+ Radiolack shows the spectrum and the waterfall of an SDR receiver in a
+ desktop window and plays NFM, AM, USB, LSB and CW. It reads an RTL-SDR
+ receiver plugged into this computer, or one that rtl_tcp serves from
+ another computer, and labels every frequency with a simplified European
+ band plan, with the IARU Region 1 plans inside the amateur bands.
+Filename: pool/main/r/radiolack/radiolack_0.4.1_all.deb
+Size: 101772
+SHA256: e50892658fc21f36e587d7521746d9a2f4da76be9f856bb90401333866cbd247
