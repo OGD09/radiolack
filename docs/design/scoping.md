@@ -580,6 +580,13 @@ These costs wait for v4:
   Protocol version 5. The tests run apt itself against repositories signed
   with throwaway keys, and the Package workflow checks the installed
   package's check against the published repository on each system.
+- APT source, 2026-11-10: `apt update` noted at each run that the
+  repository has no index for the computer's architectures (amd64, and
+  i386 where it is added), as the repository lists only `all`. apt leaves
+  such notes out when its output is not a terminal, which hid them from
+  the checks. From 0.4.1, the source names `Architectures: all`, and a
+  test runs apt with `quiet=0` against it; dpkg replaces the source at the
+  upgrade, unless the user changed it.
 - Next step: the owner's choice about the button that installs an update,
   then v1, remote access.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never

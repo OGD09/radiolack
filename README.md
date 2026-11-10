@@ -530,7 +530,12 @@ so that apt installs each new one with the system's other updates. The
 package adds it, as two configuration files: its source,
 `/etc/apt/sources.list.d/radiolack.sources`, and its key,
 `/etc/apt/keyrings/radiolack-archive-keyring.gpg`, against which apt checks
-every index and package. To stop using the repository, change `Enabled: yes`
+every index and package. The source names the repository's only
+architecture, `all`, as the package is architecture-independent: without
+it, as in the source of Radiolack 0.3.0 and 0.4.0, `apt update` notes each
+time that the repository has no index for the computer's architectures.
+An upgrade replaces that source, unless you changed it: dpkg then asks
+which one to keep. To stop using the repository, change `Enabled: yes`
 to `Enabled: no` in the source: Radiolack then stops checking for updates
 too. `sudo apt remove radiolack` keeps both
 files, so that the source still checks out, and `sudo apt purge radiolack`

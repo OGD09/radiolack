@@ -399,7 +399,10 @@ class RepositoryTest(unittest.TestCase):
         local = source.replace(f"URIs: {fields['URIs']}\n", f"URIs: file:{self.repository}/\n").replace(
             f"Signed-By: {fields['Signed-By']}\n", f"Signed-By: {self.keyring}\n")
         environment = self.apt(source=local)
-        run("apt-get", "update", env=environment)
+        # quiet=0: apt leaves its notes out when its output is not a terminal.
+        result = run("apt-get", "-o", "quiet=0", "update", env=environment)
+        # The source names the repository's only architecture, so apt asks for no other index.
+        self.assertNotIn("doesn't support architecture", result.stdout + result.stderr)
         self.assertIn("Candidate: 1.0.0", run("apt-cache", "policy", "radiolack", env=environment).stdout)
         # Turned off, the source gives apt nothing to fetch.
         environment = self.apt(source=local.replace("\nEnabled: yes\n", "\nEnabled: no\n"))
