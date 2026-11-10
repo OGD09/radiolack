@@ -156,6 +156,7 @@ function resetBuffers() {
 let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
+const typingIn = new Set(); // Source fields the user is typing in, which the engine's state leaves as they are
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
@@ -1053,9 +1054,10 @@ function bindRange(id, key, fmt, after) {
 
 // Source: what the engine captures, and the receiver settings it takes. The
 // engine's state is the reference: a change shows once the engine sends it
-// back, to every interface. The source is chosen when Radiolack starts, DC
-// removal is the engine's own setting for any source, and antenna power comes
-// with a later step.
+// back, to every interface. The source is chosen when Radiolack starts, but an
+// rtl_tcp source can move to another server address. DC removal is the
+// engine's own setting for any source, and antenna power comes with a later
+// step.
 let manualGainDb = null;    // the last manual gain, offered again when automatic gain is turned off
 const nearestIndex = (values, v) => values.reduce((best, x, i) => (Math.abs(x - v) < Math.abs(values[best] - v) ? i : best), 0);
 function sourceNote() {
@@ -1083,8 +1085,12 @@ function syncSource() {
   const settable = new Set(streamState === 'open' && source ? source.settable : []);
   $('#src-device').value = source ? source.kind : '';   // no entry is selected before the engine answers
   $('#src-note').textContent = sourceNote();
+  const addressEl = $('#src-address');
+  $('#src-address-field').hidden = !source || !source.settable.includes('address');
+  if (!typingIn.has(addressEl)) addressEl.value = source?.address ?? '';
+  addressEl.disabled = !settable.has('address');
   const centreEl = $('#src-center');
-  if (document.activeElement !== centreEl) centreEl.value = fmtMHz(source ? source.centreHz : S.fc);
+  if (!typingIn.has(centreEl)) centreEl.value = fmtMHz(source ? source.centreHz : S.fc);
   centreEl.disabled = !settable.has('centre_hz');
   const rateEl = $('#src-rate');
   selectRate(rateEl, source ? source.rateHz : S.fs);
@@ -1102,7 +1108,7 @@ function syncSource() {
   agcEl.checked = Boolean(source && source.settable.includes('gain_db') && auto);
   agcEl.disabled = !gainSettable;
   const ppmEl = $('#src-ppm');
-  if (document.activeElement !== ppmEl) ppmEl.value = String(source?.ppm ?? 0);
+  if (!typingIn.has(ppmEl)) ppmEl.value = String(source?.ppm ?? 0);
   ppmEl.disabled = !settable.has('ppm');
   const dcEl = $('#src-dc');
   dcEl.checked = Boolean(source?.dcRemoval);
@@ -1110,6 +1116,23 @@ function syncSource() {
 }
 // Gain the slider points at, in dB, or undefined.
 const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] : undefined);
+// A text field shows the engine's value, except while the user types in it:
+// from the first keystroke until Enter or leaving the field. A value sent
+// then shows as the engine took it, or the one in use if refused, focus or
+// not; leaving without a change shows the engine's value again. These run
+// before each field's own change handler, which may sync.
+for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm')]) {
+  el.addEventListener('input', () => typingIn.add(el));
+  el.addEventListener('change', () => typingIn.delete(el));
+  el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
+}
+// The engine reads the address and says why it refuses one; an emptied field
+// or the address in use changes nothing.
+$('#src-address').addEventListener('change', (e) => {
+  const el = e.target;
+  const address = el.value.trim();
+  if (!source || !address || address === source.address || !stream.sendSource({ address })) el.value = source?.address ?? '';
+});
 $('#src-center').addEventListener('change', (e) => {
   const hz = Math.round(parseFloat(e.target.value.replace(',', '.')) * 1e6);
   if (!source || !Number.isFinite(hz) || hz === source.centreHz) { syncSource(); return; }

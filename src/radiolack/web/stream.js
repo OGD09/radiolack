@@ -17,7 +17,7 @@ const AUDIO_HEADER_BYTES = 16;
 const RETRY_FIRST_MS = 250;
 const RETRY_MAX_MS = 4000;
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
-const SETTINGS = ['centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
+const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
 
 /**
@@ -106,7 +106,7 @@ const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
  */
 
 /**
- * @typedef {'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'dc_removal'} Setting
+ * @typedef {'address' | 'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'dc_removal'} Setting
  */
 
 /**
@@ -132,6 +132,7 @@ const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
 /**
  * Changes to ask of the engine; the others stay as they are.
  * @typedef {object} SourceChanges
+ * @property {string} [address]         of an rtl_tcp server: HOST, PORT or HOST:PORT
  * @property {number} [centreHz]
  * @property {number} [rateHz]
  * @property {number | null} [gainDb]   null: automatic gain
@@ -385,6 +386,7 @@ export class EngineStream {
   sendSource(changes) {
     /** @type {Record<string, string | number | boolean | null>} */
     const message = { type: 'source' };
+    if (changes.address !== undefined) message.address = changes.address;
     if (changes.centreHz !== undefined) message.centre_hz = changes.centreHz;
     if (changes.rateHz !== undefined) message.sample_rate_hz = changes.rateHz;
     if (changes.gainDb !== undefined) message.gain_db = changes.gainDb;

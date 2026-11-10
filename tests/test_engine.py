@@ -14,7 +14,8 @@ from unittest import mock
 import numpy as np
 
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
-from radiolack.engine import Engine, Subscription
+from radiolack.engine import Engine, Source, Subscription
+from radiolack.rtltcp import RtlTcpSource
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource
@@ -327,8 +328,8 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
     def read(self, name: str) -> dict:
         return json.loads((self.directory / name).read_text(encoding="utf-8"))
 
-    def engine(self, **options) -> Engine:
-        engine = Engine(FakeSource(), store=Store(self.directory), **options)
+    def engine(self, source: Source | None = None, **options) -> Engine:
+        engine = Engine(source if source is not None else FakeSource(), store=Store(self.directory), **options)
         self.addAsyncCleanup(self.stop, engine)
         return engine
 
@@ -418,6 +419,31 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         await self.stop(engine)
         self.assertEqual((self.directory / SETTINGS_FILE).read_bytes(), before)
         self.assertFalse((self.directory / BOOKMARKS_FILE).exists())
+
+    # The engine does not run in these tests: the rtl_tcp sources never read,
+    # so nothing connects to their addresses.
+
+    async def test_rtl_tcp_keeps_its_settings_and_the_address_used_last_whatever_the_address(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": "192.0.2.10:40000", "ppm": -4}}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        self.assertEqual((engine.state()["address"], engine.state()["ppm"]), ("192.0.2.10:40000", -4))
+        engine.configure({"address": "192.0.2.20"})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["address"] == "192.0.2.20:1234")
+        self.assertEqual(settings["receivers"]["rtl_tcp"]["source"]["ppm"], -4)
+
+    async def test_an_address_given_at_start_replaces_the_saved_one(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": "192.0.2.10:40000", "ppm": -4}}}})
+        engine = self.engine(RtlTcpSource("192.0.2.20", 40000), save_delay_s=60)
+        self.assertEqual((engine.state()["address"], engine.state()["ppm"]), ("192.0.2.20:40000", -4))
+        await self.stop(engine)     # nothing changed meanwhile, but the given address replaces the saved one
+        self.assertEqual(self.read(SETTINGS_FILE)["receivers"]["rtl_tcp"]["source"]["address"], "192.0.2.20:40000")
+
+    async def test_an_address_given_as_saved_writes_nothing(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": "192.0.2.10:40000"}}}})
+        before = (self.directory / SETTINGS_FILE).read_bytes()
+        await self.stop(self.engine(RtlTcpSource("192.0.2.10", 40000)))
+        self.assertEqual((self.directory / SETTINGS_FILE).read_bytes(), before)
 
     async def test_a_failed_save_reaches_the_clients_until_a_save_works(self):
         engine = self.engine(save_delay_s=0.01)

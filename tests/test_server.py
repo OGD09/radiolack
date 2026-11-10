@@ -477,6 +477,27 @@ class RtlTcpStreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn((0x04, 297), self.fake.commands)
             self.assertIn((0x05, 2**32 - 3), self.fake.commands)
 
+    async def test_an_interface_moves_the_receiver_to_another_address_for_all(self):
+        other = FakeRtlTcp(chunk_bytes=8000)
+        await other.__aenter__()
+        self.addAsyncCleanup(other.__aexit__, None, None, None)
+        address = f"{LOOPBACK_HOST}:{other.port}"
+        async with self.connect() as first, self.connect() as second:
+            for ws in (first, second):
+                self.assertEqual(await next_frame_centre(ws), 145e6)
+            await first.send_json({"type": "source", "address": str(other.port), "ppm": -3})
+            for ws in (first, second):
+                while (state := await next_text(ws))["address"] != address or state["status"] != "streaming":
+                    pass
+                self.assertEqual((state["centre_hz"], state["ppm"]), (145e6, -3))
+                self.assertEqual(await next_frame_centre(ws), 145e6)
+            self.assertEqual(other.connections, 1)
+            self.assertIn((0x05, 2**32 - 3), other.commands)
+            deadline = time.monotonic() + 5
+            while self.fake.open_connections:
+                self.assertLess(time.monotonic(), deadline, "the first rtl_tcp is still connected")
+                await asyncio.sleep(0.05)
+
     async def test_hangs_up_once_no_interface_listens(self):
         async with self.connect() as ws:
             await next_frame_centre(ws)

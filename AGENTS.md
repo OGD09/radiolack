@@ -21,8 +21,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:
   channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
-  rtl_tcp the user runs, `RtlSdrSource` runs rtl_tcp itself while it
-  connects; a lost server is a waiting state), `synthetic` (simulated 2 m
+  rtl_tcp the user runs, whose address the interface can change,
+  `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
+  waiting state), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no

@@ -16,6 +16,10 @@ the same reason it hangs up once the engine stops reading, and connects again
 at the next read. A refused, silent or lost connection is a waiting state,
 retried with a growing delay, never an error.
 
+The address of an ``RtlTcpSource`` is one of its settings: the way to the
+receiver, which changes with the network the computers are on. A new address
+hangs up and connects there, with the same settings.
+
 After a change of centre frequency, sample rate or frequency correction,
 samples of the previous setting still arrive for a moment: the source drops
 what arrives during the next 0.4 s, then labels the samples with the new
@@ -41,6 +45,7 @@ from typing import Any
 
 import numpy as np
 
+DEFAULT_ADDRESS = ("127.0.0.1", 1234)  # where rtl_tcp listens unless told otherwise
 DEFAULT_CENTRE_HZ = 145_000_000.0      # the 2 m band, until the user tunes elsewhere
 DEFAULT_SAMPLE_RATE_HZ = 2_400_000.0
 # librtlsdr's upper range of sample rates; its lower one, 225 to 300 kHz, is
@@ -56,6 +61,7 @@ RETRY_S = (0.5, 5.0)    # first and longest delay before connecting again
 RTL_TCP_PROGRAM = "rtl_tcp"     # what RtlSdrSource runs, found on the PATH
 STOP_S = 3.0            # rtl_tcp stops within about a second; killed after this
 
+_MAX_HOST = 253         # characters in the longest host name
 _CHECK_S = 0.25         # how often a connection checks its time limits
 _START_CHECK_S = 0.1    # how often RtlSdrSource tries to connect while rtl_tcp starts
 _OUTPUT_CHARS = 4096    # end of rtl_tcp's messages kept, to tell why it stopped
@@ -105,6 +111,48 @@ TUNERS = {
 _ANY_FREQUENCY_HZ = (1.0, float(0xFFFF_FFFF))
 
 
+def parse_address(text: str) -> tuple[str, int]:
+    """The host and port of an rtl_tcp server written as HOST, PORT or
+    HOST:PORT, an IPv6 host in brackets as in [::1]:1234; rtl_tcp's default
+    address gives the missing part. Raises ValueError, saying why, for
+    anything else."""
+    text = text.strip()
+    host, port = DEFAULT_ADDRESS
+    if not text:
+        raise ValueError("no address given")
+    if any(char.isspace() for char in text):
+        raise ValueError("the address must be HOST, PORT or HOST:PORT")
+    if text.isascii() and text.isdigit():
+        return host, _parse_port(text)
+    if text.startswith("["):
+        end = text.find("]")
+        rest = text[end + 1:]
+        if end < 0 or (rest and not rest.startswith(":")):
+            raise ValueError("an IPv6 address goes in brackets, as in [::1]:1234")
+        host = text[1:end]
+        if rest:
+            port = _parse_port(rest[1:])
+    elif text.count(":") > 1:
+        raise ValueError("an IPv6 address goes in brackets, as in [::1]:1234")
+    else:
+        host, colon, port_text = text.partition(":")
+        if colon:
+            port = _parse_port(port_text)
+    if not host:
+        raise ValueError("the address must be HOST, PORT or HOST:PORT")
+    if len(host) > _MAX_HOST:
+        raise ValueError("the host name is too long")
+    return host, port
+
+
+def _parse_port(text: str) -> int:
+    # At most five digits: int() refuses very long numbers with its own message.
+    port = int(text) if text.isascii() and text.isdigit() and len(text) <= 5 else 0
+    if not 1 <= port <= 65535:
+        raise ValueError("the port must be a whole number from 1 to 65535")
+    return port
+
+
 def tuner_for(tuner_type: int, gain_count: int) -> Tuner:
     """The tuner an rtl_tcp header announces. Its gains apply only when the
     header counts as many: another librtlsdr may offer other ones."""
@@ -132,17 +180,23 @@ class RtlTcpSource:
     ``centre_hz`` and ``sample_rate_hz`` describe the samples ``read`` last
     returned. ``describe`` gives the settings asked of the receiver and the
     connection state, and ``on_change`` is called whenever they change.
+
+    Without ``host`` and ``port``, the source reads rtl_tcp's default
+    address until the engine gives it the saved one; with either of them,
+    the address is ``given``, and the saved one does not replace it.
     """
 
     kind = "rtl_tcp"
 
-    def __init__(self, host: str, port: int, *, centre_hz: float = DEFAULT_CENTRE_HZ,
-                 sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ, gain_db: float | None = None,
-                 ppm: int = 0, settle_s: float = SETTLE_S, buffer_s: float = BUFFER_S, idle_s: float = IDLE_S,
-                 read_wait_s: float = READ_WAIT_S, timeout_s: float = TIMEOUT_S,
-                 retry_s: tuple[float, float] = RETRY_S) -> None:
-        self.host = host
-        self.port = port
+    def __init__(self, host: str | None = None, port: int | None = None, *,
+                 centre_hz: float = DEFAULT_CENTRE_HZ, sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
+                 gain_db: float | None = None, ppm: int = 0, settle_s: float = SETTLE_S,
+                 buffer_s: float = BUFFER_S, idle_s: float = IDLE_S, read_wait_s: float = READ_WAIT_S,
+                 timeout_s: float = TIMEOUT_S, retry_s: tuple[float, float] = RETRY_S) -> None:
+        default_host, default_port = DEFAULT_ADDRESS
+        self.given = frozenset() if host is None and port is None else frozenset({"address"})
+        self.host = default_host if host is None else host
+        self.port = default_port if port is None else port
         self._settle_s = settle_s
         self._buffer_s = buffer_s
         self._idle_s = idle_s
@@ -175,8 +229,13 @@ class RtlTcpSource:
 
     @property
     def settings_key(self) -> str:
-        """The engine saves settings per rtl_tcp address."""
-        return f"{self.kind} {self.address}"
+        """One set of settings whatever the address, which is one of them:
+        the address is only the way to the receiver."""
+        return self.kind
+
+    def _settable(self) -> list[str]:
+        """The settings an interface may change."""
+        return ["address", *_SETTINGS]
 
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples, or ``None`` when they did not arrive
@@ -226,22 +285,43 @@ class RtlTcpSource:
             "ppm": settings.ppm,
             "gains_db": list(tuner.gains_db) if tuner else [],
             "range_hz": list(tuner.range_hz if tuner else _ANY_FREQUENCY_HZ),
-            "settable": list(_SETTINGS),
+            "settable": self._settable(),
         }
 
     def configure(self, changes: Mapping[str, object]) -> None:
-        """Change ``centre_hz``, ``sample_rate_hz``, ``gain_db`` (``None``
-        for automatic gain) and ``ppm``, then call ``on_change``.
+        """Change ``address`` (as ``parse_address`` reads it), ``centre_hz``,
+        ``sample_rate_hz``, ``gain_db`` (``None`` for automatic gain) and
+        ``ppm``, then call ``on_change``.
 
         Raises ValueError, changing nothing, when a setting is unknown or
         invalid. A gain becomes the nearest the tuner offers. Changes made
-        while disconnected apply at the next connection.
+        while disconnected apply at the next connection. Another address
+        hangs up, and the next read connects there with the same settings;
+        its tuner is unknown until it answers.
         """
+        changes = dict(changes)
+        address = None
+        if "address" in changes and "address" in self._settable():
+            value = changes.pop("address")
+            if not isinstance(value, str):
+                raise ValueError("the address must be text")
+            address = parse_address(value)
+            if address == (self.host, self.port):
+                address = None
         old = self._settings
-        new = _changed(old, changes, self.tuner)
+        new = _changed(old, changes, self.tuner if address is None else None)
         self._settings = new
         retuned = (new.centre_hz, new.sample_rate_hz, new.ppm) != (old.centre_hz, old.sample_rate_hz,
                                                                    old.ppm)
+        if address is not None:
+            self.host, self.port = address
+            self.tuner = None
+            if self._task is not None and not self._task.done():
+                # The task ends, then the next read starts one for the new address.
+                self._hang_up()
+                self.status, self.detail = "connecting", ""
+            self._notify()
+            return
         connection = self._connection
         if connection is not None and connection.tuner is not None:
             if new.gain_db != old.gain_db:
@@ -264,10 +344,7 @@ class RtlTcpSource:
         if self._closed:
             return
         self._closed = True
-        if self._connection is not None:
-            self._connection.close("closed")
-        if self._task is not None:
-            self._task.cancel()
+        self._hang_up()
         self._arrived.set()
 
     async def wait_closed(self) -> None:
@@ -330,6 +407,15 @@ class RtlTcpSource:
         except (OSError, ValueError) as error:     # ValueError: a host name that cannot be encoded
             raise _Waiting(_reason(error)) from None
         return connection
+
+    def _hang_up(self) -> None:
+        """End the connection, or the attempts to make one, with the samples
+        it brought."""
+        if self._connection is not None:
+            self._connection.close("closed")
+        if self._task is not None:
+            self._task.cancel()
+        self._buffer.clear()
 
     def _idle(self) -> bool:
         """Nobody has read for a while: the engine has no client."""
@@ -409,6 +495,9 @@ class RtlSdrSource(RtlTcpSource):
         """The engine saves settings per receiver, as given: rtl_tcp's port
         changes at each start."""
         return f"{self.kind} {self.device}"
+
+    def _settable(self) -> list[str]:
+        return list(_SETTINGS)      # the source chooses where its rtl_tcp listens
 
     def describe(self) -> dict[str, Any]:
         # rtl_tcp listens on another port at each start: of no use to an interface.

@@ -19,10 +19,10 @@ import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
-from radiolack.rtltcp import RtlSdrSource
+from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.store import Store
-from tests.fakes import FAKE_RTL_TCP, FakeRtlTcpRuns
+from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, free_port
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 BROWSERS = ("chromium", "firefox", "webkit")
@@ -65,7 +65,7 @@ class BrowserTest(unittest.TestCase):
             cls.browsers[name] = browser
         expect.set_options(timeout=TIMEOUT_MS)
 
-    def serve(self, source: RtlSdrSource | None = None, store: Store | None = None) -> str:
+    def serve(self, source: RtlTcpSource | None = None, store: Store | None = None) -> str:
         """The address of a server started for this test."""
         server = LocalServer(source=source, store=store)
         server.start()
@@ -116,6 +116,7 @@ class BrowserTest(unittest.TestCase):
                 expect(status).to_contain_text(re.compile(rf" {DOT} \d+ fps$"))     # frames arrive
                 expect(page.locator("#src-device")).to_have_value("synthetic")
                 expect(page.locator("#src-note")).to_contain_text("2 m band simulated by the engine.")
+                expect(page.locator("#src-address")).to_be_hidden()
                 for receiver_setting in ("#src-center", "#src-rate", "#src-gain", "#src-agc", "#src-ppm"):
                     expect(page.locator(receiver_setting)).to_be_disabled()
                 expect(page.locator("#src-dc")).to_be_checked()
@@ -220,12 +221,42 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                expect(first.locator("#src-address")).to_be_hidden()   # the source picks its own address
                 field = first.locator("#src-ppm")
                 for typed, shown in (("-2.6", "-3"), ("150", "100"), ("0", "0")):
                     field.fill(typed)
                     field.blur()        # the change applies when the field loses the focus
                     for page in (first, second):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
+
+    def test_the_rtl_tcp_server_address_changes_in_the_source_panel(self):
+        # Nothing listens on these ports: the source waits, refused.
+        url = self.serve(RtlTcpSource(LOOPBACK, free_port()))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text("connection refused")
+                field = first.locator("#src-address")
+                expect(field).to_be_enabled()
+                port = free_port()
+                address = f"{LOOPBACK}:{port}"
+                field.fill(str(port))           # a port alone: on this computer
+                field.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(
+                        f"Waiting for rtl_tcp at {address}: connection refused\N{HORIZONTAL ELLIPSIS}")
+                    expect(page.locator("#src-address")).to_have_value(address)    # as the engine reads it
+                expect(field).to_be_focused()
+                # What the user is typing stays while another interface changes a setting.
+                field.fill(f"{LOOPBACK}:")
+                second.locator("#src-dc").uncheck()
+                expect(first.locator("#src-dc")).not_to_be_checked()
+                expect(field).to_have_value(f"{LOOPBACK}:")
+                field.press("Enter")
+                expect(first.locator("#src-note")).to_contain_text(
+                    "Change refused: the port must be a whole number from 1 to 65535.")
+                expect(field).to_have_value(address)        # the address in use, the field still focused
+                expect(field).to_be_focused()
+                expect(second.locator("#status")).to_contain_text(address)
 
 
 if __name__ == "__main__":

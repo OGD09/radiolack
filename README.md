@@ -13,8 +13,9 @@ rtl_tcp, which it runs itself for a receiver plugged into this computer, or
 simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
 spectrum and the waterfall with WebGL2. The Source panel sets the receiver's
-centre frequency, sample rate, gain and frequency correction, and turns the
-removal of the DC spike on or off; antenna power comes next. The engine
+centre frequency, sample rate, gain and frequency correction, changes the
+address of an rtl_tcp server, and turns the removal of the DC spike on or
+off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
@@ -75,7 +76,7 @@ opens the interface in a desktop window. Closing the window stops Radiolack.
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the simulated band, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
-| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default 127.0.0.1:1234), instead of the simulated band. Not with `--rtl-sdr`. |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the simulated band. The Source panel can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -131,12 +132,27 @@ rtl_tcp -a 127.0.0.1
 radiolack --rtl-tcp
 ```
 
-`--rtl-tcp` alone reads rtl_tcp's default address, 127.0.0.1:1234.
-`--rtl-tcp PORT`, `--rtl-tcp HOST` and `--rtl-tcp HOST:PORT` read another
-one, with an IPv6 address in brackets (`[::1]:1234`). rtl_tcp has no access
-control: anyone who reaches it can use the receiver, so keep it on
-127.0.0.1, or on a network you trust when the receiver is on another
-computer.
+`--rtl-tcp PORT`, `--rtl-tcp HOST` and `--rtl-tcp HOST:PORT` read the
+rtl_tcp at that address, with an IPv6 address in brackets (`[::1]:1234`).
+`--rtl-tcp` alone reads the address used last, on the command line or in the
+Source panel, and rtl_tcp's default address, 127.0.0.1:1234, the first time.
+rtl_tcp has no access control: anyone who reaches it can use the receiver,
+so keep it on 127.0.0.1, or on a network you trust when the receiver is on
+another computer.
+
+The Source panel's "Server address" field changes the address while
+Radiolack runs, for instance when the receiver's computer answers at another
+address on another network: type HOST, PORT or HOST:PORT and press Enter.
+Radiolack hangs up and connects there with the same settings, and every open
+interface follows; the field shows the full address, HOST:1234 for a host
+alone. An address Radiolack cannot read is refused, with the reason in the
+panel, and the field shows the address in use again. When nobody answers
+there, the status line says why and Radiolack tries again by itself until
+you give another address.
+
+rtl_tcp sends every sample, two bytes each: 4.8 MB/s at 2.4 MS/s, about
+17 GB an hour, and 2 MB/s at 1.024 MS/s. Over a slow or metered link, such
+as a phone's connection, lower the sample rate.
 
 With either option:
 
@@ -150,8 +166,10 @@ With either option:
   for a receiver whose clock is off, which shifts every signal by as many
   millionths of its frequency (10 ppm: 1.45 kHz at 145 MHz): set it so that
   a known signal sits on its frequency. A change shows in every open
-  interface; a refused one, such as a frequency the tuner cannot reach, shows
-  its reason in the panel.
+  interface. Once you press Enter or leave a field, it shows the setting in
+  use: as the receiver took it, a whole ppm for instance, or the previous one
+  when the change is refused, such as a frequency the tuner cannot reach,
+  with the reason in the panel.
 - "Remove the DC spike", on when Radiolack starts, takes the receiver's
   constant offset off the samples before the spectrum is computed; without
   it, the offset shows as a spike at the centre frequency. A signal exactly
@@ -212,7 +230,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 
 - `settings.json` holds each receiver's settings: the Source panel's and the
   demodulation settings (VFO, mode, filter width, squelch). The simulated
-  band, each `--rtl-sdr` device and each `--rtl-tcp` address have their own.
+  band and each `--rtl-sdr` device have their own; rtl_tcp has one set
+  whatever its address, which is saved with them.
   It also holds the interface's own settings: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and the scanners' settings. Remote access is never saved: it is off
@@ -279,9 +298,10 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 ```
 
 The browser tests drive the interface in headless Chromium, Firefox and
-WebKit through Playwright, against the simulated band and the fake rtl_tcp
-program: the stream, the Source panel, a change made in one interface
-showing in another, the bookmarks and the saved interface settings. They
+WebKit through Playwright, against the simulated band, the fake rtl_tcp
+program and rtl_tcp addresses where nothing listens: the stream, the Source
+panel, a change made in one interface showing in another, the bookmarks and
+the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of

@@ -24,7 +24,9 @@ With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
 bookmarks and the preferences. It saves them a moment after they change, as
 changes come in bursts, and when it stops. A saved setting that the receiver
-refuses keeps its default.
+refuses keeps its default, and one the source was ``given``, such as an
+address on the command line, keeps the given value, which is saved in its
+place.
 """
 
 from __future__ import annotations
@@ -64,12 +66,14 @@ class Source(Protocol):
     returned. ``describe`` gives the state the interfaces show
     (docs/design/protocol.md), and the source calls ``on_change`` whenever
     that state changes. ``settings_key`` names the receiver whose settings
-    the engine saves: each key has its own.
+    the engine saves: each key has its own. ``given`` names the settings
+    chosen when the source was made, which saved ones do not replace.
     """
 
     kind: str
     centre_hz: float
     sample_rate_hz: float
+    given: frozenset[str]
     on_change: Callable[[], None] | None
 
     @property
@@ -101,6 +105,7 @@ class FixedSource:
     kind: str
     centre_hz: float
     sample_rate_hz: float
+    given: frozenset[str] = frozenset()
     on_change: Callable[[], None] | None = None
 
     @property
@@ -246,7 +251,8 @@ class Engine:
         self._receivers = ({key: value for key, value in receivers.items() if isinstance(value, dict)}
                            if isinstance(receivers, dict) else {})
         saved = self._receivers.get(source.settings_key, {})
-        self._restore_source(saved.get("source"))
+        saved_source = saved.get("source")
+        self._restore_source(saved_source)
         described = source.describe()
         # Unless saved, the VFO starts a quarter of the span above the centre, clear of the DC spike.
         self._demod = DemodSettings(
@@ -255,7 +261,9 @@ class Engine:
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
         self._preferences = _saved_preferences(settings.get("interface"))
         if store is not None:
-            self._saved = self._contents()      # nothing to write until something changes
+            self._saved = self._contents()      # nothing to write until something changes,
+            if _given_differ(self.state(), saved_source, source.given):
+                del self._saved[SETTINGS_FILE]  # but a given setting replaces the saved one at the next write
             self._store = store
         source.on_change = self._source_changed
 
@@ -416,13 +424,14 @@ class Engine:
         self._settings_changed()
 
     def _restore_source(self, saved: object) -> None:
-        """Apply the source settings saved for this receiver one at a time:
-        one that the receiver refuses keeps its default."""
+        """Apply the source settings saved for this receiver one at a time,
+        apart from those the source was given: one that the receiver refuses
+        keeps its default."""
         if not isinstance(saved, dict):
             return
         settable = self.state()["settable"]
         for name, value in saved.items():
-            if name not in settable:
+            if name not in settable or name in self.source.given:
                 continue
             try:
                 self.configure({name: value})
@@ -505,6 +514,12 @@ class Engine:
             subscription.put_frame(frame)
             if audio is not None:
                 subscription.put_audio(audio)
+
+
+def _given_differ(state: Mapping[str, Any], saved: object, given: frozenset[str]) -> bool:
+    """Whether a setting the source was given differs from the saved one."""
+    saved_values = saved if isinstance(saved, dict) else {}
+    return any(name in state["settable"] and saved_values.get(name) != state[name] for name in given)
 
 
 def _preference_valid(name: object, value: object) -> bool:

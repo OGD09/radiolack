@@ -12,46 +12,27 @@ import webbrowser
 from collections.abc import Iterator
 
 from . import __version__, window
-from .rtltcp import RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource
+from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
 from .server import LOOPBACK_HOST, LocalServer
 from .store import Store, settings_dir
 
-RTL_TCP_ADDRESS = (LOOPBACK_HOST, 1234)     # where rtl_tcp listens by default
 
-
-def _port(text: str, lowest: int = 0) -> int:
+def _port(text: str) -> int:
     try:
         value = int(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a port number: {text!r}") from None
-    if not lowest <= value <= 65535:
-        raise argparse.ArgumentTypeError(f"port out of range {lowest}-65535: {value}")
+    if not 0 <= value <= 65535:
+        raise argparse.ArgumentTypeError(f"port out of range 0-65535: {value}")
     return value
 
 
 def _rtl_tcp_address(text: str) -> tuple[str, int]:
-    """HOST, PORT or HOST:PORT, an IPv6 address in brackets; rtl_tcp's
-    default address gives the missing part."""
-    host, port = RTL_TCP_ADDRESS
-    if text.isdigit():
-        return host, _port(text, 1)
-    if text.startswith("["):
-        end = text.find("]")
-        rest = text[end + 1:]
-        if end < 0 or (rest and not rest.startswith(":")):
-            raise argparse.ArgumentTypeError(f"not an address: {text!r}")
-        host = text[1:end]
-        if rest:
-            port = _port(rest[1:], 1)
-    elif text.count(":") > 1:
-        raise argparse.ArgumentTypeError(f"an IPv6 address goes in brackets, as in [::1]:1234: {text!r}")
-    else:
-        host, colon, port_text = text.partition(":")
-        if colon:
-            port = _port(port_text, 1)
-    if not host:
-        raise argparse.ArgumentTypeError(f"no host in {text!r}")
-    return host, port
+    """HOST, PORT or HOST:PORT, as rtltcp.parse_address reads them."""
+    try:
+        return parse_address(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _device(text: str) -> str:
@@ -85,10 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
              "Radiolack starts while an interface is open: DEVICE is its index or serial "
              "number (default: 0, the first one)",
     )
+    # Without ADDRESS, an empty address: the source takes the saved one.
     sources.add_argument(
-        "--rtl-tcp", nargs="?", const=RTL_TCP_ADDRESS, type=_rtl_tcp_address, metavar="ADDRESS",
+        "--rtl-tcp", nargs="?", const=(), type=_rtl_tcp_address, metavar="ADDRESS",
         help="read an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS: HOST, "
-             f"PORT or HOST:PORT (default: {RTL_TCP_ADDRESS[0]}:{RTL_TCP_ADDRESS[1]})",
+             "PORT or HOST:PORT (default: the address used last, the first time "
+             f"{DEFAULT_ADDRESS[0]}:{DEFAULT_ADDRESS[1]}); the Source panel can change it",
     )
     return parser
 

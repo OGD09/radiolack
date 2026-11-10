@@ -8,6 +8,7 @@ settings folder (tests/__init__.py), never the owner's.
 import contextlib
 import functools
 import io
+import json
 import os
 import re
 import signal
@@ -48,6 +49,25 @@ def run_main(*argv):
     return code, out.getvalue(), err.getvalue()
 
 
+@contextlib.contextmanager
+def own_settings():
+    """A settings folder for one test, apart from the test run's: yields the
+    path of its settings file."""
+    with tempfile.TemporaryDirectory() as config, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": config}):
+        yield Path(config) / "radiolack" / "settings.json"
+
+
+@contextlib.contextmanager
+def silent_rtl_tcp():
+    """A listening socket that never accepts, in place of rtl_tcp: yields it
+    with its address."""
+    with socket.socket() as rtl_tcp:
+        rtl_tcp.bind((LOOPBACK_HOST, 0))
+        rtl_tcp.listen()
+        rtl_tcp.setblocking(False)
+        yield rtl_tcp, f"{LOOPBACK_HOST}:{rtl_tcp.getsockname()[1]}"
+
+
 class ParserTest(unittest.TestCase):
     def test_rejects_invalid_ports(self):
         for value in ("-1", "65536", "http"):
@@ -77,7 +97,7 @@ class ParserTest(unittest.TestCase):
     def test_rtl_tcp_addresses(self):
         # Parsed only: nothing connects to these addresses.
         addresses = {
-            None: (LOOPBACK_HOST, 1234),
+            None: (),       # no address: the source takes the saved one
             "40000": (LOOPBACK_HOST, 40000),
             "radio.example": ("radio.example", 1234),
             "192.0.2.10:40000": ("192.0.2.10", 40000),
@@ -124,17 +144,29 @@ class MainTest(unittest.TestCase):
         self.assertTrue(directory.is_relative_to(tempfile.gettempdir()))
 
     def test_rtl_tcp_source_connects_only_once_an_interface_listens(self):
-        with socket.socket() as rtl_tcp:
-            rtl_tcp.bind((LOOPBACK_HOST, 0))
-            rtl_tcp.listen()
-            rtl_tcp.setblocking(False)
-            address = f"{LOOPBACK_HOST}:{rtl_tcp.getsockname()[1]}"
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
             with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
                 code, out, err = run_main("--ui", "none", "--rtl-tcp", address)
             self.assertEqual((code, err), (0, ""))
             source = server.call_args.kwargs["source"]
             self.assertIsInstance(source, RtlTcpSource)
-            self.assertEqual(source.address, address)
+            self.assertEqual((source.address, source.given), (address, frozenset({"address"})))
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
+            # Kept for the next start without an address.
+            saved = json.loads(settings.read_text(encoding="utf-8"))["receivers"]["rtl_tcp"]["source"]
+            self.assertEqual(saved["address"], address)
+
+    def test_rtl_tcp_without_an_address_reopens_the_saved_one(self):
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
+            settings.parent.mkdir()
+            saved = {"version": 1, "receivers": {"rtl_tcp": {"source": {"address": address}}}}
+            settings.write_text(json.dumps(saved), encoding="utf-8")
+            with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+                code, out, err = run_main("--ui", "none", "--rtl-tcp")
+            self.assertEqual((code, err), (0, ""))
+            source = server.call_args.kwargs["source"]
+            self.assertEqual((source.address, source.given), (address, frozenset()))
             with self.assertRaises(BlockingIOError):
                 rtl_tcp.accept()
 

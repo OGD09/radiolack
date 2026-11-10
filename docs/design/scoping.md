@@ -38,6 +38,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-09 | All frequencies: Radiolack tunes and labels the whole range of its receivers, not only the amateur bands. The band plan covers 9 kHz to 6.425 GHz with a simplified European table (ITU Region 1 allocations named by their main use) and simplified IARU Region 1 plans inside the amateur bands ([`band-plan.md`](band-plan.md)). This replaces "for the amateur bands" (2026-11-08) and answers the open question on tuning. |
 | 2026-11-09 | Browser tests (Playwright: Chromium, Firefox and WebKit) run headless and only on request (`RADIOLACK_BROWSER_TESTS=1`), as CI does; the usual test commands launch no browser. |
 | 2026-11-09 | Persistence: the engine saves everything, in `$XDG_CONFIG_HOME/radiolack` (`settings.json` and `bookmarks.json`, each with a format version), including the interface's own settings: the page's origin, and with it the browser's storage, changes with the port at each start. Receiver settings are saved per receiver (the simulated band, each `--rtl-sdr` device, each `--rtl-tcp` address). Until remote access, one set of interface settings is kept, that of the interface that changed one last, which the next interface opens with; open interfaces keep their own. v1 keeps them per device. Remote access is never saved. A file Radiolack cannot read is set aside, never overwritten. |
+| 2026-11-09 | rtl_tcp address: the address is only the way to the receiver, and changes with the networks the computers are on. The user gives the address that works where they are, on the command line or in the Source panel, and Radiolack says when it does not answer; it does not try several addresses by itself. One set of rtl_tcp settings is kept whatever the address, with the address used last, which `--rtl-tcp` without an address reopens. This replaces "each `--rtl-tcp` address" in the persistence decision above. |
 
 ## Scope
 
@@ -430,6 +431,23 @@ These costs wait for v4:
   the same run (other programs busy: the NFM entry measured 2.2 ms). Tested
   on synthetic I/Q and the synthetic band, and in three browsers; not yet
   with a receiver.
+- rtl_tcp address in the Source panel, 2026-11-09: the address of an
+  `rtl_tcp` source is one of its settings, which the Source panel's "Server
+  address" field changes (settable in the source state; protocol version 4
+  unchanged, as interfaces leave out the settings they do not know). A new
+  address hangs up and connects there with the same settings, at once even
+  while the source waits to try again; the tuner is unknown until the new
+  server answers. The engine keeps one set of rtl_tcp settings with the
+  address used last; an address given on the command line replaces the
+  saved one, which is then written over at the next save or when Radiolack
+  stops. Tested with fake rtl_tcp servers, and in three browsers against
+  addresses where nothing listens. The panel's text fields show the engine's
+  value once a change is sent, focus or not, and keep what the user types
+  until then. Tried on 2026-11-09 with an R820T behind rtl_tcp on another
+  computer, over a VPN with about 400 ms of round trip: the field moved the
+  receiver to a port where nothing listens and back with the same settings.
+  That link carried about 1.5 MB/s, short of the 2 MB/s of 1.024 MS/s: 16
+  frames per second instead of 30, rtl_tcp dropping samples.
 - Next step: a desktop launcher, then the owner's check of v0 on their
   computer.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never

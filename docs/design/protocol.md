@@ -27,7 +27,7 @@ handshake, so a page from another site cannot read the stream.
     "centre_hz": 145000000.0, "sample_rate_hz": 2400000.0, "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
     "dc_removal": true,
-    "settable": ["centre_hz", "sample_rate_hz", "gain_db", "ppm", "dc_removal"]}
+    "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm", "dc_removal"]}
    ```
 
    (`gains_db` shortened here.)
@@ -37,7 +37,7 @@ handshake, so a page from another site cannot read the stream.
    | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs. |
    | `status` | `streaming` while samples arrive. Otherwise `connecting`, `waiting` (to try again; see `detail`) or `idle` (no interface listened, so the source hung up). |
    | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`; empty otherwise. |
-   | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets); null for the other sources. |
+   | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets), which an interface may change; null for the other sources. |
    | `tuner` | Name of the receiver's tuner once known, or null. |
    | `centre_hz`, `sample_rate_hz` | The settings asked of the receiver. Each frame carries those it was taken with: after a change, frames follow a moment later. |
    | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). |
@@ -206,6 +206,7 @@ A `source` text message changes the settings it names, among those listed in
 
 | Field | Value |
 | --- | --- |
+| `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes 900001 to 3200000 Hz, librtlsdr's upper range. |
 | `gain_db` | Tuner gain in dB, or null for automatic gain. A gain becomes the nearest in `gains_db`. |
@@ -283,9 +284,10 @@ The engine demodulates audio only while at least one interface asked for it,
 but always measures the channel for the spectrum frames.
 
 While an `rtl_sdr` or `rtl_tcp` source waits, changes are kept and sent when
-it connects. Until its first connection the tuner is unknown: `range_hz`
-spans every frequency an rtl_tcp command can carry, any gain passes, and the
-source brings both within what the tuner can do once it connects.
+it connects. Until its first connection, and after a change of address, the
+tuner is unknown: `range_hz` spans every frequency an rtl_tcp command can
+carry, any gain passes, and the source brings both within what the tuner can
+do once it connects.
 
 ## Connection life
 
@@ -322,7 +324,10 @@ source brings both within what the tuner can do once it connects.
 ## Versions
 
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
-  the `bookmark` and `preferences` messages.
+  the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
+  source's `address` became settable, without a new version: an interface
+  leaves out the settings it does not know, and changes only those listed
+  in `settable`.
 - 3 (2026-11-09): the demodulation settings, the `demod` and `audio`
   messages, audio frames, the channel level and squelch in spectrum frames
   (frame format 2), and the command's type in errors.

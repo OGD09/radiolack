@@ -4,7 +4,6 @@ ephemeral port, and a fake rtl_tcp program that never opens a receiver."""
 import asyncio
 import os
 import shutil
-import socket
 import sys
 import time
 import unittest
@@ -12,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
-from radiolack.rtltcp import RtlSdrSource, RtlTcpSource, tuner_for
-from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcp, FakeRtlTcpRuns, fake_codes, sample_codes
+from radiolack.rtltcp import RtlSdrSource, RtlTcpSource, parse_address, tuner_for
+from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcp, FakeRtlTcpRuns, fake_codes, free_port, sample_codes
 
 FAST = {"settle_s": 0.15, "idle_s": 1.0, "read_wait_s": 0.2, "timeout_s": 0.5, "retry_s": (0.05, 0.2)}
 COUNT = 400         # samples per read: less than one chunk of the fake server
@@ -32,13 +31,6 @@ async def main():
 
 asyncio.run(main())
 """
-
-
-def free_port() -> int:
-    """A port nothing listens on: bound by the system, then released."""
-    with socket.socket() as sock:
-        sock.bind((LOOPBACK, 0))
-        return sock.getsockname()[1]
 
 
 async def eventually(condition, timeout: float = 5.0) -> None:
@@ -120,8 +112,10 @@ class StreamingTest(SourceTest):
             "address": f"{LOOPBACK}:{self.fake.port}", "tuner": "Rafael Micro R820T",
             "centre_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
-            "settable": ["centre_hz", "sample_rate_hz", "gain_db", "ppm"],
+            "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm"],
         })
+        # One set of settings whatever the address, which was given here.
+        self.assertEqual((source.settings_key, source.given), ("rtl_tcp", frozenset({"address"})))
         self.assertEqual(len(state["gains_db"]), 29)
         self.assertEqual(self.fake.commands[:2], [(0x03, 1), (0x04, 297)])
         self.assertGreaterEqual(self.changes, 2)    # connecting, then streaming
@@ -218,6 +212,15 @@ class SettingsTest(SourceTest):
             {"ppm": True},
             {"centre_hz": 433e6, "sample_rate_hz": 100},
             {"centre_hz": 433e6, "ppm": 200},
+            {"address": ""},
+            {"address": None},
+            {"address": 1234},
+            {"address": "host:port"},
+            {"address": "::1"},
+            {"address": "192.0.2.1 1234"},
+            {"address": "192.0.2.1:65536"},
+            {"address": "h" * 254},
+            {"address": "192.0.2.1", "ppm": 200},
         ]
         for change in refused:
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -262,6 +265,84 @@ class SettingsTest(SourceTest):
         self.assertEqual(tuner_for(6, 29).name, "Rafael Micro R828D")
         self.assertEqual(tuner_for(1, 14).range_hz, (52e6, 2200e6))
         self.assertEqual(tuner_for(0, 0).name, "Unknown tuner (type 0)")
+
+
+class AddressTest(SourceTest):
+    async def other_server(self) -> FakeRtlTcp:
+        """A second fake server, closed after the test."""
+        fake = FakeRtlTcp()
+        await fake.__aenter__()
+        self.addAsyncCleanup(fake.__aexit__, None, None, None)
+        return fake
+
+    async def test_a_new_address_hangs_up_and_connects_there_with_the_same_settings(self):
+        source = await self.start(centre_hz=433_000_000, gain_db=40, ppm=-4)
+        await self.read(source)
+        other = await self.other_server()
+        source.configure({"address": f"{LOOPBACK}:{other.port}"})
+        state = source.describe()
+        self.assertEqual((state["address"], state["status"], state["tuner"]),
+                         (f"{LOOPBACK}:{other.port}", "connecting", None))
+        self.assert_labelled(source, await self.read(source))
+        self.assertEqual(source.status, "streaming")
+        self.assertEqual(other.commands,
+                         [(0x03, 1), (0x04, 402), (0x05, 2**32 - 4), (0x02, 2_400_000), (0x01, 433_000_000)])
+        await eventually(lambda: self.fake.open_connections == 0)
+        self.assertEqual(self.fake.connections, 1)
+
+    async def test_a_new_address_while_waiting_is_tried_at_once(self):
+        source = RtlTcpSource(LOOPBACK, free_port(), **{**FAST, "retry_s": (5.0, 5.0)})
+        self.addCleanup(source.close)
+        self.assertIsNone(await source.read(COUNT))
+        await eventually(lambda: source.status == "waiting")
+        other = await self.other_server()
+        changed = time.monotonic()
+        source.configure({"address": str(other.port)})     # on 127.0.0.1, rtl_tcp's default host
+        self.assert_labelled(source, await self.read(source))
+        self.assertLess(time.monotonic() - changed, 2.0)    # not after the 5 s wait before a retry
+
+    async def test_the_address_in_use_changes_nothing(self):
+        source = await self.start()
+        await self.read(source)
+        for same in (f"{LOOPBACK}:{self.fake.port}", str(self.fake.port), f" {LOOPBACK}:{self.fake.port} "):
+            source.configure({"address": same})
+        self.assert_labelled(source, await self.read(source))
+        self.assertEqual((source.status, self.fake.connections), ("streaming", 1))
+
+    def test_without_an_address_the_default_one_waits_for_the_saved_one(self):
+        source = RtlTcpSource()     # nothing reads: nothing connects
+        self.assertEqual((source.address, source.given), ("127.0.0.1:1234", frozenset()))
+        source.configure({"address": "192.0.2.10"})     # as the engine restores a saved address
+        self.assertEqual((source.address, source.status), ("192.0.2.10:1234", "idle"))
+
+
+class AddressParsingTest(unittest.TestCase):
+    def test_reads_a_host_a_port_or_both(self):
+        addresses = {
+            "40000": (LOOPBACK, 40000),
+            "radio.example": ("radio.example", 1234),
+            " 192.0.2.10:40000 ": ("192.0.2.10", 40000),
+            "[::1]": ("::1", 1234),
+            "[fe80::1%eth0]:40000": ("fe80::1%eth0", 40000),
+        }
+        for text, address in addresses.items():
+            with self.subTest(text=text):
+                self.assertEqual(parse_address(text), address)
+
+    def test_says_why_it_refuses_an_address(self):
+        reasons = {
+            " ": "no address given",
+            "192.0.2.10 40000": "the address must be HOST, PORT or HOST:PORT",
+            ":40000": "the address must be HOST, PORT or HOST:PORT",
+            "::1": "an IPv6 address goes in brackets",
+            "[::1]40000": "an IPv6 address goes in brackets",
+            "host:0": "the port must be a whole number from 1 to 65535",
+            "host:" + "9" * 5000: "the port must be a whole number from 1 to 65535",
+            "x" * 254: "the host name is too long",
+        }
+        for text, reason in reasons.items():
+            with self.subTest(text=text[:20]), self.assertRaisesRegex(ValueError, reason):
+                parse_address(text)
 
 
 class ConnectionTest(SourceTest):
@@ -457,6 +538,14 @@ class RtlSdrSourceTest(SourceTest):
             RtlSdrSource("")
         with self.assertRaisesRegex(ValueError, "no program given"):
             RtlSdrSource(program=())
+
+    def test_chooses_its_own_address(self):
+        source = RtlSdrSource(program=FAKE_RTL_TCP)     # nothing reads: nothing starts
+        state = source.describe()
+        self.assertIsNone(state["address"])
+        self.assertEqual(state["settable"], ["centre_hz", "sample_rate_hz", "gain_db", "ppm"])
+        with self.assertRaisesRegex(ValueError, "unknown setting: address"):
+            source.configure({"address": "192.0.2.10"})
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("setpriv"),
                          "setpriv, on Linux")

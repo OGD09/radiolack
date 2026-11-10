@@ -3,6 +3,7 @@
 import asyncio
 import itertools
 import os
+import socket
 import struct
 import sys
 import tempfile
@@ -54,6 +55,13 @@ class FakeSource(FixedSource):
 
     def close(self) -> None:
         self.closed = True
+
+
+def free_port() -> int:
+    """A port nothing listens on: bound by the system, then released."""
+    with socket.socket() as sock:
+        sock.bind((LOOPBACK, 0))
+        return sock.getsockname()[1]
 
 
 def fake_codes(frequency_hz: float, rate_hz: float) -> tuple[int, int]:
