@@ -282,6 +282,9 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   at each start.
 - `bookmarks.json` holds the bookmarks.
 
+The window keeps no browser data on disk: WebKit's cache and storage stay in
+memory.
+
 Every interface shows the same bookmarks and receiver settings. An
 interface opens with the own settings of the interface that changed one
 last; changing them in one interface leaves the other open ones as they

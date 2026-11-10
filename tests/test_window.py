@@ -65,6 +65,17 @@ class StayOnOriginTest(unittest.TestCase):
         decision.ignore.assert_not_called()
 
 
+class ShowTest(unittest.TestCase):
+    def test_keeps_no_browser_data_on_disk(self):
+        # A persistent context would fill ~/.local/share/radiolack and ~/.cache/radiolack at each start.
+        Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+        with mock.patch.object(window, "_load_toolkit", return_value=(Gdk, GLib, Gtk, WebKit2)):
+            window.show("http://127.0.0.1:8000/")
+        WebKit2.WebContext.new_ephemeral.assert_called_once_with()
+        self.assertIs(WebKit2.WebView.call_args.kwargs["web_context"], WebKit2.WebContext.new_ephemeral.return_value)
+        WebKit2.WebView.return_value.load_uri.assert_called_once_with("http://127.0.0.1:8000/")
+
+
 class UnavailableReasonTest(unittest.TestCase):
     def test_without_pygobject(self):
         with mock.patch.dict(sys.modules, {"gi": None}):

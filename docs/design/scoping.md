@@ -184,6 +184,8 @@ flowchart LR
 - No telemetry and no account. Radiolack talks only to the receiver, to the
   clients the user lets in and, once updates exist, to its update server, a
   check that Settings can turn off.
+- No browser data on disk: the window's WebKit context is ephemeral, and the
+  engine saves what the interface needs with the settings.
 - Nothing personal in the repository: no owner-specific frequencies, places or
   call signs in code, examples or tests.
 
@@ -490,6 +492,13 @@ These costs wait for v4:
   SPDX form needs setuptools 77, so Debian 12's would refuse the README's
   installation without build isolation, and the older table form is
   deprecated, with 18 February 2027 as setuptools' deadline.
+- Leftovers, 2026-11-10: the window's WebKit context is ephemeral, so
+  WebKitGTK no longer fills `~/.local/share/radiolack` and
+  `~/.cache/radiolack` with a cache and storage that the interface does not
+  use; checked in Xvfb with empty XDG folders, the page still loading. The
+  programs the tests start that import the test package, such as the fake
+  rtl_tcp, keep the run's settings folder instead of leaving one of their
+  own in the temporary folder each time a signal stops them.
 - Next step: the owner makes the repository public, installs the Debian
   package and checks v0 on their computer; then versioned releases, the APT
   repository and the update alert.

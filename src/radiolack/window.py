@@ -2,8 +2,8 @@
 
 On Linux the window is GTK 3 with the system's WebKitGTK, through PyGObject
 (docs/design/scoping.md, spike 1). It loads the interface from the local
-server, stays on that server, and returns when it is closed or when the
-process receives SIGINT or SIGTERM.
+server, stays on that server, writes no browser data to disk, and returns
+when it is closed or when the process receives SIGINT or SIGTERM.
 """
 
 from __future__ import annotations
@@ -42,8 +42,12 @@ def show(url: str) -> None:
     Gdk, GLib, Gtk, WebKit2 = _load_toolkit()
 
     # A desktop program plays sound without a click first. WebKitGTK allows
-    # that only through a policy given when the view is created.
+    # that only through a policy given when the view is created. The context
+    # is ephemeral: WebKit keeps its cache and storage in memory instead of
+    # folders named after the program, as the engine saves what the
+    # interface needs.
     view = WebKit2.WebView(
+        web_context=WebKit2.WebContext.new_ephemeral(),
         website_policies=WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW))
     background = Gdk.RGBA()
     background.parse(BACKGROUND)

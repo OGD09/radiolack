@@ -27,7 +27,7 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   waiting state), `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
-  runs GTK).
+  runs GTK; an ephemeral WebKit context writes nothing to disk).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
@@ -46,7 +46,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
 - `tests/`: unittest tests without hardware; pytest runs them too.
   `test_browser.py` drives the interface in headless browsers, on request.
   `tests/__init__.py` points `XDG_CONFIG_HOME` at a temporary folder for the
-  whole run, which the programs the tests start inherit.
+  whole run, which the programs the tests start inherit; those that import
+  the package too keep it rather than make their own, and the run removes it
+  at its end.
 
 ## Commands
 
