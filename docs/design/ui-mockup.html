@@ -1,0 +1,2201 @@
+<!doctype html>
+<!--
+  Radiolack: interactive UI mockup (design reference, simulated data only).
+  Full-screen spectrum and waterfall with discreet panels. There is no
+  receiver and no audio: a 2 m band (IARU Region 1, simplified) is simulated
+  in the page. Open it directly in a browser; it has no dependencies and
+  makes no network requests.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c0f">
+<title>Radiolack mockup</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0c0f;
+    --text: #d7dde5;
+    --muted: #8b95a3;
+    --faint: rgba(215, 221, 229, 0.45);
+    --line: rgba(255, 255, 255, 0.09);
+    --panel: rgba(15, 18, 23, 0.95);
+    --control: rgba(255, 255, 255, 0.06);
+    --control-hover: rgba(255, 255, 255, 0.1);
+    --accent: #59a7ff;
+    --ok: #3ccf9a;
+    --warn: #f2b33d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  #app { position: fixed; inset: 0; display: grid; grid-template-rows: 40% 18px minmax(0, 1fr); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .area { position: relative; min-height: 0; overflow: hidden; touch-action: none; cursor: crosshair; }
+  .area canvas, #band canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #wfwrap { background: #000; }
+  #band { position: relative; background: #0d1015; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: ns-resize; touch-action: none; }
+
+  #vfo, #vfo-line, #xline { position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2; will-change: transform; }
+  #vfo { background: rgba(89, 167, 255, 0.11); border-left: 1px solid rgba(89, 167, 255, 0.5); border-right: 1px solid rgba(89, 167, 255, 0.5); }
+  #vfo.open { background: rgba(89, 167, 255, 0.19); }
+  #vfo-line { width: 1px; background: rgba(89, 167, 255, 0.95); }
+  #xline { width: 1px; background: rgba(255, 255, 255, 0.16); }
+
+  #brand {
+    position: absolute; top: calc(10px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); z-index: 5; margin: 0;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: rgba(215, 221, 229, 0.42);
+    pointer-events: none; transition: opacity 0.4s;
+  }
+
+  #readout { position: absolute; top: calc(6px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 5; text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); pointer-events: none; }
+  #freq {
+    display: inline-block; pointer-events: auto; padding: 0 4px; border-radius: 6px; cursor: ns-resize;
+    font-size: 28px; font-weight: 500; line-height: 1.15; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
+  }
+  #freq .d { border-radius: 3px; }
+  #freq .d.lo { color: #aab4c0; }
+  #freq .sep { color: var(--muted); margin: 0 1px; }
+  #freq .freq-input { width: 9em; font: inherit; font-size: 22px; text-align: center; color: var(--text); background: rgba(0, 0, 0, 0.6); border: 1px solid var(--accent); border-radius: 6px; padding: 0 6px; }
+  #meta { font-size: 12px; color: var(--muted); }
+  #meta b { color: var(--text); font-weight: 600; }
+  #meta .dot { margin: 0 6px; opacity: 0.6; }
+  #smeter { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 5px; }
+  #smeter .bar { position: relative; width: 150px; height: 4px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; }
+  #smeter .fill { position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0); background: var(--muted); border-radius: 2px; }
+  #smeter .fill.open { background: var(--accent); }
+  #smeter .sql { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--warn); border-radius: 1px; }
+  #s-text { min-width: 92px; text-align: left; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  #toolbar { position: absolute; top: calc(7px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); z-index: 6; display: flex; gap: 1px; transition: opacity 0.4s; }
+  #toolbar button {
+    background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 12px;
+    padding: 5px 8px; border-radius: 6px; cursor: pointer; text-shadow: 0 1px 2px #000;
+  }
+  #toolbar button[aria-expanded="true"] { color: var(--text); background: rgba(255, 255, 255, 0.11); }
+
+  #marks { position: absolute; left: 0; right: 0; top: 70px; height: 0; z-index: 3; }
+  .mark {
+    position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; cursor: pointer;
+    font: 11px/1.5 system-ui, sans-serif; color: var(--text); background: rgba(14, 17, 22, 0.78);
+    border: 1px solid var(--line); border-radius: 4px; padding: 0 6px;
+  }
+  .mark::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 7px; background: rgba(255, 255, 255, 0.3); }
+
+  #status, #hoverinfo {
+    position: absolute; bottom: 6px; z-index: 4; pointer-events: none; font-size: 11px; padding: 2px 7px;
+    background: rgba(10, 12, 15, 0.72); border-radius: 5px; font-variant-numeric: tabular-nums; transition: opacity 0.4s;
+  }
+  #status { left: 6px; color: var(--faint); }
+  #hoverinfo { right: 6px; color: var(--text); opacity: 0.9; }
+  #hoverinfo:empty { display: none; }
+  #hint {
+    position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); z-index: 4; pointer-events: none; white-space: nowrap;
+    background: rgba(12, 15, 19, 0.85); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px;
+    color: var(--muted); font-size: 12px; transition: opacity 1s;
+  }
+  #hint.gone { opacity: 0; }
+
+  /* Step buttons in thumb reach, shown only for touch input. */
+  #tunepad { display: none; transition: opacity 0.4s; }
+  #tunepad button {
+    position: absolute; z-index: 6; bottom: calc(14px + env(safe-area-inset-bottom)); width: 52px; height: 52px; padding: 0;
+    display: flex; align-items: center; justify-content: center; border-radius: 50%;
+    background: rgba(14, 17, 22, 0.72); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 26px; line-height: 1; cursor: pointer; touch-action: manipulation;
+  }
+  #tunepad button:active { background: rgba(89, 167, 255, 0.25); }
+  #tune-down { left: calc(12px + env(safe-area-inset-left)); }
+  #tune-up { right: calc(12px + env(safe-area-inset-right)); }
+
+  body.idle #brand, body.idle #toolbar, body.idle #status, body.idle #tunepad { opacity: 0.2; }
+  body.idle #hoverinfo { opacity: 0; }
+
+  #panel {
+    position: absolute; top: calc(42px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); z-index: 7;
+    width: 316px; max-height: calc(100% - 54px - env(safe-area-inset-top)); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px 14px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); font-size: 12.5px; overscroll-behavior: contain;
+    user-select: text; -webkit-user-select: text;
+  }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  #panel h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  #panel h3 { margin: 14px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .close { background: transparent; border: 0; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+  .field { margin: 8px 0; }
+  .field > label, .field > .label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
+  .field output { color: var(--text); font-variant-numeric: tabular-nums; }
+  select, input[type="text"], input[type="number"], input[type="search"] {
+    width: 100%; font: inherit; color: var(--text); background: var(--control); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+  }
+  select option { background: #151a21; }
+  input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+  input:disabled, select:disabled { opacity: 0.45; }
+  .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12.5px; cursor: pointer; }
+  .check input { margin: 0; accent-color: var(--accent); }
+  .segmented { display: flex; gap: 2px; padding: 2px; background: var(--control); border-radius: 7px; }
+  .segmented button { flex: 1; background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 12px; padding: 5px 0; border-radius: 5px; cursor: pointer; }
+  .segmented button[aria-checked="true"], .segmented button[aria-pressed="true"] { color: var(--text); background: rgba(255, 255, 255, 0.12); }
+  .segmented button:disabled { opacity: 0.4; cursor: default; }
+  .note { margin: 6px 0; font-size: 11.5px; color: var(--muted); }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list .item { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 12px; padding: 5px 6px; border-radius: 5px; cursor: pointer; }
+  .list .item > span { white-space: nowrap; }
+  .list .item > .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .list li.bm { display: flex; align-items: center; gap: 4px; }
+  .list li.bm > .item { flex: 1; min-width: 0; }
+  .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
+  .tag { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .link { background: transparent; border: 0; color: var(--accent); font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+  .btn { background: var(--control); border: 1px solid var(--line); color: var(--text); font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .btn.primary { border-color: rgba(89, 167, 255, 0.55); }
+  .row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+  .value { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .value.code { letter-spacing: 0.08em; font-weight: 600; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  table.peaks { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+  table.peaks th { text-align: left; font-weight: 500; font-size: 11px; color: var(--muted); padding: 4px; border-bottom: 1px solid var(--line); }
+  table.peaks td { padding: 3px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .freq-link { background: transparent; border: 0; padding: 0; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; border-radius: 3px; }
+  table.peaks tr.active .freq-link { color: var(--ok); }
+  .acts { text-align: right; white-space: nowrap; }
+  .empty { padding: 6px; font-size: 12px; color: var(--muted); }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+  .keys dt { color: var(--text); }
+  .keys dd { margin: 0; color: var(--muted); }
+  .palette-preview { height: 8px; margin-top: 6px; border-radius: 4px; }
+
+  #ctx { position: absolute; z-index: 8; min-width: 200px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); }
+  #ctx button { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 5px; cursor: pointer; }
+  #ctx button:focus-visible { background: var(--control-hover); outline: none; }
+  #ctx button:disabled { color: var(--muted); cursor: default; }
+  #ctx .ctx-title { padding: 4px 10px 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* Hover feedback only where a real hover exists: on touch screens it would stay stuck after a tap. */
+  @media (hover: hover) {
+    #freq .d:hover { background: rgba(255, 255, 255, 0.1); }
+    #toolbar button:hover:not([aria-expanded="true"]) { color: var(--text); background: rgba(255, 255, 255, 0.07); }
+    .mark:hover { border-color: rgba(89, 167, 255, 0.6); }
+    .close:hover { color: var(--text); background: var(--control-hover); }
+    .segmented button:hover:not(:disabled) { color: var(--text); }
+    .list .item:hover { background: var(--control-hover); }
+    .link:hover { background: var(--control-hover); }
+    .btn:hover:not(:disabled) { background: var(--control-hover); }
+    .freq-link:hover { text-decoration: underline; }
+    #ctx button:hover:not(:disabled) { background: var(--control-hover); }
+  }
+
+  /* Narrow or touch-sized headers: the readout moves under the brand so it never meets the toolbar. */
+  @media (max-width: 1100px), (pointer: coarse) and (max-width: 1280px) {
+    #readout { top: calc(28px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); transform: none; text-align: left; }
+    #smeter { justify-content: flex-start; }
+    #marks { top: 104px; }
+  }
+
+  /* Short viewports (phones in landscape): compact readout. */
+  @media (max-height: 500px) {
+    #brand { top: calc(6px + env(safe-area-inset-top)); }
+    #readout { top: calc(22px + env(safe-area-inset-top)); }
+    #freq { font-size: 20px; }
+    #meta { font-size: 11px; }
+    #smeter { margin-top: 2px; }
+    #marks { top: 80px; }
+  }
+
+  /* Phones in portrait: the toolbar becomes a bottom bar and panels become bottom sheets. */
+  @media (max-width: 760px) {
+    #freq { font-size: 24px; }
+    #toolbar {
+      top: auto; bottom: 0; left: 0; right: 0; gap: 0; overflow-x: auto;
+      padding: 4px calc(4px + env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left));
+      background: rgba(10, 12, 15, 0.88); border-top: 1px solid var(--line);
+    }
+    #toolbar button { flex: 1 0 auto; min-height: 44px; padding: 0 6px; font-size: 12.5px; text-shadow: none; }
+    #panel {
+      top: auto; left: 0; right: 0; bottom: calc(53px + env(safe-area-inset-bottom)); width: auto;
+      max-height: min(62vh, calc(100% - 150px)); border-radius: 14px 14px 0 0; border-bottom: 0;
+      padding-left: calc(14px + env(safe-area-inset-left)); padding-right: calc(14px + env(safe-area-inset-right));
+    }
+    #status, #hoverinfo { bottom: calc(60px + env(safe-area-inset-bottom)); }
+    #hint { bottom: calc(124px + env(safe-area-inset-bottom)); white-space: normal;   /* above the step buttons */ text-align: center; width: max-content; max-width: calc(100% - 24px); }
+    #tunepad button { bottom: calc(64px + env(safe-area-inset-bottom)); }
+  }
+
+  /* Touch: larger targets, no hover-only readouts, step buttons shown. */
+  @media (pointer: coarse) {
+    .close { min-width: 40px; min-height: 40px; }
+    select, input[type="text"], input[type="number"], input[type="search"] { min-height: 40px; font-size: 16px; }
+    input[type="range"] { height: 32px; }
+    .check { min-height: 36px; }
+    .check input { width: 20px; height: 20px; }
+    .segmented button { min-height: 36px; }
+    .list .item { min-height: 40px; }
+    .btn, .link { min-height: 36px; }
+    .freq-link { min-height: 32px; }
+    #ctx button { padding: 12px 14px; }
+    .mark { font-size: 12px; padding: 3px 8px; }
+    #status, #hoverinfo { display: none; }
+    #tunepad { display: block; }
+    body.idle #brand, body.idle #toolbar, body.idle #tunepad { opacity: 0.45; }
+  }
+  @media (pointer: coarse) and (min-width: 761px) {
+    #toolbar button { min-height: 40px; padding: 0 12px; font-size: 13px; }
+    #panel { top: calc(54px + env(safe-area-inset-top)); max-height: calc(100% - 66px - env(safe-area-inset-top)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="specwrap" class="area"><canvas id="spec" aria-hidden="true"></canvas><div id="marks"></div></div>
+  <div id="band"><canvas id="bandc" aria-hidden="true"></canvas></div>
+  <div id="wfwrap" class="area"><canvas id="wf" aria-hidden="true"></canvas></div>
+  <div id="vfo"></div>
+  <div id="vfo-line"></div>
+  <div id="xline" hidden></div>
+
+  <h1 id="brand">Radiolack</h1>
+
+  <div id="readout">
+    <div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div>
+    <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
+    <div id="smeter" aria-hidden="true"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
+  </div>
+
+  <nav id="toolbar" aria-label="Panels">
+    <button type="button" data-panel="source" aria-expanded="false" aria-controls="panel">Source</button>
+    <button type="button" data-panel="demod" aria-expanded="false" aria-controls="panel">Demod</button>
+    <button type="button" data-panel="display" aria-expanded="false" aria-controls="panel">Display</button>
+    <button type="button" data-panel="bands" aria-expanded="false" aria-controls="panel">Bands</button>
+    <button type="button" data-panel="scanners" aria-expanded="false" aria-controls="panel">Scanners</button>
+    <button type="button" data-panel="settings" aria-expanded="false" aria-controls="panel">Settings</button>
+  </nav>
+
+  <div id="panel" role="region" aria-labelledby="panel-title" hidden>
+    <div class="panel-head"><h2 id="panel-title"></h2><button type="button" class="close" aria-label="Close the panel">×</button></div>
+
+    <section data-panel="source" hidden>
+      <div class="field">
+        <label for="src-device">Receiver</label>
+        <select id="src-device">
+          <option value="rtl">RTL-SDR · local rtl_tcp</option>
+          <option value="rtl-remote">RTL-SDR · remote rtl_tcp</option>
+          <option value="soapy">SoapySDR (Airspy, HackRF, SDRplay…)</option>
+          <option value="file">I/Q file</option>
+        </select>
+        <p class="note" id="src-note"></p>
+      </div>
+      <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal"></div>
+      <div class="field">
+        <label for="src-rate">Sample rate</label>
+        <select id="src-rate">
+          <option value="1024000">1.024 MS/s</option>
+          <option value="1536000">1.536 MS/s</option>
+          <option value="2048000">2.048 MS/s</option>
+          <option value="2400000">2.400 MS/s</option>
+          <option value="2880000">2.880 MS/s</option>
+        </select>
+      </div>
+      <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1"></div>
+      <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.1"></div>
+      <label class="check"><input id="src-dc" type="checkbox"> Remove the DC spike</label>
+      <label class="check"><input id="src-agc" type="checkbox"> Tuner AGC</label>
+      <label class="check"><input id="src-bias" type="checkbox"> Antenna power (bias-T)</label>
+      <p class="note">The simulated dongle drifts by +4 ppm: with a correction of 0, signals appear about 580 Hz off.</p>
+    </section>
+
+    <section data-panel="demod" hidden>
+      <div class="field">
+        <span class="label">Mode</span>
+        <div class="segmented" role="radiogroup" aria-label="Mode" id="mode-group">
+          <button type="button" role="radio" data-mode="NFM">NFM</button>
+          <button type="button" role="radio" data-mode="AM">AM</button>
+          <button type="button" role="radio" data-mode="USB">USB</button>
+          <button type="button" role="radio" data-mode="LSB">LSB</button>
+          <button type="button" role="radio" data-mode="CW">CW</button>
+        </div>
+      </div>
+      <label class="check"><input id="dm-auto" type="checkbox"> Mode and step from the band plan</label>
+      <div class="field"><label for="dm-bw">Filter width <output id="dm-bw-v"></output></label><input id="dm-bw" type="range"></div>
+      <div class="field">
+        <label for="dm-step">Tuning step</label>
+        <select id="dm-step">
+          <option value="auto">Automatic</option>
+          <option value="10">10 Hz</option>
+          <option value="100">100 Hz</option>
+          <option value="1000">1 kHz</option>
+          <option value="6250">6.25 kHz</option>
+          <option value="12500">12.5 kHz</option>
+          <option value="25000">25 kHz</option>
+        </select>
+      </div>
+      <h3>Squelch</h3>
+      <label class="check"><input id="dm-sql-auto" type="checkbox"> Automatic (noise + 8 dB)</label>
+      <div class="field"><label for="dm-sql">Threshold <output id="dm-sql-v"></output></label><input id="dm-sql" type="range" min="-130" max="-20" step="1"></div>
+      <div class="field">
+        <label for="dm-ctcss">CTCSS</label>
+        <select id="dm-ctcss">
+          <option value="off">Off</option>
+          <option value="detect">Detect</option>
+          <option value="67.0">67.0 Hz</option>
+          <option value="88.5">88.5 Hz</option>
+          <option value="123.0">123.0 Hz</option>
+          <option value="131.8">131.8 Hz</option>
+          <option value="162.2">162.2 Hz</option>
+        </select>
+        <p class="note">Tone: <span id="ctcss-v">—</span></p>
+      </div>
+      <h3>Processing</h3>
+      <div class="field">
+        <label for="dm-agc">AGC</label>
+        <select id="dm-agc"><option value="fast">Fast</option><option value="slow">Slow</option><option value="off">Off</option></select>
+      </div>
+      <label class="check"><input id="dm-nr" type="checkbox"> Noise reduction</label>
+      <label class="check"><input id="dm-notch" type="checkbox"> Automatic notch</label>
+      <label class="check"><input id="dm-nb" type="checkbox"> Noise blanker</label>
+      <h3>Audio</h3>
+      <div class="field"><label for="dm-vol">Volume <output id="dm-vol-v"></output></label><input id="dm-vol" type="range" min="0" max="100" step="1"></div>
+      <p class="note">The mockup makes no sound.</p>
+    </section>
+
+    <section data-panel="display" hidden>
+      <h3>Spectrum</h3>
+      <div class="grid2">
+        <div class="field">
+          <label for="ds-fft">FFT size</label>
+          <select id="ds-fft"><option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option><option value="16384">16384</option></select>
+        </div>
+        <div class="field">
+          <label for="ds-win">Window</label>
+          <select id="ds-win"><option value="bh">Blackman-Harris</option><option value="nuttall">Nuttall</option><option value="hann">Hann</option><option value="rect">Rectangular</option></select>
+        </div>
+      </div>
+      <p class="note" id="ds-fft-note"></p>
+      <div class="field"><label for="ds-rate">Refresh rate <output id="ds-rate-v"></output></label><input id="ds-rate" type="range" min="5" max="60" step="1"></div>
+      <div class="field"><label for="ds-avg">Averaging <output id="ds-avg-v"></output></label><input id="ds-avg" type="range" min="0" max="0.95" step="0.05"></div>
+      <label class="check"><input id="ds-fill" type="checkbox"> Fill under the trace</label>
+      <div class="row"><label class="check"><input id="ds-peak" type="checkbox"> Peak hold</label><button type="button" class="link" id="ds-peak-clear">Clear</button></div>
+      <label class="check"><input id="ds-grid" type="checkbox"> Grid</label>
+      <label class="check"><input id="ds-auto" type="checkbox"> Automatic scale</label>
+      <div class="field"><label for="ds-top">Top level <output id="ds-top-v"></output></label><input id="ds-top" type="range" min="-80" max="0" step="1"></div>
+      <div class="field"><label for="ds-range">Dynamic range <output id="ds-range-v"></output></label><input id="ds-range" type="range" min="30" max="140" step="5"></div>
+      <h3>Waterfall</h3>
+      <div class="field">
+        <label for="wf-pal">Palette</label>
+        <select id="wf-pal"><option value="classic">Classic</option><option value="viridis">Viridis</option><option value="amber">Amber</option><option value="ice">Ice</option><option value="gray">Greyscale</option></select>
+        <div class="palette-preview" id="wf-pal-preview"></div>
+      </div>
+      <label class="check"><input id="wf-auto" type="checkbox"> Automatic contrast</label>
+      <div class="field"><label for="wf-min">Floor <output id="wf-min-v"></output></label><input id="wf-min" type="range" min="-140" max="-40" step="1"></div>
+      <div class="field"><label for="wf-max">Ceiling <output id="wf-max-v"></output></label><input id="wf-max" type="range" min="-110" max="-10" step="1"></div>
+      <div class="field"><label for="wf-speed">Speed <output id="wf-speed-v"></output></label><input id="wf-speed" type="range" min="2" max="60" step="1"></div>
+      <label class="check"><input id="wf-time" type="checkbox"> Timestamps</label>
+      <h3>Overlays</h3>
+      <label class="check"><input id="ov-plan" type="checkbox"> Band plan</label>
+      <label class="check"><input id="ov-marks" type="checkbox"> Bookmarks on the spectrum</label>
+      <div class="field"><label for="ov-split">Spectrum height <output id="ov-split-v"></output></label><input id="ov-split" type="range" min="0.12" max="0.8" step="0.01"></div>
+      <p class="note">The waterfall keeps levels, not colours: palette, contrast and zoom recolour its whole history.</p>
+    </section>
+
+    <section data-panel="bands" hidden>
+      <h3>Bands</h3>
+      <div class="segmented" id="band-group">
+        <button type="button" disabled>6 m</button>
+        <button type="button" aria-pressed="true">2 m</button>
+        <button type="button" disabled>70 cm</button>
+        <button type="button" disabled>23 cm</button>
+      </div>
+      <p class="note">The mockup simulates only the 2 m band.</p>
+      <h3>IARU Region 1 plan (simplified)</h3>
+      <ul class="list" id="plan-list"></ul>
+      <h3>Bookmarks</h3>
+      <div class="row"><input id="bm-filter" type="search" placeholder="Filter" aria-label="Filter the bookmarks"><button type="button" class="btn" id="bm-add">Add current frequency</button></div>
+      <ul class="list" id="bm-list"></ul>
+      <div class="row"><button type="button" class="btn" disabled>Import (CSV, CHIRP)</button></div>
+    </section>
+
+    <section data-panel="scanners" hidden>
+      <div class="segmented" id="scan-tabs">
+        <button type="button" data-tab="peaks">Peaks</button>
+        <button type="button" data-tab="sweep">Sweep</button>
+        <button type="button" data-tab="memory">Bookmarks</button>
+      </div>
+      <div data-tab-panel="peaks">
+        <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
+        <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
+        <label class="check"><input id="pk-marks" type="checkbox"> Mark on the spectrum</label>
+        <table class="peaks">
+          <thead><tr><th>Frequency</th><th>Margin</th><th>Last seen</th><th></th></tr></thead>
+          <tbody id="pk-body"></tbody>
+        </table>
+        <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Restore</button></p>
+      </div>
+      <div data-tab-panel="sweep" hidden>
+        <p class="note">The sweep chains several receiver windows into a wide panorama, then looks for peaks in it. Useful on 70 cm (10 MHz) and 23 cm (60 MHz).</p>
+        <div class="grid2">
+          <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" value="430.000"></div>
+          <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" value="440.000"></div>
+          <div class="field"><label for="sw-dwell">Time per window</label><select id="sw-dwell"><option>0.25 s</option><option selected>0.5 s</option><option>1 s</option></select></div>
+          <div class="field"><label for="sw-thr">Threshold</label><select id="sw-thr"><option>8 dB</option><option selected>12 dB</option><option>18 dB</option></select></div>
+        </div>
+        <div class="row"><button type="button" class="btn primary" disabled>Start</button><span class="note">Not simulated in the mockup.</span></div>
+      </div>
+      <div data-tab-panel="memory" hidden>
+        <div class="field"><label for="mem-dwell">Dwell per channel <output id="mem-dwell-v"></output></label><input id="mem-dwell" type="range" min="0.1" max="1" step="0.05"></div>
+        <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5"></div>
+        <ul class="list" id="mem-list"></ul>
+        <div class="row"><button type="button" class="btn primary" id="mem-start">Start</button><span class="note" id="mem-state"></span></div>
+        <p class="note">The scan stops on a channel when the squelch opens.</p>
+      </div>
+    </section>
+
+    <section data-panel="settings" hidden>
+      <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
+      <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
+      <h3>Remote access</h3>
+      <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
+      <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
+      <div id="st-remote-info" hidden>
+        <div class="field"><span class="label">Address</span><div class="row"><span class="value" id="st-remote-url">https://192.168.1.20:8443</span><button type="button" class="btn" id="st-remote-copy">Copy</button></div></div>
+        <div class="field"><span class="label">Access code</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">New code</button></div></div>
+        <p class="note">Connected devices: none.</p>
+        <p class="note" id="st-remote-msg" role="status"></p>
+        <p class="note">Example address and code: the mockup starts no server.</p>
+      </div>
+      <p class="note">Off by default. Local network only; these settings can only be changed on this computer.</p>
+      <h3>Touch</h3>
+      <dl class="keys">
+        <dt>Tap</dt><dd>Tune</dd>
+        <dt>Drag</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Pinch</dt><dd>Zoom</dd>
+        <dt>Long press</dt><dd>Context menu</dd>
+        <dt>− and +</dt><dd>Tuning step, hold to repeat</dd>
+        <dt>Tap the frequency</dt><dd>Type a frequency</dd>
+      </dl>
+      <h3>Shortcuts</h3>
+      <dl class="keys">
+        <dt>Click</dt><dd>Tune</dd>
+        <dt>Drag the filter</dt><dd>Move the VFO</dd>
+        <dt>Drag an edge</dt><dd>Filter width</dd>
+        <dt>Wheel</dt><dd>Tuning step</dd>
+        <dt>Ctrl + wheel</dt><dd>Zoom</dd>
+        <dt>Drag the background</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Right-click</dt><dd>Context menu</dd>
+        <dt>← →</dt><dd>Step (Shift: ×10)</dd>
+        <dt>+ − 0</dt><dd>Zoom, full view</dd>
+        <dt>M</dt><dd>Next mode</dd>
+        <dt>1 to 6</dt><dd>Panels</dd>
+        <dt>Esc</dt><dd>Close</dd>
+        <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
+      </dl>
+      <p class="note">Radiolack · interface mockup · simulated data</p>
+    </section>
+  </div>
+
+  <div id="ctx" role="menu" aria-label="Frequency actions" hidden>
+    <div class="ctx-title" id="ctx-title"></div>
+    <button type="button" role="menuitem" data-cmd="tune">Tune here</button>
+    <button type="button" role="menuitem" data-cmd="bookmark">Add to bookmarks</button>
+    <button type="button" role="menuitem" data-cmd="center">Centre the view here</button>
+    <button type="button" role="menuitem" data-cmd="segment">Zoom to the segment</button>
+    <button type="button" role="menuitem" data-cmd="ignore">Ignore in the scanner</button>
+  </div>
+
+  <div id="tunepad">
+    <button type="button" id="tune-down" aria-label="One step down">−</button>
+    <button type="button" id="tune-up" aria-label="One step up">+</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="hoverinfo"></div>
+  <div id="hint"></div>
+</div>
+
+<script>
+'use strict';
+(() => {
+  // ------------------------------------------------------------------ helpers
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const dbToLin = (db) => Math.pow(10, db / 10);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const fmtMHz = (hz, dec = 4) => (hz / 1e6).toFixed(dec);
+  const fmtBw = (hz) => (hz >= 1000 ? `${+(hz / 1000).toFixed(2)} kHz` : `${Math.round(hz)} Hz`);
+  const fmtDb = (db) => `${Math.round(db)} dB`;
+  const fmtAgo = (s) => (s < 60 ? `${Math.max(0, Math.round(s))} s` : `${Math.floor(s / 60)} min`);
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // ------------------------------------------------------------------ constants
+  const Q_MIN = -150;                 // waterfall history: -150..-10 dB quantized on 8 bits
+  const Q_STEP = 140 / 255;
+  const NOISE_DB_PER_HZ = -127;       // simulated noise density at 30 dB gain
+  const DONGLE_ERROR_PPM = 4;         // simulated crystal error of the dongle
+  const HIST_ROWS = 1400;             // waterfall lines kept for re-rendering
+  const S_ZERO = -104;                // S-meter bar range (mock calibration: S9 = -50 dB)
+  const S_TOP = -10;
+  const METER_FLOOR = -140;           // reading when the passband holds no signal or no bins
+  const BG32 = 0xff000000;
+  const R820T_GAINS = [0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4,
+    28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6];
+  const MODES = {
+    NFM: { bw: 10000, min: 4000, max: 25000, step: 500 },
+    AM: { bw: 8000, min: 3000, max: 15000, step: 500 },
+    USB: { bw: 2700, min: 1500, max: 4000, step: 100 },
+    LSB: { bw: 2700, min: 1500, max: 4000, step: 100 },
+    CW: { bw: 500, min: 100, max: 2000, step: 50 },
+  };
+  const MODE_ORDER = Object.keys(MODES);
+  const WINDOWS = {                   // leakage of a narrow carrier into neighbour bins, noise bandwidth
+    bh: { enbw: 3.0, half: [0, -3.3, -14, -36, -70] },
+    nuttall: { enbw: 3.0, half: [0, -3.3, -14, -38, -80] },
+    hann: { enbw: 1.76, half: [0, -6, -25, -38, -48] },
+    rect: { enbw: 0, half: [0, -8, -15, -19, -22, -24, -26, -28, -30] },
+  };
+  const PALETTES = {
+    classic: ['#000000', '#00007a', '#0050ff', '#00d0ff', '#40ff80', '#ffff00', '#ff7000', '#ff0000'],
+    viridis: ['#440154', '#414487', '#2a788e', '#22a884', '#7ad151', '#fde725'],
+    amber: ['#000000', '#2a1200', '#7a3600', '#d97b00', '#ffc04d', '#fff4d6'],
+    ice: ['#000000', '#06142e', '#12407a', '#2a86c8', '#7fd3f5', '#f2fbff'],
+    gray: ['#000000', '#ffffff'],
+  };
+  // Simplified IARU Region 1 2 m band plan, for the mockup only.
+  const SEGMENTS = [
+    { from: 144.000e6, to: 144.150e6, label: 'CW / MGM', mode: 'CW', step: 100, rgb: '107,138,253' },
+    { from: 144.150e6, to: 144.400e6, label: 'SSB / CW / MGM', mode: 'USB', step: 100, rgb: '176,124,255' },
+    { from: 144.400e6, to: 144.490e6, label: 'Beacons', mode: 'CW', step: 100, rgb: '242,179,61' },
+    { from: 144.500e6, to: 144.794e6, label: 'All modes', mode: 'NFM', step: 12500, rgb: '125,139,153' },
+    { from: 144.794e6, to: 144.990e6, label: 'Digital', mode: 'NFM', step: 12500, rgb: '60,207,154' },
+    { from: 144.990e6, to: 145.194e6, label: 'Repeater inputs', mode: 'NFM', step: 12500, rgb: '255,122,122' },
+    { from: 145.194e6, to: 145.206e6, label: 'Space', mode: 'NFM', step: 12500, rgb: '226,230,90' },
+    { from: 145.206e6, to: 145.594e6, label: 'FM simplex', mode: 'NFM', step: 12500, rgb: '89,167,255' },
+    { from: 145.594e6, to: 145.794e6, label: 'Repeater outputs', mode: 'NFM', step: 12500, rgb: '255,159,90' },
+    { from: 145.794e6, to: 145.806e6, label: 'ISS', mode: 'NFM', step: 12500, rgb: '226,230,90' },
+    { from: 145.806e6, to: 146.000e6, label: 'Satellites', mode: 'USB', step: 100, rgb: '226,230,90' },
+  ];
+  const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', settings: 'Settings' };
+  const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'settings'];
+
+  // ------------------------------------------------------------------ DOM
+  const appEl = $('#app');
+  const specWrap = $('#specwrap');
+  const wfWrap = $('#wfwrap');
+  const bandEl = $('#band');
+  const specCanvas = $('#spec');
+  const wfCanvas = $('#wf');
+  const bandCanvas = $('#bandc');
+  const specCtx = specCanvas.getContext('2d');
+  const bandCtx = bandCanvas.getContext('2d');
+  const wfCtx = wfCanvas.getContext('2d', { alpha: false });
+  const vfoEl = $('#vfo');
+  const vfoLine = $('#vfo-line');
+  const xline = $('#xline');
+  const marksEl = $('#marks');
+  const freqEl = $('#freq');
+  const meterFill = $('#smeter .fill');
+  const meterSql = $('#smeter .sql');
+  const panelEl = $('#panel');
+  const ctxEl = $('#ctx');
+  const hoverEl = $('#hoverinfo');
+  const hintEl = $('#hint');
+  const readoutEl = $('#readout');
+  const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
+
+  // ------------------------------------------------------------------ simulated band
+  const MORSE = { V: '...-' };
+  function keying(text, carrierUnits) {
+    let out = '';
+    for (const ch of text) {
+      const code = MORSE[ch];
+      if (!code) { out += '0000'; continue; }
+      for (let i = 0; i < code.length; i += 1) {
+        out += code[i] === '.' ? '1' : '111';
+        out += i < code.length - 1 ? '0' : '000';
+      }
+    }
+    return `${out}0000${'1'.repeat(carrierUnits)}${'0'.repeat(10)}`;
+  }
+
+  class Repeater {
+    constructor(out, level, tone, inputs) {
+      this.out = out; this.inp = out - 600e3; this.level = level; this.tone = tone; this.inputs = inputs;
+      this.state = 'idle'; this.until = rand(1, 10); this.k = 0; this.left = 0;
+    }
+    update(t) {
+      if (t < this.until) return;
+      if (this.state === 'idle') {
+        this.state = 'over'; this.k = Math.floor(Math.random() * this.inputs.length);
+        this.left = 2 + Math.floor(Math.random() * 6); this.until = t + rand(4, 12);
+      } else if (this.state === 'over') {
+        this.state = 'tail'; this.left -= 1; this.until = t + rand(1.2, 2.2);
+      } else if (this.left > 0) {
+        this.state = 'over'; this.k = (this.k + 1) % this.inputs.length; this.until = t + rand(4, 12);
+      } else {
+        this.state = 'idle'; this.until = t + rand(10, 40);
+      }
+    }
+    emit(add) {
+      if (this.state === 'over') {
+        add(this.out, this.level, 'fm', 9000);
+        add(this.inp, this.inputs[this.k], 'fm', 9000);
+      } else if (this.state === 'tail') {
+        add(this.out, this.level + 3, 'carrier');
+      }
+    }
+    toneNear(f) { return this.state !== 'idle' && Math.abs(f - this.out) < 3000 ? this.tone : null; }
+  }
+
+  class Simplex {
+    constructor(f, levels, calls) {
+      this.f = f; this.levels = levels; this.calls = calls; this.cur = levels[0];
+      this.state = 'idle'; this.until = rand(2, 15); this.k = 0; this.left = 0;
+      this.offsets = levels.map(() => rand(-400, 400));
+    }
+    update(t) {
+      if (t < this.until) return;
+      if (this.state === 'idle') {
+        this.state = 'over'; this.k = 0;
+        this.left = this.calls ? 1 : 3 + Math.floor(Math.random() * 6);
+        this.cur = this.calls ? rand(-90, -62) : this.levels[0];
+        this.until = t + (this.calls ? rand(2.5, 5) : rand(5, 14));
+      } else if (this.state === 'over') {
+        this.left -= 1;
+        if (this.left <= 0) { this.state = 'idle'; this.until = t + (this.calls ? rand(15, 45) : rand(20, 60)); }
+        else { this.state = 'gap'; this.until = t + rand(0.8, 2.5); }
+      } else {
+        this.state = 'over'; this.k = (this.k + 1) % this.levels.length; this.cur = this.levels[this.k];
+        this.until = t + rand(5, 14);
+      }
+    }
+    emit(add) { if (this.state === 'over') add(this.f + this.offsets[this.k], this.cur, 'fm', 9000); }
+  }
+
+  class Aprs {
+    constructor(f) { this.f = f; this.next = rand(1, 5); this.end = 0; this.level = -70; this.offset = 0; }
+    update(t) {
+      if (t < this.next) return;
+      this.end = t + rand(0.35, 0.9); this.level = rand(-88, -60); this.offset = rand(-800, 800);
+      this.next = this.end + rand(2, 12);
+    }
+    emit(add, t) { if (t < this.end) add(this.f + this.offset, this.level, 'fm', 8000); }
+  }
+
+  class Beacon {
+    constructor(f, level, pattern, unit) { this.f = f; this.level = level; this.pattern = pattern; this.unit = unit; }
+    update() {}
+    emit(add, t) { if (this.pattern[Math.floor(t / this.unit) % this.pattern.length] === '1') add(this.f, this.level, 'carrier'); }
+  }
+
+  class Ft8 {
+    constructor(dial) { this.dial = dial; this.cycle = -1; this.slots = []; }
+    update(t) {
+      const cycle = Math.floor(t / 15);
+      if (cycle === this.cycle) return;
+      this.cycle = cycle;
+      const n = 2 + Math.floor(Math.random() * 5);
+      this.slots = Array.from({ length: n }, () => ({ offset: rand(300, 2700), level: rand(-96, -84) }));
+    }
+    emit(add, t) {
+      const phase = t % 15;
+      if (phase < 0.5 || phase > 13.1) return;
+      for (const s of this.slots) add(this.dial + s.offset, s.level, 'carrier');
+    }
+  }
+
+  class SsbQso {
+    constructor(dial, levels) {
+      this.dial = dial; this.levels = levels; this.state = 'idle'; this.until = rand(3, 12); this.k = 0; this.left = 0;
+      this.offsets = levels.map(() => rand(-60, 60)); this.p1 = rand(0, 6); this.p2 = rand(0, 6);
+    }
+    update(t) {
+      if (t < this.until) return;
+      if (this.state === 'idle') {
+        this.state = 'over'; this.k = 0; this.left = 3 + Math.floor(Math.random() * 5); this.until = t + rand(6, 16);
+      } else if (this.state === 'over') {
+        this.left -= 1;
+        if (this.left <= 0) { this.state = 'idle'; this.until = t + rand(15, 40); }
+        else { this.state = 'gap'; this.until = t + rand(1, 3); }
+      } else {
+        this.state = 'over'; this.k = (this.k + 1) % this.levels.length; this.until = t + rand(6, 16);
+      }
+    }
+    emit(add, t) {
+      if (this.state !== 'over') return;
+      const env = 0.55 * Math.sin(6.1 * t + this.p1) + 0.45 * Math.sin(2.3 * t + this.p2) + 0.2;
+      if (env < 0.05) return;
+      add(this.dial + this.offsets[this.k], this.levels[this.k] + 10 * Math.log10(env), 'ssb');
+    }
+  }
+
+  class SatBeacon {
+    constructor(f) { this.f = f; }
+    update() {}
+    emit(add, t) {
+      const phase = t % 100;
+      if (phase > 70) return;
+      const x = phase / 70;
+      const doppler = (3500 * Math.tanh((0.5 - x) * 6)) / Math.tanh(3);
+      add(this.f + doppler, -97 + 13 * Math.sin(Math.PI * x), 'carrier');
+    }
+  }
+
+  const repeaters = [
+    new Repeater(145.6125e6, -55, '123.0', [-78, -92]),
+    new Repeater(145.6625e6, -66, '67.0', [-84, -80, -97]),
+    new Repeater(145.7375e6, -77, '88.5', [-95]),
+  ];
+  const signals = [
+    ...repeaters,
+    new Simplex(145.5e6, [-70], true),
+    new Simplex(145.3375e6, [-70, -86], false),
+    new Aprs(144.8e6),
+    new Beacon(144.4125e6, -86, keying('VVV', 40), 0.1),
+    new Beacon(144.4585e6, -93, keying('VVV', 60), 0.08),
+    new Beacon(144.471e6, -82, keying('VVV', 30), 0.12),
+    new Ft8(144.174e6),
+    new SsbQso(144.3e6, [-74, -84]),
+    new SatBeacon(145.94e6),
+  ];
+
+  // ------------------------------------------------------------------ state
+  const S = {
+    fc: 145.0e6, fs: 2.4e6, nb: 8192,
+    vfo: 145.5e6, mode: 'NFM', bw: 10000, autoMode: true, step: 'auto',
+    device: 'rtl', gainIdx: 17, ppm: 4, dcRemove: true, tunerAgc: false, biasT: false,
+    fftRate: 30, avg: 0.6, win: 'bh', fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
+    palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
+    showPlan: true, showMarks: true, split: 0.4,
+    sql: -80, sqlAuto: true, ctcss: 'detect', agc: 'slow', nr: false, notch: false, blanker: false, volume: 70,
+    peakOn: true, peakThr: 12, peakMarks: true, memDwell: 0.25, memResume: 2,
+    autoHide: true, keepAwake: false, remote: false,
+  };
+  const view = { f0: 0, f1: 0 };
+  let bookmarks = [
+    { f: 144.050e6, name: 'CW calling', mode: 'CW', scan: false },
+    { f: 144.174e6, name: 'FT8', mode: 'USB', scan: false },
+    { f: 144.300e6, name: 'SSB calling', mode: 'USB', scan: true },
+    { f: 144.800e6, name: 'APRS', mode: 'NFM', scan: true },
+    { f: 145.3375e6, name: 'Simplex', mode: 'NFM', scan: true },
+    { f: 145.500e6, name: 'FM calling', mode: 'NFM', scan: true },
+    { f: 145.6125e6, name: 'Repeater A', mode: 'NFM', scan: true },
+    { f: 145.6625e6, name: 'Repeater B', mode: 'NFM', scan: true },
+    { f: 145.7375e6, name: 'Repeater C', mode: 'NFM', scan: true },
+    { f: 145.800e6, name: 'ISS', mode: 'NFM', scan: false },
+  ];
+  let bookmarkCounter = 0;
+
+  const gainDb = () => R820T_GAINS[S.gainIdx];
+  const fStart = () => S.fc - S.fs / 2;
+  const fEnd = () => S.fc + S.fs / 2;
+  const binHz = () => S.fs / S.nb;
+  const segmentAt = (f) => SEGMENTS.find((s) => f >= s.from && f < s.to) || null;
+  function stepAt(f) {
+    if (S.step !== 'auto') return Number(S.step);
+    const seg = segmentAt(f);
+    return seg ? seg.step : 100;
+  }
+  const snapAt = (f) => { const st = stepAt(f); return Math.round(f / st) * st; };
+  function passband() {
+    const f = S.vfo, bw = S.bw;
+    if (S.mode === 'USB') return [f, f + bw];
+    if (S.mode === 'LSB') return [f - bw, f];
+    return [f - bw / 2, f + bw / 2];
+  }
+
+  // ------------------------------------------------------------------ buffers
+  let frameLin, avgLin, avgDb, peakDb, wfAcc, scratch, hist, histTime, rolloff, kernel;
+  let wfCount = 0, histHead = -1, histFilled = 0, avgPrimed = false, frameCounter = 0, lastStampSlot = -1;
+  let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
+  const autoWf = { min: -101, max: -57 };
+  const floorSample = new Float32Array(1024);
+  const PEAK_MERGE_HZ = 1500;         // detections closer than this update the same entry
+  const PEAK_LIST_MAX = 200;
+  const peaks = [];                   // { f, ch, first, last, hits, margin }
+  const excluded = [];                // frequencies ignored by the peak scanner
+  const isExcluded = (f) => excluded.some((x) => Math.abs(x - f) <= PEAK_MERGE_HZ);
+  let DPR = 1, appW = 0, specH = 0, wfW = 0, wfH = 0, layoutPending = false;
+  let wfRowImg = null, wfRow32 = null, colStart = null, colEnd = null, specVals = null, peakVals = null, fillGrad = null;
+  let needWfRedraw = true, lutDirty = true;
+
+  function kernelFor(win) {
+    const half = WINDOWS[win].half.map(dbToLin);
+    return half.slice(1).reverse().concat(half);
+  }
+
+  function resetBuffers() {
+    const nb = S.nb;
+    frameLin = new Float32Array(nb);
+    avgLin = new Float32Array(nb);
+    avgDb = new Float32Array(nb).fill(-140);
+    peakDb = new Float32Array(nb).fill(-300);
+    wfAcc = new Float32Array(nb);
+    scratch = new Float32Array(nb);
+    hist = new Uint8Array(nb * HIST_ROWS);
+    histTime = new Float64Array(HIST_ROWS);
+    wfCount = 0; histHead = -1; histFilled = 0; avgPrimed = false;
+    rolloff = new Float32Array(nb);
+    for (let i = 0; i < nb; i += 1) {
+      const off = Math.abs((i + 0.5) / nb - 0.5) * 2;
+      rolloff[i] = off < 0.75 ? 1 : dbToLin(-14 * ((off - 0.75) / 0.25) ** 2);
+    }
+    kernel = kernelFor(S.win);
+    const lo = fStart(), hi = fEnd();
+    if (!(view.f1 > view.f0 && view.f0 >= lo && view.f1 <= hi)) { view.f0 = lo; view.f1 = hi; }
+    viewChanged();
+  }
+
+  // ------------------------------------------------------------------ signal processing (simulated)
+  function generateFrame(t) {
+    const nb = S.nb, bin = binHz(), f0 = fStart();
+    const noiseMean = dbToLin(NOISE_DB_PER_HZ + 10 * Math.log10(bin) + WINDOWS[S.win].enbw + (gainDb() - 30) * 0.7);
+    for (let i = 0; i < nb; i += 1) frameLin[i] = -Math.log(1 - Math.random()) * noiseMean * rolloff[i];
+    const sigGain = gainDb() - 30;
+    const ppmFactor = (DONGLE_ERROR_PPM - S.ppm) * 1e-6;
+    const half = (kernel.length - 1) / 2;
+    const add = (f, levelDb, kind, width = 0, internal = false) => {
+      const fd = internal ? f : f * (1 + ppmFactor);
+      const c = (fd - f0) / bin;
+      if (c < -200 || c > nb + 200) return;
+      const p = dbToLin(levelDb + sigGain);
+      if (kind === 'carrier') {
+        const ci = Math.round(c);
+        for (let j = 0; j < kernel.length; j += 1) {
+          const i = ci - half + j;
+          if (i >= 0 && i < nb) frameLin[i] += p * kernel[j] * rolloff[i];
+        }
+        return;
+      }
+      const lo = kind === 'ssb' ? c + 300 / bin : c - width / 2 / bin;
+      const hi = kind === 'ssb' ? c + 2700 / bin : c + width / 2 / bin;
+      const sk = (kind === 'ssb' ? 150 : 900) / bin;
+      const i0 = Math.max(0, Math.floor(lo - 4 * sk));
+      const i1 = Math.min(nb - 1, Math.ceil(hi + 4 * sk));
+      if (i1 < i0) return;
+      const phase = Math.random() * 6.283;
+      let sum = 0;
+      for (let i = i0; i <= i1; i += 1) {
+        let w = 1;
+        if (i < lo) w = Math.exp(-((lo - i) ** 2) / (2 * sk * sk));
+        else if (i > hi) w = Math.exp(-((i - hi) ** 2) / (2 * sk * sk));
+        if (kind === 'ssb') w *= 0.25 + Math.abs(Math.sin(phase + ((i - lo) * bin) / 700));
+        w *= 0.7 + 0.6 * Math.random();
+        scratch[i] = w;
+        sum += w;
+      }
+      if (sum <= 0) return;
+      const k = p / sum;
+      for (let i = i0; i <= i1; i += 1) frameLin[i] += scratch[i] * k * rolloff[i];
+    };
+    for (const s of signals) s.emit(add, t);
+    if (!S.dcRemove) add(S.fc, -64, 'carrier', 0, true);
+    add(144.0e6, -84, 'carrier', 0, true);   // dongle spur (5 x 28.8 MHz)
+  }
+
+  function integrateFrame() {
+    const nb = S.nb, a = avgPrimed ? S.avg : 0;
+    for (let i = 0; i < nb; i += 1) {
+      const v = frameLin[i];
+      const m = a * avgLin[i] + (1 - a) * v;
+      avgLin[i] = m;
+      const db = 10 * Math.log10(m + 1e-30);
+      avgDb[i] = db;
+      if (db > peakDb[i]) peakDb[i] = db;
+      wfAcc[i] += v;
+    }
+    wfCount += 1;
+    avgPrimed = true;
+    updateMeter();
+  }
+
+  function updateMeter() {
+    const [lo, hi] = passband();
+    const bin = binHz(), f0 = fStart();
+    const a = clamp(Math.floor((lo - f0) / bin), 0, S.nb);
+    const b = clamp(Math.ceil((hi - f0) / bin), 0, S.nb);
+    if (b <= a) {                     // passband outside the captured span
+      meterDb = METER_FLOOR;
+      sqlOpen = false;
+      return;
+    }
+    let p = 0;
+    for (let i = a; i < b; i += 1) p += frameLin[i];
+    const db = Math.max(METER_FLOOR, 10 * Math.log10(p + 1e-30));
+    meterDb += (db - meterDb) * (db > meterDb ? 0.6 : 0.15);
+    if (S.sqlAuto) S.sql = Math.round(floorDb + 10 * Math.log10(Math.max(1, b - a)) + 8);
+    sqlOpen = meterDb > S.sql;
+  }
+
+  function estimateFloor() {
+    const nb = S.nb, from = Math.floor(nb * 0.15), to = Math.floor(nb * 0.85);
+    const count = Math.min(floorSample.length, to - from), stride = (to - from) / count;
+    for (let k = 0; k < count; k += 1) floorSample[k] = avgDb[from + Math.floor(k * stride)];
+    const sorted = floorSample.subarray(0, count).sort();
+    floorDb += (sorted[count >> 1] - floorDb) * 0.2;
+  }
+
+  function autoAdjust() {
+    if (S.autoRange) autoTop += (floorDb - 12 + S.range - autoTop) * 0.05;
+    if (S.wfAuto) {
+      const lo = floorDb - 4, hi = floorDb + 40;
+      if (Math.abs(lo - autoWf.min) > 0.3 || Math.abs(hi - autoWf.max) > 0.3) {
+        autoWf.min += (lo - autoWf.min) * 0.05;
+        autoWf.max += (hi - autoWf.max) * 0.05;
+        lutDirty = true;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ waterfall
+  const paletteCache = {};
+  function paletteRgb(name) {
+    if (paletteCache[name]) return paletteCache[name];
+    const stops = PALETTES[name].map((h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16)));
+    const out = new Uint8Array(768);
+    for (let i = 0; i < 256; i += 1) {
+      const x = (i / 255) * (stops.length - 1);
+      const k = Math.min(stops.length - 2, Math.floor(x)), fr = x - k;
+      for (let c = 0; c < 3; c += 1) out[i * 3 + c] = Math.round(stops[k][c] + (stops[k + 1][c] - stops[k][c]) * fr);
+    }
+    paletteCache[name] = out;
+    return out;
+  }
+  const lut32 = new Uint32Array(256);
+  const wfLo = () => (S.wfAuto ? autoWf.min : S.wfMin);
+  const wfHi = () => (S.wfAuto ? autoWf.max : S.wfMax);
+  function rebuildLut() {
+    const pal = paletteRgb(S.palette), lo = wfLo(), span = Math.max(1, wfHi() - lo);
+    for (let q = 0; q < 256; q += 1) {
+      const idx = clamp(Math.round(((Q_MIN + q * Q_STEP - lo) / span) * 255), 0, 255) * 3;
+      lut32[q] = ((255 << 24) | (pal[idx + 2] << 16) | (pal[idx + 1] << 8) | pal[idx]) >>> 0;
+    }
+  }
+
+  function computeCols() {
+    const bin = binHz(), f0 = fStart(), span = view.f1 - view.f0;
+    for (let x = 0; x < wfW; x += 1) {
+      const fa = view.f0 + (x / wfW) * span, fb = view.f0 + ((x + 1) / wfW) * span;
+      const a = Math.floor((fa - f0) / bin);
+      let b = Math.floor((fb - f0) / bin);
+      if (b <= a) b = a + 1;
+      colStart[x] = a;
+      colEnd[x] = b;
+    }
+  }
+
+  function fillRow(row, out32, offset) {
+    const nb = S.nb, base = row * nb;
+    for (let x = 0; x < wfW; x += 1) {
+      const a = colStart[x], b = colEnd[x];
+      if (b <= 0 || a >= nb) { out32[offset + x] = BG32; continue; }
+      let m = 0;
+      for (let i = Math.max(0, a), e = Math.min(nb, b); i < e; i += 1) {
+        const q = hist[base + i];
+        if (q > m) m = q;
+      }
+      out32[offset + x] = lut32[m];
+    }
+  }
+
+  function drawStamp(y, ms) {
+    wfCtx.save();
+    wfCtx.fillStyle = 'rgba(255,255,255,0.6)';
+    wfCtx.fillRect(0, y, 7, 1);
+    wfCtx.font = '10px system-ui, sans-serif';
+    wfCtx.textBaseline = 'top';
+    wfCtx.shadowColor = 'rgba(0,0,0,0.9)';
+    wfCtx.shadowBlur = 3;
+    wfCtx.fillStyle = 'rgba(230,235,240,0.75)';
+    wfCtx.fillText(new Date(ms).toTimeString().slice(0, 8), 10, y + 1);
+    wfCtx.restore();
+  }
+
+  function commitWfLine(now) {
+    if (!wfCount || !wfRowImg) return;
+    const nb = S.nb;
+    histHead = (histHead + 1) % HIST_ROWS;
+    histFilled = Math.min(HIST_ROWS, histFilled + 1);
+    const base = histHead * nb, inv = 1 / wfCount;
+    for (let i = 0; i < nb; i += 1) {
+      const q = (10 * Math.log10(wfAcc[i] * inv + 1e-30) - Q_MIN) / Q_STEP;
+      hist[base + i] = q <= 0 ? 0 : q >= 255 ? 255 : q + 0.5;
+      wfAcc[i] = 0;
+    }
+    wfCount = 0;
+    histTime[histHead] = now;
+    if (wfH > 1) wfCtx.drawImage(wfCanvas, 0, 0, wfW, wfH - 1, 0, 1, wfW, wfH - 1);
+    fillRow(histHead, wfRow32, 0);
+    wfCtx.putImageData(wfRowImg, 0, 0);
+    const slot = Math.floor(now / 10000);
+    if (S.timestamps && slot !== lastStampSlot) drawStamp(0, now);
+    lastStampSlot = slot;
+  }
+
+  function redrawWaterfall() {
+    if (!wfRowImg) return;
+    const img = wfCtx.createImageData(wfW, wfH);
+    const out = new Uint32Array(img.data.buffer);
+    out.fill(BG32);
+    const rows = Math.min(wfH, histFilled);
+    for (let y = 0; y < rows; y += 1) fillRow((histHead - y + HIST_ROWS) % HIST_ROWS, out, y * wfW);
+    wfCtx.putImageData(img, 0, 0);
+    if (S.timestamps) {
+      for (let y = 0; y + 1 < rows; y += 1) {
+        const t = histTime[(histHead - y + HIST_ROWS) % HIST_ROWS];
+        const older = histTime[(histHead - y - 1 + HIST_ROWS) % HIST_ROWS];
+        if (Math.floor(t / 10000) !== Math.floor(older / 10000)) drawStamp(y, t);
+      }
+    }
+    if (histFilled) lastStampSlot = Math.floor(histTime[histHead] / 10000);
+  }
+
+  // ------------------------------------------------------------------ spectrum
+  function niceStep(x) {
+    const p = 10 ** Math.floor(Math.log10(x));
+    for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= x) return m * p;
+    return 10 * p;
+  }
+
+  function sample(src, out) {
+    const W = out.length, nb = S.nb, bin = binHz(), f0 = fStart(), span = view.f1 - view.f0;
+    const binsPerPx = span / bin / W;
+    for (let x = 0; x < W; x += 1) {
+      const ba = (view.f0 + (x / W) * span - f0) / bin;
+      const bb = ba + binsPerPx;
+      if (binsPerPx >= 1) {
+        let m = -300;
+        for (let i = Math.max(0, Math.floor(ba)), e = Math.min(nb, Math.ceil(bb)); i < e; i += 1) if (src[i] > m) m = src[i];
+        out[x] = m;
+      } else {
+        const pos = (ba + bb) / 2 - 0.5;
+        const i = Math.floor(pos), fr = pos - i;
+        const v0 = src[clamp(i, 0, nb - 1)], v1 = src[clamp(i + 1, 0, nb - 1)];
+        out[x] = v0 + (v1 - v0) * fr;
+      }
+    }
+  }
+
+  function drawSpectrum() {
+    const ctx = specCtx, W = specCanvas.width, H = specCanvas.height, d = DPR;
+    if (!specVals || W < 2 || H < 2) return;
+    ctx.fillStyle = '#0a0c0f';
+    ctx.fillRect(0, 0, W, H);
+    const axisH = 18 * d, plotH = Math.max(10, H - axisH);
+    const top = S.autoRange ? autoTop : S.top, bottom = top - S.range;
+    const yOf = (db) => ((top - db) / (top - bottom)) * plotH;
+    const span = view.f1 - view.f0;
+    ctx.lineWidth = 1;
+    ctx.font = `${10 * d}px system-ui, sans-serif`;
+
+    const dbStep = (plotH / S.range) * 10 >= 24 * d ? 10 : 20;
+    const dbFirst = Math.ceil(bottom / dbStep) * dbStep;
+    if (S.grid) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+      for (let db = dbFirst; db <= top; db += dbStep) {
+        const y = Math.round(yOf(db)) + 0.5;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
+    }
+
+    const step = niceStep((span * 110) / (W / d));
+    const dec = clamp(Math.ceil(-Math.log10(step / 1e6) - 1e-9), 3, 6);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let f = Math.ceil(view.f0 / step) * step; f <= view.f1; f += step) {
+      const x = Math.round(((f - view.f0) / span) * W) + 0.5;
+      if (S.grid) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(215,221,229,0.55)';
+      ctx.fillText((f / 1e6).toFixed(dec), x, plotH + axisH / 2);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath(); ctx.moveTo(0, plotH + 0.5); ctx.lineTo(W, plotH + 0.5); ctx.stroke();
+
+    sample(avgDb, specVals);
+    const trace = new Path2D();
+    for (let x = 0; x < W; x += 1) {
+      const y = clamp(yOf(specVals[x]), 0, plotH);
+      if (x === 0) trace.moveTo(0, y); else trace.lineTo(x, y);
+    }
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, plotH); ctx.clip();
+    if (S.fill) {
+      const area = new Path2D(trace);
+      area.lineTo(W - 1, plotH); area.lineTo(0, plotH); area.closePath();
+      ctx.fillStyle = fillGrad;
+      ctx.fill(area);
+    }
+    if (S.peakHold) {
+      sample(peakDb, peakVals);
+      ctx.beginPath();
+      for (let x = 0; x < W; x += 1) {
+        const y = clamp(yOf(peakVals[x]), 0, plotH);
+        if (x === 0) ctx.moveTo(0, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(242,179,61,0.55)';
+      ctx.lineWidth = d;
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#d6dee8';
+    ctx.lineWidth = 1.1 * d;
+    ctx.lineJoin = 'round';
+    ctx.stroke(trace);
+
+    if (S.peakOn && S.peakMarks) {
+      const now = performance.now();
+      ctx.fillStyle = 'rgba(60,207,154,0.9)';
+      for (const p of peaks) {
+        if (now - p.last > 1500 || isExcluded(p.f) || p.f < view.f0 || p.f > view.f1) continue;
+        const x = ((p.f - view.f0) / span) * W;
+        const bi = clamp(Math.round((p.f - fStart()) / binHz()), 0, S.nb - 1);
+        const y = clamp(yOf(avgDb[bi]) - 6 * d, 12 * d, plotH);
+        ctx.beginPath();
+        ctx.moveTo(x - 4 * d, y - 7 * d); ctx.lineTo(x + 4 * d, y - 7 * d); ctx.lineTo(x, y);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+
+    // dB scale last, with a dark halo, so the trace never hides it.
+    const labelTop = labelTopCss * d;
+    const markBand = markBandCss && [markBandCss[0] * d, markBandCss[1] * d];
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 3 * d;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(10,12,15,0.85)';
+    ctx.fillStyle = 'rgba(215,221,229,0.5)';
+    for (let db = dbFirst; db <= top; db += dbStep) {
+      const y = Math.round(yOf(db)) + 0.5;
+      if (y <= labelTop || y >= plotH - 4 * d) continue;
+      // The text spans about [y - 14, y - 2] CSS px: skip it where a bookmark label covers the column.
+      if (markBand && y - 14 * d < markBand[1] && y - 2 * d > markBand[0]) continue;
+      ctx.strokeText(String(db), 6 * d, y - 2 * d);
+      ctx.fillText(String(db), 6 * d, y - 2 * d);
+    }
+  }
+
+  // ------------------------------------------------------------------ overlays
+  const fToX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * appW;
+  const xToF = (x) => view.f0 + (x / appW) * (view.f1 - view.f0);
+
+  function drawBandStrip() {
+    const ctx = bandCtx, W = bandCanvas.width, H = bandCanvas.height, d = DPR;
+    ctx.clearRect(0, 0, W, H);
+    if (!S.showPlan) return;
+    ctx.font = `${10 * d}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const s of SEGMENTS) {
+      const x0 = fToX(s.from) * d, x1 = fToX(s.to) * d;
+      if (x1 < 0 || x0 > W) continue;
+      ctx.fillStyle = `rgba(${s.rgb},0.26)`;
+      ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H);
+      ctx.fillStyle = `rgba(${s.rgb},0.85)`;
+      ctx.fillRect(x0, H - 2 * d, Math.max(1, x1 - x0), 2 * d);
+      const a = Math.max(x0, 0), b = Math.min(x1, W);
+      if (ctx.measureText(s.label).width + 8 * d < b - a) {
+        ctx.fillStyle = 'rgba(230,235,240,0.85)';
+        ctx.fillText(s.label, (a + b) / 2, H / 2 - d);
+      }
+    }
+  }
+
+  function renderMarks() {
+    marksEl.textContent = '';
+    markBandCss = null;
+    if (!S.showMarks || specH < 150) return;
+    const coarse = coarseQuery.matches;   // touch labels use a larger font and padding (see CSS)
+    const items = bookmarks
+      .filter((b) => b.f >= view.f0 && b.f <= view.f1)
+      .map((b) => ({ b, x: fToX(b.f), w: b.name.length * (coarse ? 7.2 : 6.4) + (coarse ? 22 : 14) }))
+      .sort((p, q) => p.x - q.x);
+    let right = -Infinity;
+    for (const it of items) {
+      if (it.x - it.w / 2 < right + 4) continue;
+      right = it.x + it.w / 2;
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'mark';
+      el.textContent = it.b.name;
+      el.title = `${it.b.name} · ${fmtMHz(it.b.f)} MHz · ${it.b.mode}`;
+      el.style.left = `${it.x}px`;
+      el.addEventListener('pointerdown', (e) => e.stopPropagation());
+      el.addEventListener('click', (e) => { e.stopPropagation(); userTune(); tune(it.b.f, { mode: it.b.mode }); });
+      marksEl.appendChild(el);
+    }
+    // Marks are placed left to right: only the first one can reach the dB label column (7 px tick included).
+    const first = marksEl.firstElementChild;
+    const r = first && first.getBoundingClientRect();
+    if (r && r.left < DB_LABEL_COL) markBandCss = [r.top, r.bottom + 7];
+  }
+
+  function renderFreq() {
+    if (editingFreq) return;
+    const s = String(Math.round(S.vfo)), n = s.length;
+    let html = '';
+    for (let i = 0; i < n; i += 1) {
+      const pos = n - 1 - i;
+      html += `<span class="d${pos < 3 ? ' lo' : ''}" data-m="${10 ** pos}">${s[i]}</span>`;
+      if (pos > 0 && pos % 3 === 0) html += '<span class="sep">.</span>';
+    }
+    freqEl.innerHTML = html;
+    freqEl.setAttribute('aria-valuenow', String(Math.round(S.vfo)));
+    freqEl.setAttribute('aria-valuetext', `${fmtMHz(S.vfo)} MHz`);
+  }
+
+  function updateMeta() {
+    $('#m-mode').textContent = S.mode;
+    $('#m-bw').textContent = fmtBw(S.bw);
+    const seg = segmentAt(S.vfo);
+    $('#m-seg').textContent = `${seg ? seg.label : 'Outside the plan'} · step ${fmtBw(stepAt(S.vfo))}`;
+  }
+
+  function sUnits(db) {
+    const over = db + 50;
+    if (over < 0) return `S${clamp(Math.floor(9 + over / 6), 0, 9)}`;
+    if (over < 10) return 'S9';
+    return `S9+${Math.floor(over / 10) * 10}`;
+  }
+
+  let lastMeterText = 0;
+  function updateMeterUi(ts) {
+    const frac = clamp((meterDb - S_ZERO) / (S_TOP - S_ZERO), 0, 1);
+    meterFill.style.transform = `scaleX(${frac})`;
+    meterFill.classList.toggle('open', sqlOpen);
+    meterSql.style.left = `${clamp((S.sql - S_ZERO) / (S_TOP - S_ZERO), 0, 1) * 100}%`;
+    vfoEl.classList.toggle('open', sqlOpen);
+    if (ts - lastMeterText > 120) {
+      lastMeterText = ts;
+      $('#s-text').textContent = `${sUnits(meterDb)} · ${Math.round(meterDb)} dB`;
+    }
+  }
+
+  function updateOverlays() {
+    if (!appW) return;
+    const [lo, hi] = passband();
+    const x0 = fToX(lo), x1 = fToX(hi);
+    const visible = x1 >= -2 && x0 <= appW + 2;
+    vfoEl.style.display = visible ? '' : 'none';
+    vfoLine.style.display = visible ? '' : 'none';
+    vfoEl.style.transform = `translateX(${x0}px)`;
+    vfoEl.style.width = `${Math.max(1, x1 - x0)}px`;
+    vfoLine.style.transform = `translateX(${Math.round(fToX(S.vfo))}px)`;
+    renderMarks();
+    drawBandStrip();
+    updateMeta();
+    renderFreq();
+  }
+
+  let hoverAt = null;                 // last pointer position over a view, to refresh the readout when the view moves
+  function showHover(e, area) {
+    hoverAt = { clientX: e.clientX, clientY: e.clientY, area };
+    const x = e.clientX, f = xToF(x);
+    xline.hidden = false;
+    xline.style.transform = `translateX(${Math.round(x)}px)`;
+    let txt = `${fmtMHz(f, 5)} MHz`;
+    const bi = Math.floor((f - fStart()) / binHz());
+    if (bi >= 0 && bi < S.nb) {
+      if (area === 'spec') {
+        txt += ` · ${Math.round(avgDb[bi])} dB`;
+      } else if (area === 'wf') {
+        const age = Math.floor(e.clientY - wfWrap.getBoundingClientRect().top);
+        if (age >= 0 && age < histFilled) {
+          const row = (histHead - age + HIST_ROWS) % HIST_ROWS;
+          txt += ` · ${Math.round(Q_MIN + hist[row * S.nb + bi] * Q_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
+        }
+      }
+    }
+    const seg = segmentAt(f);
+    if (seg) txt += ` · ${seg.label}`;
+    hoverEl.textContent = txt;
+  }
+  function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; }
+
+  function updateStatus() {
+    $('#status').textContent = `Simulation · RTL-SDR · ${(S.fs / 1e6).toFixed(3)} MS/s · FFT ${S.nb} (${Math.round(binHz())} Hz) · ${S.fftRate} fps${S.remote ? ' · remote access on' : ''}`;
+  }
+
+  // ------------------------------------------------------------------ layout and view
+  const bandHeight = () => (coarseQuery.matches ? 26 : 18);   // the band strip doubles as a touch handle
+  let labelTopCss = 40;               // dB labels start below this line, clear of the brand and the readout
+  let markBandCss = null;             // [top, bottom] of a bookmark label lying over the dB label column
+  const DB_LABEL_COL = 40;            // width kept by the dB labels at the left edge, in CSS px
+  function layout() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    appW = window.innerWidth;
+    const H = window.innerHeight, bandH = bandHeight();
+    specH = Math.round(clamp(S.split, 0.12, 0.8) * (H - bandH));
+    appEl.style.gridTemplateRows = `${specH}px ${bandH}px minmax(0, 1fr)`;
+    specCanvas.width = Math.max(2, Math.round(appW * DPR));
+    specCanvas.height = Math.max(2, Math.round(specH * DPR));
+    bandCanvas.width = Math.max(2, Math.round(appW * DPR));
+    bandCanvas.height = Math.max(2, Math.round(bandEl.clientHeight * DPR));
+    wfW = Math.max(2, appW);
+    wfH = Math.max(2, H - specH - bandH);
+    wfCanvas.width = wfW;
+    wfCanvas.height = wfH;
+    wfRowImg = wfCtx.createImageData(wfW, 1);
+    wfRow32 = new Uint32Array(wfRowImg.data.buffer);
+    colStart = new Int32Array(wfW);
+    colEnd = new Int32Array(wfW);
+    specVals = new Float32Array(specCanvas.width);
+    peakVals = new Float32Array(specCanvas.width);
+    fillGrad = specCtx.createLinearGradient(0, 0, 0, Math.max(2, specCanvas.height - 18 * DPR));
+    fillGrad.addColorStop(0, 'rgba(89,167,255,0.30)');
+    fillGrad.addColorStop(1, 'rgba(89,167,255,0.03)');
+    // On narrow screens the readout sits over the dB label column: start the labels below it.
+    const ro = readoutEl.getBoundingClientRect();
+    labelTopCss = ro.left < 60 ? Math.ceil(ro.bottom) + 8 : 40;
+    viewChanged();
+  }
+
+  function viewChanged() {
+    if (!colStart) return;
+    computeCols();
+    needWfRedraw = true;
+    updateOverlays();
+    if (hoverAt) showHover(hoverAt, hoverAt.area);
+  }
+
+  const minSpan = () => Math.max(4000, binHz() * 16);
+  function setView(f0, f1) {
+    const lo = fStart(), hi = fEnd();
+    const span = clamp(f1 - f0, minSpan(), hi - lo);
+    const a = clamp((f0 + f1) / 2 - span / 2, lo, hi - span);
+    view.f0 = a;
+    view.f1 = a + span;
+    viewChanged();
+  }
+  function zoomAt(factor, anchor) {
+    const span = view.f1 - view.f0, r = (anchor - view.f0) / span;
+    const s = clamp(span * factor, minSpan(), fEnd() - fStart());
+    const a = clamp(anchor - r * s, fStart(), fEnd() - s);
+    view.f0 = a;
+    view.f1 = a + s;
+    viewChanged();
+  }
+  function zoomToSegment(seg) {
+    if (!seg) return;
+    const pad = (seg.to - seg.from) * 0.08, a = seg.from - pad, b = seg.to + pad, w = b - a;
+    const same = Math.abs(view.f1 - view.f0 - w) < w * 0.05 && Math.abs((view.f0 + view.f1) / 2 - (a + b) / 2) < w * 0.05;
+    if (same) setView(fStart(), fEnd()); else setView(a, b);
+  }
+
+  // ------------------------------------------------------------------ tuning
+  let lastSeg;
+  function applyMode(mode) {
+    if (!MODES[mode]) return;
+    S.mode = mode;
+    S.bw = MODES[mode].bw;
+  }
+  function tune(f, opts = {}) {
+    if (!Number.isFinite(f)) return;
+    f = Math.round(f);
+    const seg = segmentAt(f);
+    if (opts.mode) applyMode(opts.mode);
+    else if (S.autoMode && seg && seg !== lastSeg && seg.mode !== S.mode) applyMode(seg.mode);
+    lastSeg = seg;
+    S.vfo = f;
+    if (Math.abs(f - S.fc) > S.fs * 0.46) {
+      S.fc = Math.round((f + S.fs * 0.2) / 1e5) * 1e5;
+      view.f0 = 0; view.f1 = 0;
+      resetBuffers();
+      updateStatus();
+      syncSource();
+    } else if (!opts.keepView && (f < view.f0 || f > view.f1)) {
+      const span = view.f1 - view.f0;
+      setView(f - span / 2, f + span / 2);
+    }
+    updateOverlays();
+    syncDemod();
+  }
+  function stepTune(dir, mult = 1) {
+    userTune();
+    tune(snapAt(S.vfo) + dir * stepAt(S.vfo) * mult);
+  }
+  function setMode(mode) {
+    applyMode(mode);
+    syncDemod();
+    updateOverlays();
+  }
+  function setBandwidth(bw) {
+    const m = MODES[S.mode];
+    S.bw = clamp(Math.round(bw / m.step) * m.step, m.min, m.max);
+    syncDemod();
+    updateOverlays();
+  }
+
+  // ------------------------------------------------------------------ scanners
+  // Channelized FM snaps to the 12.5 kHz raster. Narrow signals keep 100 Hz
+  // precision and merge with the nearest entry, so bin jitter does not split
+  // one transmitter into several rows and slow drift (Doppler) is followed.
+  function registerPeak(f, width, margin, now) {
+    const seg = segmentAt(f);
+    const ch = width >= 4000 && Boolean(seg) && seg.step >= 12500;
+    const fq = ch ? Math.round(f / 12500) * 12500 : Math.round(f / 100) * 100;
+    if (isExcluded(fq)) return;
+    let e = null, best = PEAK_MERGE_HZ;
+    for (const p of peaks) {
+      const dist = Math.abs(p.f - fq);
+      if (dist <= best) { best = dist; e = p; }
+    }
+    if (!e) {
+      e = { f: fq, ch, first: now, last: now, hits: 0, margin };
+      peaks.push(e);
+      if (peaks.length > PEAK_LIST_MAX) {
+        peaks.sort((a, b) => b.last - a.last);
+        peaks.length = PEAK_LIST_MAX;
+      }
+    } else if (ch) {
+      e.f = fq;
+      e.ch = true;
+    } else if (!e.ch) {
+      e.f = Math.round((e.f + (fq - e.f) * 0.3) / 100) * 100;
+    }
+    e.last = now;
+    e.hits += 1;
+    e.margin = margin;
+  }
+  function scanPeaks(now) {
+    if (!S.peakOn || !avgPrimed) return;
+    const nb = S.nb, bin = binHz(), f0 = fStart(), thr = floorDb + S.peakThr;
+    const lo = Math.floor(nb * 0.05), hi = Math.ceil(nb * 0.95);
+    let i = lo;
+    while (i < hi) {
+      if (avgDb[i] <= thr) { i += 1; continue; }
+      let j = i, maxDb = -300, wsum = 0, fsum = 0;
+      while (j < hi && avgDb[j] > thr - 4) {
+        wsum += avgLin[j];
+        fsum += avgLin[j] * j;
+        if (avgDb[j] > maxDb) maxDb = avgDb[j];
+        j += 1;
+      }
+      const f = f0 + (fsum / wsum + 0.5) * bin;
+      const isDc = !S.dcRemove && Math.abs(f - S.fc) < 2 * bin;
+      if (!isDc) registerPeak(f, (j - i) * bin, maxDb - floorDb, now);
+      i = j + 1;
+    }
+  }
+  function renderPeaks() {
+    const now = performance.now();
+    const rows = peaks.filter((p) => !isExcluded(p.f));
+    rows.sort((a, b) => {
+      const aa = now - a.last < 1500, ba = now - b.last < 1500;
+      if (aa !== ba) return aa ? -1 : 1;
+      return aa ? b.margin - a.margin : b.last - a.last;
+    });
+    $('#pk-body').innerHTML = rows.length
+      ? rows.slice(0, 40).map((p) => {
+        const ago = (now - p.last) / 1000, active = ago < 1.5;
+        return `<tr class="${active ? 'active' : ''}">`
+          + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Listen">${fmtMHz(p.f)}</button></td>`
+          + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'active' : `${fmtAgo(ago)} ago`}</td>`
+          + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignore</button></td></tr>`;
+      }).join('')
+      : '<tr><td colspan="4" class="empty">No peak detected</td></tr>';
+    $('#pk-excluded').textContent = excluded.length ? `${excluded.length} ignored ${excluded.length === 1 ? 'frequency' : 'frequencies'}.` : '';
+    $('#pk-restore').hidden = excluded.length === 0;
+  }
+
+  const mem = { running: false, idx: -1, state: 'idle', until: 0, cur: null };
+  function memNext(now) {
+    const list = bookmarks.filter((b) => b.scan);
+    if (!list.length) { memStop(); return; }
+    mem.idx = (mem.idx + 1) % list.length;
+    mem.cur = list[mem.idx];
+    tune(mem.cur.f, { mode: mem.cur.mode, keepView: true });
+    meterDb = METER_FLOOR;
+    sqlOpen = false;
+    mem.state = 'settle';
+    mem.until = now + S.memDwell;
+    syncMem();
+  }
+  function memStart() {
+    if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'No bookmark is checked.'; return; }
+    mem.running = true;
+    mem.idx = -1;
+    memNext(performance.now() / 1000);
+    syncMem();
+  }
+  function memStop() {
+    mem.running = false;
+    mem.state = 'idle';
+    syncMem();
+  }
+  function memTick(now) {
+    if (!mem.running) return;
+    const before = mem.state;
+    if (mem.state === 'settle') {
+      if (now >= mem.until) { if (sqlOpen) mem.state = 'listen'; else memNext(now); }
+    } else if (mem.state === 'listen') {
+      if (!sqlOpen) { mem.state = 'hang'; mem.until = now + S.memResume; }
+    } else if (mem.state === 'hang') {
+      if (sqlOpen) mem.state = 'listen';
+      else if (now >= mem.until) memNext(now);
+    }
+    if (mem.running && mem.state !== before) syncMem();
+  }
+  function userTune() { if (mem.running) memStop(); }
+  function syncMem() {
+    $('#mem-start').textContent = mem.running ? 'Stop' : 'Start';
+    const name = mem.cur ? mem.cur.name : '';
+    let txt = 'Stopped';
+    if (mem.running) txt = mem.state === 'listen' ? `Listening: ${name}` : mem.state === 'hang' ? `Waiting: ${name}` : `Scanning: ${name}`;
+    $('#mem-state').textContent = txt;
+  }
+  function renderMemList() {
+    $('#mem-list').innerHTML = bookmarks.map((b, i) => `<li><label class="check"><input type="checkbox" data-i="${i}"${b.scan ? ' checked' : ''}>`
+      + `<span>${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span></label></li>`).join('');
+  }
+
+  function ctcssText() {
+    if (S.ctcss === 'off' || !sqlOpen) return '—';
+    const tone = repeaters.map((r) => r.toneNear(S.vfo)).find(Boolean);
+    if (!tone) return 'none';
+    if (S.ctcss === 'detect') return `${tone} Hz`;
+    return tone === S.ctcss ? `${tone} Hz (filter open)` : `${tone} Hz (filter closed)`;
+  }
+
+  // ------------------------------------------------------------------ panels
+  let openName = null, scanTab = 'peaks';
+  function openPanel(name) {
+    openName = name;
+    panelEl.hidden = false;
+    for (const s of $$('#panel section[data-panel]')) s.hidden = s.dataset.panel !== name;
+    $('#panel-title').textContent = PANEL_TITLES[name];
+    for (const b of $$('#toolbar button')) b.setAttribute('aria-expanded', String(b.dataset.panel === name));
+    document.body.classList.remove('idle');
+    if (name === 'bands') renderBookmarks();
+    if (name === 'scanners') syncScanTabs();
+    liveUi();
+  }
+  function closePanel() {
+    if (!openName) return;
+    const btn = $(`#toolbar button[data-panel="${openName}"]`);
+    const hadFocus = panelEl.contains(document.activeElement);
+    openName = null;
+    panelEl.hidden = true;
+    for (const b of $$('#toolbar button')) b.setAttribute('aria-expanded', 'false');
+    if (hadFocus && btn) btn.focus();
+  }
+  function togglePanel(name) { if (openName === name) closePanel(); else openPanel(name); }
+
+  const syncers = [];
+  function bindCheck(id, key, after) {
+    const el = $(`#${id}`);
+    const sync = () => { el.checked = Boolean(S[key]); };
+    sync();
+    syncers.push(sync);
+    el.addEventListener('change', () => { S[key] = el.checked; if (after) after(); });
+    return el;
+  }
+  function bindRange(id, key, fmt, after) {
+    const el = $(`#${id}`), out = $(`#${id}-v`);
+    const sync = () => { el.value = String(S[key]); if (out) out.textContent = fmt(S[key]); };
+    sync();
+    syncers.push(sync);
+    el.addEventListener('input', () => { S[key] = Number(el.value); if (out) out.textContent = fmt(S[key]); if (after) after(); });
+    return el;
+  }
+
+  // Source
+  const srcDevice = $('#src-device'), srcCenter = $('#src-center'), srcRate = $('#src-rate'), gainEl = $('#src-gain'), ppmEl = $('#src-ppm');
+  gainEl.max = String(R820T_GAINS.length - 1);
+  function syncSource() {
+    srcDevice.value = S.device;
+    $('#src-note').textContent = S.device === 'rtl' ? 'Simulated RTL-SDR (R820T tuner).' : 'Not simulated in the mockup.';
+    srcCenter.value = fmtMHz(S.fc);
+    srcRate.value = String(S.fs);
+    gainEl.value = String(S.gainIdx);
+    $('#src-gain-v').textContent = `${gainDb().toFixed(1)} dB`;
+    ppmEl.value = String(S.ppm);
+  }
+  srcDevice.addEventListener('change', () => { S.device = srcDevice.value; syncSource(); });
+  srcCenter.addEventListener('change', () => {
+    const v = parseFloat(srcCenter.value.replace(',', '.'));
+    if (Number.isFinite(v) && v >= 24 && v <= 1766) {
+      const offset = S.vfo - S.fc;      // the VFO follows the capture, like a hardware retune
+      S.fc = Math.round(v * 1e6);
+      view.f0 = 0; view.f1 = 0;
+      resetBuffers();
+      updateStatus();
+      userTune();
+      tune(S.fc + offset);
+    }
+    syncSource();
+  });
+  srcRate.addEventListener('change', () => {
+    S.fs = Number(srcRate.value);
+    view.f0 = 0; view.f1 = 0;
+    resetBuffers();
+    updateStatus();
+    tune(S.vfo);                        // recenters the capture if the VFO fell outside the narrower span
+  });
+  gainEl.addEventListener('input', () => { S.gainIdx = Number(gainEl.value); $('#src-gain-v').textContent = `${gainDb().toFixed(1)} dB`; });
+  ppmEl.addEventListener('change', () => {
+    const v = parseFloat(ppmEl.value);
+    if (Number.isFinite(v)) S.ppm = clamp(v, -100, 100);
+    ppmEl.value = String(S.ppm);
+  });
+  bindCheck('src-dc', 'dcRemove');
+  bindCheck('src-agc', 'tunerAgc');
+  bindCheck('src-bias', 'biasT');
+
+  // Demodulation
+  const bwEl = $('#dm-bw'), sqlEl = $('#dm-sql');
+  function syncDemod() {
+    for (const b of $$('#mode-group button')) b.setAttribute('aria-checked', String(b.dataset.mode === S.mode));
+    const m = MODES[S.mode];
+    bwEl.min = String(m.min); bwEl.max = String(m.max); bwEl.step = String(m.step); bwEl.value = String(S.bw);
+    $('#dm-bw-v').textContent = fmtBw(S.bw);
+    $('#dm-step').value = S.step;
+    syncSql();
+  }
+  function syncSql() {
+    sqlEl.value = String(S.sql);
+    sqlEl.disabled = S.sqlAuto;
+    $('#dm-sql-v').textContent = fmtDb(S.sql);
+  }
+  for (const b of $$('#mode-group button')) b.addEventListener('click', () => setMode(b.dataset.mode));
+  bindCheck('dm-auto', 'autoMode');
+  bwEl.addEventListener('input', () => setBandwidth(Number(bwEl.value)));
+  $('#dm-step').addEventListener('change', (e) => { S.step = e.target.value; updateMeta(); });
+  bindCheck('dm-sql-auto', 'sqlAuto', syncSql);
+  sqlEl.addEventListener('input', () => { S.sql = Number(sqlEl.value); $('#dm-sql-v').textContent = fmtDb(S.sql); });
+  $('#dm-ctcss').value = S.ctcss;
+  $('#dm-ctcss').addEventListener('change', (e) => { S.ctcss = e.target.value; });
+  $('#dm-agc').value = S.agc;
+  $('#dm-agc').addEventListener('change', (e) => { S.agc = e.target.value; });
+  bindCheck('dm-nr', 'nr');
+  bindCheck('dm-notch', 'notch');
+  bindCheck('dm-nb', 'blanker');
+  bindRange('dm-vol', 'volume', (v) => `${v}%`);
+
+  // Display
+  const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` : v < 0.75 ? `medium (${v.toFixed(2)})` : `strong (${v.toFixed(2)})`);
+  function drawPalettePreview() { $('#wf-pal-preview').style.background = `linear-gradient(90deg, ${PALETTES[S.palette].join(', ')})`; }
+  function syncDisplay() {
+    for (const s of syncers) s();
+    $('#ds-fft').value = String(S.nb);
+    $('#ds-win').value = S.win;
+    $('#ds-fft-note').textContent = `Resolution: ${Math.round(binHz())} Hz per bin.`;
+    $('#wf-pal').value = S.palette;
+    drawPalettePreview();
+    syncAutoDisplay();
+  }
+  function syncAutoDisplay() {
+    const top = $('#ds-top'), lo = $('#wf-min'), hi = $('#wf-max');
+    top.disabled = S.autoRange;
+    lo.disabled = S.wfAuto;
+    hi.disabled = S.wfAuto;
+    if (S.autoRange) { top.value = String(Math.round(autoTop)); $('#ds-top-v').textContent = fmtDb(autoTop); }
+    if (S.wfAuto) {
+      lo.value = String(Math.round(autoWf.min)); $('#wf-min-v').textContent = fmtDb(autoWf.min);
+      hi.value = String(Math.round(autoWf.max)); $('#wf-max-v').textContent = fmtDb(autoWf.max);
+    }
+  }
+  $('#ds-fft').addEventListener('change', (e) => { S.nb = Number(e.target.value); resetBuffers(); updateStatus(); syncDisplay(); });
+  $('#ds-win').addEventListener('change', (e) => { S.win = e.target.value; kernel = kernelFor(S.win); });
+  bindRange('ds-rate', 'fftRate', (v) => `${v} fps`, updateStatus);
+  bindRange('ds-avg', 'avg', avgLabel);
+  bindCheck('ds-fill', 'fill');
+  bindCheck('ds-peak', 'peakHold', () => { if (S.peakHold) peakDb.fill(-300); });
+  $('#ds-peak-clear').addEventListener('click', () => peakDb.fill(-300));
+  bindCheck('ds-grid', 'grid');
+  bindCheck('ds-auto', 'autoRange', () => { if (!S.autoRange) S.top = Math.round(autoTop); syncDisplay(); });
+  bindRange('ds-top', 'top', fmtDb);
+  bindRange('ds-range', 'range', (v) => `${v} dB`);
+  $('#wf-pal').addEventListener('change', (e) => { S.palette = e.target.value; drawPalettePreview(); needWfRedraw = true; });
+  bindCheck('wf-auto', 'wfAuto', () => {
+    if (!S.wfAuto) { S.wfMin = Math.round(autoWf.min); S.wfMax = Math.round(autoWf.max); }
+    syncDisplay();
+    needWfRedraw = true;
+  });
+  bindRange('wf-min', 'wfMin', fmtDb, () => { S.wfMin = Math.min(S.wfMin, S.wfMax - 5); needWfRedraw = true; });
+  bindRange('wf-max', 'wfMax', fmtDb, () => { S.wfMax = Math.max(S.wfMax, S.wfMin + 5); needWfRedraw = true; });
+  bindRange('wf-speed', 'wfSpeed', (v) => `${v} lines/s`);
+  bindCheck('wf-time', 'timestamps', () => { needWfRedraw = true; });
+  bindCheck('ov-plan', 'showPlan', drawBandStrip);
+  bindCheck('ov-marks', 'showMarks', renderMarks);
+  bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
+
+  // Bands and bookmarks
+  function renderPlanList() {
+    $('#plan-list').innerHTML = SEGMENTS.map((s, i) => `<li><button type="button" class="item" data-seg="${i}"><span class="sw" style="background: rgb(${s.rgb})"></span>`
+      + `<span class="name">${s.label}</span><span class="num">${fmtMHz(s.from, 3)}–${fmtMHz(s.to, 3)}</span></button></li>`).join('');
+  }
+  function renderBookmarks() {
+    const q = $('#bm-filter').value.trim().toLowerCase();
+    const items = bookmarks.map((b, i) => ({ b, i })).filter(({ b }) => !q || b.name.toLowerCase().includes(q) || fmtMHz(b.f).includes(q));
+    $('#bm-list').innerHTML = items.length
+      ? items.map(({ b, i }) => `<li class="bm"><button type="button" class="item" data-i="${i}"><span class="name">${escapeHtml(b.name)}</span>`
+        + `<span class="num">${fmtMHz(b.f)}</span><span class="tag">${b.mode}</span></button>`
+        + `<button type="button" class="link" data-del="${i}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`).join('')
+      : '<li class="empty">No bookmarks</li>';
+  }
+  function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); }
+  function addBookmark(f, mode) {
+    bookmarkCounter += 1;
+    bookmarks.push({ f, name: `Bookmark ${bookmarkCounter}`, mode, scan: true });
+    bookmarks.sort((a, b) => a.f - b.f);
+    bookmarksChanged();
+  }
+  $('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-seg]'); if (b) zoomToSegment(SEGMENTS[Number(b.dataset.seg)]); });
+  $('#bm-filter').addEventListener('input', renderBookmarks);
+  $('#bm-add').addEventListener('click', () => addBookmark(S.vfo, S.mode));
+  $('#bm-list').addEventListener('click', (e) => {
+    const go = e.target.closest('button[data-i]');
+    const del = e.target.closest('button[data-del]');
+    if (go) { const b = bookmarks[Number(go.dataset.i)]; if (b) { userTune(); tune(b.f, { mode: b.mode }); } }
+    if (del) { bookmarks.splice(Number(del.dataset.del), 1); bookmarksChanged(); }
+  });
+
+  // Scanners
+  function syncScanTabs() {
+    for (const b of $$('#scan-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.tab === scanTab));
+    for (const p of $$('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== scanTab;
+    if (scanTab === 'peaks') renderPeaks();
+    if (scanTab === 'memory') { renderMemList(); syncMem(); }
+  }
+  for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
+  bindCheck('pk-on', 'peakOn');
+  bindRange('pk-thr', 'peakThr', (v) => `${v} dB`);
+  bindCheck('pk-marks', 'peakMarks');
+  $('#pk-body').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    const f = Number(b.dataset.f);
+    if (b.dataset.act === 'tune') { userTune(); tune(f); } else { excluded.push(f); renderPeaks(); }
+  });
+  $('#pk-restore').addEventListener('click', () => { excluded.length = 0; renderPeaks(); });
+  bindRange('mem-dwell', 'memDwell', (v) => `${Math.round(v * 1000)} ms`);
+  bindRange('mem-resume', 'memResume', (v) => `${v} s`);
+  $('#mem-list').addEventListener('change', (e) => { const b = bookmarks[Number(e.target.dataset.i)]; if (b) b.scan = e.target.checked; });
+  $('#mem-start').addEventListener('click', () => { if (mem.running) memStop(); else memStart(); });
+
+  // Settings
+  bindCheck('st-autohide', 'autoHide', poke);
+  bindCheck('st-wake', 'keepAwake');
+
+  // Remote access (mock): the desktop app would open its web server to the local network.
+  const REMOTE_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';   // no 0/O or 1/I to misread
+  function newRemoteCode() {
+    const s = Array.from(crypto.getRandomValues(new Uint8Array(8)), (n) => REMOTE_CODE_CHARS[n % REMOTE_CODE_CHARS.length]).join('');
+    return `${s.slice(0, 4)}-${s.slice(4)}`;
+  }
+  const remoteMsg = (text) => { $('#st-remote-msg').textContent = text; };
+  bindCheck('st-remote', 'remote', () => {
+    $('#st-remote-info').hidden = !S.remote;
+    if (S.remote && !$('#st-remote-code').textContent) $('#st-remote-code').textContent = newRemoteCode();
+    remoteMsg('');
+    updateStatus();
+  });
+  $('#st-remote-renew').addEventListener('click', () => {
+    $('#st-remote-code').textContent = newRemoteCode();
+    remoteMsg('New code: devices already connected must enter it again.');
+  });
+  $('#st-remote-copy').addEventListener('click', () => {
+    const urlEl = $('#st-remote-url');
+    const selectUrl = () => {
+      const range = document.createRange();
+      range.selectNodeContents(urlEl);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      remoteMsg('Address selected: copy it from the browser menu.');
+    };
+    if (!navigator.clipboard) { selectUrl(); return; }
+    navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Address copied.'), selectUrl);
+  });
+
+  for (const b of $$('#toolbar button')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
+  $('#panel .close').addEventListener('click', closePanel);
+
+  function liveUi() {
+    if (openName === 'scanners') { if (scanTab === 'peaks') renderPeaks(); else if (scanTab === 'memory') syncMem(); }
+    if (openName === 'demod') { syncSql(); $('#ctcss-v').textContent = ctcssText(); }
+    if (openName === 'display') syncAutoDisplay();
+  }
+
+  // ------------------------------------------------------------------ context menu
+  let ctxF = 0, ctxGuardUntil = 0;
+  // A touch menu opens beside the finger so the finger does not hide it: above, else below, else to one side.
+  function touchMenuOrigin(x, y, w, h) {
+    const gap = 24, margin = 8;
+    if (y - gap - h >= margin) return [x - w / 2, y - gap - h];
+    if (y + gap + h <= window.innerHeight - margin) return [x - w / 2, y + gap];
+    return [x + gap + w <= window.innerWidth - margin ? x + gap : x - gap - w, y - h / 2];
+  }
+  function openCtx(x, y, f, touch = false) {
+    ctxF = f;
+    const seg = segmentAt(f);
+    $('#ctx-title').textContent = `${fmtMHz(f, 4)} MHz${seg ? ` · ${seg.label}` : ''}`;
+    ctxEl.querySelector('[data-cmd="segment"]').disabled = !seg;
+    ctxEl.hidden = false;
+    const r = ctxEl.getBoundingClientRect();
+    const [left, top] = touch ? touchMenuOrigin(x, y, r.width, r.height) : [x, y];
+    ctxEl.style.left = `${clamp(left, 8, window.innerWidth - r.width - 8)}px`;
+    ctxEl.style.top = `${clamp(top, 8, window.innerHeight - r.height - 8)}px`;
+    if (!touch) ctxEl.querySelector('button').focus();   // keyboard use starts on the first item; a finger needs no focus ring
+  }
+  function closeCtx() { ctxEl.hidden = true; }
+  // Lifting the finger that opened the menu also fires a click where it lifts: that click is ignored.
+  function guardCtxRelease(e) { if (e.pointerType !== 'mouse' && !ctxEl.hidden) ctxGuardUntil = performance.now() + 350; }
+  ctxEl.addEventListener('click', (e) => {
+    if (performance.now() < ctxGuardUntil) return;
+    const b = e.target.closest('button[data-cmd]');
+    if (!b || b.disabled) return;
+    const f = snapAt(ctxF), seg = segmentAt(ctxF);
+    if (b.dataset.cmd === 'tune') { userTune(); tune(f); }
+    else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg ? seg.mode : S.mode);
+    else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
+    else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
+    else if (b.dataset.cmd === 'ignore') { excluded.push(f); renderPeaks(); }
+    closeCtx();
+  });
+  // A press outside the menu only dismisses it: on the views it must not also tune or start a drag.
+  window.addEventListener('pointerdown', (e) => {
+    if (ctxEl.hidden || ctxEl.contains(e.target)) return;
+    closeCtx();
+    if (specWrap.contains(e.target) || wfWrap.contains(e.target)) { poke(); e.stopPropagation(); }
+  }, true);
+
+  // ------------------------------------------------------------------ pointer and keyboard
+  let drag = null, wheelAcc = 0, pinch = null, longPress = 0;
+  const touchX = new Map();           // touch or pen contacts on the views: pointerId -> clientX
+  const LONG_PRESS_MS = 550;
+  function hitTest(x, touch = false) {
+    const [lo, hi] = passband();
+    const xl = fToX(lo), xh = fToX(hi);
+    const edge = touch ? 12 : 5, near = touch ? 16 : 6;   // fingers need wider handles than a mouse
+    if (xh - xl >= 3 * edge) {
+      if (Math.abs(x - xl) <= edge) return 'lo';
+      if (Math.abs(x - xh) <= edge) return 'hi';
+      if (x > xl && x < xh) return 'move';
+    } else if (Math.abs(x - fToX(S.vfo)) <= near) {
+      return 'move';
+    }
+    return 'free';
+  }
+  const cursorFor = (hit) => (hit === 'lo' || hit === 'hi' ? 'ew-resize' : hit === 'move' ? 'grab' : 'crosshair');
+
+  function cancelLongPress() { clearTimeout(longPress); longPress = 0; }
+  // Two fingers zoom around their midpoint and follow it, like a map.
+  function startPinch() {
+    cancelLongPress();
+    drag = null;
+    const [a, b] = [...touchX.values()];
+    pinch = { d0: Math.max(24, Math.abs(a - b)), mid0: (a + b) / 2, f0: view.f0, f1: view.f1 };
+  }
+  function updatePinch() {
+    const [a, b] = [...touchX.values()];
+    const span0 = pinch.f1 - pinch.f0;
+    const span = span0 * (pinch.d0 / Math.max(24, Math.abs(a - b)));
+    const anchor = pinch.f0 + (pinch.mid0 / appW) * span0;   // frequency under the initial midpoint
+    const start = anchor - (((a + b) / 2) / appW) * span;
+    setView(start, start + span);
+  }
+  function releaseTouch(e) {
+    touchX.delete(e.pointerId);
+    if (pinch && touchX.size < 2) { pinch = null; drag = null; }
+  }
+
+  function onDown(e) {
+    if (e.button !== 0) return;
+    hintEl.classList.add('gone');
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    const touch = e.pointerType !== 'mouse';
+    if (touch) {
+      touchX.set(e.pointerId, e.clientX);
+      if (touchX.size === 2) { startPinch(); return; }
+      if (touchX.size > 2) return;
+    }
+    const x = e.clientX;
+    drag = { hit: hitTest(x, touch), x0: x, y0: e.clientY, f0: xToF(x), vfo0: S.vfo, view0: view.f0, moved: false, touch };
+    if (drag.hit !== 'free') userTune();
+    if (touch && drag.hit === 'free') {
+      longPress = setTimeout(() => {
+        longPress = 0;
+        if (!drag || drag.moved) return;
+        const { x0, y0 } = drag;
+        drag = null;
+        openCtx(x0, y0, xToF(x0), true);
+      }, LONG_PRESS_MS);
+    }
+  }
+  function onMove(e, area) {
+    poke();
+    if (touchX.has(e.pointerId)) {
+      touchX.set(e.pointerId, e.clientX);
+      if (pinch) { if (touchX.size >= 2) updatePinch(); return; }
+    }
+    showHover(e, area);
+    const x = e.clientX;
+    if (!drag) { if (e.pointerType === 'mouse') e.currentTarget.style.cursor = cursorFor(hitTest(x)); return; }
+    const dx = x - drag.x0;
+    // A finger sliding vertically is a swipe, not a tap: it must not tune on release.
+    const slop = drag.touch ? 8 : 3;
+    if (!drag.moved && (Math.abs(dx) > slop || (drag.touch && Math.abs(e.clientY - drag.y0) > slop))) {
+      drag.moved = true;
+      cancelLongPress();
+    }
+    const hzPerPx = (view.f1 - view.f0) / appW;
+    if (drag.hit === 'lo' || drag.hit === 'hi') {
+      const f = xToF(x);
+      if (S.mode === 'USB') { if (drag.hit === 'hi') setBandwidth(f - S.vfo); }
+      else if (S.mode === 'LSB') { if (drag.hit === 'lo') setBandwidth(S.vfo - f); }
+      else setBandwidth(2 * Math.abs(f - S.vfo));
+    } else if (drag.hit === 'move') {
+      if (drag.moved) tune(snapAt(drag.vfo0 + dx * hzPerPx), { keepView: true });
+    } else if (drag.moved) {
+      const span = view.f1 - view.f0, a = drag.view0 - dx * hzPerPx;
+      setView(a, a + span);
+    }
+  }
+  function onUp(e) {
+    cancelLongPress();
+    guardCtxRelease(e);
+    releaseTouch(e);
+    if (!drag) return;
+    if (drag.hit === 'free' && !drag.moved) { userTune(); tune(snapAt(drag.f0)); }
+    drag = null;
+  }
+  function onCancel(e) {
+    cancelLongPress();
+    guardCtxRelease(e);
+    releaseTouch(e);
+    drag = null;
+  }
+  function onWheel(e) {
+    e.preventDefault();
+    poke();
+    hintEl.classList.add('gone');
+    if (e.ctrlKey || e.metaKey) { zoomAt(Math.exp(clamp(e.deltaY, -100, 100) * 0.004), xToF(e.clientX)); return; }
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const span = view.f1 - view.f0, a = view.f0 + e.deltaX * (span / appW);
+      setView(a, a + span);
+      return;
+    }
+    const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    if (Math.abs(px) >= 50) { wheelAcc = 0; stepTune(px > 0 ? -1 : 1); return; }
+    wheelAcc += px;
+    if (Math.abs(wheelAcc) >= 50) { stepTune(wheelAcc > 0 ? -1 : 1); wheelAcc = 0; }
+  }
+  for (const [el, area] of [[specWrap, 'spec'], [wfWrap, 'wf']]) {
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', (e) => onMove(e, area));
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onCancel);
+    el.addEventListener('pointerleave', hideHover);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      cancelLongPress();
+      drag = null;                    // Android also fires this on a long press: never tune on release
+      openCtx(e.clientX, e.clientY, xToF(e.clientX), e.pointerType === 'touch' || e.pointerType === 'pen');
+    });
+    el.addEventListener('gesturestart', (e) => e.preventDefault());   // Safari: the pinch belongs to the views
+  }
+
+  let bandDrag = null;
+  bandEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    bandDrag = { y0: e.clientY, h0: specH, moved: false };
+    bandEl.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  bandEl.addEventListener('pointermove', (e) => {
+    poke();
+    showHover(e, 'band');
+    const seg = segmentAt(xToF(e.clientX));
+    bandEl.title = seg ? `${seg.label} · ${fmtMHz(seg.from, 3)}–${fmtMHz(seg.to, 3)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+    if (!bandDrag) return;
+    const dy = e.clientY - bandDrag.y0;
+    if (Math.abs(dy) > 3) bandDrag.moved = true;
+    if (bandDrag.moved) { S.split = clamp((bandDrag.h0 + dy) / (window.innerHeight - bandHeight()), 0.12, 0.8); layoutPending = true; }
+  });
+  bandEl.addEventListener('pointerup', (e) => {
+    if (bandDrag && !bandDrag.moved) zoomToSegment(segmentAt(xToF(e.clientX)));
+    bandDrag = null;
+  });
+  bandEl.addEventListener('pointercancel', () => { bandDrag = null; });
+  bandEl.addEventListener('pointerleave', hideHover);
+
+  let editingFreq = false;
+  function editFreq() {
+    if (editingFreq) return;
+    editingFreq = true;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.className = 'freq-input';
+    input.value = fmtMHz(S.vfo);
+    input.setAttribute('aria-label', 'Frequency in MHz');
+    freqEl.replaceChildren(input);
+    input.focus();
+    input.select();
+    let closed = false;
+    const finish = (apply) => {
+      if (closed) return;
+      closed = true;
+      editingFreq = false;
+      if (apply) {
+        const v = parseFloat(input.value.replace(',', '.'));
+        const hz = v < 1e5 ? v * 1e6 : v;
+        if (Number.isFinite(hz) && hz >= 24e6 && hz <= 1766e6) { userTune(); tune(hz); }
+      }
+      renderFreq();
+      freqEl.focus();
+    };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+  freqEl.addEventListener('dblclick', editFreq);
+  freqEl.addEventListener('click', () => { if (coarseQuery.matches) editFreq(); });   // touch: one tap opens the keypad
+  freqEl.addEventListener('wheel', (e) => {
+    const digit = e.target.closest('.d');
+    if (!digit) return;
+    e.preventDefault();
+    if (Math.abs(e.deltaY) < 2) return;
+    userTune();
+    tune(S.vfo + (e.deltaY < 0 ? 1 : -1) * Number(digit.dataset.m));
+  }, { passive: false });
+
+  // Touch step buttons: a press steps once, holding repeats.
+  function bindStepButton(btn, dir) {
+    let delay = 0, repeat = 0, lastPointer = -Infinity;
+    const stop = () => { clearTimeout(delay); clearInterval(repeat); delay = 0; repeat = 0; };
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      stop();
+      btn.setPointerCapture(e.pointerId);
+      stepTune(dir);
+      delay = setTimeout(() => { repeat = setInterval(() => stepTune(dir), 120); }, 400);
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      btn.addEventListener(type, () => { stop(); lastPointer = performance.now(); });
+    }
+    window.addEventListener('blur', stop);
+    // Keyboard and assistive technologies activate the button with a click and no pointer press.
+    btn.addEventListener('click', () => { if (performance.now() - lastPointer > 300) stepTune(dir); });
+  }
+  bindStepButton($('#tune-down'), -1);
+  bindStepButton($('#tune-up'), 1);
+
+  window.addEventListener('keydown', (e) => {
+    poke();
+    if (e.key === 'Escape') {
+      if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
+      else if (openName) { closePanel(); e.preventDefault(); }
+      return;
+    }
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target === freqEl && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      stepTune(e.key === 'ArrowUp' ? 1 : -1, e.shiftKey ? 10 : 1);
+      e.preventDefault();
+      return;
+    }
+    if (e.target === freqEl && e.key === 'Enter') { editFreq(); e.preventDefault(); return; }
+    switch (e.key) {
+      case 'ArrowRight': stepTune(1, e.shiftKey ? 10 : 1); break;
+      case 'ArrowLeft': stepTune(-1, e.shiftKey ? 10 : 1); break;
+      case '+': case '=': zoomAt(1 / 1.5, S.vfo); break;
+      case '-': case '_': zoomAt(1.5, S.vfo); break;
+      case '0': setView(fStart(), fEnd()); break;
+      case 'm': case 'M': setMode(MODE_ORDER[(MODE_ORDER.indexOf(S.mode) + 1) % MODE_ORDER.length]); break;
+      default:
+        if (e.key >= '1' && e.key <= '6') togglePanel(PANEL_ORDER[Number(e.key) - 1]);
+        else return;
+    }
+    e.preventDefault();
+  });
+
+  let idleTimer = 0;
+  function poke() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (S.autoHide && !openName) document.body.classList.add('idle'); }, 3000);
+  }
+  window.addEventListener('pointermove', poke, { passive: true });
+  window.addEventListener('pointerdown', poke, { passive: true });   // a tap wakes the interface too
+  window.addEventListener('resize', () => { layoutPending = true; });
+
+  const HINTS = {
+    mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 6: panels',
+    touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
+  };
+  function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }
+  const onPointerModeChange = () => { syncPointerMode(); layoutPending = true; };
+  if (coarseQuery.addEventListener) coarseQuery.addEventListener('change', onPointerModeChange);
+  else coarseQuery.addListener(onPointerModeChange);   // Safari before 14
+
+  // ------------------------------------------------------------------ main loop
+  let lastTs = performance.now(), frameAcc = 0, lineAcc = 0, simT = 0, lastUi = 0, lastPeakScan = 0;
+  function loop(ts) {
+    const dt = Math.min(0.1, Math.max(0, (ts - lastTs) / 1000));
+    lastTs = ts;
+    if (layoutPending) { layoutPending = false; layout(); }
+    frameAcc += dt * S.fftRate;
+    let produced = 0;
+    while (frameAcc >= 1 && produced < 6) {
+      frameAcc -= 1;
+      produced += 1;
+      simT += 1 / S.fftRate;
+      for (const s of signals) s.update(simT);
+      generateFrame(simT);
+      integrateFrame();
+      frameCounter += 1;
+      if (frameCounter % 3 === 0) estimateFloor();
+    }
+    if (frameAcc > 6) frameAcc = 0;
+    autoAdjust();
+    if (lutDirty || needWfRedraw) { lutDirty = false; rebuildLut(); }
+    if (needWfRedraw) { needWfRedraw = false; redrawWaterfall(); }
+    lineAcc += dt * S.wfSpeed;
+    let lines = 0;
+    while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitWfLine(Date.now()); }
+    if (lineAcc > 6) lineAcc = 0;
+    if (ts - lastPeakScan > 300) { lastPeakScan = ts; scanPeaks(ts); }
+    memTick(ts / 1000);
+    drawSpectrum();
+    updateMeterUi(ts);
+    if (ts - lastUi > 400) { lastUi = ts; liveUi(); }
+    requestAnimationFrame(loop);
+  }
+
+  // ------------------------------------------------------------------ start
+  resetBuffers();
+  layout();
+  syncSource();
+  syncDisplay();
+  renderPlanList();
+  renderBookmarks();
+  renderMemList();
+  syncScanTabs();
+  updateStatus();
+  tune(S.vfo);
+  syncPointerMode();
+  poke();
+  setTimeout(() => hintEl.classList.add('gone'), 9000);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

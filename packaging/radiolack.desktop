@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Radiolack
+GenericName=SDR Receiver
+Comment=Receive-only SDR receiver with spectrum, waterfall and band plans
+Exec=/usr/bin/radiolack
+Icon=radiolack
+Terminal=false
+StartupNotify=true
+StartupWMClass=radiolack
+Categories=AudioVideo;Audio;HamRadio;
+Keywords=SDR;radio;receiver;RTL-SDR;rtl_tcp;ham;amateur;spectrum;waterfall;

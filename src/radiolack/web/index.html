@@ -1,0 +1,290 @@
+<!doctype html>
+<!--
+  Radiolack web interface. The engine serves this page and the files next to
+  it as they are: plain ES modules, no build step.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c0f">
+<title>Radiolack</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="main.js"></script>
+</head>
+<body>
+<div id="app">
+  <div id="specwrap" class="area">
+    <canvas id="spec" aria-hidden="true"></canvas><canvas id="spec-axis" aria-hidden="true"></canvas><canvas id="spec-db" aria-hidden="true"></canvas>
+    <div id="marks"></div>
+  </div>
+  <div id="band"><canvas id="bandc" aria-hidden="true"></canvas></div>
+  <div id="wfwrap" class="area"><canvas id="wf" aria-hidden="true"></canvas><div id="wf-stamps" aria-hidden="true"></div></div>
+  <div id="vfo"></div>
+  <div id="vfo-line"></div>
+  <div id="xline" hidden></div>
+
+  <h1 id="brand">Radiolack</h1>
+
+  <div id="readout">
+    <div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div>
+    <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
+    <div id="smeter" aria-hidden="true"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
+  </div>
+
+  <nav id="toolbar" aria-label="Panels">
+    <button type="button" data-panel="source" aria-expanded="false" aria-controls="panel">Source</button>
+    <button type="button" data-panel="demod" aria-expanded="false" aria-controls="panel">Demod</button>
+    <button type="button" data-panel="display" aria-expanded="false" aria-controls="panel">Display</button>
+    <button type="button" data-panel="bands" aria-expanded="false" aria-controls="panel">Bands</button>
+    <button type="button" data-panel="scanners" aria-expanded="false" aria-controls="panel">Scanners</button>
+    <button type="button" data-panel="settings" aria-expanded="false" aria-controls="panel">Settings</button>
+  </nav>
+
+  <div id="panel" role="region" aria-labelledby="panel-title" hidden>
+    <div class="panel-head"><h2 id="panel-title"></h2><button type="button" class="close" aria-label="Close the panel">×</button></div>
+
+    <section data-panel="source" hidden>
+      <div class="field">
+        <label for="src-device">Receiver</label>
+        <select id="src-device" disabled>
+          <option value="synthetic">Synthetic band (2 m)</option>
+          <option value="rtl_sdr">RTL-SDR · this computer</option>
+          <option value="rtl_tcp">RTL-SDR · rtl_tcp</option>
+          <option value="soapy">SoapySDR (Airspy, HackRF, SDRplay…)</option>
+          <option value="file">I/Q file</option>
+        </select>
+        <p class="note" id="src-note"></p>
+      </div>
+      <div class="field" id="src-address-field" hidden><label for="src-address">Server address</label><input id="src-address" type="text" inputmode="url" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="host:port" disabled></div>
+      <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" disabled></div>
+      <div class="field">
+        <label for="src-rate">Sample rate</label>
+        <select id="src-rate" disabled>
+          <option value="1024000">1.024 MS/s</option>
+          <option value="1536000">1.536 MS/s</option>
+          <option value="2048000">2.048 MS/s</option>
+          <option value="2400000">2.400 MS/s</option>
+          <option value="2880000">2.880 MS/s</option>
+        </select>
+      </div>
+      <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1" disabled></div>
+      <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="1" value="0" disabled></div>
+      <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
+      <label class="check"><input id="src-agc" type="checkbox" disabled> Tuner AGC</label>
+      <label class="check"><input id="src-bias" type="checkbox" disabled> Antenna power (bias-T)</label>
+    </section>
+
+    <section data-panel="demod" hidden>
+      <div class="field">
+        <span class="label">Mode</span>
+        <div class="segmented" role="radiogroup" aria-label="Mode" id="mode-group">
+          <button type="button" role="radio" data-mode="NFM">NFM</button>
+          <button type="button" role="radio" data-mode="AM">AM</button>
+          <button type="button" role="radio" data-mode="USB">USB</button>
+          <button type="button" role="radio" data-mode="LSB">LSB</button>
+          <button type="button" role="radio" data-mode="CW">CW</button>
+        </div>
+      </div>
+      <label class="check"><input id="dm-auto" type="checkbox"> Mode and step from the band plan</label>
+      <div class="field"><label for="dm-bw">Filter width <output id="dm-bw-v"></output></label><input id="dm-bw" type="range"></div>
+      <div class="field">
+        <label for="dm-step">Tuning step</label>
+        <select id="dm-step">
+          <option value="auto">Automatic</option>
+          <option value="10">10 Hz</option>
+          <option value="100">100 Hz</option>
+          <option value="1000">1 kHz</option>
+          <option value="6250">6.25 kHz</option>
+          <option value="12500">12.5 kHz</option>
+          <option value="25000">25 kHz</option>
+        </select>
+      </div>
+      <h3>Squelch</h3>
+      <label class="check"><input id="dm-sql-auto" type="checkbox"> Automatic (noise + 8 dB)</label>
+      <div class="field"><label for="dm-sql">Threshold <output id="dm-sql-v"></output></label><input id="dm-sql" type="range" min="-130" max="-20" step="1"></div>
+      <div class="field">
+        <label for="dm-ctcss">CTCSS</label>
+        <select id="dm-ctcss" disabled>
+          <option value="off">Off</option>
+          <option value="detect">Detect</option>
+          <option value="67.0">67.0 Hz</option>
+          <option value="88.5">88.5 Hz</option>
+          <option value="123.0">123.0 Hz</option>
+          <option value="131.8">131.8 Hz</option>
+          <option value="162.2">162.2 Hz</option>
+        </select>
+        <p class="note">Tone: <span id="ctcss-v">—</span></p>
+      </div>
+      <h3>Processing</h3>
+      <div class="field">
+        <label for="dm-agc">AGC</label>
+        <select id="dm-agc" disabled><option value="fast">Fast</option><option value="slow">Slow</option><option value="off">Off</option></select>
+      </div>
+      <label class="check"><input id="dm-nr" type="checkbox" disabled> Noise reduction</label>
+      <label class="check"><input id="dm-notch" type="checkbox" disabled> Automatic notch</label>
+      <label class="check"><input id="dm-nb" type="checkbox" disabled> Noise blanker</label>
+      <p class="note">AM follows its carrier's level, and USB, LSB and CW have a slow AGC. CTCSS and the other processing are not applied yet.</p>
+      <h3>Audio</h3>
+      <div class="field"><label for="dm-vol">Volume <output id="dm-vol-v"></output></label><input id="dm-vol" type="range" min="0" max="100" step="1"></div>
+      <p class="note" id="dm-audio-note" role="status" hidden></p>
+    </section>
+
+    <section data-panel="display" hidden>
+      <h3>Spectrum</h3>
+      <div class="grid2">
+        <div class="field">
+          <label for="ds-fft">FFT size</label>
+          <select id="ds-fft" disabled><option value="2048">2048</option><option value="4096">4096</option><option value="8192">8192</option><option value="16384">16384</option></select>
+        </div>
+        <div class="field">
+          <label for="ds-win">Window</label>
+          <select id="ds-win" disabled><option value="bh">Blackman-Harris</option><option value="nuttall">Nuttall</option><option value="hann">Hann</option><option value="rect">Rectangular</option></select>
+        </div>
+      </div>
+      <p class="note" id="ds-fft-note"></p>
+      <div class="field"><label for="ds-rate">Refresh rate <output id="ds-rate-v">30 fps</output></label><input id="ds-rate" type="range" min="5" max="60" step="1" value="30" disabled></div>
+      <div class="field"><label for="ds-avg">Averaging <output id="ds-avg-v"></output></label><input id="ds-avg" type="range" min="0" max="0.95" step="0.05"></div>
+      <label class="check"><input id="ds-fill" type="checkbox"> Fill under the trace</label>
+      <div class="row"><label class="check"><input id="ds-peak" type="checkbox"> Peak hold</label><button type="button" class="link" id="ds-peak-clear">Clear</button></div>
+      <label class="check"><input id="ds-grid" type="checkbox"> Grid</label>
+      <label class="check"><input id="ds-auto" type="checkbox"> Automatic scale</label>
+      <div class="field"><label for="ds-top">Top level <output id="ds-top-v"></output></label><input id="ds-top" type="range" min="-80" max="0" step="1"></div>
+      <div class="field"><label for="ds-range">Dynamic range <output id="ds-range-v"></output></label><input id="ds-range" type="range" min="30" max="140" step="5"></div>
+      <h3>Waterfall</h3>
+      <div class="field">
+        <label for="wf-pal">Palette</label>
+        <select id="wf-pal"><option value="classic">Classic</option><option value="viridis">Viridis</option><option value="amber">Amber</option><option value="ice">Ice</option><option value="gray">Greyscale</option></select>
+        <div class="palette-preview" id="wf-pal-preview"></div>
+      </div>
+      <label class="check"><input id="wf-auto" type="checkbox"> Automatic contrast</label>
+      <div class="field"><label for="wf-min">Floor <output id="wf-min-v"></output></label><input id="wf-min" type="range" min="-140" max="-40" step="1"></div>
+      <div class="field"><label for="wf-max">Ceiling <output id="wf-max-v"></output></label><input id="wf-max" type="range" min="-110" max="-10" step="1"></div>
+      <div class="field"><label for="wf-speed">Speed <output id="wf-speed-v"></output></label><input id="wf-speed" type="range" min="2" max="30" step="1"></div>
+      <label class="check"><input id="wf-time" type="checkbox"> Timestamps</label>
+      <h3>Overlays</h3>
+      <label class="check"><input id="ov-plan" type="checkbox"> Band plan</label>
+      <label class="check"><input id="ov-marks" type="checkbox"> Bookmarks on the spectrum</label>
+      <div class="field"><label for="ov-split">Spectrum height <output id="ov-split-v"></output></label><input id="ov-split" type="range" min="0.12" max="0.8" step="0.01"></div>
+      <p class="note">The waterfall keeps levels, not colours: palette, contrast and zoom recolour its whole history.</p>
+    </section>
+
+    <section data-panel="bands" hidden>
+      <h3>Bands</h3>
+      <div class="segmented" id="band-group">
+        <button type="button" disabled>6 m</button>
+        <button type="button" aria-pressed="true">2 m</button>
+        <button type="button" disabled>70 cm</button>
+        <button type="button" disabled>23 cm</button>
+      </div>
+      <p class="note">Only the 2 m band is simulated for now.</p>
+      <h3>Band plan</h3>
+      <p class="note" id="plan-note"></p>
+      <ul class="list" id="plan-list"></ul>
+      <h3>Bookmarks</h3>
+      <div class="row"><input id="bm-filter" type="search" placeholder="Filter" aria-label="Filter the bookmarks"><button type="button" class="btn" id="bm-add">Add current frequency</button></div>
+      <ul class="list" id="bm-list"></ul>
+      <p class="note" id="bm-note" role="status" hidden></p>
+      <div class="row"><button type="button" class="btn" disabled>Import (CSV, CHIRP)</button></div>
+    </section>
+
+    <section data-panel="scanners" hidden>
+      <div class="segmented" id="scan-tabs">
+        <button type="button" data-tab="peaks">Peaks</button>
+        <button type="button" data-tab="sweep">Sweep</button>
+        <button type="button" data-tab="memory">Bookmarks</button>
+      </div>
+      <div data-tab-panel="peaks">
+        <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
+        <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
+        <label class="check"><input id="pk-marks" type="checkbox"> Mark on the spectrum</label>
+        <table class="peaks">
+          <thead><tr><th>Frequency</th><th>Margin</th><th>Last seen</th><th></th></tr></thead>
+          <tbody id="pk-body"></tbody>
+        </table>
+        <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Restore</button></p>
+      </div>
+      <div data-tab-panel="sweep" hidden>
+        <p class="note">The sweep chains several receiver windows into a wide panorama, then looks for peaks in it. Useful on 70 cm (10 MHz) and 23 cm (60 MHz).</p>
+        <div class="grid2">
+          <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" value="430.000"></div>
+          <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" value="440.000"></div>
+          <div class="field"><label for="sw-dwell">Time per window</label><select id="sw-dwell"><option>0.25 s</option><option selected>0.5 s</option><option>1 s</option></select></div>
+          <div class="field"><label for="sw-thr">Threshold</label><select id="sw-thr"><option>8 dB</option><option selected>12 dB</option><option>18 dB</option></select></div>
+        </div>
+        <div class="row"><button type="button" class="btn primary" disabled>Start</button><span class="note">Not available yet.</span></div>
+      </div>
+      <div data-tab-panel="memory" hidden>
+        <div class="field"><label for="mem-dwell">Dwell per channel <output id="mem-dwell-v"></output></label><input id="mem-dwell" type="range" min="0.1" max="1" step="0.05"></div>
+        <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5"></div>
+        <ul class="list" id="mem-list"></ul>
+        <div class="row"><button type="button" class="btn primary" id="mem-start">Start</button><span class="note" id="mem-state"></span></div>
+        <p class="note">The scan stops on a channel when the squelch opens.</p>
+      </div>
+    </section>
+
+    <section data-panel="settings" hidden>
+      <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
+      <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
+      <h3>Storage</h3>
+      <p class="note" id="st-storage" role="status"></p>
+      <h3>Remote access</h3>
+      <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
+      <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
+      <div id="st-remote-info" hidden>
+        <div class="field"><span class="label">Address</span><div class="row"><span class="value" id="st-remote-url">https://192.168.1.20:8443</span><button type="button" class="btn" id="st-remote-copy">Copy</button></div></div>
+        <div class="field"><span class="label">Access code</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">New code</button></div></div>
+        <p class="note">Connected devices: none.</p>
+        <p class="note" id="st-remote-msg" role="status"></p>
+        <p class="note">Example address and code: remote access does not work yet.</p>
+      </div>
+      <p class="note">Off by default. Local network only; these settings can only be changed on this computer.</p>
+      <h3>Touch</h3>
+      <dl class="keys">
+        <dt>Tap</dt><dd>Tune</dd>
+        <dt>Drag</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Pinch</dt><dd>Zoom</dd>
+        <dt>Long press</dt><dd>Context menu</dd>
+        <dt>− and +</dt><dd>Tuning step, hold to repeat</dd>
+        <dt>Tap the frequency</dt><dd>Type a frequency</dd>
+      </dl>
+      <h3>Shortcuts</h3>
+      <dl class="keys">
+        <dt>Click</dt><dd>Tune</dd>
+        <dt>Drag the filter</dt><dd>Move the VFO</dd>
+        <dt>Drag an edge</dt><dd>Filter width</dd>
+        <dt>Wheel</dt><dd>Tuning step</dd>
+        <dt>Ctrl + wheel</dt><dd>Zoom</dd>
+        <dt>Drag the background</dt><dd>Scroll (zoomed view)</dd>
+        <dt>Right-click</dt><dd>Context menu</dd>
+        <dt>← →</dt><dd>Step (Shift: ×10)</dd>
+        <dt>+ − 0</dt><dd>Zoom, full view</dd>
+        <dt>M</dt><dd>Next mode</dd>
+        <dt>1 to 6</dt><dd>Panels</dd>
+        <dt>Esc</dt><dd>Close</dd>
+        <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
+      </dl>
+      <p class="note">Radiolack · early rewrite · simulated band</p>
+    </section>
+  </div>
+
+  <div id="ctx" role="menu" aria-label="Frequency actions" hidden>
+    <div class="ctx-title" id="ctx-title"></div>
+    <button type="button" role="menuitem" data-cmd="tune">Tune here</button>
+    <button type="button" role="menuitem" data-cmd="bookmark">Add to bookmarks</button>
+    <button type="button" role="menuitem" data-cmd="center">Centre the view here</button>
+    <button type="button" role="menuitem" data-cmd="segment">Zoom to the segment</button>
+    <button type="button" role="menuitem" data-cmd="ignore">Ignore in the scanner</button>
+  </div>
+
+  <div id="tunepad">
+    <button type="button" id="tune-down" aria-label="One step down">−</button>
+    <button type="button" id="tune-up" aria-label="One step up">+</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="hoverinfo"></div>
+  <div id="hint"></div>
+</div>
+</body>
+</html>

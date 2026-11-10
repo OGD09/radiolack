@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Radiolack's icon: a spectrum trace with one signal above two waterfall rows, in the interface's colours. -->
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="#0a0c0f"/>
+  <rect x="9" y="9" width="110" height="110" rx="23" fill="none" stroke="#59a7ff" stroke-opacity="0.35" stroke-width="2"/>
+  <path d="M28 90h72M28 102h72" stroke="#d7dde5" stroke-opacity="0.22" stroke-width="6" stroke-linecap="round"/>
+  <path d="M57 90h14M57 102h14" stroke="#59a7ff" stroke-width="6" stroke-linecap="round"/>
+  <path d="M24 74l14-2 10 3 9-6 7-37 7 37 9 6 10-3 14 2" fill="none" stroke="#59a7ff" stroke-width="7"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

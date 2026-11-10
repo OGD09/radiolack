@@ -1,258 +1,300 @@
-"""Command line: usage errors, import, stats, Gqrx profile, check and stop (no reception)."""
+"""Tests for the command line: options, interface choice, signals and exit codes.
+
+No test opens a window or a browser: in-process tests replace them, and the
+subprocesses run without any display. Radiolack runs with the test run's own
+settings folder (tests/__init__.py), never the owner's.
+"""
 
 import contextlib
 import functools
 import io
 import json
 import os
-from pathlib import Path
+import re
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
+import urllib.request
+from pathlib import Path
+from unittest import mock
 
+import radiolack
 from radiolack import cli
-from radiolack.gqrx import prepare_gqrx_profile
-from radiolack.storage import ObservationStore, lock_path_for
+from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
+from radiolack.server import LOOPBACK_HOST
+from radiolack.sources import Sources
+import tests     # tests/__init__.py gives the test run a settings folder of its own
 
-from tests.helpers import legacy_journal
-
-# Child processes that hold a store lock; the PID is written like RadioLack does.
-LOCK_HOLDER = """
-import fcntl, os, time
-handle = open(os.environ["LOCK_PATH"], "a+")
-fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-handle.seek(0)
-handle.truncate()
-handle.write(f"{os.getpid()}\\n")
-handle.flush()
-print("ready", flush=True)
-time.sleep(60)
-"""
-# The base interpreter path: a virtual environment inside the project would
-# put "radiolack" in the child's command line.
-PYTHON = os.path.realpath(sys.executable)
+PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
+URL_LINE = re.compile(r"Radiolack is running at (http://127\.0\.0\.1:\d+/) ")
 
 
-def free_ports(count):
-    """Distinct loopback ports that nothing listens on (never the default ports)."""
-    sockets = [socket.socket() for _ in range(count)]
-    try:
-        for item in sockets:
-            item.bind(("127.0.0.1", 0))
-        return [item.getsockname()[1] for item in sockets]
-    finally:
-        for item in sockets:
-            item.close()
+@contextlib.contextmanager
+def no_wait():
+    """Stand in for cli._stop_signals: the stop event is already set."""
+    stop = threading.Event()
+    stop.set()
+    yield stop
 
 
-def run(*argv):
+def run_main(*argv):
+    """Run cli.main in-process without waiting for a signal."""
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            code = cli.main([str(item) for item in argv])
-        except SystemExit as exit_:
-            code = exit_.code
+    with mock.patch.object(cli, "_stop_signals", no_wait), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli.main(list(argv))
     return code, out.getvalue(), err.getvalue()
 
 
-class CliTestCase(unittest.TestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        self.store = self.root / "data" / "observations.json"
-        self.source = self.root / "airband-peaks.json"
-        self.source.write_text(json.dumps(legacy_journal()))
-        environment = patch.dict(os.environ)
-        environment.start()
-        self.addCleanup(environment.stop)
-        for name in ("RADIOLACK_STORE", "RADIOLACK_DATA_DIR"):
-            os.environ.pop(name, None)
-        rtl, bridge, gqrx = free_ports(3)
-        self.ports = ["--rtl-tcp", f"127.0.0.1:{rtl}", "--bridge", f"127.0.0.1:{bridge}",
-                      "--gqrx", f"127.0.0.1:{gqrx}"]
-        self.bridge_port, self.gqrx_port = bridge, gqrx
+@contextlib.contextmanager
+def own_settings():
+    """A settings folder for one test, apart from the test run's: yields the
+    path of its settings file."""
+    with tempfile.TemporaryDirectory() as config, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": config}):
+        yield Path(config) / "radiolack" / "settings.json"
 
 
-class InformationCommandTests(CliTestCase):
-    def test_profiles_and_plan(self):
-        code, out, _ = run("profiles")
-        self.assertEqual(code, 0)
-        self.assertIn("airband-8k33", out)
-        code, out, _ = run("plan")
-        self.assertEqual(code, 0)
-        self.assertIn("32 overlapping windows", out)
-        self.assertIn("all 2280 grid channels", out)
-        self.assertEqual(run("plan", "--rate", "1000")[0], 2)
-        code, _, err = run("plan", "--profile", "no-such-profile")
-        self.assertEqual(code, 2)
-        self.assertIn("Unknown profile", err)
+@contextlib.contextmanager
+def silent_rtl_tcp():
+    """A listening socket that never accepts, in place of rtl_tcp: yields it
+    with its address."""
+    with socket.socket() as rtl_tcp:
+        rtl_tcp.bind((LOOPBACK_HOST, 0))
+        rtl_tcp.listen()
+        rtl_tcp.setblocking(False)
+        yield rtl_tcp, f"{LOOPBACK_HOST}:{rtl_tcp.getsockname()[1]}"
 
 
-class ImportAndStatsTests(CliTestCase):
-    def test_import_is_idempotent_and_stats_read_the_store(self):
-        code, out, _ = run("import", self.source, "--store", self.store, "--dry-run")
-        self.assertEqual(code, 0)
-        self.assertIn("Dry run: nothing was written.", out)
-        self.assertFalse(self.store.exists())
-        code, out, _ = run("import", self.source, "--store", self.store)
-        self.assertEqual(code, 0)
-        self.assertIn("Observations: 3 added, 0 already present, 0 conflicts", out)
-        self.assertIn("Legacy counters: identical", out)
-        self.assertIn("The source file was only read.", out)
-        code, out, _ = run("import", self.source, "--store", self.store)
-        self.assertIn("Nothing new: the store was not modified.", out)
-        code, out, _ = run("stats", "--store", self.store)
-        self.assertEqual(code, 0)
-        self.assertIn("Validated listens: 3 | frequencies: 2 | squelch memories: 1", out)
-        self.assertIn("135.925000", out)
-        self.assertIn("not conversations", out)
-        code, out, _ = run("stats", "--store", self.store, "--json")
-        report = json.loads(out)
-        self.assertEqual(report["summary"]["validated_listens"], 3)
-        self.assertEqual(list(report["frequencies"]), ["135925000", "136575000"])
-        _, out, _ = run("stats", "--store", self.store, "--json", "--frequency", "136.575")
-        self.assertEqual(list(json.loads(out)["frequencies"]), ["136575000"])
-        _, out, _ = run("stats", "--store", self.store, "--json", "--limit", "1")
-        self.assertEqual(list(json.loads(out)["frequencies"]), ["135925000"])
+class ParserTest(unittest.TestCase):
+    def test_rejects_invalid_ports(self):
+        for value in ("-1", "65536", "http"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(["--port", value])
+                self.assertEqual(raised.exception.code, 2)
 
-    def test_storage_problems_use_their_own_exit_code(self):
-        code, _, err = run("stats", "--store", self.store)
-        self.assertEqual(code, 3)
-        self.assertIn("storage error: No observation store", err)
-        self.store.parent.mkdir()
-        self.store.write_text("{broken")
-        code, _, err = run("stats", "--store", self.store)
-        self.assertEqual((code, self.store.read_text()), (3, "{broken"))
-        self.assertIn("not valid JSON", err)
-        self.assertEqual(run("import", self.store, "--store", self.root / "other.json")[0], 3)
-        self.assertEqual(run("import", self.source, "--store", self.source)[0], 3)
+    def test_defaults(self):
+        args = cli.build_parser().parse_args([])
+        self.assertEqual((args.ui, args.port, args.rtl_sdr, args.rtl_tcp), ("window", 0, None, None))
 
-    def test_environment_variables_select_the_data_directory_and_store(self):
-        os.environ["RADIOLACK_DATA_DIR"] = str(self.root / "env-data")
-        self.assertEqual(run("import", self.source)[0], 0)
-        self.assertTrue((self.root / "env-data" / "observations.json").exists())
-        os.environ["RADIOLACK_STORE"] = str(self.root / "elsewhere.json")
-        code, _, err = run("stats")
-        self.assertEqual(code, 3)
-        self.assertIn("elsewhere.json", err)
+    def test_rtl_sdr_devices(self):
+        for argv, device in ((["--rtl-sdr"], "0"), (["--rtl-sdr", "1"], "1"),
+                             (["--rtl-sdr", "00000001"], "00000001")):
+            with self.subTest(argv=argv):
+                self.assertEqual(cli.build_parser().parse_args(argv).rtl_sdr, device)
 
+    def test_rejects_invalid_receivers_and_two_receivers(self):
+        for argv in (["--rtl-sdr", ""], ["--rtl-sdr", " "], ["--rtl-sdr", "--rtl-tcp"],
+                     ["--rtl-tcp", "--rtl-sdr"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(argv)
+                self.assertEqual(raised.exception.code, 2)
 
-class GqrxProfileCommandTests(CliTestCase):
-    def test_separate_profile_is_created_once(self):
-        with patch.object(cli, "prepare_gqrx_profile", functools.partial(prepare_gqrx_profile, base=None)):
-            code, out, _ = run("gqrx-profile", "--data-dir", self.root / "data")
-            self.assertEqual(code, 0)
-            path = self.root / "data" / "gqrx-radiolack.conf"
-            text = path.read_text()
-            self.assertIn('device="rtl_tcp=127.0.0.1:1235"', text)
-            self.assertIn("port=7356", text)
-            self.assertIn(f"gqrx -c {path}", out)
-            code, _, err = run("gqrx-profile", "--data-dir", self.root / "data")
-            self.assertEqual(code, 1)
-            self.assertIn("already exists; it was not overwritten", err)
-            self.assertEqual(path.read_text(), text)
-        self.assertEqual(run("gqrx-profile", "--output", self.root / "x.conf", "--bridge", "192.168.1.5:1235")[0], 2)
-        self.assertEqual(run("gqrx-profile", "--output", self.root / "x.conf", "--gqrx", "127.0.0.1:1235")[0], 2)
-        self.assertFalse((self.root / "x.conf").exists())
+    def test_rtl_tcp_addresses(self):
+        # Parsed only: nothing connects to these addresses.
+        addresses = {
+            None: (),       # no address: the source takes the saved one
+            "40000": (LOOPBACK_HOST, 40000),
+            "radio.example": ("radio.example", 1234),
+            "192.0.2.10:40000": ("192.0.2.10", 40000),
+            "[::1]": ("::1", 1234),
+            "[::1]:40000": ("::1", 40000),
+        }
+        for value, address in addresses.items():
+            with self.subTest(value=value):
+                argv = ["--rtl-tcp"] if value is None else ["--rtl-tcp", value]
+                self.assertEqual(cli.build_parser().parse_args(argv).rtl_tcp, address)
+
+    def test_rejects_invalid_rtl_tcp_addresses(self):
+        for value in ("", "0", "65536", "host:", ":40000", "host:port", "::1", "[::1", "[::1]40000", "[]:40000"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(["--rtl-tcp", value])
+                self.assertEqual(raised.exception.code, 2)
+
+    def test_version(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as raised:
+            cli.main(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(radiolack.__version__, out.getvalue())
 
 
-class MonitorCommandTests(CliTestCase):
-    def test_invalid_options_are_rejected_before_any_action(self):
-        before = signal.getsignal(signal.SIGTERM)
-        missing = self.root / "missing.json"
-        cases = (["--bridge", "10.0.0.1:1235"], ["--gqrx", "192.168.1.2:7356"], ["--rtl-tcp", "192.168.1.2:1234"],
-                 ["--rtl-tcp", "127.0.0.1:7356", "--gqrx", "127.0.0.1:7356"], ["--rate", "1000"],
-                 ["--center", "140000000"], ["--margin-db", "2"], ["--min-active-seconds", "20"],
-                 ["--meter-guard-seconds", "0.1"], ["--gain", "60"], ["--window-seconds", "0.1"])
-        for extra in cases:
-            code, _, err = run("scan", *self.ports, "--store", missing, *extra)
-            self.assertEqual(code, 2, (extra, err))
-        self.assertEqual(run("watch", *self.ports, "--store", missing, "--window-seconds", "2")[0], 2)
-        self.assertFalse(missing.exists())
-        self.assertIs(signal.getsignal(signal.SIGTERM), before)
-
-    def test_missing_store_stops_before_reception_starts(self):
-        code, out, err = run("watch", "--external-source", *self.ports, "--store", self.root / "missing.json")
-        self.assertEqual(code, 3)
-        self.assertIn("--create-store", err)
-        self.assertEqual(out, "")
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", self.bridge_port))  # the bridge port was never opened
-
-
-class CheckCommandTests(CliTestCase):
-    def check(self, *extra):
-        with patch.object(cli.shutil, "which", return_value="/usr/bin/tool"), \
-                patch.object(cli, "_usb_rtl_sdr_present", return_value=[]):
-            return run("check", *self.ports, "--data-dir", self.root / "data", "--store", self.store, *extra)
-
-    def test_read_only_report(self):
-        code, out, _ = self.check()
-        self.assertEqual(code, 0, out)
-        self.assertIn(f"bridge port {self.bridge_port}", out)
-        self.assertIn("not reachable", out)
-        self.assertIn("missing: run `radiolack import ...`", out)
-        self.assertFalse(self.store.exists())
-        with socket.socket() as gqrx:
-            gqrx.bind(("127.0.0.1", self.gqrx_port))
-            gqrx.listen(1)
-            # The listener is this test process, not a Gqrx started with the RadioLack profile.
-            code, out, _ = self.check()
-            self.assertEqual(code, 0)
-            self.assertRegex(out, rf"WARN +Gqrx remote control +reachable on 127\.0\.0\.1:{self.gqrx_port} but "
-                                  rf"held by PID {os.getpid()} \(.*not by a Gqrx started with gqrx-radiolack\.conf")
-            with patch.object(cli, "command_line", return_value="gqrx -c /home/u/data/gqrx-radiolack.conf"):
-                out = self.check()[1]
-            self.assertRegex(out, rf"OK +Gqrx remote control +reachable on 127\.0\.0\.1:{self.gqrx_port}: "
-                                  rf"PID {os.getpid()} \(")
+class MainTest(unittest.TestCase):
+    def test_busy_port(self):
         with socket.socket() as busy:
-            busy.bind(("127.0.0.1", self.bridge_port))
-            busy.listen(1)
-            code, out, _ = self.check()
-            self.assertEqual(code, 1)
-            self.assertIn("in use by another program", out)
-
-    def test_store_in_use_is_reported(self):
-        with ObservationStore(self.store, create=True):
-            code, out, _ = self.check()
-        self.assertEqual(code, 0)
-        self.assertIn(f"in use by RadioLack process {os.getpid()}", out)
-
-
-class StopCommandTests(CliTestCase):
-    def holder(self, *marker):
-        lock = lock_path_for(self.store)
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        child = subprocess.Popen([PYTHON, "-c", LOCK_HOLDER, *marker], stdout=subprocess.PIPE, text=True,
-                                 env=dict(os.environ, LOCK_PATH=str(lock)))
-        self.addCleanup(lambda: child.poll() is None and (child.kill(), child.wait()))
-        self.addCleanup(child.stdout.close)
-        self.assertEqual(child.stdout.readline().strip(), "ready")
-        return child
-
-    def test_nothing_to_stop(self):
-        code, out, _ = run("stop", "--store", self.store)
-        self.assertEqual(code, 0)
-        self.assertIn("No RadioLack process is using", out)
-
-    def test_radiolack_process_is_terminated_and_waited_for(self):
-        child = self.holder("radiolack")
-        code, out, _ = run("stop", "--store", self.store, "--timeout", "5")
-        self.assertEqual(code, 0)
-        self.assertIn(f"Stopped RadioLack process {child.pid}", out)
-        self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
-
-    def test_unrelated_process_is_never_signalled(self):
-        child = self.holder()
-        code, _, err = run("stop", "--store", self.store, "--timeout", "1")
+            busy.bind((LOOPBACK_HOST, 0))
+            busy.listen()
+            code, out, err = run_main("--ui", "none", "--port", str(busy.getsockname()[1]))
         self.assertEqual(code, 1)
-        self.assertIn("does not look like RadioLack; it was not signalled", err)
-        self.assertIsNone(child.poll())
+        self.assertEqual(out, "")
+        self.assertIn("cannot listen on 127.0.0.1:", err)
+
+    def test_saves_in_the_settings_folder(self):
+        with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none")
+        self.assertEqual((code, err), (0, ""))
+        directory = server.call_args.kwargs["store"].directory
+        self.assertEqual(directory, Path(os.environ["XDG_CONFIG_HOME"]) / "radiolack")
+        # tests/__init__.py: the test run has a settings folder of its own.
+        self.assertTrue(directory.is_relative_to(tempfile.gettempdir()))
+
+    def test_rtl_tcp_source_connects_only_once_an_interface_listens(self):
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
+            with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+                code, out, err = run_main("--ui", "none", "--rtl-tcp", address)
+            self.assertEqual((code, err), (0, ""))
+            source = server.call_args.kwargs["source"]
+            self.assertIsInstance(source, RtlTcpSource)
+            self.assertEqual((source.address, source.given), (address, frozenset({"address"})))
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
+            # Kept for the next start without an address.
+            saved = json.loads(settings.read_text(encoding="utf-8"))["receivers"]["rtl_tcp"]["source"]
+            self.assertEqual(saved["address"], address)
+
+    def test_without_a_source_option_opens_the_receiver_used_last(self):
+        opened = []
+
+        class Recording(Sources):
+            def open(self, reopen):
+                opened.append(super().open(reopen))
+                return opened[-1]
+
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
+            with mock.patch.object(cli, "Sources", Recording):
+                self.assertEqual(run_main("--ui", "none")[0], 0)
+                self.assertEqual([source.kind for source in opened], ["synthetic"])    # the first time
+                settings.parent.mkdir(exist_ok=True)
+                saved = {"version": 1, "source": {"kind": "rtl_tcp"},
+                         "receivers": {"rtl_tcp": {"source": {"address": address}}}}
+                settings.write_text(json.dumps(saved), encoding="utf-8")
+                opened.clear()
+                code, out, err = run_main("--ui", "none")
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual([(source.kind, source.address) for source in opened], [("rtl_tcp", address)])
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
+
+    def test_rtl_tcp_without_an_address_reopens_the_saved_one(self):
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
+            settings.parent.mkdir()
+            saved = {"version": 1, "receivers": {"rtl_tcp": {"source": {"address": address}}}}
+            settings.write_text(json.dumps(saved), encoding="utf-8")
+            with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+                code, out, err = run_main("--ui", "none", "--rtl-tcp")
+            self.assertEqual((code, err), (0, ""))
+            source = server.call_args.kwargs["source"]
+            self.assertEqual((source.address, source.given), (address, frozenset()))
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
+
+    def test_rtl_sdr_source_starts_nothing_until_an_interface_listens(self):
+        # A program that does not exist: nothing could open a real receiver.
+        safe_source = functools.partial(RtlSdrSource, program=("/nonexistent/rtl_tcp",))
+        with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/rtl_tcp"), \
+                mock.patch.object(cli, "RtlSdrSource", side_effect=safe_source) as created, \
+                mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none", "--rtl-sdr", "1")
+        self.assertEqual((code, err), (0, ""))
+        created.assert_called_once_with("1")
+        source = server.call_args.kwargs["source"]
+        self.assertIsInstance(source, RtlSdrSource)
+        self.assertEqual((source.device, source.status), ("1", "idle"))
+
+    def test_rtl_sdr_needs_rtl_tcp_installed(self):
+        with mock.patch.object(cli.shutil, "which", return_value=None), \
+                mock.patch.object(cli, "LocalServer") as server:
+            code, out, err = run_main("--ui", "none", "--rtl-sdr")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("rtl_tcp is not installed", err)
+        server.assert_not_called()
+
+    def test_window_shows_served_interface(self):
+        shown = []
+        with mock.patch.object(cli.window, "unavailable_reason", return_value=None), \
+                mock.patch.object(cli.window, "show", side_effect=shown.append):
+            code, out, err = run_main()
+        self.assertEqual((code, out, err), (0, "", ""))
+        self.assertEqual(len(shown), 1)
+        self.assertRegex(shown[0], r"^http://127\.0\.0\.1:\d+/$")
+
+    def test_window_unavailable_falls_back_to_address(self):
+        with mock.patch.object(cli.window, "unavailable_reason", return_value="no graphical display"), \
+                mock.patch.object(cli.window, "show") as show:
+            code, out, err = run_main("--ui", "window")
+        self.assertEqual(code, 0)
+        show.assert_not_called()
+        self.assertIn("no native window (no graphical display)", err)
+        self.assertRegex(out, URL_LINE)
+
+    def test_browser(self):
+        with mock.patch.object(cli.webbrowser, "open", return_value=True) as open_browser:
+            code, out, err = run_main("--ui", "browser")
+        self.assertEqual((code, err), (0, ""))
+        url = URL_LINE.search(out).group(1)
+        open_browser.assert_called_once_with(url)
+
+    def test_browser_unavailable(self):
+        with mock.patch.object(cli.webbrowser, "open", return_value=False):
+            code, out, err = run_main("--ui", "browser")
+        self.assertEqual(code, 0)
+        self.assertIn("no web browser could be opened", err)
+        self.assertRegex(out, URL_LINE)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX signals")
+class SignalTest(unittest.TestCase):
+    """Run the real entry point and stop it the way a terminal or a service would."""
+
+    def start(self, *argv):
+        env = dict(os.environ)
+        for name in ("DISPLAY", "WAYLAND_DISPLAY"):
+            env.pop(name, None)
+        env["GDK_BACKEND"] = "x11"  # With no DISPLAY, GTK finds no display.
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (PACKAGE_PARENT, env.get("PYTHONPATH"))))
+        process = subprocess.Popen(
+            [sys.executable, "-m", "radiolack", *argv], env=env, text=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.cleanup, process)
+        line = process.stdout.readline()
+        match = URL_LINE.search(line)
+        self.assertIsNotNone(match, f"unexpected output: {line!r}")
+        return process, match.group(1)
+
+    @staticmethod
+    def cleanup(process):
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
+
+    def assert_stops(self, process, signum):
+        process.send_signal(signum)
+        out, err = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, err)
+        return err
+
+    def test_serves_until_sigterm(self):
+        process, url = self.start("--ui", "none")
+        with urllib.request.urlopen(url, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        self.assert_stops(process, signal.SIGTERM)
+
+    def test_stops_on_sigint(self):
+        process, _ = self.start("--ui", "none")
+        self.assert_stops(process, signal.SIGINT)
+
+    def test_window_without_display(self):
+        process, _ = self.start()
+        err = self.assert_stops(process, signal.SIGTERM)
+        # A missing display or toolkit, never a toolkit that failed to load.
+        self.assertRegex(err, r"no native window \((no graphical display|PyGObject is not "
+                              r"installed|GTK 3 is not installed|WebKitGTK is not installed)\)")
 
 
 if __name__ == "__main__":
