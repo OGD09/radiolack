@@ -49,7 +49,14 @@ the history under the tag `v0.1.0`.
   `release.py` (tags a release on `main` and starts the next development
   version), `apt_repository.py` (builds and signs the APT repository: it
   checks the repository's signature with gpgv, then signs only what the key
-  signed before and the packages it is given), `radiolack.desktop` (menu
+  signed before and the packages it is given), `publish_apt.py` (publishes a
+  release in the APT repository on the `gh-pages` branch, which GitHub Pages
+  serves: it rebuilds the release from its tag and compares it with
+  GitHub's, signs through `apt_repository.py`, checks the signatures with
+  the package's key and pushes once the owner agrees), `radiolack.sources`
+  and `radiolack-archive-keyring.gpg` (the APT source and the owner's public
+  key, which the package installs as conffiles in /etc/apt; README.md gives
+  the key's fingerprint, which the tests check), `radiolack.desktop` (menu
   entry), `radiolack.svg` (icon) and
   `copyright` (the package's licence notice). The window's program name,
   `window.PROGRAM`, matches the menu entry's and the icon's names: change
@@ -92,14 +99,20 @@ the history under the tag `v0.1.0`.
   signs with throwaway keys in a GnuPG home of its own, through a stand-in
   pinentry, and reads the repositories with apt-get run as the current user
   in a folder of its own.
+- APT publication, only when the owner asks, and only the owner runs it:
+  `python3 packaging/publish_apt.py X.Y.Z` signs with the owner's key and
+  pushes `gh-pages`. `tests/test_publish_apt.py` runs it in temporary
+  repositories, with throwaway keys and a stand-in for GitHub's downloads,
+  and fails a year before the real key's signing subkey expires.
 - CI (GitHub Actions, `.github/workflows/`): `tests.yml` runs the unittest
   command against the package installed with pip on Python 3.11 and 3.15;
   `interface.yml` runs the type check and the browser tests when the
   package, the tests or pyproject.toml change; `package.yml` builds the
   Debian package twice and compares the builds, puts it in an APT
   repository signed with a key made for the run, then installs it from
-  there, runs (`smoke_test.py --window` under Xvfb) and removes it on Debian
-  12 and 13
+  there, checks that apt reads its APT source, runs it (`smoke_test.py
+  --window` under Xvfb), removes it (its source and key stay) and purges it
+  on Debian 12 and 13
   and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
   packaging change; `workflows.yml` runs actionlint
   (`.github/actionlint.yaml`) and zizmor when `.github/` changes;
@@ -138,7 +151,10 @@ the history under the tag `v0.1.0`.
 - Never use, export or change the owner's GnuPG keys (`~/.gnupg`), never
   sign anything with them and never handle a passphrase: the owner signs
   the APT repository. Tests and checks sign with throwaway keys in a
-  temporary `GNUPGHOME`.
+  temporary `GNUPGHOME`. Never push to the `gh-pages` branch: the owner
+  publishes the APT repository there. Replace
+  `packaging/radiolack-archive-keyring.gpg` only with a public key that the
+  owner exported.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,

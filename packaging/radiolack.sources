@@ -1,0 +1,9 @@
+# Radiolack's APT repository, which the radiolack package adds so that apt
+# keeps Radiolack up to date. To stop using it, change "Enabled: yes" to
+# "Enabled: no". Purging the package removes this file and the key.
+Types: deb
+URIs: https://ogd09.github.io/radiolack/
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/radiolack-archive-keyring.gpg
+Enabled: yes

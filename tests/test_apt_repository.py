@@ -67,52 +67,62 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def stop_gnupg():
+    """Stop the agent that signing starts, and remove its sockets' folder."""
+    run("gpgconf", "--kill", "all", check=False)
+    run("gpgconf", "--remove-socketdir", check=False)
+
+
+def make_key(name, passphrase):
+    """A new key of the owner's kind, a primary key that only certifies
+    and a signing subkey, under this passphrase: its fingerprint."""
+    secret = ["--pinentry-mode", "loopback", "--passphrase", passphrase]
+    run("gpg", "--batch", "--quiet", *secret, "--quick-generate-key", name, "ed25519", "cert", "never")
+    listing = run("gpg", "--batch", "--with-colons", "--list-keys", name).stdout
+    fingerprint = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+    run("gpg", "--batch", "--quiet", *secret, "--quick-add-key", fingerprint, "ed25519", "sign", "1d")
+    return fingerprint
+
+
+def throwaway_gnupg(test_class):
+    """Give a test class, from its setUpClass, a temporary ``folder`` with
+    a GnuPG home of its own, whose agent asks a stand-in pinentry for
+    passphrases: it gives PASSPHRASE and notes each request in
+    ``pinentry_log``. The class gets two keys: ``key``, under PASSPHRASE,
+    and ``other_key``, without one, with their public keyrings ``keyring``
+    and ``other_keyring``. Its cleanups stop GnuPG and remove the folder."""
+    temporary = tempfile.TemporaryDirectory()
+    test_class.addClassCleanup(temporary.cleanup)
+    test_class.folder = folder = Path(temporary.name)
+    home = folder / "gnupg"
+    home.mkdir(mode=0o700)
+    environment = mock.patch.dict(os.environ, {"GNUPGHOME": str(home)})
+    environment.start()
+    test_class.addClassCleanup(environment.stop)
+    test_class.addClassCleanup(stop_gnupg)     # before the folder goes
+    test_class.pinentry_log = folder / "pinentry.log"
+    pinentry = folder / "pinentry"
+    pinentry.write_text(PINENTRY.format(python=sys.executable, log=str(test_class.pinentry_log),
+                                        passphrase=PASSPHRASE))
+    pinentry.chmod(0o700)
+    (home / "gpg-agent.conf").write_text(f"pinentry-program {pinentry}\n")
+    test_class.key = make_key("Radiolack test repository", PASSPHRASE)
+    test_class.other_key = make_key("Another test repository", "")
+    run("gpgconf", "--kill", "gpg-agent")     # forget the passphrase
+    test_class.keyring = folder / "keyring.gpg"
+    test_class.keyring.write_bytes(run("gpg", "--batch", "--export", test_class.key, text=False).stdout)
+    test_class.other_keyring = folder / "other-keyring.gpg"
+    test_class.other_keyring.write_bytes(run("gpg", "--batch", "--export", test_class.other_key, text=False).stdout)
+
+
 @unittest.skipUnless(all(shutil.which(tool) for tool in TOOLS), "dpkg-deb, gpg, gpgv and gpgconf")
 class RepositoryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        temporary = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(temporary.cleanup)
-        cls.folder = Path(temporary.name)
-        home = cls.folder / "gnupg"
-        home.mkdir(mode=0o700)
-        environment = mock.patch.dict(os.environ, {"GNUPGHOME": str(home)})
-        environment.start()
-        cls.addClassCleanup(environment.stop)
-        cls.addClassCleanup(cls.stop_gnupg)     # before the folder goes
-        cls.pinentry_log = cls.folder / "pinentry.log"
-        pinentry = cls.folder / "pinentry"
-        pinentry.write_text(PINENTRY.format(python=sys.executable, log=str(cls.pinentry_log), passphrase=PASSPHRASE))
-        pinentry.chmod(0o700)
-        (home / "gpg-agent.conf").write_text(f"pinentry-program {pinentry}\n")
-        # The owner's kind of key: a primary key that only certifies, and a
-        # signing subkey, under a passphrase; and another key, without one.
-        cls.key = cls.make_key("Radiolack test repository", PASSPHRASE)
-        cls.other_key = cls.make_key("Another test repository", "")
-        run("gpgconf", "--kill", "gpg-agent")     # forget the passphrase
-        cls.keyring = cls.folder / "keyring.gpg"
-        cls.keyring.write_bytes(run("gpg", "--batch", "--export", cls.key, text=False).stdout)
-        cls.other_keyring = cls.folder / "other-keyring.gpg"
-        cls.other_keyring.write_bytes(run("gpg", "--batch", "--export", cls.other_key, text=False).stdout)
+        throwaway_gnupg(cls)
         cls.first = cls.make_package("1.0.0")
         cls.second = cls.make_package("1.1.0")
         cls.second_rebuilt = cls.make_package("1.1.0", note="rebuilt")
-
-    @staticmethod
-    def stop_gnupg():
-        """Stop the agent that signing starts, and remove its sockets' folder."""
-        run("gpgconf", "--kill", "all", check=False)
-        run("gpgconf", "--remove-socketdir", check=False)
-
-    @classmethod
-    def make_key(cls, name, passphrase):
-        """A new key's fingerprint."""
-        secret = ["--pinentry-mode", "loopback", "--passphrase", passphrase]
-        run("gpg", "--batch", "--quiet", *secret, "--quick-generate-key", name, "ed25519", "cert", "never")
-        listing = run("gpg", "--batch", "--with-colons", "--list-keys", name).stdout
-        fingerprint = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
-        run("gpg", "--batch", "--quiet", *secret, "--quick-add-key", fingerprint, "ed25519", "sign", "1d")
-        return fingerprint
 
     @classmethod
     def make_package(cls, version, name="radiolack", architecture="all", note="", fields=""):
@@ -137,19 +147,19 @@ class RepositoryTest(unittest.TestCase):
     def update(self, *packages, key=None, date=DATE):
         return apt_repository.update(self.repository, key or self.key, list(packages), date)
 
-    def apt(self, keyring=None):
+    def apt(self, keyring=None, source=None):
         """An environment that runs apt-get and apt-cache as the current
-        user, in a folder of their own, with the repository as their only
-        source."""
+        user, in a folder of their own, with one source: by default, the
+        repository, with this keyring."""
         root = Path(tempfile.mkdtemp(dir=self.folder))
         for folder in ("etc/apt/sources.list.d", "etc/apt/apt.conf.d", "etc/apt/preferences.d",
                        "etc/apt/trusted.gpg.d", "var/lib/apt/lists/partial", "var/cache/apt/archives/partial",
                        "var/lib/dpkg", "var/log/apt"):
             (root / folder).mkdir(parents=True)
         (root / "var/lib/dpkg/status").touch()
-        (root / "etc/apt/sources.list.d/radiolack.sources").write_text(
+        (root / "etc/apt/sources.list.d/radiolack.sources").write_text(source or (
             f"Types: deb\nURIs: file:{self.repository}/\nSuites: stable\nComponents: main\n"
-            f"Signed-By: {keyring or self.keyring}\n")
+            f"Signed-By: {keyring or self.keyring}\n"))
         (root / "apt.conf").write_text(
             f'Dir "{root}/";\nDir::State::status "{root}/var/lib/dpkg/status";\n'
             'Dir::Bin::Methods "/usr/lib/apt/methods/";\nDebug::NoLocking "true";\n'
@@ -377,6 +387,23 @@ class RepositoryTest(unittest.TestCase):
         result = run("apt-get", "download", "radiolack", env=environment, cwd=download, check=False)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((download / "radiolack_1.0.0_all.deb").exists())
+
+    @unittest.skipUnless(APT, "apt-get, as on Debian and Ubuntu")
+    def test_apt_reads_the_source_that_the_package_adds(self):
+        source = (ROOT / "packaging" / "radiolack.sources").read_text(encoding="utf-8")
+        fields = dict(line.split(": ", 1) for line in source.splitlines() if line and not line.startswith("#"))
+        result = run("apt-get", "update", "--print-uris", env=self.apt(source=source))
+        self.assertIn(f"'{fields['URIs']}dists/stable/InRelease' ", result.stdout)
+        # Pointed at this repository and its key, apt fetches the repository and checks it.
+        self.update(self.first)
+        local = source.replace(f"URIs: {fields['URIs']}\n", f"URIs: file:{self.repository}/\n").replace(
+            f"Signed-By: {fields['Signed-By']}\n", f"Signed-By: {self.keyring}\n")
+        environment = self.apt(source=local)
+        run("apt-get", "update", env=environment)
+        self.assertIn("Candidate: 1.0.0", run("apt-cache", "policy", "radiolack", env=environment).stdout)
+        # Turned off, the source gives apt nothing to fetch.
+        environment = self.apt(source=local.replace("\nEnabled: yes\n", "\nEnabled: no\n"))
+        self.assertEqual(run("apt-get", "update", "--print-uris", env=environment).stdout, "")
 
 
 if __name__ == "__main__":
