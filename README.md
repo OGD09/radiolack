@@ -402,9 +402,10 @@ under Xvfb and with that silent output, when the package, the tests or
 
 ## Previous version
 
-Until the first milestone replaces it, the `main` branch keeps the previous
-Radiolack, a Gqrx-driven explorer of the VHF airband. Its personal data in
-`data/` stays untouched (see [data/README.md](data/README.md)).
+The first milestone replaced the previous Radiolack, a Gqrx-driven explorer
+of the VHF airband, on `main`. Its code stays in the history at commit
+`f0e1cf6` (`git checkout f0e1cf6`), and its personal data in `data/` stays
+untouched (see [data/README.md](data/README.md)).
 
 ## Project layout
 

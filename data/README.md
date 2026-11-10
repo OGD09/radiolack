@@ -1,9 +1,10 @@
 # data/
 
-Personal data of the airband explorer, the previous Radiolack that the `main`
-branch keeps. Everything here except this README is excluded from version
-control. The rewritten Radiolack neither reads nor writes this directory, and
-none of these files is ever written, replaced, regenerated or deleted.
+Personal data of the airband explorer, the previous Radiolack, whose code
+stays in the history at commit `f0e1cf6`. Everything here except this README
+is excluded from version control. The rewritten Radiolack neither reads nor
+writes this directory, and none of these files is ever written, replaced,
+regenerated or deleted.
 
 | File | Role |
 | --- | --- |

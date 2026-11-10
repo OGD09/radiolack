@@ -1,11 +1,14 @@
 # Radiolack agent guide
 
 Receive-only SDR receiver for every frequency its receivers cover, with
-ham-focused band plans, being rewritten on the `rewrite` branch (Python 3.11+,
-aiohttp; web interface shown in a native window). User documentation is in README.md. Design decisions, milestones and
-open questions are in docs/design/scoping.md: read it before substantive work.
+ham-focused band plans (Python 3.11+, aiohttp; web interface shown in a
+native window), rewritten from scratch: v0 replaced the airband explorer on
+`main` on 2026-11-10, and work continues there. User documentation is in
+README.md. Design decisions, milestones and open questions are in
+docs/design/scoping.md: read it before substantive work.
 docs/design/ui-mockup.html is the visual reference, and docs/design/lessons.md
-keeps what the rewrite reuses from the airband explorer, which stays on `main`.
+keeps what the rewrite reuses from the airband explorer, whose code stays in
+the history at commit `f0e1cf6`.
 
 ## Layout
 

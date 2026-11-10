@@ -1,7 +1,7 @@
 # Lessons from the airband explorer
 
-The Gqrx-driven airband explorer is removed from the `rewrite` branch. Its
-code and documentation stay on `main` (commit `f0e1cf6`: `src/radiolack/`,
+The rewrite removed the Gqrx-driven airband explorer. Its code and
+documentation stay in the history at commit `f0e1cf6` (`src/radiolack/`,
 `docs/architecture.md`, `docs/squelch.md`). This note keeps what the new
 engine reuses; the details are in those files.
 

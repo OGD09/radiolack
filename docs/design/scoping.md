@@ -1,12 +1,13 @@
 # Radiolack rewrite: scoping
 
-Status: v0 started on the `rewrite` branch, 2026-11-08.
+Status: v0 merged into `main` on 2026-11-10 (started on the `rewrite` branch
+on 2026-11-08).
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
 This document fixes what the rewritten Radiolack is, what it is not, how it is
-built and in which order. Until the first milestone can stand in for it, `main`
-keeps the current Gqrx-driven airband tool.
+built and in which order. The first milestone replaced the Gqrx-driven airband
+tool on `main`; that tool stays in the history at commit `f0e1cf6`.
 
 ## Purpose
 
@@ -499,9 +500,12 @@ These costs wait for v4:
   programs the tests start that import the test package, such as the fake
   rtl_tcp, keep the run's settings folder instead of leaving one of their
   own in the temporary folder each time a signal stops them.
+- v0 merged into `main`, 2026-11-10, with a merge commit that keeps the
+  rewrite's commits as they are. The airband explorer stays in the history
+  at commit `f0e1cf6`; work continues on `main`, and the `rewrite` branch is
+  no longer used.
 - Next step: the owner makes the repository public, installs the Debian
   package and checks v0 on their computer; then versioned releases, the APT
   repository and the update alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
-- `main` keeps the current tool until v0 is merged.
