@@ -3,8 +3,9 @@
 # package twice and compares the builds, byte for byte, and puts it in an APT
 # repository signed with a throwaway key (packaging/apt_repository.py); then,
 # on each supported release of Debian and Ubuntu, installs it with apt from
-# that repository, runs it (packaging/smoke_test.py), removes it, and on
-# Debian 13 checks it with lintian. No secrets, services or radio hardware.
+# that repository, checks the APT source that it adds, runs it
+# (packaging/smoke_test.py), removes and purges it, and on Debian 13 checks
+# it with lintian. No secrets, services or radio hardware.
 name: Package
 
 on:
@@ -184,6 +185,16 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y --no-install-recommends radiolack xvfb xauth
           apt-get autoclean
 
+      # Read, not fetched: the published repository is not this run's.
+      - name: Check that apt reads the APT source that the package adds
+        timeout-minutes: 2
+        run: |
+          url=$(sed -n 's/^URIs: //p' /etc/apt/sources.list.d/radiolack.sources)
+          if ! apt-get update --print-uris | grep -F "'${url}dists/stable/InRelease'"; then
+            echo "::error::apt does not read the source that the package adds, for ${url:-no address}"
+            exit 1
+          fi
+
       - name: Run the installed package
         timeout-minutes: 5
         env:
@@ -196,17 +207,33 @@ jobs:
           fi
           xvfb-run -a python3 packaging/smoke_test.py --window
 
-      - name: Remove the package
+      # Removing it keeps its configuration files, the APT source and the key
+      # that the source needs; purging it removes them.
+      - name: Remove the package, then purge it
         timeout-minutes: 5
         run: |
-          apt-get purge -y radiolack
-          if dpkg --status radiolack > /dev/null 2>&1; then
-            echo "::error::dpkg still knows radiolack after its removal"
-            exit 1
-          fi
-          for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack /usr/share/doc/radiolack; do
+          apt-get remove -y radiolack
+          for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack; do
             if [ -e "$path" ]; then
               echo "::error::$path is left after the package's removal"
+              exit 1
+            fi
+          done
+          for path in /etc/apt/sources.list.d/radiolack.sources /etc/apt/keyrings/radiolack-archive-keyring.gpg; do
+            if [ ! -f "$path" ]; then
+              echo "::error::the package's removal took $path, which its APT source needs"
+              exit 1
+            fi
+          done
+          apt-get purge -y radiolack
+          if dpkg --status radiolack > /dev/null 2>&1; then
+            echo "::error::dpkg still knows radiolack after its purge"
+            exit 1
+          fi
+          for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack /usr/share/doc/radiolack \
+              /etc/apt/sources.list.d/radiolack.sources /etc/apt/keyrings/radiolack-archive-keyring.gpg; do
+            if [ -e "$path" ]; then
+              echo "::error::$path is left after the package's purge"
               exit 1
             fi
           done

@@ -163,6 +163,11 @@ class PackageTest(unittest.TestCase):
         return subprocess.run(["dpkg-deb", "--field", str(self.package), name], capture_output=True, text=True,
                               check=True, timeout=60).stdout.strip()
 
+    def control(self, name: str) -> str:
+        """One of the package's control files."""
+        return subprocess.run(["dpkg-deb", "--info", str(self.package), name], capture_output=True, text=True,
+                               check=True, timeout=60).stdout
+
     def test_describes_an_architecture_independent_package(self):
         self.assertEqual((self.field("Package"), self.field("Architecture")), ("radiolack", "all"))
         self.assertTrue(self.field("Version").startswith(build_deb.debian_version(radiolack.__version__)))
@@ -189,6 +194,21 @@ class PackageTest(unittest.TestCase):
         # The packaged command, not a radiolack found earlier on the PATH, such as in ~/.local/bin.
         entry = (self.tree / "usr/share/applications/radiolack.desktop").read_text(encoding="utf-8")
         self.assertIn("\nExec=/usr/bin/radiolack\n", entry)
+
+    def test_adds_the_apt_repository_as_configuration_files(self):
+        source, keyring = "etc/apt/sources.list.d/radiolack.sources", "etc/apt/keyrings/radiolack-archive-keyring.gpg"
+        self.assertEqual(self.control("conffiles").splitlines(), [f"/{keyring}", f"/{source}"])
+        for path, name in ((source, "radiolack.sources"), (keyring, "radiolack-archive-keyring.gpg")):
+            self.assertEqual((self.tree / path).read_bytes(), (ROOT / "packaging" / name).read_bytes(), path)
+            self.assertEqual((self.tree / path).stat().st_mode & 0o777, 0o644, path)
+        self.assertIn(f"\nSigned-By: /{keyring}\n", (self.tree / source).read_text(encoding="utf-8"))
+        # As Debian's tools write md5sums: every file but the conffiles, whose checksums dpkg keeps apart.
+        listed = {line.split("  ", 1)[1] for line in self.control("md5sums").splitlines()}
+        installed = {path.relative_to(self.tree).as_posix() for path in self.tree.rglob("*") if path.is_file()}
+        self.assertEqual(listed, installed - {source, keyring})
+        # Lintian flags every package that adds an APT source; this one does on purpose.
+        overrides = (self.tree / "usr/share/lintian/overrides/radiolack").read_text(encoding="utf-8")
+        self.assertIn(f"\nradiolack: package-installs-apt-sources [{source}]\n", overrides)
 
     def test_states_the_licence(self):
         # Debian keeps a package's licence notice in /usr/share/doc/PACKAGE/copyright, and the text of the

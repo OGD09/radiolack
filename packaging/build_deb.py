@@ -6,6 +6,8 @@ The package installs Radiolack for the system's Python 3 and its packaged
 libraries (aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK), with the
 ``radiolack`` command, its manual page, a menu entry, an icon, and the
 changelog and licence notice that Debian keeps in /usr/share/doc/radiolack.
+It also adds Radiolack's APT repository, its source and its key, so that apt
+keeps Radiolack up to date.
 Building needs only Python and dpkg-deb, as found on Debian and Ubuntu:
 
     python3 packaging/build_deb.py --maintainer "Name <address>"
@@ -48,6 +50,20 @@ ROOT = HERE.parent
 SOURCE = ROOT / "src" / PACKAGE
 DIST_PACKAGES = Path("usr/lib/python3/dist-packages")
 MANUAL_PAGE = f"{PACKAGE}.1"     # in packaging/, with @VERSION@ and @DATE@ to fill in
+KEYRING = f"{PACKAGE}-archive-keyring.gpg"     # in packaging/: the public key of the APT repository
+# The APT repository's source and key, from packaging/, as configuration files
+# (conffiles): removing the package keeps both, so that the source still checks
+# out; purging it removes both.
+CONFFILES = {
+    f"etc/apt/sources.list.d/{PACKAGE}.sources": f"{PACKAGE}.sources",
+    f"etc/apt/keyrings/{KEYRING}": KEYRING,
+}
+# Lintian flags every package that adds an APT source; this one adds its own.
+LINTIAN_OVERRIDES = f"""\
+# The package adds Radiolack's own APT repository, signed with Radiolack's own
+# key, so that apt keeps Radiolack up to date.
+{PACKAGE}: package-installs-apt-sources [etc/apt/sources.list.d/{PACKAGE}.sources]
+"""
 
 # What the package needs from the system, at the versions of Debian 12.
 DEPENDS = (
@@ -224,6 +240,9 @@ def stage(tree: Path, version: str, maintainer: str, epoch: int) -> None:
         _write(tree / folder / name, (HERE / name).read_text(encoding="utf-8"))
     _write(tree / f"usr/share/doc/{PACKAGE}/changelog.gz", _compress(changelog(version, maintainer, epoch)))
     _write(tree / f"usr/share/man/man1/{MANUAL_PAGE}.gz", _compress(manual_page(version, epoch)))
+    for path, name in CONFFILES.items():
+        _write(tree / path, (HERE / name).read_bytes())
+    _write(tree / f"usr/share/lintian/overrides/{PACKAGE}", LINTIAN_OVERRIDES)
     tree.chmod(0o755)
     for path in tree.rglob("*"):
         if path.is_dir():
@@ -247,8 +266,11 @@ def stage(tree: Path, version: str, maintainer: str, epoch: int) -> None:
     ]
     debian = tree / "DEBIAN"
     _write(debian / "control", "\n".join(control).rstrip("\n") + "\n")
+    # As Debian's tools write it: dpkg keeps the checksums of the conffiles apart.
     _write(debian / "md5sums", "".join(
-        f"{hashlib.md5(path.read_bytes()).hexdigest()}  {path.relative_to(tree).as_posix()}\n" for path in files))
+        f"{hashlib.md5(path.read_bytes()).hexdigest()}  {path.relative_to(tree).as_posix()}\n" for path in files
+        if path.relative_to(tree).as_posix() not in CONFFILES))
+    _write(debian / "conffiles", "".join(f"/{path}\n" for path in sorted(CONFFILES)))
     _write(debian / "postinst", POSTINST, executable=True)
     _write(debian / "prerm", PRERM, executable=True)
     debian.chmod(0o755)

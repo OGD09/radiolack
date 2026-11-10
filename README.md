@@ -69,11 +69,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 sudo apt install ./radiolack_VERSION_all.deb
 ```
 
-Radiolack then shows in the applications menu. A later release installs
-over an earlier one, and `sudo apt remove radiolack` removes it, leaving
-your settings and bookmarks. Radiolack does not update itself yet. The
-release notes also give the command that checks the attestation of the
-package's build.
+Radiolack then shows in the applications menu. The package also adds
+Radiolack's APT repository, so that apt installs each later release with the
+system's other updates ([APT repository](#apt-repository)); Radiolack itself
+does not announce them yet. `sudo apt remove radiolack` removes Radiolack
+but leaves your settings and bookmarks, and the repository's source and key;
+`sudo apt purge radiolack` also removes the source and the key. The release
+notes also give the command that checks the attestation of the package's
+build.
 
 To install the latest commit instead, build the package from the
 repository, with your name and address as its maintainer; building needs
@@ -357,7 +360,11 @@ temporary folder, compare the builds and run the package's command; where
 git is, they make releases in temporary repositories, never in yours; where
 GnuPG is too, they build APT repositories, sign them with throwaway keys and
 read them with apt-get, run as you in a folder of its own, away from your
-system's apt.
+system's apt, and publish releases in them as the owner does, with a
+stand-in for GitHub's downloads. They also check the APT repository's key
+that the package carries: the one that [APT repository](#apt-repository)
+gives, whose signing subkey has more than a year left, so that they fail a
+year before it expires.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
 without producing any file. The check needs Node.js and downloads TypeScript
@@ -428,8 +435,10 @@ services or radio hardware:
 - Package: builds the Debian package twice and compares the builds, and
   puts it in an APT repository signed with a key made for the run; installs
   it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and
-  26.04, runs it there with `packaging/smoke_test.py`, removes it, and
-  checks it with lintian; when the package or its packaging change.
+  26.04, checks that apt reads the source that it adds, runs it there with
+  `packaging/smoke_test.py`, removes it, which keeps the source and its key,
+  then purges it, which removes them, and checks it with lintian; when the
+  package or its packaging change.
 - Workflows: actionlint and zizmor check the workflows themselves when they
   change.
 - Release: publishes each release (see
@@ -481,12 +490,52 @@ the rewrite's first release.
 
 ### APT repository
 
-A signed APT repository will carry the releases, so that apt installs
-Radiolack and keeps it up to date. It is not published yet: its signing key
-and its publication on GitHub Pages come next.
-`packaging/apt_repository.py` builds it. It adds the packages it is given to
-the repository's pool, writes the index of every package there and signs it
-with the owner's GnuPG key, which asks for the key's passphrase as usual:
+Radiolack's APT repository, which GitHub Pages serves, carries the releases,
+so that apt installs each new one with the system's other updates. The
+package adds it, as two configuration files: its source,
+`/etc/apt/sources.list.d/radiolack.sources`, and its key,
+`/etc/apt/keyrings/radiolack-archive-keyring.gpg`, against which apt checks
+every index and package. To stop using the repository, change `Enabled: yes`
+to `Enabled: no` in the source. `sudo apt remove radiolack` keeps both
+files, so that the source still checks out, and `sudo apt purge radiolack`
+removes them. The key is the owner's:
+
+```text
+FD76 A620 CA60 3AD5 9DE3  62B1 6D45 6D30 0682 367A
+```
+
+Its primary key stays offline and only certifies; a subkey signs the
+repository. apt refuses a signature by an expired key: a year before the
+signing subkey expires, the tests fail and the command below warns. The
+owner then extends its expiry with the primary key, puts the new public key
+in `packaging/radiolack-archive-keyring.gpg`, and publishes a release with
+it, which installations receive while the old expiry still holds.
+
+The owner publishes each release in the repository once the Release
+workflow has published it on GitHub, from a computer that holds the signing
+subkey:
+
+```bash
+python3 packaging/publish_apt.py 0.3.0
+```
+
+The command fetches the repository from the `gh-pages` branch and checks its
+signature with the package's key; downloads the release's package and
+`SHA256SUMS`, and checks one against the other; builds the package again
+from the release's tag and checks that both are identical, byte for byte,
+so that the key signs only what the tagged source makes; adds the package
+to the repository, GnuPG asking for the key's passphrase; and checks the new
+signatures with the package's key. It then shows the commit it made on
+`gh-pages` and pushes it once the owner agrees: nothing reaches GitHub
+before. GitHub Pages publishes the branch as it is (Settings > Pages: deploy
+from the `gh-pages` branch, at its root). The command needs Python, git,
+dpkg-deb and GnuPG, and a dpkg-deb that builds the same package as the
+Release workflow's, as Debian 12's does.
+
+`packaging/apt_repository.py` builds the repository. It adds the packages
+it is given to the repository's pool, writes the index of every package
+there and signs it with the owner's GnuPG key, which asks for the key's
+passphrase as usual:
 
 ```bash
 python3 packaging/apt_repository.py --key FINGERPRINT REPOSITORY radiolack_0.2.1_all.deb
@@ -497,9 +546,9 @@ architecture-independent packages only. Before it signs, the tool checks
 that the repository's index carries the key's signature and lists exactly
 the packages in the pool: the key signs only what it signed before, and the
 packages it is given. A published version never changes. Without packages,
-the command signs the repository again, which must be done before the key's
-signing subkey expires: apt refuses a signature by an expired key. It needs
-Python, dpkg-deb and GnuPG (gpg and gpgv).
+the command signs the repository again, as it must with a new signing
+subkey before the old one expires. It needs Python, dpkg-deb and GnuPG (gpg
+and gpgv).
 
 ## Documentation
 
@@ -544,8 +593,8 @@ src/radiolack/
 tests/          tests without hardware
 docs/design/    design documents
 packaging/      Debian package (build script, manual page, menu entry,
-                icon, licence notice), its smoke test, the release script
-                and the APT repository's tool
+                icon, licence notice, APT source and key), its smoke test,
+                the release script and the APT repository's tools
 .github/        GitHub Actions workflows, their settings and Dependabot's
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
