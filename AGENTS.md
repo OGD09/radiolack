@@ -39,11 +39,18 @@ the history under the tag `v0.1.0`.
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
-  Python package as it is), `release.py` (tags a release on `main` and
-  starts the next development version), `radiolack.desktop` (menu entry),
-  `radiolack.svg` (icon) and `copyright` (the package's licence notice). The
-  window's program name, `window.PROGRAM`, matches the menu entry's and the
-  icon's names: change them together.
+  Python package as it is; reproducible: every file carries the last
+  commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose
+  version and date the build fills in; the tests check that it documents
+  every option of `cli.build_parser()` and no other), `smoke_test.py`
+  (checks a Radiolack from the outside: listening on 127.0.0.1 only, Host
+  and Origin refusals, interface files and Content-Security-Policy, stream,
+  stop on SIGTERM; `--window` checks that the window's toolkit loads),
+  `release.py` (tags a release on `main` and starts the next development
+  version), `radiolack.desktop` (menu entry), `radiolack.svg` (icon) and
+  `copyright` (the package's licence notice). The window's program name,
+  `window.PROGRAM`, matches the menu entry's and the icon's names: change
+  them together.
 - `docs/design/protocol.md`: the stream between engine and interface. Change
   it with the engine, the server and `stream.js`, and raise the protocol
   version for any incompatible change.
@@ -66,16 +73,37 @@ the history under the tag `v0.1.0`.
   `--ui none` (address only).
 - Debian package: `python3 packaging/build_deb.py --maintainer "Name <address>"`
   writes `dist/radiolack_VERSION_all.deb` (needs dpkg-deb);
-  `tests/test_packaging.py` builds one in a temporary folder.
+  `tests/test_packaging.py` builds one twice in a temporary folder, compares
+  them and runs `packaging/smoke_test.py` on the package's files. On an
+  installed package: `python3 packaging/smoke_test.py`.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
   a `main` without changes and at the commit of `origin/main`. It commits
   the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes
   nothing. `tests/test_release.py` runs it in temporary repositories.
-- CI (GitHub Actions): `.github/workflows/tests.yml` runs the unittest
+  Pushing a `vX.Y.Z` tag publishes a release on GitHub
+  (`.github/workflows/release.yml`): never push one unless the owner asks
+  for that push.
+- CI (GitHub Actions, `.github/workflows/`): `tests.yml` runs the unittest
   command against the package installed with pip on Python 3.11 and 3.15;
-  `.github/workflows/interface.yml` runs the type check and the browser tests
-  when the package, the tests or pyproject.toml change. Keep their job and
-  step timeouts, their concurrency cancellation, the path filters and the
+  `interface.yml` runs the type check and the browser tests when the
+  package, the tests or pyproject.toml change; `package.yml` builds the
+  Debian package twice and compares the builds, then installs, runs
+  (`smoke_test.py --window` under Xvfb) and removes it on Debian 12 and 13
+  and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
+  packaging change; `workflows.yml` runs actionlint
+  (`.github/actionlint.yaml`) and zizmor when `.github/` changes;
+  `release.yml`, on a `vX.Y.Z` tag, checks the tag, calls tests.yml,
+  interface.yml and package.yml (`workflow_call`) and publishes the package,
+  its SHA256SUMS and, for a public repository, an attestation, from the
+  `release` environment. Dependabot (`.github/dependabot.yml`) updates the
+  actions and Playwright weekly, after a seven-day cooldown. Keep: every
+  action pinned to a full commit with its version in a comment, and this
+  repository's workflows called through `$/`, not `./`; checkouts
+  with `persist-credentials: false`; read-only permissions except the
+  publish job's; `${{ }}` values passed to scripts through `env`, never
+  inside `run`; job and step timeouts; concurrency cancellation, with
+  literal group prefixes (in a called workflow, `github.workflow` names the
+  caller); the path filters; `cache-mode: none` in release.yml; and the
   cache of the browsers' system packages (the runners' Ubuntu mirror is at
   times too slow for them). The TypeScript version appears in
   interface.yml, README.md and here.

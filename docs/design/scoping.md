@@ -1,7 +1,8 @@
 # Radiolack rewrite: scoping
 
 Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
-on the `rewrite` branch on 2026-11-08).
+on the `rewrite` branch on 2026-11-08), and accepted by the owner the same
+day with one check left (see v0 below).
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
@@ -46,6 +47,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | Licence: GPL-3.0-or-later, copyright OGD09. It is the licence of most SDR software (Gqrx, SDR++, SDRangel, GNU Radio), whose code Radiolack can then reuse; anyone who distributes a modified Radiolack must publish its source under the same licence. Every dependency fits it (aiohttp: Apache-2.0; NumPy: BSD; PyGObject, GTK and WebKitGTK: LGPL), and so do GPL drivers that installers may carry, such as librtlsdr. Set aside: the AGPL, OpenWebRX's choice, whose duties for versions used over a network Radiolack's private remote access does not call for, and permissive licences, which allow closed versions. |
 | 2026-11-10 | Versions: three numbers, X.Y.Z, the middle one for new features and the last one for fixes. Each release is an annotated tag `vX.Y.Z` on `main`, made with `packaging/release.py`; between releases `main` holds the next development version, X.Y.Z.dev0, so that a package built from it installs over the release. The airband explorer is `v0.1.0`, its own version, and the rewrite starts at `v0.2.0`. A published tag never moves. |
 | 2026-11-10 | Publication: the repository becomes public. Updates need packages that Radiolack can fetch without the owner's credentials, and the packages hold the Python code anyway. The history was audited first (2026-11-10) and stays as it is: rewriting it would not remove the commits GitHub keeps for pull requests. The owner switches the repository's visibility. |
+| 2026-11-10 | Releases are built, checked and published by GitHub Actions from their tag, never from a computer, with security first: the tag must be annotated, on `main` and name the version its commit holds; the tests, the interface checks and the package's installation on each supported system run on that commit, without any cache; the package is reproducible and published with its checksum and, once the repository is public, an attestation of its build, by one job in a `release` environment whose protection rules the owner sets. Every action is pinned to a commit and updated by Dependabot a week after its release, and actionlint and zizmor check the workflows. The APT repository's signing key is decided with that repository. |
 
 ## Scope
 
@@ -136,9 +138,11 @@ flowchart LR
   browser.
 - **Packaging**: on Linux, a Debian package (`packaging/build_deb.py`) that
   installs the Python package for the system's Python 3, with the
-  `radiolack` command, a menu entry, an icon and its licence notice, and
-  depends on the system's aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK.
-  The macOS and Windows installers come with their shells (spike 5).
+  `radiolack` command and its manual page, a menu entry, an icon, its
+  changelog and its licence notice, and depends on the system's aiohttp,
+  NumPy, PyGObject, GTK 3 and WebKitGTK. Its build is reproducible, and
+  GitHub Actions publishes it with each release (`release.yml`). The macOS
+  and Windows installers come with their shells (spike 5).
 
 ### Behaviour rules
 
@@ -215,6 +219,17 @@ Done when the owner confirms on their computer that Radiolack, installed from
 its Debian package, starts from its menu entry, shows the live band, tunes a
 local repeater with clean audio and remembers its settings, and when every
 test passes in CI.
+
+Accepted on 2026-11-10, with one check left. Installed from the Debian
+package of v0.2.0, Radiolack started from its menu entry, showed the live
+band from an RTL-SDR behind an rtl_tcp server on the local network,
+remembered its settings across a restart and played voices in AM on the
+airband; every test passed in CI. No analog voice was on the air in NFM:
+the only active repeater carried digital voice (4FSK at 4800 symbols per
+second), which the NFM demodulator rendered faithfully, its audio reaching
+full scale, but which Radiolack does not decode. Left to check: an analog
+NFM voice, clean and without saturation on loud passages; a fault found
+there gets a fix release.
 
 ### v1: remote access
 
@@ -510,8 +525,26 @@ These costs wait for v4:
   pushes nothing; `tests/test_release.py` runs it against a local bare
   repository. Tags: `v0.1.0` on the airband explorer (`f0e1cf6`, whose
   version was 0.1.0) and `v0.2.0` on v0.
-- Next step: the owner makes the repository public, installs the Debian
-  package of v0.2.0 and checks v0 on their computer; then published
-  packages, the APT repository and the update alert.
+- v0 accepted, 2026-11-10: the owner installed the Debian package of
+  v0.2.0 and checked v0 on their computer, with one check left, an analog
+  NFM voice (see Milestones).
+- Published packages, 2026-11-10: GitHub Actions builds the Debian package
+  twice and compares the builds, byte for byte (every file carries the last
+  commit's date), installs it with apt on Debian 12 and 13 and Ubuntu 24.04
+  and 26.04, checks it there from the outside (`packaging/smoke_test.py`:
+  127.0.0.1 only, Host and Origin refusals, interface and its
+  Content-Security-Policy, stream, clean stop, and the window's toolkit
+  under Xvfb), removes it and checks it with lintian. On a `vX.Y.Z` tag,
+  `release.yml` checks the tag, runs every check on its commit without any
+  cache, then publishes the package that the build made, with its checksum,
+  on the tag's release page. The package gained a manual page and a
+  changelog. Every action is pinned to a commit; Dependabot, actionlint and
+  zizmor watch the workflows. Tested locally (two identical builds, the
+  smoke test against the package's files, the release scripts against a
+  fake GitHub command); not yet on GitHub.
+- Next step: the owner makes the repository public and sets its
+  protections (the `release` environment, rules for `main` and the tags,
+  immutable releases); then the signed APT repository and the update
+  alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

@@ -13,8 +13,9 @@ origin's main, and that 0.2.1 comes neither before the package's version nor
 before an existing release tag. It then commits the version 0.2.1
 ("chore: release 0.2.1"), tags that commit v0.2.1 and commits the next
 development version ("chore: start 0.2.2.dev0"). It pushes nothing: it
-prints the command that publishes the two commits and the tag, and the
-commands that build the release's Debian package from its tag.
+prints the command that publishes the two commits and the tag together. On
+GitHub, the tag starts the Release workflow (.github/workflows/release.yml),
+which checks it and publishes the release's Debian package.
 """
 
 from __future__ import annotations
@@ -175,12 +176,10 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     except ReleaseError as error:
         print(f"release: {error}", file=sys.stderr)
         return 1
-    print(f"Tagged {tag}; {BRANCH} now holds {following}. Publish the two commits and the tag with:")
-    print(f"    git push {REMOTE} {BRANCH} {tag}")
-    print("Build the release's Debian package from its tag:")
-    print(f"    git switch --detach {tag}")
-    print('    python3 packaging/build_deb.py --maintainer "Name <address>"')
-    print(f"    git switch {BRANCH}")
+    print(f"Tagged {tag}; {BRANCH} now holds {following}. Publish the two commits and the tag together with:")
+    print(f"    git push --atomic {REMOTE} {BRANCH} {tag}")
+    print(f"On GitHub, the Release workflow then checks {tag}, builds its Debian package, tests it and "
+          "publishes it on the tag's release page.")
     return 0
 
 

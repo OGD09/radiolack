@@ -1,0 +1,9 @@
+# actionlint settings (.github/workflows/workflows.yml).
+paths:
+  # actionlint 1.7.12 knows neither the workflow-level cache-mode key nor
+  # GitHub's self-repository syntax ($/), both newer than it: drop these
+  # once actionlint knows them.
+  .github/workflows/release.yml:
+    ignore:
+      - 'unexpected key "cache-mode" for "workflow" section'
+      - 'reusable workflow call "\$/\.github/workflows/[a-z]+\.yml" at "uses" is not following the format'

@@ -122,8 +122,8 @@ class ReleaseTest(unittest.TestCase):
         published = self.git(self.clone, "rev-parse", "HEAD")
         status, output, _ = self.run_release("0.2.0")
         self.assertEqual(status, 0)
-        self.assertIn("git push origin main v0.2.0", output)
-        self.assertIn("git switch --detach v0.2.0", output)
+        self.assertIn("git push --atomic origin main v0.2.0", output)
+        self.assertIn("the Release workflow then checks v0.2.0", output)
         self.assertEqual(self.git(self.clone, "log", "-2", "--format=%s").splitlines(),
                          ["chore: start 0.2.1.dev0", "chore: release 0.2.0"])
         self.assertEqual(self.git(self.clone, "cat-file", "-t", "v0.2.0").strip(), "tag")
