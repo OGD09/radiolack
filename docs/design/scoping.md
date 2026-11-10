@@ -49,6 +49,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | Publication: the repository becomes public. Updates need packages that Radiolack can fetch without the owner's credentials, and the packages hold the Python code anyway. The history was audited first (2026-11-10) and stays as it is: rewriting it would not remove the commits GitHub keeps for pull requests. The owner switches the repository's visibility. |
 | 2026-11-10 | Releases are built, checked and published by GitHub Actions from their tag, never from a computer, with security first: the tag must be annotated, on `main` and name the version its commit holds; the tests, the interface checks and the package's installation on each supported system run on that commit, without any cache; the package is reproducible and published with its checksum and, once the repository is public, an attestation of its build, by one job in a `release` environment whose protection rules the owner sets. Every action is pinned to a commit and updated by Dependabot a week after its release, and actionlint and zizmor check the workflows. The APT repository's signing key is decided with that repository. |
 | 2026-11-10 | APT repository: the owner signs it on their computer, with the signing subkey of an Ed25519 key whose primary key stays offline, in the owner's password manager, with its revocation certificate; another computer of the owner's may get a signing subkey of its own later. One suite, `stable`, and one component, `main`, with architecture-independent packages; the indexes also stay under their checksum (Acquire-By-Hash), so that a web cache never pairs an old index with a new Release file. `packaging/apt_repository.py` signs only what the key signed before and the packages it is given, once gpgv has checked the repository's signature: a published version never changes. No `Valid-Until`: apt would refuse the repository whenever the owner did not sign it again in time. Without it, someone who could change the published site could serve an old index, which apt would accept; HTTPS keeps others on the network from doing it. apt refuses a signature by an expired key: the signing subkey's expiry is extended, and a release carries the new public key, well before it expires (the tests fail a year before). The package adds the repository's source and key as configuration files in /etc/apt, the key in /etc/apt/keyrings rather than /usr/share/keyrings: a removed but not purged package keeps its source, and apt update would fail without the key. GitHub Pages serves the `gh-pages` branch, which `packaging/publish_apt.py` updates only with a release that its tag rebuilds, byte for byte, on the owner's computer, and pushes only once the owner agrees. |
+| 2026-11-10 | Updates, first part: the owner chose the alert before the button. Radiolack says when a newer version is out and sends the user to the system's software updates, which install it from the APT repository; the button that installs it, with the administrator's password, comes later if still wanted. The check needs no privilege: it runs apt as the user, with Radiolack's APT source alone and none of the system's apt configuration (other repositories, proxies, hooks), in a temporary folder, so that it never touches the system's package lists, and compares the repository's latest version with the installed package's. Only a Radiolack that runs from the Debian package checks. A check that fails stays in Settings: the notice shows only a newer version, or one installed since the start, which runs once Radiolack restarts. |
 
 ## Scope
 
@@ -189,8 +190,8 @@ flowchart LR
 ### Privacy
 
 - No telemetry and no account. Radiolack talks only to the receiver, to the
-  clients the user lets in and, once updates exist, to its update server, a
-  check that Settings can turn off.
+  clients the user lets in and, for its update check, which Settings can
+  turn off, to its APT repository.
 - No browser data on disk: the window's WebKit context is ephemeral, and the
   engine saves what the interface needs with the settings.
 - Nothing personal in the repository: no owner-specific frequencies, places or
@@ -565,9 +566,21 @@ These costs wait for v4:
   release on `gh-pages`. Tested locally: apt 2.6 reads the source, fails
   without its key (hence the key's place), and the command publishes only
   a release that its tag rebuilds, in a repository that the key signed.
-- Next step: the owner publishes v0.2.1 with `publish_apt.py`, which starts
-  the `gh-pages` branch, and turns GitHub Pages on for it, so that the
-  repository is online before any package points at it; the next release
-  then carries the source and key. Then the update alert.
+- APT repository online, 2026-11-10: the owner published v0.2.1 with
+  `publish_apt.py`, which started the `gh-pages` branch, and turned GitHub
+  Pages on for it; then released v0.3.0, the first release that carries the
+  repository's source and key, and published it there too. Checked: the
+  served files are the branch's, the signatures check out with the key that
+  the package carries, and apt-get over HTTPS lists both releases and
+  downloads them as published.
+- Update alert, 2026-11-10: at start, unless turned off, the engine checks
+  the APT repository for a newer version (`updates.py`), and the interface
+  says so at the top of the waterfall until closed; Settings > Updates shows
+  the latest check's outcome, checks again and turns the check at start off.
+  Protocol version 5. The tests run apt itself against repositories signed
+  with throwaway keys, and the Package workflow checks the installed
+  package's check against the published repository on each system.
+- Next step: the owner's choice about the button that installs an update,
+  then v1, remote access.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

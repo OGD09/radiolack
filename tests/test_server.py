@@ -14,16 +14,18 @@ from pathlib import Path, PurePosixPath
 
 import aiohttp
 
+from radiolack import __version__
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
 from radiolack.sources import Sources
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
-from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource
+from radiolack.updates import UpdateResult
+from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
 # The states a stream starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "preferences", "storage")
+STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update")
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -188,8 +190,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 4})
-            self.assertEqual(PROTOCOL_VERSION, 4)
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 5})
+            self.assertEqual(PROTOCOL_VERSION, 5)
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             settings = await ws.receive_json(timeout=5)
@@ -199,6 +201,10 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             # Without a settings folder, nothing is saved.
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "storage", "directory": None, "saving": False, "problem": ""})
+            # Without an update check, nothing checks.
+            self.assertEqual(await ws.receive_json(timeout=5), {
+                "type": "update", "status": "unavailable", "version": __version__, "latest": None,
+                "detail": "This Radiolack does not check for updates.", "check_at_start": True})
             for _ in range(3):
                 message = await ws.receive(timeout=5)
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
@@ -310,6 +316,10 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "preferences", "values": {"palette": [1]}}': (
                 "preferences", "the preference 'palette' must be a number, true or false, a text of at most "
                                "100 characters or null"),
+            '{"type": "update", "install": true}': ("update", "unknown update setting: install"),
+            '{"type": "update", "check": 1}': ("update", "check and check_at_start must be true or false"),
+            '{"type": "update", "check_at_start": "no"}': (
+                "update", "check and check_at_start must be true or false"),
         }
         async with self.connect(self.origin) as ws:
             await self.start(ws)
@@ -410,6 +420,46 @@ class SavedSettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["bookmarks"]["bookmarks"], [{"id": 1, **bookmark}])
         self.assertEqual(states["preferences"]["values"], values)
         self.assertEqual((states["storage"]["saving"], states["storage"]["problem"]), (True, ""))
+
+
+class UpdateStreamTest(unittest.IsolatedAsyncioTestCase):
+    """An interface asks the engine to check for updates, and turns the check
+    at start off; every interface learns the outcome."""
+
+    async def asyncSetUp(self):
+        self.updates = FakeUpdates(UpdateResult("available", latest="9.9.9"))
+        self.server = LocalServer(source=FakeSource(), updates=self.updates)
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+        self.origin = f"http://{LOOPBACK_HOST}:{self.server.port}"
+
+    def connect(self):
+        return self.session.ws_connect(f"{self.server.url}stream", origin=self.origin)
+
+    @staticmethod
+    async def next_update(ws) -> dict:
+        while (message := await next_text(ws))["type"] != "update":
+            continue
+        return message
+
+    async def test_every_interface_learns_what_the_checks_find(self):
+        async with self.connect() as first, self.connect() as other:
+            for ws in (first, other):
+                state = (await read_start(self, ws))["update"]
+                while state["status"] != "available":       # the check at start
+                    state = await self.next_update(ws)
+                self.assertEqual((state["latest"], state["check_at_start"]), ("9.9.9", True))
+            await first.send_json({"type": "update", "check": True})
+            for ws in (first, other):
+                self.assertEqual((await self.next_update(ws))["status"], "checking")
+                self.assertEqual((await self.next_update(ws))["status"], "available")
+            self.assertEqual(self.updates.checks, 2)
+            await other.send_json({"type": "update", "check_at_start": False})
+            for ws in (first, other):
+                state = await self.next_update(ws)
+                self.assertEqual((state["status"], state["check_at_start"]), ("available", False))
 
 
 async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:

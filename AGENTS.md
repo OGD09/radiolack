@@ -16,10 +16,13 @@ the history under the tag `v0.1.0`.
   `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
   background thread; interface files and the `/stream` WebSocket), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
-  state, the demodulation settings and the bookmarks with clients, sends
-  audio to those that ask, passes their changes on, switches between kinds
-  of sources, restores and saves the settings and the source in use; idle
-  without clients), `store` (settings and bookmarks files in
+  state, the demodulation settings, the bookmarks and the update check's
+  findings with clients, sends audio to those that ask, passes their changes
+  on, switches between kinds of sources, restores and saves the settings and
+  the source in use; idle without clients), `updates` (update check: apt run
+  as the user, with Radiolack's APT source alone and none of the system's
+  apt configuration, in a temporary folder; only for the Debian package's
+  Radiolack), `store` (settings and bookmarks files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, unreadable files set
   aside), `bookmarks` (bookmarks and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
@@ -45,7 +48,9 @@ the history under the tag `v0.1.0`.
   every option of `cli.build_parser()` and no other), `smoke_test.py`
   (checks a Radiolack from the outside: listening on 127.0.0.1 only, Host
   and Origin refusals, interface files and Content-Security-Policy, stream,
-  stop on SIGTERM; `--window` checks that the window's toolkit loads),
+  update check, stop on SIGTERM; `--window` checks that the window's toolkit
+  loads, `--check-updates` that the update check reaches the APT
+  repository),
   `release.py` (tags a release on `main` and starts the next development
   version), `apt_repository.py` (builds and signs the APT repository: it
   checks the repository's signature with gpgv, then signs only what the key
@@ -111,7 +116,8 @@ the history under the tag `v0.1.0`.
   Debian package twice and compares the builds, puts it in an APT
   repository signed with a key made for the run, then installs it from
   there, checks that apt reads its APT source, runs it (`smoke_test.py
-  --window` under Xvfb), removes it (its source and key stay) and purges it
+  --window --check-updates` under Xvfb: its update check reads the published
+  APT repository), removes it (its source and key stay) and purges it
   on Debian 12 and 13
   and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
   packaging change; `workflows.yml` runs actionlint
@@ -158,7 +164,9 @@ the history under the tag `v0.1.0`.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,
-  7356 or 8443), and never open a window. Only `tests/test_browser.py`
+  7356 or 8443), never open a window and never reach the network: the
+  update check's tests use stand-ins for apt, or `file:` repositories signed
+  with throwaway keys. Only `tests/test_browser.py`
   launches browsers: headless, and only when `RADIOLACK_BROWSER_TESTS=1` is
   set, as in CI.
 - The server listens on 127.0.0.1 only. Listening on other interfaces belongs

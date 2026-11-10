@@ -73,6 +73,7 @@ DEPENDS = (
     "python3-gi",
     "gir1.2-gtk-3.0",
     "gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0",
+    "ca-certificates",      # for the APT repository that the package adds, served over HTTPS
 )
 RECOMMENDS = ("rtl-sdr",)      # rtl_tcp, for an RTL-SDR receiver plugged into this computer
 DESCRIPTION = """\

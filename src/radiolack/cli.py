@@ -16,6 +16,7 @@ from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource
 from .server import LOOPBACK_HOST, LocalServer
 from .sources import Sources
 from .store import Store, settings_dir
+from .updates import UpdateCheck
 
 
 def _port(text: str) -> int:
@@ -90,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.rtl_tcp is not None:
         source = RtlTcpSource(*args.rtl_tcp)
     try:
-        server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()))
+        server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
+                             updates=UpdateCheck())
     except OSError as error:
         print(f"radiolack: cannot listen on {LOOPBACK_HOST}:{args.port}: "
               f"{error.strerror or error}", file=sys.stderr)

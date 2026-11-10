@@ -15,6 +15,7 @@ import numpy as np
 
 import radiolack
 from radiolack.engine import FixedSource
+from radiolack.updates import UpdateResult
 
 FAKE_CENTRE_HZ = 145_000_000.0
 FAKE_RATE_HZ = 245_760.0     # 8192 samples per frame at 30 frames per second
@@ -55,6 +56,37 @@ class FakeSource(FixedSource):
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeUpdates:
+    """Stands in for updates.UpdateCheck, without apt or a network: each
+    check counts in ``checks``, waits until ``release`` is set (it is at
+    first), notes in ``cancelled`` whether it was cancelled, then gives
+    ``result``, or raises it when it is an exception. ``reason`` is why
+    checks are unavailable, or None."""
+
+    def __init__(self, result: UpdateResult | Exception = UpdateResult("current"),
+                 reason: str | None = None) -> None:
+        self.result = result
+        self.reason = reason
+        self.checks = 0
+        self.cancelled = False
+        self.release = asyncio.Event()
+        self.release.set()
+
+    def unavailable_reason(self) -> str | None:
+        return self.reason
+
+    async def check(self) -> UpdateResult:
+        self.checks += 1
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
 
 
 def free_port() -> int:

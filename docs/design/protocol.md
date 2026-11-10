@@ -1,6 +1,6 @@
 # Interface protocol
 
-How the engine and the interface talk. Protocol version 4, 2026-11-09.
+How the engine and the interface talk. Protocol version 5, 2026-11-10.
 
 The interface opens one WebSocket to `/stream` on the server that served it.
 The server accepts the connection only when its `Host` header names the
@@ -14,7 +14,7 @@ handshake, so a page from another site cannot read the stream.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 4}
+   {"type": "hello", "protocol": 5}
    ```
 
 2. Then the source state, a JSON text message, sent again whenever it
@@ -112,7 +112,22 @@ handshake, so a page from another site cannot read the stream.
    | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
    | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-7. Binary spectrum frames, about 30 per second while the source streams.
+7. Then the update state, a JSON text message, sent again whenever it
+   changes:
+
+   ```json
+   {"type": "update", "status": "available", "version": "0.3.0", "latest": "0.4.0", "detail": "", "check_at_start": true}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `status` | What the latest check for a newer Radiolack found: `idle` (no check yet), `checking`, `current` (the latest version is installed, and runs), `available` (a newer version is in the APT repository), `installed` (a newer version was installed since Radiolack started, and runs once it restarts), `failed`, or `unavailable` (no check can run, such as for a Radiolack that does not run from its Debian package). |
+   | `version` | The version of the Radiolack that runs. |
+   | `latest` | The newer version with `available` and `installed`; otherwise null. |
+   | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
+   | `check_at_start` | Whether the engine checks when it starts. |
+
+8. Binary spectrum frames, about 30 per second while the source streams.
    Each frame is a 40-byte little-endian header followed by one byte per FFT
    bin:
 
@@ -147,7 +162,7 @@ handshake, so a page from another site cannot read the stream.
    the automatic one, which is NaN while the engine has no noise estimate
    (the VFO outside the span); the squelch then stays closed.
 
-8. Binary audio frames, about 30 per second, only to an interface that asked
+9. Binary audio frames, about 30 per second, only to an interface that asked
    for audio (`audio` message). Each frame is a 16-byte little-endian header
    followed by 16-bit samples:
 
@@ -180,18 +195,18 @@ handshake, so a page from another site cannot read the stream.
    its samples by the filters' delay and the squelch's look-ahead: about
    40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
 
-9. An error, to one interface only, when the engine refuses a message from
-   it. `command` is the message's type, or null when it is not a JSON
-   object of a known type:
+10. An error, to one interface only, when the engine refuses a message from
+    it. `command` is the message's type, or null when it is not a JSON
+    object of a known type:
 
-   ```json
-   {"type": "error", "command": "source", "message": "the receiver tunes from 24 to 1766 MHz"}
-   ```
+    ```json
+    {"type": "error", "command": "source", "message": "the receiver tunes from 24 to 1766 MHz"}
+    ```
 
 What is waiting for an interface goes out in this order: the source state,
-the demodulation settings, the bookmarks and the storage state, each when it
-changed (and the preferences at the start), then errors, then audio frames,
-then spectrum frames. A client that reads too
+the demodulation settings, the bookmarks, the storage state and the update
+state, each when it changed (and the preferences at the start), then
+errors, then audio frames, then spectrum frames. A client that reads too
 slowly loses its oldest frames: the engine keeps the latest four spectrum
 frames and fifteen audio frames (half a second) for it and never slows down
 for one client; it keeps its latest states, and up to eight errors. When
@@ -277,6 +292,18 @@ The engine saves them and sends them to the interfaces that connect later;
 open interfaces receive nothing, so each keeps its own. It refuses values
 that do not fit the preferences message.
 
+An `update` message asks the engine to check for a newer Radiolack now, or
+turns its check at start on or off, for the next starts:
+
+```json
+{"type": "update", "check": true}
+{"type": "update", "check_at_start": false}
+```
+
+The engine starts a check unless one is running, saves the check at start
+with its settings, and every interface receives the update state as it
+changes. It refuses other fields, and values other than true or false.
+
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
 
@@ -307,10 +334,10 @@ do once it connects.
   or step is not a finite number; the rate and the step must also be
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
-  number. It ignores a source state, demodulation settings, bookmarks or a
-  storage state with a missing or malformed field, and leaves out source
-  settings it does not know and preferences that are not numbers, true or
-  false, texts or null.
+  number. It ignores a source state, demodulation settings, bookmarks, a
+  storage state or an update state with a missing or malformed field, and
+  leaves out source settings it does not know and preferences that are not
+  numbers, true or false, texts or null.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -327,6 +354,7 @@ do once it connects.
 
 ## Versions
 
+- 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
   source's `address` became settable, without a new version: an interface

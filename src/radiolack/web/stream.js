@@ -1,12 +1,13 @@
 /*
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
- * state, the demodulation settings, the bookmarks, the saved preferences and
- * the storage state from the engine, and takes this interface's changes, its
- * preferences and its request for audio to it (docs/design/protocol.md). It
- * reconnects by itself after a disconnection.
+ * state, the demodulation settings, the bookmarks, the saved preferences, the
+ * storage state and the update state from the engine, and takes this
+ * interface's changes, its preferences, its request for audio and its update
+ * requests to it (docs/design/protocol.md). It reconnects by itself after a
+ * disconnection.
  */
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 const FRAME_KIND_SPECTRUM = 1;
 const FRAME_VERSION = 2;
 const HEADER_BYTES = 40;
@@ -18,7 +19,8 @@ const RETRY_FIRST_MS = 250;
 const RETRY_MAX_MS = 4000;
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences', 'update'];
+const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
  * @typedef {object} SpectrumFrame
@@ -97,7 +99,21 @@ const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
  * @property {string} problem           what went wrong with the files, or ""
  */
 
-/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences'} Command */
+/**
+ * What the engine's update check found.
+ * @typedef {'idle' | 'checking' | 'current' | 'available' | 'installed' | 'failed' | 'unavailable'} UpdateStatus
+ */
+
+/**
+ * @typedef {object} UpdateState
+ * @property {UpdateStatus} status
+ * @property {string} version         the Radiolack that runs
+ * @property {string | null} latest   the newer version: in the repository (available) or installed (installed)
+ * @property {string} detail          why the check failed or is unavailable, or ""
+ * @property {boolean} checkAtStart   the engine checks when it starts
+ */
+
+/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences' | 'update'} Command */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -158,6 +174,7 @@ const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
  * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
  * @property {(values: Preferences) => void} onPreferences  sent next, once per connection: the latest saved
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
+ * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -325,6 +342,22 @@ export function decodeStorage(message) {
 }
 
 /**
+ * Decode an update message. Returns null when a field is missing or
+ * malformed.
+ * @param {any} message  a parsed JSON message of type "update"
+ * @returns {UpdateState | null}
+ */
+export function decodeUpdate(message) {
+  const m = message;
+  const valid = UPDATE_STATUSES.includes(m.status) && typeof m.version === 'string'
+    && (m.latest === null || typeof m.latest === 'string') && typeof m.detail === 'string'
+    && typeof m.check_at_start === 'boolean';
+  return valid
+    ? { status: m.status, version: m.version, latest: m.latest, detail: m.detail, checkAtStart: m.check_at_start }
+    : null;
+}
+
+/**
  * The fields of a bookmark command, named as the engine names them.
  * @param {BookmarkFields} fields
  */
@@ -463,6 +496,26 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine to check for a newer Radiolack now, unless a check is
+   * running: every interface receives the update state as it changes.
+   * Returns false, sending nothing, when the stream is not open.
+   * @returns {boolean}
+   */
+  checkUpdates() {
+    return this.#send({ type: 'update', check: true });
+  }
+
+  /**
+   * Turn the engine's update check at start on or off, for the next starts.
+   * Returns false, sending nothing, when the stream is not open.
+   * @param {boolean} on
+   * @returns {boolean}
+   */
+  setCheckAtStart(on) {
+    return this.#send({ type: 'update', check_at_start: on });
+  }
+
+  /**
    * Whether this interface wants audio: the engine sends audio frames only
    * then, on this connection and the next ones.
    * @param {boolean} on
@@ -563,6 +616,9 @@ export class EngineStream {
     } else if (message.type === 'storage') {
       const storage = decodeStorage(message);
       if (storage) this.#handlers.onStorage(storage);
+    } else if (message.type === 'update') {
+      const update = decodeUpdate(message);
+      if (update) this.#handlers.onUpdate(update);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);
