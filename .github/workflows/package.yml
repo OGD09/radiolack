@@ -4,8 +4,9 @@
 # repository signed with a throwaway key (packaging/apt_repository.py); then,
 # on each supported release of Debian and Ubuntu, installs it with apt from
 # that repository, checks the APT source that it adds, runs it
-# (packaging/smoke_test.py), removes and purges it, and on Debian 13 checks
-# it with lintian. No secrets, services or radio hardware.
+# (packaging/smoke_test.py), with its update check against the published APT
+# repository, removes and purges it, and on Debian 13 checks it with lintian.
+# No secrets, services or radio hardware.
 name: Package
 
 on:
@@ -205,7 +206,7 @@ jobs:
             echo "::error::the package's maintainer script did not compile its Python files"
             exit 1
           fi
-          xvfb-run -a python3 packaging/smoke_test.py --window
+          xvfb-run -a python3 packaging/smoke_test.py --window --check-updates
 
       # Removing it keeps its configuration files, the APT source and the key
       # that the source needs; purging it removes them.

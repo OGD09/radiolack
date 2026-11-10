@@ -27,6 +27,7 @@ from radiolack import cli
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST
 from radiolack.sources import Sources
+from radiolack.updates import UpdateCheck
 import tests     # tests/__init__.py gives the test run a settings folder of its own
 
 PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
@@ -143,6 +144,16 @@ class MainTest(unittest.TestCase):
         self.assertEqual(directory, Path(os.environ["XDG_CONFIG_HOME"]) / "radiolack")
         # tests/__init__.py: the test run has a settings folder of its own.
         self.assertTrue(directory.is_relative_to(tempfile.gettempdir()))
+
+    def test_checks_for_updates_from_the_debian_package_only(self):
+        with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none")
+        self.assertEqual((code, err), (0, ""))
+        updates = server.call_args.kwargs["updates"]
+        self.assertIsInstance(updates, UpdateCheck)
+        # The tests' Radiolack, from the checkout or pip, never runs apt.
+        self.assertEqual(updates.unavailable_reason(),
+                         "Radiolack checks for updates when it runs from its Debian package.")
 
     def test_rtl_tcp_source_connects_only_once_an_interface_listens(self):
         with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a Radiolack command from the outside, as its user starts it.
 
-    python3 packaging/smoke_test.py [--window] [COMMAND ...]
+    python3 packaging/smoke_test.py [--window] [--check-updates] [COMMAND ...]
 
 starts COMMAND, by default ``radiolack`` as the Debian package installs it,
 with ``--ui none`` and an empty settings folder of its own, so that it
@@ -14,7 +14,13 @@ checks that Radiolack
   interface loads, each with its type;
 - streams the simulated band's spectrum to the interface, and refuses the
   stream to pages from other origins;
+- ends its update check at start, which may be unavailable but must not
+  fail;
 - stops on SIGTERM with status 0, without a traceback.
+
+With --check-updates, the update check must also reach Radiolack's APT
+repository, as the installed Debian package's does with the APT source it
+adds: this needs the network.
 
 With --window, it also checks that the desktop window's toolkit, GTK 3 and
 WebKitGTK through PyGObject, loads for the radiolack that this Python
@@ -45,6 +51,7 @@ import aiohttp
 START_TIMEOUT_S = 60    # a first start imports NumPy and aiohttp, slowly on a busy runner
 STEP_TIMEOUT_S = 30
 STOP_TIMEOUT_S = 20
+UPDATE_TIMEOUT_S = 60   # Radiolack's update check gives up after 30 s
 ADDRESS_LINE = re.compile(r"Radiolack is running at (http://127\.0\.0\.1:\d+/) ")
 # The files that an interface file names: the page's style sheet and script,
 # the modules they import, the audio worklet and the band plan.
@@ -191,7 +198,25 @@ async def check_stream(session: aiohttp.ClientSession, url: str) -> None:
     passed(f"streams the simulated band's spectrum (protocol {hello['protocol']})")
 
 
-async def run(command: list[str], window: bool) -> None:
+async def check_updates(session: aiohttp.ClientSession, url: str, reach: bool) -> None:
+    async with session.ws_connect(url + "stream", headers={"Origin": url.rstrip("/")}) as ws:
+        async def outcome() -> dict:
+            async for message in ws:
+                if message.type is aiohttp.WSMsgType.TEXT:
+                    data = json.loads(message.data)
+                    if (isinstance(data, dict) and data.get("type") == "update"
+                            and data.get("status") not in ("idle", "checking")):
+                        return data
+            raise CheckFailed(f"the stream closed: {ws.close_code}")
+        state = await within(UPDATE_TIMEOUT_S, outcome(), "the update check at start did not end")
+    status, detail = state.get("status"), str(state.get("detail") or "")
+    check(status != "failed", f"the update check failed: {detail}")
+    check(not reach or status in ("current", "available", "installed"),
+          f"the update check did not reach the APT repository: {status}: {detail}")
+    passed(f"checks for updates at start: {status}" + (f" ({detail})" if detail else ""))
+
+
+async def run(command: list[str], window: bool, reach: bool) -> None:
     version = await output([*command, "--version"], f"{command[-1]} --version")
     check(re.fullmatch(r"radiolack \S+", version), f"--version printed {version!r}")
     passed(f"prints its version: {version}")
@@ -212,6 +237,7 @@ async def run(command: list[str], window: bool) -> None:
             async with aiohttp.ClientSession() as session:
                 await check_interface(session, url)
                 await check_stream(session, url)
+                await check_updates(session, url, reach)
         finally:
             if process.returncode is None:
                 process.send_signal(signal.SIGTERM)
@@ -236,11 +262,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check a Radiolack command from the outside.")
     parser.add_argument("--window", action="store_true",
                         help="also check that the desktop window's toolkit loads (needs a display)")
+    parser.add_argument("--check-updates", action="store_true",
+                        help="also check that the update check reaches Radiolack's APT repository, as the "
+                             "installed Debian package's does (needs the network)")
     parser.add_argument("command", nargs="*",
                         help="the command that starts Radiolack, after -- (default: radiolack)")
     args = parser.parse_args(argv)
     try:
-        asyncio.run(run(args.command or ["radiolack"], args.window))
+        asyncio.run(run(args.command or ["radiolack"], args.window, args.check_updates))
     except (CheckFailed, OSError, ValueError, aiohttp.ClientError) as failure:
         print(f"smoke_test: failed: {failure}", file=sys.stderr)
         return 1

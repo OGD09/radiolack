@@ -77,6 +77,7 @@ const panelEl = $('#panel');
 const ctxEl = $('#ctx');
 const hoverEl = $('#hoverinfo');
 const hintEl = $('#hint');
+const noticeEl = $('#notice');
 const readoutEl = $('#readout');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
 
@@ -160,6 +161,9 @@ const typingIn = new Set(); // Source fields the user is typing in, which the en
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
+let update = null;          // what the engine's update check found (stream.js UpdateState), once received
+let updateNote = '';        // why this interface's last update request did not reach the engine
+let noticeClosed = '';      // the update notice closed on this page: its status and version
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
@@ -241,6 +245,11 @@ const stream = new EngineStream({
     syncStorage();
     updateStatus();
   },
+  onUpdate: (state) => {
+    update = state;
+    updateNote = '';
+    syncUpdate();
+  },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
       demodError = message;     // the engine's settings came back before the error
@@ -254,6 +263,11 @@ const stream = new EngineStream({
     }
     if (command === 'preferences') {
       console.error('Radiolack: the engine did not keep the preferences:', message);
+      return;
+    }
+    if (command === 'update') {
+      updateNote = `Refused: ${message}.`;
+      syncUpdate();
       return;
     }
     sourceError = message;
@@ -769,6 +783,7 @@ function layout() {
   dbCanvas.width = Math.round(DB_LABEL_COL * DPR);
   dbCanvas.height = Math.max(2, Math.round((specH - AXIS_H) * DPR));
   specKey = wfKey = axisKey = levelKey = '';     // resized canvases are blank
+  noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
   // On narrow screens the readout sits over the dB label column: start the labels below it.
   const ro = readoutEl.getBoundingClientRect();
   labelTopCss = ro.left < 60 ? Math.ceil(ro.bottom) + 8 : 40;
@@ -1484,6 +1499,46 @@ $('#mem-start').addEventListener('click', () => { if (mem.running) memStop(); el
 bindCheck('st-autohide', 'autoHide', poke);
 bindCheck('st-wake', 'keepAwake');
 
+// Updates: the engine checks for a newer Radiolack at start, unless turned
+// off, and on request. The box and the notice follow the engine's state.
+$('#st-update-start').addEventListener('change', (e) => {
+  if (stream.setCheckAtStart(e.target.checked)) return;
+  updateNote = 'Not connected to the engine: the setting did not change.';
+  syncUpdate();
+});
+$('#st-update-check').addEventListener('click', () => {
+  updateNote = stream.checkUpdates() ? '' : 'Not connected to the engine.';
+  syncUpdate();
+});
+$('#notice-close').addEventListener('click', () => {
+  noticeClosed = noticeKey();
+  syncUpdate();
+});
+const UPDATE_TEXTS = {
+  idle: (u) => `Radiolack ${u.version}.`,
+  checking: () => 'Checking for a newer version…',
+  current: (u) => `Radiolack ${u.version} is up to date.`,
+  available: (u) => `Radiolack ${u.latest} is available: install it with the system's software updates.`,
+  installed: (u) => `Radiolack ${u.latest} is installed: restart Radiolack to use it.`,
+  failed: (u) => `The check failed: ${u.detail}`,
+  unavailable: (u) => u.detail,
+};
+// The notice shows a newer version until closed on this page.
+function noticeKey() {
+  return update && (update.status === 'available' || update.status === 'installed') ? `${update.status} ${update.latest}` : '';
+}
+function syncUpdate() {
+  const text = update ? UPDATE_TEXTS[update.status](update) : '';
+  $('#st-update').textContent = [text, updateNote].filter(Boolean).join(' ');
+  const start = $('#st-update-start');
+  start.checked = update ? update.checkAtStart : false;
+  start.disabled = !update;
+  $('#st-update-check').disabled = !update || update.status === 'checking';
+  const key = noticeKey();
+  if (key) $('#notice-text').textContent = text;
+  noticeEl.hidden = !key || key === noticeClosed;
+}
+
 // Remote access (mock): the desktop app would open its web server to the local network.
 const REMOTE_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';   // no 0/O or 1/I to misread
 function newRemoteCode() {
@@ -1961,6 +2016,7 @@ loadPlan();
 renderBookmarks();
 renderMemList();
 syncScanTabs();
+syncUpdate();
 updateStatus();
 showVfo();
 syncPointerMode();

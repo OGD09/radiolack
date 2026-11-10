@@ -52,8 +52,9 @@ English, with no translations.
 On Debian 12 or later and Ubuntu 24.04 or later, Radiolack installs as a
 Debian package for the system's Python, with the `radiolack` command, its
 manual page (`man radiolack`), a menu entry and an icon. apt also installs
-what Radiolack needs (aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK) and
-the rtl-sdr package it recommends.
+what Radiolack needs (aiohttp, NumPy, PyGObject, GTK 3, WebKitGTK, and the
+certificates that apt needs to read its APT repository over HTTPS) and the
+rtl-sdr package it recommends.
 
 Each release on the repository's Releases page carries its package,
 `radiolack_VERSION_all.deb`, and the package's checksum, `SHA256SUMS`, which
@@ -71,12 +72,12 @@ sudo apt install ./radiolack_VERSION_all.deb
 
 Radiolack then shows in the applications menu. The package also adds
 Radiolack's APT repository, so that apt installs each later release with the
-system's other updates ([APT repository](#apt-repository)); Radiolack itself
-does not announce them yet. `sudo apt remove radiolack` removes Radiolack
-but leaves your settings and bookmarks, and the repository's source and key;
-`sudo apt purge radiolack` also removes the source and the key. The release
-notes also give the command that checks the attestation of the package's
-build.
+system's other updates ([APT repository](#apt-repository)), and Radiolack
+says when one is out ([Updates](#updates)). `sudo apt remove radiolack`
+removes Radiolack but leaves your settings and bookmarks, and the
+repository's source and key; `sudo apt purge radiolack` also removes the
+source and the key. The release notes also give the command that checks
+the attestation of the package's build.
 
 To install the latest commit instead, build the package from the
 repository, with your name and address as its maintainer; building needs
@@ -300,7 +301,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   It also holds the interface's own settings: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and the scanners' settings. Remote access is never saved: it is off
-  at each start.
+  at each start. Last, it records whether Radiolack checks for updates at
+  start ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
 
 The window keeps no browser data on disk: WebKit's cache and storage stay in
@@ -325,6 +327,34 @@ cannot read as its own, damaged or edited by hand with a mistake, is renamed
 starts without it. A file that cannot be opened, or that a newer Radiolack
 wrote, is left as it is and not saved until the next start. To start again
 from the defaults, delete the folder while Radiolack is stopped.
+
+## Updates
+
+Installed from its Debian package, Radiolack checks at each start whether
+its APT repository has a newer version, and then says so at the top of the
+waterfall until you close the notice: the system's software updates, or
+`sudo apt update && sudo apt upgrade`, install it, and it runs once
+Radiolack restarts. Settings > Updates shows what the latest check found,
+checks again on request, and turns the check at start off, a choice saved
+with the settings.
+
+The check needs no password and installs nothing. It runs apt as you, with
+Radiolack's APT source alone and none of the system's apt configuration, in
+a temporary folder that it then removes: apt downloads the repository's
+signed index from GitHub Pages, checks it against the repository's key, and
+compares the latest version with the installed package's. The check is the
+only connection Radiolack makes besides the receiver and its interfaces,
+and it carries no identifier: GitHub Pages sees your address and apt's
+version, as for any download. apt's own proxy settings do not apply to it,
+but the `https_proxy` environment variable does. A check that gets no
+answer within 30 seconds fails, and Settings > Updates says why; the notice
+shows only for a newer version.
+
+A Radiolack that does not run from the package (from the repository or
+pip), or whose APT source is missing or turned off, does not check, and
+Settings > Updates says why. On Debian 12, whose apt checks signatures
+through apt-key, each check leaves an empty folder in `/run/user/UID/gnupg`,
+which the end of your session removes.
 
 ## Band plan
 
@@ -360,8 +390,9 @@ temporary folder, compare the builds and run the package's command; where
 git is, they make releases in temporary repositories, never in yours; where
 GnuPG is too, they build APT repositories, sign them with throwaway keys and
 read them with apt-get, run as you in a folder of its own, away from your
-system's apt, and publish releases in them as the owner does, with a
-stand-in for GitHub's downloads. They also check the APT repository's key
+system's apt, check them for updates as Radiolack does, and publish
+releases in them as the owner does, with a stand-in for GitHub's
+downloads. They also check the APT repository's key
 that the package carries: the one that [APT repository](#apt-repository)
 gives, whose signing subkey has more than a year left, so that they fail a
 year before it expires.
@@ -416,11 +447,13 @@ on the simulated band, in a settings folder of its own and on a free port,
 then checks that it listens on 127.0.0.1 only, refuses requests addressed to
 other hosts and streams from other origins, serves the interface with its
 Content-Security-Policy and every file the interface loads, streams the
-spectrum, and stops on SIGTERM. After installing the Debian package, it
-checks the installed `radiolack`:
+spectrum, ends its update check without failing, and stops on SIGTERM.
+After installing the Debian package, it checks the installed `radiolack`;
+with `--check-updates`, its update check must also reach the APT
+repository, which needs the network:
 
 ```bash
-python3 packaging/smoke_test.py
+python3 packaging/smoke_test.py --check-updates
 ```
 
 ### Continuous integration
@@ -436,7 +469,9 @@ services or radio hardware:
   puts it in an APT repository signed with a key made for the run; installs
   it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and
   26.04, checks that apt reads the source that it adds, runs it there with
-  `packaging/smoke_test.py`, removes it, which keeps the source and its key,
+  `packaging/smoke_test.py`, whose update check reads the published APT
+  repository with the source and key that the package adds, removes it,
+  which keeps the source and its key,
   then purges it, which removes them, and checks it with lintian; when the
   package or its packaging change.
 - Workflows: actionlint and zizmor check the workflows themselves when they
@@ -496,7 +531,8 @@ package adds it, as two configuration files: its source,
 `/etc/apt/sources.list.d/radiolack.sources`, and its key,
 `/etc/apt/keyrings/radiolack-archive-keyring.gpg`, against which apt checks
 every index and package. To stop using the repository, change `Enabled: yes`
-to `Enabled: no` in the source. `sudo apt remove radiolack` keeps both
+to `Enabled: no` in the source: Radiolack then stops checking for updates
+too. `sudo apt remove radiolack` keeps both
 files, so that the source still checks out, and `sudo apt purge radiolack`
 removes them. The key is the owner's:
 
@@ -577,9 +613,9 @@ src/radiolack/
   cli.py        command line
   server.py     local web server (aiohttp): interface files and the stream
   engine.py     reads a source, removes its DC offset, shares spectrum
-                frames, the demodulation settings and the bookmarks with
-                the interfaces, sends audio to those that ask, and saves
-                the settings
+                frames, the demodulation settings, the bookmarks and the
+                update check's findings with the interfaces, sends audio to
+                those that ask, and saves the settings
   store.py      settings and bookmarks files
   bookmarks.py  bookmarks and their checks
   demod.py      one VFO: channel level, squelch and the audio of each mode
@@ -588,6 +624,7 @@ src/radiolack/
   sources.py    opens each kind of source, for the Receiver list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
+  updates.py    update check: asks the APT repository for a newer version
   window.py     desktop window (GTK 3 and WebKitGTK)
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware

@@ -95,6 +95,14 @@ html, body {
   color: var(--muted); font-size: 12px; transition: opacity 1s;
 }
 #hint.gone { opacity: 0; }
+/* A newer Radiolack: at the top of the waterfall, which layout() places under the band plan strip. */
+#notice {
+  position: absolute; left: 50%; top: 0; transform: translateX(-50%); z-index: 5; display: flex; align-items: center; gap: 4px;
+  width: max-content; max-width: calc(100% - 24px); padding: 2px 2px 2px 12px;
+  background: rgba(12, 15, 19, 0.9); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); font-size: 12px; user-select: text; -webkit-user-select: text;
+}
+#notice[hidden] { display: none; }
 
 /* Step buttons in thumb reach, shown only for touch input. */
 #tunepad { display: none; transition: opacity 0.4s; }

@@ -1,7 +1,7 @@
 """Tests for the engine: frames, source state and demodulation settings for
 every client, audio for the clients that ask, idle without clients, changes
 passed to the source, switching to another kind of source, DC removal,
-bookmarks and preferences, saved settings, clean stop."""
+bookmarks and preferences, update checks, saved settings, clean stop."""
 
 import asyncio
 import contextlib
@@ -15,15 +15,17 @@ from unittest import mock
 import numpy as np
 
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
+from radiolack import __version__
 from radiolack.engine import Engine, Source, Subscription
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
-from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource
+from radiolack.updates import UpdateResult
+from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource, FakeUpdates
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
-STATES = ("source", "demod", "bookmarks", "preferences", "storage")     # what a new client gets first
+STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update")    # what a new client gets first
 
 
 async def next_message(subscription: Subscription):
@@ -130,6 +132,10 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
                          {"type": "storage", "directory": None, "saving": False, "problem": ""})
+        # Without an update check, the engine never checks.
+        self.assertEqual(subscription.get_nowait(), {
+            "type": "update", "status": "unavailable", "version": __version__, "latest": None,
+            "detail": "This Radiolack does not check for updates.", "check_at_start": True})
         self.assertIsInstance(await next_message(subscription), bytes)
 
     async def test_every_client_gets_the_frames(self):
@@ -602,7 +608,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_failed_save_reaches_the_clients_until_a_save_works(self):
         engine = self.engine(save_delay_s=0.01)
         subscription = engine.subscribe()
-        self.assertTrue(waiting(subscription)[-1]["saving"])
+        self.assertTrue(waiting(subscription)[STATES.index("storage")]["saving"])
 
         async def storage_state() -> dict:
             while True:
@@ -649,6 +655,165 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "preference"):
                 engine.set_preferences(values)
         self.assertEqual(engine.preferences_state()["values"], {"volume": 30})
+
+
+
+def update_states(subscription: Subscription) -> list[dict]:
+    """The update states ready now, without the other messages."""
+    return [message for message in waiting(subscription)
+            if isinstance(message, dict) and message["type"] == "update"]
+
+
+class UpdateTest(unittest.IsolatedAsyncioTestCase):
+    """The engine with a stand-in update check, and a store in a temporary
+    folder."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = Store(Path(temporary.name) / "radiolack")
+
+    def engine(self, updates: FakeUpdates | None, run: bool = True) -> Engine:
+        engine = Engine(FakeSource(), store=self.store, updates=updates, save_delay_s=0.01)
+        task = asyncio.ensure_future(engine.run()) if run else None
+
+        async def stop():
+            engine.close()
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def settled(self, engine: Engine) -> dict:
+        """The update state once no check is running."""
+        deadline = time.monotonic() + 5
+        while (state := engine.update_state())["status"] in ("idle", "checking"):
+            self.assertLess(time.monotonic(), deadline, f"the check did not end: {state}")
+            await asyncio.sleep(0.01)
+        return state
+
+    async def test_checks_at_start_and_every_client_learns_what_it_found(self):
+        updates = FakeUpdates(UpdateResult("available", latest="9.9.9"))
+        updates.release.clear()
+        engine = self.engine(updates, run=False)
+        subscription = engine.subscribe()
+        self.assertEqual(update_states(subscription), [{
+            "type": "update", "status": "idle", "version": __version__, "latest": None, "detail": "",
+            "check_at_start": True}])
+        task = asyncio.ensure_future(engine.run())
+        self.addAsyncCleanup(asyncio.gather, task, return_exceptions=True)
+        while updates.checks == 0:
+            await asyncio.sleep(0.01)
+        self.assertEqual([state["status"] for state in update_states(subscription)], ["checking"])
+        updates.release.set()
+        state = await self.settled(engine)
+        self.assertEqual((state["status"], state["latest"], state["detail"]), ("available", "9.9.9", ""))
+        self.assertEqual(update_states(subscription)[-1], state)
+        self.assertEqual(updates.checks, 1)
+
+    async def test_a_check_at_start_turned_off_waits_for_a_request(self):
+        self.store.save(SETTINGS_FILE, {"updates": {"check_at_start": False}})
+        updates = FakeUpdates()
+        engine = self.engine(updates)
+        await asyncio.sleep(0.1)
+        self.assertEqual((updates.checks, engine.update_state()["status"]), (0, "idle"))
+        self.assertFalse(engine.update_state()["check_at_start"])
+        engine.configure_updates({"check": True})
+        self.assertEqual((await self.settled(engine))["status"], "current")
+        self.assertEqual(updates.checks, 1)
+
+    async def test_one_check_at_a_time(self):
+        updates = FakeUpdates()
+        updates.release.clear()
+        engine = self.engine(updates)
+        while updates.checks == 0:
+            await asyncio.sleep(0.01)
+        engine.configure_updates({"check": True})
+        engine.check_updates()
+        await asyncio.sleep(0.05)
+        self.assertEqual((updates.checks, engine.update_state()["status"]), (1, "checking"))
+        updates.release.set()
+        await self.settled(engine)
+        engine.check_updates()
+        self.assertEqual((await self.settled(engine))["status"], "current")
+        self.assertEqual(updates.checks, 2)
+
+    async def test_the_check_at_start_setting_reaches_every_client_and_is_saved(self):
+        engine = self.engine(FakeUpdates())
+        await self.settled(engine)
+        subscriptions = [engine.subscribe() for _ in range(2)]
+        for subscription in subscriptions:
+            waiting(subscription)
+        engine.configure_updates({"check_at_start": False})
+        for subscription in subscriptions:
+            self.assertEqual([state["check_at_start"] for state in update_states(subscription)], [False])
+        deadline = time.monotonic() + 5
+        while self.store.load(SETTINGS_FILE).get("updates") != {"check_at_start": False}:
+            self.assertLess(time.monotonic(), deadline, "the setting was not saved")
+            await asyncio.sleep(0.01)
+        updates = FakeUpdates()
+        again = self.engine(updates)
+        await asyncio.sleep(0.05)
+        self.assertEqual((again.update_state()["check_at_start"], updates.checks), (False, 0))
+
+    async def test_refused_settings_change_nothing(self):
+        updates = FakeUpdates()
+        engine = self.engine(updates, run=False)
+        for changes in ({"later": True}, {"check": "yes"}, {"check_at_start": 0}, {"check": True, "check_at_start": None}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_updates(changes)
+        await asyncio.sleep(0.05)
+        self.assertEqual((updates.checks, engine.update_state()["check_at_start"]), (0, True))
+
+    async def test_a_saved_setting_that_is_not_valid_keeps_the_check_at_start(self):
+        for saved in ({"check_at_start": "no"}, [False]):
+            with self.subTest(saved=saved):
+                self.store.save(SETTINGS_FILE, {"updates": saved})
+                with self.assertLogs("radiolack.engine", "WARNING"):
+                    engine = self.engine(FakeUpdates(), run=False)
+                self.assertTrue(engine.update_state()["check_at_start"])
+
+    async def test_an_unavailable_check_says_why_and_does_not_run_at_start(self):
+        updates = FakeUpdates(reason="Radiolack's APT source is missing.")
+        engine = self.engine(updates)
+        await asyncio.sleep(0.05)
+        self.assertEqual(updates.checks, 0)
+        state = engine.update_state()
+        self.assertEqual((state["status"], state["detail"]), ("unavailable", "Radiolack's APT source is missing."))
+
+    async def test_without_an_update_check_nothing_checks(self):
+        engine = self.engine(None)
+        engine.configure_updates({"check": True})
+        await asyncio.sleep(0.05)
+        self.assertEqual(engine.update_state()["status"], "unavailable")
+
+    async def test_a_check_that_raises_fails_and_is_logged(self):
+        engine = self.engine(FakeUpdates(RuntimeError("a bug")), run=False)
+        with self.assertLogs("radiolack.engine", "ERROR"):
+            engine.check_updates()
+            state = await self.settled(engine)
+        self.assertEqual((state["status"], state["detail"]), ("failed", "The check stopped on an error."))
+
+    async def test_a_failed_check_is_logged(self):
+        engine = self.engine(FakeUpdates(UpdateResult("failed", detail="No answer within 30 s.")), run=False)
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.check_updates()
+            await self.settled(engine)
+        self.assertIn("No answer within 30 s.", logs.output[0])
+
+    async def test_closing_stops_a_running_check(self):
+        updates = FakeUpdates()
+        updates.release.clear()
+        engine = self.engine(updates)
+        while updates.checks == 0:
+            await asyncio.sleep(0.01)
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+        self.assertTrue(updates.cancelled)
+        engine.check_updates()      # closed: nothing starts
+        self.assertEqual(updates.checks, 1)
 
 
 if __name__ == "__main__":

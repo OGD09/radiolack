@@ -28,6 +28,14 @@ Ctrl+C.
 .PP
 Radiolack serves its interface on 127.0.0.1 only, so other devices cannot
 reach it, and answers only requests addressed to 127.0.0.1 or localhost.
+.PP
+At each start, unless Settings turns the check off, Radiolack asks its APT
+repository whether a newer version is out, and says so in its interface:
+the system's software updates install it.
+The check runs apt as the current user, with Radiolack's APT source alone,
+in a temporary folder, and installs nothing.
+It is the only connection Radiolack makes besides the receiver and its
+interfaces, and it carries no identifier.
 .SH OPTIONS
 .TP
 \fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR
@@ -61,10 +69,17 @@ Print a summary of the options and exit.
 .SH FILES
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/settings.json\fR
-The settings of each receiver and the interface's preferences.
+The settings of each receiver, the interface's preferences and whether to
+check for updates at start.
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/bookmarks.json\fR
 The bookmarks.
+.TP
+\fI/etc/apt/sources.list.d/radiolack.sources\fR
+Radiolack's APT source, which the package adds with the repository's key,
+\fI/etc/apt/keyrings/radiolack\-archive\-keyring.gpg\fR.
+With \fBEnabled: no\fR, apt no longer uses the repository, and Radiolack no
+longer checks for updates.
 .PP
 Without \fBXDG_CONFIG_HOME\fR, or when it is not an absolute path, the
 folder is \fI~/.config/radiolack\fR.

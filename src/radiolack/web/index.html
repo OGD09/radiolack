@@ -228,6 +228,9 @@
       <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
       <h3>Storage</h3>
       <p class="note" id="st-storage" role="status"></p>
+      <h3>Updates</h3>
+      <label class="check"><input id="st-update-start" type="checkbox"> Check for a newer version at start</label>
+      <div class="row"><button type="button" class="btn" id="st-update-check">Check now</button><span class="note" id="st-update" role="status"></span></div>
       <h3>Remote access</h3>
       <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
       <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
@@ -285,6 +288,7 @@
   <div id="status"></div>
   <div id="hoverinfo"></div>
   <div id="hint"></div>
+  <div id="notice" hidden><span id="notice-text" role="status"></span><button type="button" class="close" id="notice-close" aria-label="Dismiss the update notice">×</button></div>
 </div>
 </body>
 </html>

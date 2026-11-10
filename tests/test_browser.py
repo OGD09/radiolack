@@ -23,7 +23,8 @@ from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
 from radiolack.store import SETTINGS_FILE, Store
-from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, free_port
+from radiolack.updates import UpdateResult
+from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 BROWSERS = ("chromium", "firefox", "webkit")
@@ -67,9 +68,9 @@ class BrowserTest(unittest.TestCase):
         expect.set_options(timeout=TIMEOUT_MS)
 
     def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
-              sources: Sources | None = None) -> str:
+              sources: Sources | None = None, updates: FakeUpdates | None = None) -> str:
         """The address of a server started for this test."""
-        server = LocalServer(source=source, store=store, sources=sources)
+        server = LocalServer(source=source, store=store, sources=sources, updates=updates)
         server.start()
         self.addCleanup(server.stop)
         return server.url
@@ -123,6 +124,35 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator(receiver_setting)).to_be_disabled()
                 expect(page.locator("#src-dc")).to_be_checked()
                 expect(page.locator("#src-dc")).to_be_enabled()
+
+    def test_a_newer_version_shows_until_closed_and_settings_check_again(self):
+        updates = FakeUpdates(UpdateResult("available", latest="9.9.9"))
+        url = self.serve(updates=updates)
+        text = "Radiolack 9.9.9 is available: install it with the system's software updates."
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    expect(page.locator("#notice-text")).to_have_text(text)
+                first.locator("#notice-close").click()
+                expect(first.locator("#notice")).to_be_hidden()
+                expect(second.locator("#notice")).to_be_visible()       # closed on its own page only
+                for page in (first, second):
+                    page.locator(SETTINGS_PANEL).click()
+                    expect(page.locator("#st-update")).to_have_text(text)
+                    expect(page.locator("#st-update-start")).to_be_checked()
+                first.locator("#st-update-start").uncheck()
+                expect(second.locator("#st-update-start")).not_to_be_checked()
+                second.locator("#st-update-start").check()
+                expect(first.locator("#st-update-start")).to_be_checked()
+                checks = updates.checks
+                first.locator("#st-update-check").click()
+                deadline = time.monotonic() + TIMEOUT_MS / 1000
+                while updates.checks == checks:
+                    self.assertLess(time.monotonic(), deadline, "Check now did not check")
+                    time.sleep(0.05)
+                expect(first.locator("#st-update")).to_have_text(text)
+                expect(first.locator("#st-update-check")).to_be_enabled()
+                expect(first.locator("#notice")).to_be_hidden()         # the same version stays closed
 
     def test_a_change_in_one_interface_shows_in_the_others(self):
         url = self.serve()

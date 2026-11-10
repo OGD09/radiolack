@@ -26,13 +26,17 @@ time.
 
 The engine also keeps the bookmarks, shared by every client like the
 settings, and the interfaces' preferences, which a new interface starts with.
+With an update check (updates.py), it checks for a newer Radiolack when it
+starts, unless turned off, and when a client asks, and tells every client
+what the check found.
+
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
-bookmarks and the preferences. It saves them a moment after they change, as
-changes come in bursts, and when it stops. A saved setting that the receiver
-refuses keeps its default, and one the source was ``given``, such as an
-address on the command line, keeps the given value, which is saved in its
-place.
+bookmarks, the preferences and whether to check for updates at start. It
+saves them a moment after they change, as changes come in bursts, and when
+it stops. A saved setting that the receiver refuses keeps its default, and
+one the source was ``given``, such as an address on the command line, keeps
+the given value, which is saved in its place.
 """
 
 from __future__ import annotations
@@ -48,10 +52,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from . import __version__
 from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
 from .spectrum import SpectrumAnalyzer, encode_frame
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
+from .updates import UpdateResult
 
 FRAME_RATE = 30.0       # display frames per second
 CLIENT_QUEUE = 4        # frames kept for a client that falls behind
@@ -155,6 +161,16 @@ class SourceOpener(Protocol):
         when it cannot be opened."""
 
 
+class UpdateChecker(Protocol):
+    """Checks for a newer Radiolack (updates.py)."""
+
+    def unavailable_reason(self) -> str | None:
+        """Why no check can run, in a sentence for the user, or None."""
+
+    async def check(self) -> UpdateResult:
+        """What a check finds; it reports a failure in its result."""
+
+
 class Subscription:
     """What the engine has for one client, in the order it goes out: the
     states that changed (all of them at the start, in the order of
@@ -240,12 +256,13 @@ class Engine:
 
     The engine reads ``source``, or without one the source that ``sources``
     opened last, and switches between the kinds of ``sources`` when a client
-    asks."""
+    asks. It checks for updates with ``updates``; without it, it never
+    does."""
 
     def __init__(self, source: Source | None = None, *, sources: SourceOpener | None = None,
-                 store: Store | None = None, frame_rate: float = FRAME_RATE,
-                 analyzer: SpectrumAnalyzer | None = None, queue_size: int = CLIENT_QUEUE,
-                 save_delay_s: float = SAVE_DELAY_S) -> None:
+                 store: Store | None = None, updates: UpdateChecker | None = None,
+                 frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
+                 queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S) -> None:
         if frame_rate <= 0:
             raise ValueError(f"the frame rate must be positive, not {frame_rate}")
         self._sources = sources
@@ -267,6 +284,7 @@ class Engine:
             "bookmarks": lambda _: self.bookmarks_state(),
             "preferences": lambda _: self.preferences_state(),
             "storage": lambda _: self.storage_state(),
+            "update": lambda _: self.update_state(),
         }
         # Saving: the store once the saved settings apply, what each file held
         # at its latest write, and the task that writes them after a change.
@@ -298,6 +316,12 @@ class Engine:
         self._adopt()
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
         self._preferences = _saved_preferences(settings.get("interface"))
+        # Updates: whether to check at start, what the latest check found, and the check running.
+        self._updates = updates
+        self._check_at_start = _saved_check_at_start(settings.get("updates"))
+        reason = "This Radiolack does not check for updates." if updates is None else updates.unavailable_reason()
+        self._update = UpdateResult("idle") if reason is None else UpdateResult("unavailable", detail=reason)
+        self._checking: asyncio.Future | None = None
         if store is not None:
             self._saved = self._contents()      # nothing to write until something changes,
             # but a source or a setting given at start replaces the saved one at the next write.
@@ -310,8 +334,8 @@ class Engine:
 
     def subscribe(self) -> Subscription:
         """The messages for a new client, starting with the source state, the
-        demodulation settings, the bookmarks, the preferences and the storage
-        state."""
+        demodulation settings, the bookmarks, the preferences, the storage
+        state and the update state."""
         subscription = Subscription(self._states, self._queue_size)
         if self._closed:
             subscription.end()
@@ -416,19 +440,59 @@ class Engine:
         return {"type": "storage", "directory": store.location, "saving": store.saving,
                 "problem": store.problem}
 
+    def update_state(self) -> dict[str, Any]:
+        """The update message: what the latest check found, and whether the
+        engine checks at start."""
+        found = self._update
+        return {"type": "update", "status": found.status, "version": __version__, "latest": found.latest,
+                "detail": found.detail, "check_at_start": self._check_at_start}
+
+    def configure_updates(self, changes: Mapping[str, object]) -> None:
+        """``check_at_start``, true or false, turns the check at the next
+        starts on or off; ``check``, true, checks now, unless a check is
+        running. Raises ValueError, changing nothing, when one is refused."""
+        for name in changes:
+            if name not in ("check", "check_at_start"):
+                raise ValueError(f"unknown update setting: {str(name)[:40]}")
+        check = changes.get("check", False)
+        check_at_start = changes.get("check_at_start", self._check_at_start)
+        if not isinstance(check, bool) or not isinstance(check_at_start, bool):
+            raise ValueError("check and check_at_start must be true or false")
+        if check_at_start != self._check_at_start:
+            self._check_at_start = check_at_start
+            self._update_changed()
+            self._settings_changed()
+        if check:
+            self.check_updates()
+
+    def check_updates(self) -> None:
+        """Check for a newer Radiolack in the background, unless a check is
+        running: every client learns that it started, then what it found."""
+        updates = self._updates
+        if updates is None or self._closed or (self._checking is not None and not self._checking.done()):
+            return
+        self._update = UpdateResult("checking")
+        self._update_changed()
+        self._checking = asyncio.ensure_future(self._check_updates(updates))
+
     def close(self) -> None:
-        """Stop for good: every client's messages end with ``None``, and the
-        source is closed. Safe to repeat."""
+        """Stop for good: every client's messages end with ``None``, the
+        source is closed and a running update check stops. Safe to repeat."""
         self._closed = True
         for subscription in self._clients:
             subscription.end()
         self._clients.clear()
         self._wanted.set()
         self.source.close()
+        if self._checking is not None:
+            self._checking.cancel()
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
-        like those switched away from, and the latest changes are saved."""
+        like those switched away from, the update check has stopped its
+        programs, and the latest changes are saved."""
+        if self._checking is not None:
+            await asyncio.gather(self._checking, return_exceptions=True)
         await self.source.wait_closed()
         if self._closing:
             await asyncio.wait(set(self._closing))
@@ -440,7 +504,10 @@ class Engine:
         await self._save()      # also what a failed write left unsaved
 
     async def run(self) -> None:
-        """Produce frames until closed or cancelled."""
+        """Produce frames until closed or cancelled, having started the update
+        check unless it is turned off at start or cannot run."""
+        if self._check_at_start and self._update.status != "unavailable":
+            self.check_updates()
         try:
             while True:
                 await self._wanted.wait()
@@ -479,6 +546,21 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("demod")
         self._settings_changed()
+
+    def _update_changed(self) -> None:
+        for subscription in self._clients:
+            subscription.changed("update")
+
+    async def _check_updates(self, updates: UpdateChecker) -> None:
+        try:
+            found = await updates.check()
+        except Exception:
+            log.exception("the update check failed")
+            found = UpdateResult("failed", detail="The check stopped on an error.")
+        if found.status == "failed":
+            log.warning("the update check failed: %s", found.detail)
+        self._update = found
+        self._update_changed()
 
     def _switch(self, kind: object) -> None:
         """Read a source of ``kind`` in place of this one: the receiver used
@@ -565,6 +647,7 @@ class Engine:
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
         settings["interface"] = dict(self._preferences)
+        settings["updates"] = {"check_at_start": self._check_at_start}
         return {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
 
     def _settings_changed(self) -> None:
@@ -661,6 +744,18 @@ def _saved_preferences(saved: object) -> dict[str, Any]:
     if len(valid) < len(saved) or len(valid) > MAX_PREFERENCES:
         log.warning("some saved preferences are not used")
     return dict(list(valid.items())[:MAX_PREFERENCES])
+
+
+def _saved_check_at_start(saved: object) -> bool:
+    """Whether to check for updates at start, as saved: yes unless saved as
+    false."""
+    if saved is None:
+        return True
+    value = saved.get("check_at_start", True) if isinstance(saved, dict) else None
+    if not isinstance(value, bool):
+        log.warning("the saved update setting is not used")
+        return True
+    return value
 
 
 def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, samples: np.ndarray,

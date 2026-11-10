@@ -175,7 +175,7 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(self.field("Maintainer"), "A Name <a@example.org>")
         depends = self.field("Depends")
         for needed in ("python3 (>= 3.11)", "python3-aiohttp", "python3-numpy", "python3-gi", "gir1.2-gtk-3.0",
-                       "gir1.2-webkit2-4.1"):
+                       "gir1.2-webkit2-4.1", "ca-certificates"):
             self.assertIn(needed, depends)
         self.assertEqual(self.field("Recommends"), "rtl-sdr")
 
@@ -276,6 +276,9 @@ class PackageTest(unittest.TestCase):
                                 capture_output=True, text=True, env=environment, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"ok: prints its version: radiolack {radiolack.__version__}\n", result.stdout)
+        # Only the installed package's Radiolack checks for updates.
+        self.assertIn("ok: checks for updates at start: unavailable (Radiolack checks for updates when it runs "
+                      "from its Debian package.)\n", result.stdout)
         self.assertIn("smoke_test: every check passed\n", result.stdout)
 
     @unittest.skipUnless(shutil.which("desktop-file-validate"), "desktop-file-validate (desktop-file-utils)")

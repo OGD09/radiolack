@@ -3,10 +3,11 @@
 The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
 desktop window toolkit, which must own it. The engine runs in that loop and
-streams its frames, its audio, its source state, its demodulation settings
-and its bookmarks to each interface over a WebSocket (``/stream``; see
-docs/design/protocol.md), which also carries the interfaces' changes, their
-preferences and their requests for audio.
+streams its frames, its audio, its source state, its demodulation settings,
+its bookmarks and what its update check found to each interface over a
+WebSocket (``/stream``; see docs/design/protocol.md), which also carries the
+interfaces' changes, their preferences, their requests for audio and for an
+update check.
 """
 
 from __future__ import annotations
@@ -21,12 +22,12 @@ from pathlib import Path
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from .engine import Engine, Source, SourceOpener, Subscription
+from .engine import Engine, Source, SourceOpener, Subscription, UpdateChecker
 from .store import Store
 from .synthetic import SyntheticBand
 
 LOOPBACK_HOST = "127.0.0.1"
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 WEB_DIR = Path(__file__).with_name("web")
 
 _START_TIMEOUT_S = 10.0
@@ -34,7 +35,7 @@ _STOP_TIMEOUT_S = 10.0
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "bookmark", "preferences")
+_COMMANDS = ("source", "demod", "audio", "bookmark", "preferences", "update")
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +178,8 @@ def _apply_command(engine: Engine, subscription: Subscription, text: str) -> tup
             if changes:
                 return kind, f"unknown preferences field: {next(iter(changes))}"
             engine.set_preferences(values)
+        elif kind == "update":
+            engine.configure_updates(changes)
         else:
             on = changes.pop("on", None)
             if changes:
@@ -242,14 +245,16 @@ class LocalServer:
     source that ``sources`` opened last, and closes it when the server stops;
     with ``sources``, an interface may switch to another kind of source.
     Without either, it reads the synthetic band. With a ``store``, the engine
-    starts from the saved settings and saves their changes.
+    starts from the saved settings and saves their changes; with ``updates``,
+    it checks for a newer Radiolack.
     """
 
     def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
-                 sources: SourceOpener | None = None) -> None:
+                 sources: SourceOpener | None = None, updates: UpdateChecker | None = None) -> None:
         self._source = source
         self._sources = sources
         self._store = store
+        self._updates = updates
         self._sock = _bind(port)
         self.port: int = self._sock.getsockname()[1]
         self.url = f"http://{LOOPBACK_HOST}:{self.port}/"
@@ -299,7 +304,7 @@ class LocalServer:
 
     async def _serve(self) -> None:
         source = SyntheticBand() if self._source is None and self._sources is None else self._source
-        engine = Engine(source, sources=self._sources, store=self._store)
+        engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates)
         runner = web.AppRunner(create_app(self.port, engine), handle_signals=False)
         await runner.setup()
         try:
