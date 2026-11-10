@@ -1,7 +1,8 @@
 # Radiolack rewrite: scoping
 
 Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
-on the `rewrite` branch on 2026-11-08).
+on the `rewrite` branch on 2026-11-08), and accepted by the owner the same
+day with one check left (see v0 below).
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
@@ -215,6 +216,17 @@ Done when the owner confirms on their computer that Radiolack, installed from
 its Debian package, starts from its menu entry, shows the live band, tunes a
 local repeater with clean audio and remembers its settings, and when every
 test passes in CI.
+
+Accepted on 2026-11-10, with one check left. Installed from the Debian
+package of v0.2.0, Radiolack started from its menu entry, showed the live
+band from an RTL-SDR behind an rtl_tcp server on the local network,
+remembered its settings across a restart and played voices in AM on the
+airband; every test passed in CI. No analog voice was on the air in NFM:
+the only active repeater carried digital voice (4FSK at 4800 symbols per
+second), which the NFM demodulator rendered faithfully, its audio reaching
+full scale, but which Radiolack does not decode. Left to check: an analog
+NFM voice, clean and without saturation on loud passages; a fault found
+there gets a fix release.
 
 ### v1: remote access
 
@@ -510,8 +522,10 @@ These costs wait for v4:
   pushes nothing; `tests/test_release.py` runs it against a local bare
   repository. Tags: `v0.1.0` on the airband explorer (`f0e1cf6`, whose
   version was 0.1.0) and `v0.2.0` on v0.
-- Next step: the owner makes the repository public, installs the Debian
-  package of v0.2.0 and checks v0 on their computer; then published
+- v0 accepted, 2026-11-10: the owner installed the Debian package of
+  v0.2.0 and checked v0 on their computer, with one check left, an analog
+  NFM voice (see Milestones).
+- Next step: the owner makes the repository public; then published
   packages, the APT repository and the update alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
