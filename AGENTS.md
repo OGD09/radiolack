@@ -47,7 +47,10 @@ the history under the tag `v0.1.0`.
   and Origin refusals, interface files and Content-Security-Policy, stream,
   stop on SIGTERM; `--window` checks that the window's toolkit loads),
   `release.py` (tags a release on `main` and starts the next development
-  version), `radiolack.desktop` (menu entry), `radiolack.svg` (icon) and
+  version), `apt_repository.py` (builds and signs the APT repository: it
+  checks the repository's signature with gpgv, then signs only what the key
+  signed before and the packages it is given), `radiolack.desktop` (menu
+  entry), `radiolack.svg` (icon) and
   `copyright` (the package's licence notice). The window's program name,
   `window.PROGRAM`, matches the menu entry's and the icon's names: change
   them together.
@@ -57,9 +60,9 @@ the history under the tag `v0.1.0`.
 - `tests/`: unittest tests without hardware; pytest runs them too.
   `test_browser.py` drives the interface in headless browsers, on request.
   `tests/__init__.py` points `XDG_CONFIG_HOME` at a temporary folder for the
-  whole run, which the programs the tests start inherit; those that import
-  the package too keep it rather than make their own, and the run removes it
-  at its end.
+  whole run, and `GNUPGHOME` at an empty GnuPG home in it, which the
+  programs the tests start inherit; those that import the package too keep
+  it rather than make their own, and the run removes it at its end.
 
 ## Commands
 
@@ -83,12 +86,20 @@ the history under the tag `v0.1.0`.
   Pushing a `vX.Y.Z` tag publishes a release on GitHub
   (`.github/workflows/release.yml`): never push one unless the owner asks
   for that push.
+- APT repository: `python3 packaging/apt_repository.py --key FINGERPRINT
+  REPOSITORY [PACKAGE.deb ...]` signs with the owner's key, so only the
+  owner runs it on the real repository. `tests/test_apt_repository.py`
+  signs with throwaway keys in a GnuPG home of its own, through a stand-in
+  pinentry, and reads the repositories with apt-get run as the current user
+  in a folder of its own.
 - CI (GitHub Actions, `.github/workflows/`): `tests.yml` runs the unittest
   command against the package installed with pip on Python 3.11 and 3.15;
   `interface.yml` runs the type check and the browser tests when the
   package, the tests or pyproject.toml change; `package.yml` builds the
-  Debian package twice and compares the builds, then installs, runs
-  (`smoke_test.py --window` under Xvfb) and removes it on Debian 12 and 13
+  Debian package twice and compares the builds, puts it in an APT
+  repository signed with a key made for the run, then installs it from
+  there, runs (`smoke_test.py --window` under Xvfb) and removes it on Debian
+  12 and 13
   and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
   packaging change; `workflows.yml` runs actionlint
   (`.github/actionlint.yaml`) and zizmor when `.github/` changes;
@@ -124,6 +135,10 @@ the history under the tag `v0.1.0`.
   band.
 - Never install, upgrade or remove the Debian package, or any system
   package: that needs sudo, which the owner runs.
+- Never use, export or change the owner's GnuPG keys (`~/.gnupg`), never
+  sign anything with them and never handle a passphrase: the owner signs
+  the APT repository. Tests and checks sign with throwaway keys in a
+  temporary `GNUPGHOME`.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,

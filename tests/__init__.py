@@ -1,7 +1,8 @@
-"""Radiolack's tests. No test may read or write the owner's settings: the
-test run gets an empty settings folder of its own through XDG_CONFIG_HOME
-(store.py), which the programs it starts inherit. The run removes the folder
-when it ends."""
+"""Radiolack's tests. No test may read or write the owner's settings or
+GnuPG keys: the test run gets an empty settings folder of its own through
+XDG_CONFIG_HOME (store.py), and an empty GnuPG home in it through GNUPGHOME,
+which the programs it starts inherit. The run removes the folder when it
+ends."""
 
 import atexit
 import os
@@ -19,3 +20,7 @@ else:
     _CONFIG_HOME = tempfile.mkdtemp(prefix="radiolack-tests-")
     os.environ["XDG_CONFIG_HOME"] = os.environ[_RUN_FOLDER] = _CONFIG_HOME
     atexit.register(shutil.rmtree, _CONFIG_HOME, ignore_errors=True)
+    # Tests that sign make a GnuPG home of their own; this one only keeps
+    # any other gpg away from the owner's keys.
+    os.environ["GNUPGHOME"] = os.path.join(_CONFIG_HOME, "gnupg")
+    os.mkdir(os.environ["GNUPGHOME"], 0o700)

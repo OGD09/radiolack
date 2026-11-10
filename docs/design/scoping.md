@@ -48,6 +48,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | Versions: three numbers, X.Y.Z, the middle one for new features and the last one for fixes. Each release is an annotated tag `vX.Y.Z` on `main`, made with `packaging/release.py`; between releases `main` holds the next development version, X.Y.Z.dev0, so that a package built from it installs over the release. The airband explorer is `v0.1.0`, its own version, and the rewrite starts at `v0.2.0`. A published tag never moves. |
 | 2026-11-10 | Publication: the repository becomes public. Updates need packages that Radiolack can fetch without the owner's credentials, and the packages hold the Python code anyway. The history was audited first (2026-11-10) and stays as it is: rewriting it would not remove the commits GitHub keeps for pull requests. The owner switches the repository's visibility. |
 | 2026-11-10 | Releases are built, checked and published by GitHub Actions from their tag, never from a computer, with security first: the tag must be annotated, on `main` and name the version its commit holds; the tests, the interface checks and the package's installation on each supported system run on that commit, without any cache; the package is reproducible and published with its checksum and, once the repository is public, an attestation of its build, by one job in a `release` environment whose protection rules the owner sets. Every action is pinned to a commit and updated by Dependabot a week after its release, and actionlint and zizmor check the workflows. The APT repository's signing key is decided with that repository. |
+| 2026-11-10 | APT repository: the owner signs it on their computer, with the signing subkey of an Ed25519 key whose primary key stays offline, in the owner's password manager, with its revocation certificate; another computer of the owner's may get a signing subkey of its own later. One suite, `stable`, and one component, `main`, with architecture-independent packages; the indexes also stay under their checksum (Acquire-By-Hash), so that a web cache never pairs an old index with a new Release file. `packaging/apt_repository.py` signs only what the key signed before and the packages it is given, once gpgv has checked the repository's signature: a published version never changes. No `Valid-Until`: apt would refuse the repository whenever the owner did not sign it again in time. Without it, someone who could change the published site could serve an old index, which apt would accept; HTTPS keeps others on the network from doing it. The repository must still be signed again before the signing subkey expires, since apt refuses a signature by an expired key. The package will carry the repository's source and key. |
 
 ## Scope
 
@@ -542,9 +543,23 @@ These costs wait for v4:
   zizmor watch the workflows. Tested locally (two identical builds, the
   smoke test against the package's files, the release scripts against a
   fake GitHub command); not yet on GitHub.
-- Next step: the owner makes the repository public and sets its
-  protections (the `release` environment, rules for `main` and the tags,
-  immutable releases); then the signed APT repository and the update
-  alert.
+- First published release, 2026-11-10: the repository is public, with the
+  protections the owner set: the `release` environment, which only the
+  owner approves; rules that keep `main` and the release tags from being
+  deleted or rewritten; immutable releases; actions limited to GitHub's and
+  zizmor's, pinned to commits; and a read-only workflow token. v0.2.1 is the
+  first release that the Release workflow published. It carries an
+  attestation of its build, and a rebuild from its tag on Debian 12 gives
+  the same package, byte for byte.
+- APT repository, first part, 2026-11-10: `packaging/apt_repository.py`
+  builds and signs the repository (see Decisions); its tests sign with
+  throwaway keys and read the repositories with apt-get run as a normal
+  user, and the Package workflow installs the package on each system from a
+  repository signed with a key made for the run. Tested with apt 2.6 and
+  gpgv: a changed index, a changed Release file, another key and a changed
+  package are all refused.
+- Next step: the owner creates the repository's key; the package then
+  carries the repository's source and key, and the repository goes on
+  GitHub Pages. Then the update alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
