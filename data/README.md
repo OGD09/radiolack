@@ -1,7 +1,7 @@
 # data/
 
 Personal data of the airband explorer, the previous Radiolack, whose code
-stays in the history at commit `f0e1cf6`. Everything here except this README
+stays in the history under the tag `v0.1.0`. Everything here except this README
 is excluded from version control. The rewritten Radiolack neither reads nor
 writes this directory, and none of these files is ever written, replaced,
 regenerated or deleted.

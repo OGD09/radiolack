@@ -71,7 +71,9 @@ Radiolack then shows in the applications menu. A package built from a later
 commit installs over an earlier one, and `sudo apt remove radiolack` removes
 it, leaving your settings and bookmarks. DEBFULLNAME and DEBEMAIL, as
 Debian's tools read them, can give the maintainer instead of
-`--maintainer`. Radiolack does not update itself yet.
+`--maintainer`. Radiolack does not update itself yet. To install a release
+rather than the latest commit, build the package from the release's tag
+(see [Versions and releases](#versions-and-releases)).
 
 ### From the repository
 
@@ -335,7 +337,8 @@ The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
 they use a temporary settings folder, never yours. Where dpkg-deb is
 installed, they also build the Debian package in a temporary folder and run
-its command. GitHub Actions runs them against Radiolack installed with pip,
+its command; where git is, they make releases in temporary repositories,
+never in yours. GitHub Actions runs them against Radiolack installed with pip,
 on Python 3.11 and 3.15.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
@@ -387,6 +390,37 @@ A second GitHub Actions workflow runs the type check and the browser tests,
 under Xvfb and with that silent output, when the package, the tests or
 `pyproject.toml` change.
 
+## Versions and releases
+
+Versions have three numbers, X.Y.Z: the middle one grows with new features,
+the last one with fixes. `src/radiolack/__init__.py` holds the version that
+pip, `radiolack --version` and the Debian package read. Each release is an
+annotated tag `vX.Y.Z` on `main`. Between two releases, `main` holds the
+next version as a development version, such as 0.2.1.dev0 after 0.2.0: a
+package built from it installs over the release, and the next release
+installs over it.
+
+To make a release, on a `main` without changes and at the commit of
+`origin/main`:
+
+```bash
+python3 packaging/release.py 0.2.1
+```
+
+It commits the version, tags that commit `v0.2.1`, then commits the next
+development version. It pushes nothing, and prints the command that
+publishes the two commits and the tag. A release's package is built from
+its tag, before coming back to `main`:
+
+```bash
+git switch --detach v0.2.1
+python3 packaging/build_deb.py --maintainer "Your Name <you@example.org>"
+git switch main
+```
+
+`v0.1.0` marks the previous Radiolack, the airband explorer, and `v0.2.0`
+the rewrite's first release.
+
 ## Documentation
 
 - [docs/design/scoping.md](docs/design/scoping.md): purpose, decisions,
@@ -403,8 +437,8 @@ under Xvfb and with that silent output, when the package, the tests or
 ## Previous version
 
 The first milestone replaced the previous Radiolack, a Gqrx-driven explorer
-of the VHF airband, on `main`. Its code stays in the history at commit
-`f0e1cf6` (`git checkout f0e1cf6`), and its personal data in `data/` stays
+of the VHF airband, on `main`. Its code stays in the history under the tag
+`v0.1.0` (`git checkout v0.1.0`), and its personal data in `data/` stays
 untouched (see [data/README.md](data/README.md)).
 
 ## Project layout
@@ -429,7 +463,8 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents
-packaging/      Debian package: build script, menu entry, icon and licence notice
+packaging/      Debian package (build script, menu entry, icon, licence
+                notice) and release script
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
 ```

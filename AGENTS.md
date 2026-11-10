@@ -8,7 +8,7 @@ README.md. Design decisions, milestones and open questions are in
 docs/design/scoping.md: read it before substantive work.
 docs/design/ui-mockup.html is the visual reference, and docs/design/lessons.md
 keeps what the rewrite reuses from the airband explorer, whose code stays in
-the history at commit `f0e1cf6`.
+the history under the tag `v0.1.0`.
 
 ## Layout
 
@@ -39,7 +39,8 @@ the history at commit `f0e1cf6`.
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
-  Python package as it is), `radiolack.desktop` (menu entry),
+  Python package as it is), `release.py` (tags a release on `main` and
+  starts the next development version), `radiolack.desktop` (menu entry),
   `radiolack.svg` (icon) and `copyright` (the package's licence notice). The
   window's program name, `window.PROGRAM`, matches the menu entry's and the
   icon's names: change them together.
@@ -66,6 +67,10 @@ the history at commit `f0e1cf6`.
 - Debian package: `python3 packaging/build_deb.py --maintainer "Name <address>"`
   writes `dist/radiolack_VERSION_all.deb` (needs dpkg-deb);
   `tests/test_packaging.py` builds one in a temporary folder.
+- Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
+  a `main` without changes and at the commit of `origin/main`. It commits
+  the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes
+  nothing. `tests/test_release.py` runs it in temporary repositories.
 - CI (GitHub Actions): `.github/workflows/tests.yml` runs the unittest
   command against the package installed with pip on Python 3.11 and 3.15;
   `.github/workflows/interface.yml` runs the type check and the browser tests
@@ -140,3 +145,7 @@ the history at commit `f0e1cf6`.
   data taken from elsewhere, needs a licence compatible with it.
   `pyproject.toml` leaves the licence out while a supported system's
   setuptools cannot read its SPDX form (setuptools 77; Debian 12 has 66).
+- Versions have three numbers, X.Y.Z (Y for new features, Z for fixes). A
+  release is an annotated tag `vX.Y.Z` on `main` that matches `__version__`;
+  between releases `main` holds the next `.dev0`. A published tag never
+  moves.

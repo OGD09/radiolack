@@ -1,13 +1,13 @@
 # Radiolack rewrite: scoping
 
-Status: v0 merged into `main` on 2026-11-10 (started on the `rewrite` branch
-on 2026-11-08).
+Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
+on the `rewrite` branch on 2026-11-08).
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
 This document fixes what the rewritten Radiolack is, what it is not, how it is
 built and in which order. The first milestone replaced the Gqrx-driven airband
-tool on `main`; that tool stays in the history at commit `f0e1cf6`.
+tool on `main`; that tool stays in the history under the tag `v0.1.0`.
 
 ## Purpose
 
@@ -44,6 +44,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | Installation: each system gets its usual installer. The Debian package comes first, for Debian 12 or later and Ubuntu 24.04 or later, on the system's Python and libraries, with a menu entry and an icon; the owner's v0 check uses it. The macOS (.dmg) and Windows (.msi or .exe) installers come with their window shells, before v4. |
 | 2026-11-10 | Updates: at start, Radiolack says when a newer version is out, with a button that installs it and restarts Radiolack; Settings checks on demand and can turn the check at start off. On Linux the update comes from a signed APT repository and upgrades Radiolack only, once the system has asked for the administrator's password. The button shows in the local window only, never through remote access. The check is the only connection Radiolack makes besides the receiver and its clients, and carries no identifier. It needs published packages: see the publication decision below. |
 | 2026-11-10 | Licence: GPL-3.0-or-later, copyright OGD09. It is the licence of most SDR software (Gqrx, SDR++, SDRangel, GNU Radio), whose code Radiolack can then reuse; anyone who distributes a modified Radiolack must publish its source under the same licence. Every dependency fits it (aiohttp: Apache-2.0; NumPy: BSD; PyGObject, GTK and WebKitGTK: LGPL), and so do GPL drivers that installers may carry, such as librtlsdr. Set aside: the AGPL, OpenWebRX's choice, whose duties for versions used over a network Radiolack's private remote access does not call for, and permissive licences, which allow closed versions. |
+| 2026-11-10 | Versions: three numbers, X.Y.Z, the middle one for new features and the last one for fixes. Each release is an annotated tag `vX.Y.Z` on `main`, made with `packaging/release.py`; between releases `main` holds the next development version, X.Y.Z.dev0, so that a package built from it installs over the release. The airband explorer is `v0.1.0`, its own version, and the rewrite starts at `v0.2.0`. A published tag never moves. |
 | 2026-11-10 | Publication: the repository becomes public. Updates need packages that Radiolack can fetch without the owner's credentials, and the packages hold the Python code anyway. The history was audited first (2026-11-10) and stays as it is: rewriting it would not remove the commits GitHub keeps for pull requests. The owner switches the repository's visibility. |
 
 ## Scope
@@ -504,8 +505,13 @@ These costs wait for v4:
   rewrite's commits as they are. The airband explorer stays in the history
   at commit `f0e1cf6`; work continues on `main`, and the `rewrite` branch is
   no longer used.
+- Versions and tags, 2026-11-10: `packaging/release.py` makes a release on
+  `main` (version commit, annotated tag, next development version) and
+  pushes nothing; `tests/test_release.py` runs it against a local bare
+  repository. Tags: `v0.1.0` on the airband explorer (`f0e1cf6`, whose
+  version was 0.1.0) and `v0.2.0` on v0.
 - Next step: the owner makes the repository public, installs the Debian
-  package and checks v0 on their computer; then versioned releases, the APT
-  repository and the update alert.
+  package of v0.2.0 and checks v0 on their computer; then published
+  packages, the APT repository and the update alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
