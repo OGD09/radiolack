@@ -71,9 +71,9 @@ sudo apt install ./radiolack_VERSION_all.deb
 
 Radiolack then shows in the applications menu. A later release installs
 over an earlier one, and `sudo apt remove radiolack` removes it, leaving
-your settings and bookmarks. Radiolack does not update itself yet. Once the
-repository is public, the release notes also give the command that checks
-the attestation of the package's build.
+your settings and bookmarks. Radiolack does not update itself yet. The
+release notes also give the command that checks the attestation of the
+package's build.
 
 To install the latest commit instead, build the package from the
 repository, with your name and address as its maintainer; building needs
@@ -351,10 +351,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 
 The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
-they use a temporary settings folder, never yours. Where dpkg-deb is
-installed, they also build the Debian package twice in a temporary folder,
-compare the builds and run the package's command; where git is, they make
-releases in temporary repositories, never in yours.
+they use a temporary settings folder and GnuPG home, never yours. Where
+dpkg-deb is installed, they also build the Debian package twice in a
+temporary folder, compare the builds and run the package's command; where
+git is, they make releases in temporary repositories, never in yours; where
+GnuPG is too, they build APT repositories, sign them with throwaway keys and
+read them with apt-get, run as you in a folder of its own, away from your
+system's apt.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
 without producing any file. The check needs Node.js and downloads TypeScript
@@ -422,10 +425,11 @@ services or radio hardware:
   3.11 and 3.15, for every push to `main` and every pull request.
 - Interface: the type check and the browser tests, under Xvfb and with that
   silent output, when the package, the tests or `pyproject.toml` change.
-- Package: builds the Debian package twice and compares the builds; installs
-  it with apt on Debian 12 and 13 and Ubuntu 24.04 and 26.04, runs it there
-  with `packaging/smoke_test.py`, removes it, and checks it with lintian;
-  when the package or its packaging change.
+- Package: builds the Debian package twice and compares the builds, and
+  puts it in an APT repository signed with a key made for the run; installs
+  it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and
+  26.04, runs it there with `packaging/smoke_test.py`, removes it, and
+  checks it with lintian; when the package or its packaging change.
 - Workflows: actionlint and zizmor check the workflows themselves when they
   change.
 - Release: publishes each release (see
@@ -475,6 +479,28 @@ address.
 `v0.1.0` marks the previous Radiolack, the airband explorer, and `v0.2.0`
 the rewrite's first release.
 
+### APT repository
+
+A signed APT repository will carry the releases, so that apt installs
+Radiolack and keeps it up to date. It is not published yet: its signing key
+and its publication on GitHub Pages come next.
+`packaging/apt_repository.py` builds it. It adds the packages it is given to
+the repository's pool, writes the index of every package there and signs it
+with the owner's GnuPG key, which asks for the key's passphrase as usual:
+
+```bash
+python3 packaging/apt_repository.py --key FINGERPRINT REPOSITORY radiolack_0.2.1_all.deb
+```
+
+The repository has one suite, `stable`, and one component, `main`, with
+architecture-independent packages only. Before it signs, the tool checks
+that the repository's index carries the key's signature and lists exactly
+the packages in the pool: the key signs only what it signed before, and the
+packages it is given. A published version never changes. Without packages,
+the command signs the repository again, which must be done before the key's
+signing subkey expires: apt refuses a signature by an expired key. It needs
+Python, dpkg-deb and GnuPG (gpg and gpgv).
+
 ## Documentation
 
 - [docs/design/scoping.md](docs/design/scoping.md): purpose, decisions,
@@ -518,7 +544,8 @@ src/radiolack/
 tests/          tests without hardware
 docs/design/    design documents
 packaging/      Debian package (build script, manual page, menu entry,
-                icon, licence notice), its smoke test and the release script
+                icon, licence notice), its smoke test, the release script
+                and the APT repository's tool
 .github/        GitHub Actions workflows, their settings and Dependabot's
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
