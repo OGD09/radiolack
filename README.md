@@ -50,30 +50,46 @@ English, with no translations.
 ### Debian and Ubuntu package
 
 On Debian 12 or later and Ubuntu 24.04 or later, Radiolack installs as a
-Debian package for the system's Python, with the `radiolack` command, a menu
-entry and an icon. Build the package from the repository, with your name and
-address as its maintainer; building needs only Python and dpkg-deb:
+Debian package for the system's Python, with the `radiolack` command, its
+manual page (`man radiolack`), a menu entry and an icon. apt also installs
+what Radiolack needs (aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK) and
+the rtl-sdr package it recommends.
+
+Each release on the repository's Releases page carries its package,
+`radiolack_VERSION_all.deb`, and the package's checksum, `SHA256SUMS`, which
+GitHub Actions built and checked
+([Versions and releases](#versions-and-releases)). Download both into one
+folder, check the package, then install it:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+```bash
+sudo apt install ./radiolack_VERSION_all.deb
+```
+
+Radiolack then shows in the applications menu. A later release installs
+over an earlier one, and `sudo apt remove radiolack` removes it, leaving
+your settings and bookmarks. Radiolack does not update itself yet. Once the
+repository is public, the release notes also give the command that checks
+the attestation of the package's build.
+
+To install the latest commit instead, build the package from the
+repository, with your name and address as its maintainer; building needs
+only Python and dpkg-deb:
 
 ```bash
 python3 packaging/build_deb.py --maintainer "Your Name <you@example.org>"
 ```
 
-It prints the package's path, `dist/radiolack_VERSION_all.deb`. Install
-that file with apt, which also installs what Radiolack needs (aiohttp,
-NumPy, PyGObject, GTK 3 and WebKitGTK) and the rtl-sdr package it
-recommends:
-
-```bash
-sudo apt install ./dist/radiolack_VERSION_all.deb
-```
-
-Radiolack then shows in the applications menu. A package built from a later
-commit installs over an earlier one, and `sudo apt remove radiolack` removes
-it, leaving your settings and bookmarks. DEBFULLNAME and DEBEMAIL, as
-Debian's tools read them, can give the maintainer instead of
-`--maintainer`. Radiolack does not update itself yet. To install a release
-rather than the latest commit, build the package from the release's tag
-(see [Versions and releases](#versions-and-releases)).
+It prints the package's path, `dist/radiolack_VERSION_all.deb`, to install
+with apt as above; a package built from a later commit installs over an
+earlier one. DEBFULLNAME and DEBEMAIL, as Debian's tools read them, can give
+the maintainer instead of `--maintainer`. The build is reproducible: from
+the same commit, with the same maintainer and the same version of dpkg-deb,
+it makes the same package, byte for byte, so that anyone can rebuild a
+release's package and compare.
 
 ### From the repository
 
@@ -336,10 +352,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
 they use a temporary settings folder, never yours. Where dpkg-deb is
-installed, they also build the Debian package in a temporary folder and run
-its command; where git is, they make releases in temporary repositories,
-never in yours. GitHub Actions runs them against Radiolack installed with pip,
-on Python 3.11 and 3.15.
+installed, they also build the Debian package twice in a temporary folder,
+compare the builds and run the package's command; where git is, they make
+releases in temporary repositories, never in yours.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
 without producing any file. The check needs Node.js and downloads TypeScript
@@ -386,9 +401,40 @@ null sink gives it a silent output (Debian and Ubuntu:
 pulseaudio --start --exit-idle-time=-1 -n --load=module-native-protocol-unix --load=module-null-sink
 ```
 
-A second GitHub Actions workflow runs the type check and the browser tests,
-under Xvfb and with that silent output, when the package, the tests or
-`pyproject.toml` change.
+`packaging/smoke_test.py` checks a Radiolack from the outside: it starts it
+on the simulated band, in a settings folder of its own and on a free port,
+then checks that it listens on 127.0.0.1 only, refuses requests addressed to
+other hosts and streams from other origins, serves the interface with its
+Content-Security-Policy and every file the interface loads, streams the
+spectrum, and stops on SIGTERM. After installing the Debian package, it
+checks the installed `radiolack`:
+
+```bash
+python3 packaging/smoke_test.py
+```
+
+### Continuous integration
+
+GitHub Actions runs these workflows (`.github/workflows/`), without secrets,
+services or radio hardware:
+
+- Tests: the tests above, against Radiolack installed with pip, on Python
+  3.11 and 3.15, for every push to `main` and every pull request.
+- Interface: the type check and the browser tests, under Xvfb and with that
+  silent output, when the package, the tests or `pyproject.toml` change.
+- Package: builds the Debian package twice and compares the builds; installs
+  it with apt on Debian 12 and 13 and Ubuntu 24.04 and 26.04, runs it there
+  with `packaging/smoke_test.py`, removes it, and checks it with lintian;
+  when the package or its packaging change.
+- Workflows: actionlint and zizmor check the workflows themselves when they
+  change.
+- Release: publishes each release (see
+  [Versions and releases](#versions-and-releases)).
+
+Each action is pinned to a commit, and Dependabot proposes updates once a
+week, for versions out for a week or more (`.github/dependabot.yml`). The
+workflows' token can only read the repository, except in the job that
+publishes a release.
 
 ## Versions and releases
 
@@ -409,14 +455,22 @@ python3 packaging/release.py 0.2.1
 
 It commits the version, tags that commit `v0.2.1`, then commits the next
 development version. It pushes nothing, and prints the command that
-publishes the two commits and the tag. A release's package is built from
-its tag, before coming back to `main`:
+publishes the two commits and the tag together:
 
 ```bash
-git switch --detach v0.2.1
-python3 packaging/build_deb.py --maintainer "Your Name <you@example.org>"
-git switch main
+git push --atomic origin main v0.2.1
 ```
+
+On GitHub, the tag starts the Release workflow. It checks that the tag is
+annotated, is on `main` and names the version its commit holds, then runs
+the Tests, Interface and Package workflows on that commit, without any
+cache. Once they pass, its last job, in the repository's `release`
+environment, publishes the package that the Package workflow built and
+checked, with its checksum, on the tag's release page, and, while the
+repository is public, an attestation of its build. It never replaces a
+release that exists. The package's Maintainer field is the repository's
+`DEB_MAINTAINER` variable when set, else the owner's GitHub no-reply
+address.
 
 `v0.1.0` marks the previous Radiolack, the airband explorer, and `v0.2.0`
 the rewrite's first release.
@@ -463,8 +517,9 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents
-packaging/      Debian package (build script, menu entry, icon, licence
-                notice) and release script
+packaging/      Debian package (build script, manual page, menu entry,
+                icon, licence notice), its smoke test and the release script
+.github/        GitHub Actions workflows, their settings and Dependabot's
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
 ```

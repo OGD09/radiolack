@@ -1,0 +1,78 @@
+.\" Manual page of the radiolack command, installed by the Debian package.
+.\" packaging/build_deb.py fills in the version and the date.
+.TH RADIOLACK 1 "@DATE@" "Radiolack @VERSION@" "User Commands"
+.SH NAME
+radiolack \- receive\-only SDR receiver with band plans
+.SH SYNOPSIS
+.B radiolack
+[\fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR]
+[\fB\-\-port\fR \fIPORT\fR]
+[\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR]]
+.br
+.B radiolack
+\fB\-\-version\fR | \fB\-h\fR | \fB\-\-help\fR
+.SH DESCRIPTION
+Radiolack shows the spectrum and the waterfall of an SDR receiver in a
+desktop window and plays NFM, AM, USB, LSB and CW.
+It only receives: it has no transmit function.
+It reads an RTL\-SDR receiver plugged into this computer, or one that an
+rtl_tcp server serves from another computer, and labels every frequency
+with a simplified European band plan, with the IARU Region\ 1 plans
+inside the amateur bands.
+.PP
+Without \fB\-\-rtl\-sdr\fR or \fB\-\-rtl\-tcp\fR, Radiolack opens the
+source used last: the simulated 2\ m band the first time.
+The Source panel switches between sources.
+Closing the window stops Radiolack; without a window, stop it with
+Ctrl+C.
+.PP
+Radiolack serves its interface on 127.0.0.1 only, so other devices cannot
+reach it, and answers only requests addressed to 127.0.0.1 or localhost.
+.SH OPTIONS
+.TP
+\fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR
+Show the interface in a desktop window (the default), in the default web
+browser, or nowhere: Radiolack then only prints the interface's address.
+When the window cannot open, for instance without a graphical display,
+Radiolack says why, keeps running and prints the address.
+.TP
+\fB\-\-port\fR \fIPORT\fR
+Listen on \fIPORT\fR, on 127.0.0.1, instead of any free port.
+.TP
+\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR]
+Read the RTL\-SDR receiver plugged into this computer, through an rtl_tcp
+that Radiolack runs while an interface is open.
+\fIDEVICE\fR is the receiver's index or serial number: 0, the first one,
+by default.
+rtl_tcp comes with the rtl\-sdr package.
+.TP
+\fB\-\-rtl\-tcp\fR [\fIADDRESS\fR]
+Read an RTL\-SDR receiver through an rtl_tcp server that you run, at
+\fIADDRESS\fR: \fIHOST\fR, \fIPORT\fR or \fIHOST\fR:\fIPORT\fR.
+By default, the address used last: 127.0.0.1:1234 the first time.
+The Source panel can change it.
+Not with \fB\-\-rtl\-sdr\fR.
+.TP
+\fB\-\-version\fR
+Print the version and exit.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print a summary of the options and exit.
+.SH FILES
+.TP
+\fI$XDG_CONFIG_HOME/radiolack/settings.json\fR
+The settings of each receiver and the interface's preferences.
+.TP
+\fI$XDG_CONFIG_HOME/radiolack/bookmarks.json\fR
+The bookmarks.
+.PP
+Without \fBXDG_CONFIG_HOME\fR, or when it is not an absolute path, the
+folder is \fI~/.config/radiolack\fR.
+A file that Radiolack cannot read is renamed aside, never overwritten, and
+Radiolack starts from its defaults.
+.SH EXIT STATUS
+0 once Radiolack stops, after its window closes or on Ctrl+C or SIGTERM;
+1 when it cannot start, for instance on a port already in use;
+2 for an invalid option.
+.SH SEE ALSO
+.BR rtl_tcp (1)

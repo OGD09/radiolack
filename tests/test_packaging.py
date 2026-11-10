@@ -1,21 +1,28 @@
 """Tests for the Debian package (packaging/build_deb.py): its version, its
-control fields and its files, built into a temporary folder. The launcher it
-installs runs from the extracted package, without a window. Building needs
-dpkg-deb, as on Debian and Ubuntu."""
+control fields, its files and their dates, built into a temporary folder,
+twice, to compare. The launcher it installs runs from the extracted package,
+without a window, through packaging/smoke_test.py. Building needs dpkg-deb,
+as on Debian and Ubuntu."""
 
 import contextlib
+import email.utils
+import gzip
 import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import radiolack
+from radiolack import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("build_deb", ROOT / "packaging" / "build_deb.py")
@@ -38,6 +45,77 @@ class VersionTest(unittest.TestCase):
 
     def test_reads_the_package_version(self):
         self.assertEqual(build_deb.python_version(), radiolack.__version__)
+
+
+class DateTest(unittest.TestCase):
+    def test_source_date_epoch_dates_the_package(self):
+        self.assertEqual(build_deb.source_date_epoch({"SOURCE_DATE_EPOCH": " 1700000000 "}), 1700000000)
+
+    def test_refuses_other_dates(self):
+        for value in ("-1", "1.5", "now", "1e9", str(8**11)):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                build_deb.source_date_epoch({"SOURCE_DATE_EPOCH": value})
+
+    def test_otherwise_the_last_commit_dates_the_package(self):
+        commit = build_deb.last_commit()
+        if commit is None:
+            self.skipTest("not in a git checkout")
+        self.assertEqual(build_deb.source_date_epoch({"SOURCE_DATE_EPOCH": ""}), commit[0])
+
+    def test_outside_a_git_checkout_the_package_is_dated_now(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertIsNone(build_deb.last_commit(Path(folder)))
+            before = int(time.time())
+            epoch = build_deb.source_date_epoch({}, Path(folder))
+            self.assertTrue(before <= epoch <= time.time())
+
+
+class DocumentationTest(unittest.TestCase):
+    def test_compresses_as_gzip_does_for_debian(self):
+        for text in ("", "Radiolack 1.2.0, ±12.5 kHz\n" * 50):
+            with self.subTest(length=len(text)):
+                data = build_deb._compress(text)
+                self.assertEqual(gzip.decompress(data).decode("utf-8"), text)
+                self.assertEqual(data[:4], b"\x1f\x8b\x08\x00")    # gzip, deflate, no name
+                self.assertEqual(data[4:8], bytes(4))                 # no date
+                self.assertEqual(data[8:10], b"\x02\x03")            # best compression, Unix
+                self.assertEqual(build_deb._compress(text), data)
+
+    def test_the_changelog_names_the_version_the_maintainer_and_the_date(self):
+        entry = build_deb.changelog("1.2.0", " A Name <a@example.org> ", 1700000000)
+        lines = entry.splitlines()
+        self.assertEqual(lines[:4], ["radiolack (1.2.0) unstable; urgency=medium", "", "  * Radiolack 1.2.0.", ""])
+        signature, date = lines[4].split("  ")
+        self.assertEqual(signature, " -- A Name <a@example.org>")
+        self.assertEqual(email.utils.parsedate_to_datetime(date).timestamp(), 1700000000)
+        self.assertEqual((len(lines), entry[-1]), (5, "\n"))
+        with self.assertRaises(ValueError):
+            build_deb.changelog("1.2.0", "a@example.org", 1700000000)
+
+    @unittest.skipUnless(shutil.which("dpkg-parsechangelog"), "dpkg-parsechangelog (dpkg-dev)")
+    def test_dpkg_reads_the_changelog(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "changelog"
+            path.write_text(build_deb.changelog("1.2.0~dev0+git20231114221320.938a320", "A Name <a@example.org>",
+                                                1700000000), encoding="utf-8")
+            result = subprocess.run(["dpkg-parsechangelog", "-l", str(path)], capture_output=True, text=True,
+                                    timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        fields = dict(line.split(": ", 1) for line in result.stdout.splitlines() if ": " in line)
+        self.assertEqual(fields["Version"], "1.2.0~dev0+git20231114221320.938a320")
+        self.assertEqual(fields["Maintainer"], "A Name <a@example.org>")
+        self.assertEqual(fields["Timestamp"], "1700000000")
+
+    def test_the_manual_page_documents_every_option_and_no_other(self):
+        page = build_deb.manual_page("1.2.0", 1700000000)
+        self.assertIn('\n.TH RADIOLACK 1 "2023-11-14" "Radiolack 1.2.0" "User Commands"\n', page)
+        self.assertNotIn("@", page)
+        self.assertTrue(page.isascii())
+        options = {option for action in cli.build_parser()._actions for option in action.option_strings}
+        self.assertTrue({"--help", "--version", "--ui", "--port", "--rtl-sdr", "--rtl-tcp"} <= options)
+        documented = {name.replace("\\-", "-") for name in re.findall(r"\\fB((?:\\-)+[a-z](?:[a-z]|\\-)*)\\fR", page)}
+        self.assertEqual(documented, options)
 
 
 class MaintainerTest(unittest.TestCase):
@@ -77,6 +155,7 @@ class PackageTest(unittest.TestCase):
         cls.addClassCleanup(temporary.cleanup)
         cls.folder = Path(temporary.name)
         cls.package = build_deb.build(cls.folder / "dist", maintainer="A Name <a@example.org>")
+        cls.epoch = build_deb.source_date_epoch()
         cls.tree = cls.folder / "tree"
         subprocess.run(["dpkg-deb", "-x", str(cls.package), str(cls.tree)], check=True, timeout=60)
 
@@ -140,11 +219,65 @@ class PackageTest(unittest.TestCase):
                                capture_output=True, text=True, env=environment, check=True, timeout=60).stdout
         self.assertTrue(Path(where.strip()).is_relative_to(packaged))
 
+    def test_documents_the_command_and_its_versions(self):
+        for path in ("usr/share/man/man1/radiolack.1.gz", "usr/share/doc/radiolack/changelog.gz"):
+            self.assertEqual((self.tree / path).stat().st_mode & 0o777, 0o644, path)
+        version = self.field("Version")
+        page = gzip.decompress((self.tree / "usr/share/man/man1/radiolack.1.gz").read_bytes()).decode("utf-8")
+        self.assertIn(f'"Radiolack {version}"', page)
+        entry = gzip.decompress((self.tree / "usr/share/doc/radiolack/changelog.gz").read_bytes()).decode("utf-8")
+        self.assertTrue(entry.startswith(f"radiolack ({version}) unstable; urgency=medium\n"))
+        self.assertIn(" -- A Name <a@example.org>  ", entry)
+
+    def test_every_file_carries_the_date_of_the_source(self):
+        members = ar_members(self.package)
+        self.assertEqual(list(members), ["debian-binary", "control.tar.xz", "data.tar.xz"])
+        self.assertEqual({date for date, _ in members.values()}, {self.epoch})
+        for name in ("control.tar.xz", "data.tar.xz"):
+            with tarfile.open(fileobj=io.BytesIO(members[name][1])) as archive:
+                entries = archive.getmembers()
+            self.assertTrue(entries)
+            for entry in entries:
+                with self.subTest(archive=name, entry=entry.name):
+                    self.assertEqual(entry.mtime, self.epoch)
+                    self.assertEqual((entry.uid, entry.gid, entry.uname, entry.gname), (0, 0, "root", "root"))
+
+    def test_a_second_build_is_identical(self):
+        with tempfile.TemporaryDirectory() as folder:
+            again = build_deb.build(Path(folder), maintainer="A Name <a@example.org>")
+            self.assertEqual(again.name, self.package.name)
+            self.assertEqual(again.read_bytes(), self.package.read_bytes())
+
+    def test_the_packaged_radiolack_passes_the_smoke_test(self):
+        # Radiolack from the package's files, on an ephemeral port, in a settings folder of the smoke test's own.
+        environment = {**os.environ, "PYTHONPATH": str(self.tree / "usr/lib/python3/dist-packages")}
+        result = subprocess.run([sys.executable, str(ROOT / "packaging/smoke_test.py"), "--",
+                                 sys.executable, str(self.tree / "usr/bin/radiolack")],
+                                capture_output=True, text=True, env=environment, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"ok: prints its version: radiolack {radiolack.__version__}\n", result.stdout)
+        self.assertIn("smoke_test: every check passed\n", result.stdout)
+
     @unittest.skipUnless(shutil.which("desktop-file-validate"), "desktop-file-validate (desktop-file-utils)")
     def test_the_menu_entry_is_valid(self):
         entry = self.tree / "usr/share/applications/radiolack.desktop"
         result = subprocess.run(["desktop-file-validate", str(entry)], capture_output=True, text=True, timeout=60)
         self.assertEqual((result.returncode, result.stdout + result.stderr), (0, ""))
+
+
+def ar_members(path: Path) -> dict[str, tuple[int, bytes]]:
+    """The members of a Debian package, an ar archive: name -> (date, content)."""
+    data = path.read_bytes()
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError(f"{path} is not an ar archive")
+    members, offset = {}, 8
+    while offset < len(data):
+        header = data[offset:offset + 60]
+        name = header[:16].decode("ascii").rstrip().removesuffix("/")
+        date, size = int(header[16:28]), int(header[48:58])
+        members[name] = (date, data[offset + 60:offset + 60 + size])
+        offset += 60 + size + size % 2
+    return members
 
 
 if __name__ == "__main__":

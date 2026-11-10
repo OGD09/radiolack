@@ -1,7 +1,8 @@
-# Interface checks, only when the package, the tests or this file change:
-# the type check of the interface's JavaScript, and the browser tests, which
-# drive the interface in headless Chromium, Firefox and WebKit (Playwright)
-# against a server on the runner. No secrets, services or radio hardware.
+# Interface checks, when the package, the tests or this file change, and for
+# each release (release.yml): the type check of the interface's JavaScript,
+# and the browser tests, which drive the interface in headless Chromium,
+# Firefox and WebKit (Playwright) against a server on the runner. No secrets,
+# services or radio hardware.
 name: Interface
 
 on:
@@ -20,12 +21,14 @@ on:
       - "jsconfig.json"
       - "pyproject.toml"
       - ".github/workflows/interface.yml"
+  workflow_call:
 
 permissions:
   contents: read
 
+# A literal prefix: in a called workflow, github.workflow names the caller.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: interface-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -36,16 +39,16 @@ jobs:
     env:
       TYPESCRIPT_VERSION: "7.0.2"     # as in README.md and AGENTS.md
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
 
       # npx keeps the TypeScript it downloads in ~/.npm.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
           key: npm-typescript-${{ env.TYPESCRIPT_VERSION }}
@@ -59,11 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
           cache: pip
@@ -93,7 +96,7 @@ jobs:
           echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
           echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-archives
           key: apt-${{ steps.image.outputs.os }}-${{ steps.image.outputs.version }}-${{ hashFiles('pyproject.toml', '.github/workflows/interface.yml') }}

@@ -1,0 +1,24 @@
+# Dependabot: one pull request a week for the actions that the workflows pin
+# by commit, and one for the Playwright version that the browser tests pin
+# (pyproject.toml, the "browser" extra). Only versions out for a week or more:
+# a compromised release is usually withdrawn within days.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    allow:
+      - dependency-name: playwright

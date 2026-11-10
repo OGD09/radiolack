@@ -1,0 +1,6 @@
+# actionlint settings (.github/workflows/workflows.yml).
+paths:
+  # actionlint 1.7.12 does not know the workflow-level cache-mode key yet.
+  .github/workflows/release.yml:
+    ignore:
+      - 'unexpected key "cache-mode" for "workflow" section'

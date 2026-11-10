@@ -1,0 +1,183 @@
+# Release, on each tag vX.Y.Z (packaging/release.py makes them): checks the
+# tag, runs the Tests, Interface and Package workflows on its commit, then
+# publishes the Debian package and its checksum on the tag's release page,
+# with an attestation of its build when the repository is public. The
+# publish job runs in the "release" environment, whose protection rules the
+# repository's settings hold.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions: {}
+
+# No cache: a release comes from its commit alone. The called workflows
+# inherit this limit.
+cache-mode: none
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Check the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the tag is a release of main
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          MAIN: ${{ github.event.repository.default_branch }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
+            fail "$TAG is not a release tag, such as v1.2.3"
+          version="${TAG#v}"
+          kind=$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq .object.type)
+          [ "$kind" = tag ] || fail "$TAG is not an annotated tag, as packaging/release.py makes them"
+          found=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/radiolack/__init__.py)
+          [ "$found" = "$version" ] || fail "the commit of $TAG holds version '$found', not $version"
+          status=$(gh api "repos/$REPOSITORY/compare/$COMMIT...$MAIN" --jq .status)
+          case "$status" in
+            identical | ahead) ;;
+            *) fail "$TAG is not on $MAIN: $MAIN does not contain its commit ($status)" ;;
+          esac
+          echo "$TAG: an annotated tag of version $version, on $MAIN"
+
+  tests:
+    name: Tests
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yml
+
+  interface:
+    name: Interface
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/interface.yml
+
+  package:
+    name: Package
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    name: Publish
+    needs: [version, tests, interface, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write       # the release and its files
+      id-token: write       # the attestation's signing certificate
+      attestations: write   # the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: debian-package
+          path: dist
+
+      # The package that the build job checked, and no other: any job of
+      # this run could have uploaded an artifact.
+      - name: Check the package against its build
+        timeout-minutes: 1
+        env:
+          BUILT: ${{ needs.package.outputs.sha256 }}
+        run: |
+          cd dist
+          packages=(*.deb)
+          if [ "${#packages[@]}" -ne 1 ] || [ ! -f "${packages[0]}" ]; then
+            echo "::error::the artifact holds ${#packages[@]} packages, not one"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
+          if [ "$(sha256sum < "${packages[0]}" | cut -d ' ' -f 1)" != "$BUILT" ] || [ "$(wc -l < SHA256SUMS)" -ne 1 ]; then
+            echo "::error::${packages[0]} is not the package that the build job made"
+            exit 1
+          fi
+
+      # A SLSA build provenance attestation, signed through Sigstore's public
+      # instance; on GitHub Free, attestations need a public repository.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: dist/*.deb
+
+      # A draft first, published once its files are in place; a release that
+      # exists already is left alone, for the owner to look at.
+      - name: Publish the release
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          DPKG: ${{ needs.package.outputs.dpkg }}
+          ATTESTED: ${{ !github.event.repository.private }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          version="${TAG#v}"
+          package=$(cd dist && echo *.deb)
+          maintainer=$(dpkg-deb --field "dist/$package" Maintainer)
+          releases=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          if grep -Fxq -- "$TAG" <<< "$releases"; then
+            echo "::error::a release or a draft of $TAG exists already: check it on GitHub"
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/notes.md"
+          cat > "$notes" <<EOF
+          Radiolack $version, a receive-only SDR receiver, for Debian 12 or later and Ubuntu 24.04 or later.
+
+          ## Install
+
+          Download $package and SHA256SUMS into one folder, check the package, then install it:
+
+              sha256sum --check --ignore-missing SHA256SUMS
+              sudo apt install ./$package
+
+          ## Origin
+
+          GitHub Actions built and checked this package from tag $TAG, commit $COMMIT.
+          EOF
+          if [ "$ATTESTED" = true ]; then
+            cat >> "$notes" <<EOF
+          GitHub attests this build. To check its attestation, with GitHub's command-line tool:
+
+              gh attestation verify $package --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG --deny-self-hosted-runners
+          EOF
+          fi
+          cat >> "$notes" <<EOF
+
+          The build is reproducible: dpkg-deb $DPKG, as on Ubuntu 24.04, builds the same package, byte for byte, from the tag:
+
+              git clone $SERVER/$GH_REPO.git && cd ${GH_REPO#*/}
+              git switch --detach $TAG
+              python3 packaging/build_deb.py --maintainer "$maintainer"
+          EOF
+          gh release create "$TAG" --verify-tag --draft --title "Radiolack $version" --notes-file "$notes" \
+            "dist/$package" dist/SHA256SUMS
+          gh release edit "$TAG" --draft=false
+          echo "Published $TAG: $SERVER/$GH_REPO/releases/tag/$TAG"
