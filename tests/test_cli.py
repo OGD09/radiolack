@@ -26,6 +26,7 @@ import radiolack
 from radiolack import cli
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST
+from radiolack.sources import Sources
 import tests     # tests/__init__.py gives the test run a settings folder of its own
 
 PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
@@ -156,6 +157,29 @@ class MainTest(unittest.TestCase):
             # Kept for the next start without an address.
             saved = json.loads(settings.read_text(encoding="utf-8"))["receivers"]["rtl_tcp"]["source"]
             self.assertEqual(saved["address"], address)
+
+    def test_without_a_source_option_opens_the_receiver_used_last(self):
+        opened = []
+
+        class Recording(Sources):
+            def open(self, reopen):
+                opened.append(super().open(reopen))
+                return opened[-1]
+
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:
+            with mock.patch.object(cli, "Sources", Recording):
+                self.assertEqual(run_main("--ui", "none")[0], 0)
+                self.assertEqual([source.kind for source in opened], ["synthetic"])    # the first time
+                settings.parent.mkdir(exist_ok=True)
+                saved = {"version": 1, "source": {"kind": "rtl_tcp"},
+                         "receivers": {"rtl_tcp": {"source": {"address": address}}}}
+                settings.write_text(json.dumps(saved), encoding="utf-8")
+                opened.clear()
+                code, out, err = run_main("--ui", "none")
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual([(source.kind, source.address) for source in opened], [("rtl_tcp", address)])
+            with self.assertRaises(BlockingIOError):
+                rtl_tcp.accept()
 
     def test_rtl_tcp_without_an_address_reopens_the_saved_one(self):
         with silent_rtl_tcp() as (rtl_tcp, address), own_settings() as settings:

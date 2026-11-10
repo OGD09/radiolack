@@ -39,6 +39,11 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-09 | Browser tests (Playwright: Chromium, Firefox and WebKit) run headless and only on request (`RADIOLACK_BROWSER_TESTS=1`), as CI does; the usual test commands launch no browser. |
 | 2026-11-09 | Persistence: the engine saves everything, in `$XDG_CONFIG_HOME/radiolack` (`settings.json` and `bookmarks.json`, each with a format version), including the interface's own settings: the page's origin, and with it the browser's storage, changes with the port at each start. Receiver settings are saved per receiver (the simulated band, each `--rtl-sdr` device, each `--rtl-tcp` address). Until remote access, one set of interface settings is kept, that of the interface that changed one last, which the next interface opens with; open interfaces keep their own. v1 keeps them per device. Remote access is never saved. A file Radiolack cannot read is set aside, never overwritten. |
 | 2026-11-09 | rtl_tcp address: the address is only the way to the receiver, and changes with the networks the computers are on. The user gives the address that works where they are, on the command line or in the Source panel, and Radiolack says when it does not answer; it does not try several addresses by itself. One set of rtl_tcp settings is kept whatever the address, with the address used last, which `--rtl-tcp` without an address reopens. This replaces "each `--rtl-tcp` address" in the persistence decision above. |
+| 2026-11-10 | Source choice: the Source panel's Receiver list switches between the simulated band, a receiver plugged into this computer and an rtl_tcp server while Radiolack runs; each keeps its own settings. Without `--rtl-sdr` or `--rtl-tcp`, Radiolack opens the source used last, the simulated band the first time. |
+| 2026-11-10 | Installation: each system gets its usual installer. The Debian package comes first, for Debian 12 or later and Ubuntu 24.04 or later, on the system's Python and libraries, with a menu entry and an icon; the owner's v0 check uses it. The macOS (.dmg) and Windows (.msi or .exe) installers come with their window shells, before v4. |
+| 2026-11-10 | Updates: at start, Radiolack says when a newer version is out, with a button that installs it and restarts Radiolack; Settings checks on demand and can turn the check at start off. On Linux the update comes from a signed APT repository and upgrades Radiolack only, once the system has asked for the administrator's password. The button shows in the local window only, never through remote access. The check is the only connection Radiolack makes besides the receiver and its clients, and carries no identifier. It needs published packages: see the publication decision below. |
+| 2026-11-10 | Licence: GPL-3.0-or-later, copyright OGD09. It is the licence of most SDR software (Gqrx, SDR++, SDRangel, GNU Radio), whose code Radiolack can then reuse; anyone who distributes a modified Radiolack must publish its source under the same licence. Every dependency fits it (aiohttp: Apache-2.0; NumPy: BSD; PyGObject, GTK and WebKitGTK: LGPL), and so do GPL drivers that installers may carry, such as librtlsdr. Set aside: the AGPL, OpenWebRX's choice, whose duties for versions used over a network Radiolack's private remote access does not call for, and permissive licences, which allow closed versions. |
+| 2026-11-10 | Publication: the repository becomes public. Updates need packages that Radiolack can fetch without the owner's credentials, and the packages hold the Python code anyway. The history was audited first (2026-11-10) and stays as it is: rewriting it would not remove the commits GitHub keeps for pull requests. The owner switches the repository's visibility. |
 
 ## Scope
 
@@ -103,7 +108,8 @@ flowchart LR
   state.
   - Sources: an rtl_tcp client, with an rtl_tcp child process that Radiolack
     starts on a free local port; SoapySDR later; synthetic I/Q generated in
-    memory for tests and demos (never recorded).
+    memory for tests and demos (never recorded). The Source panel switches
+    between them while Radiolack runs.
   - DSP: display FFT (window, averaging, peak hold), channel extraction (mix
     and decimate), NFM, AM, USB, LSB and CW demodulators, squelch, AGC, audio
     resampling.
@@ -126,6 +132,11 @@ flowchart LR
   with pywebview (WebView2, WKWebView) as the candidate. Where no native
   window is available, `radiolack --ui browser` opens the UI in the default
   browser.
+- **Packaging**: on Linux, a Debian package (`packaging/build_deb.py`) that
+  installs the Python package for the system's Python 3, with the
+  `radiolack` command, a menu entry, an icon and its licence notice, and
+  depends on the system's aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK.
+  The macOS and Windows installers come with their shells (spike 5).
 
 ### Behaviour rules
 
@@ -170,8 +181,9 @@ flowchart LR
 
 ### Privacy
 
-- No telemetry and no account. Radiolack talks only to the receiver and to the
-  clients the user lets in.
+- No telemetry and no account. Radiolack talks only to the receiver, to the
+  clients the user lets in and, once updates exist, to its update server, a
+  check that Settings can turn off.
 - Nothing personal in the repository: no owner-specific frequencies, places or
   call signs in code, examples or tests.
 
@@ -190,13 +202,15 @@ Goal: replace Gqrx for the owner's daily listening on 2 m and 70 cm.
 - Bookmarks and the band plan: all frequencies, with the IARU Region 1 plans
   inside the amateur bands.
 - Settings panel with persistence; English interface.
+- Debian package with a menu entry and an icon.
 - Tests without hardware: DSP on synthetic I/Q; engine and server over local
   sockets on ephemeral ports; UI tests in Chromium, Firefox and WebKit
   (Playwright); CI updated with job timeouts and cancellation.
 
-Done when the owner confirms on their computer that Radiolack starts from its
-launcher, shows the live band, tunes a local repeater with clean audio and
-remembers its settings, and when every test passes in CI.
+Done when the owner confirms on their computer that Radiolack, installed from
+its Debian package, starts from its menu entry, shows the live band, tunes a
+local repeater with clean audio and remembers its settings, and when every
+test passes in CI.
 
 ### v1: remote access
 
@@ -219,9 +233,8 @@ the code.
   scanners matter more than remote access.
 - v3, receivers and bands: SoapySDR devices, HF (direct sampling, RTL-SDR Blog
   V4), band plans for the other regions.
-- v4, public release: Windows and macOS builds, installers, code signing,
-  updates, user documentation, licence, accessibility review, public
-  repository.
+- v4, public release: Windows and macOS builds and installers, code signing,
+  updates on every system, user documentation, accessibility review.
 
 ## Spikes and risks
 
@@ -282,7 +295,7 @@ expensive later, so they apply from v0:
 - Band plans by region, with no owner-specific data.
 - Cross-platform code paths only.
 - Secure defaults for remote access.
-- Dependencies whose licences fit the licence chosen for Radiolack.
+- Dependencies whose licences fit Radiolack's, GPL-3.0-or-later.
 
 These costs wait for v4:
 
@@ -292,17 +305,13 @@ These costs wait for v4:
 - Installers and updates for three systems, built on each system (GitHub
   Actions minutes are free for public repositories).
 - Support and documentation for other people's receivers and drivers.
-- An audit of the git history before the repository becomes public.
 - A check that the name "Radiolack" is free to use.
 
 ## Open questions
 
-1. Licence: GPL-3.0-or-later matches most SDR software (Gqrx, SDR++, SDRangel)
-   and makes it simple to ship GPL drivers such as librtlsdr. A permissive
-   licence is possible but needs more care when bundling those drivers.
-2. Recording: the repository forbids recording audio and raw I/Q today, while
+1. Recording: the repository forbids recording audio and raw I/Q today, while
    most SDR programs offer it. Keep the rule, or allow recording on demand?
-3. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
+2. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
    WFM demodulator, but the scope lists NFM, AM, USB, LSB and CW only. Add WFM
    to v0, or later?
 
@@ -448,8 +457,42 @@ These costs wait for v4:
   receiver to a port where nothing listens and back with the same settings.
   That link carried about 1.5 MB/s, short of the 2 MB/s of 1.024 MS/s: 16
   frames per second instead of 30, rtl_tcp dropping samples.
-- Next step: a desktop launcher, then the owner's check of v0 on their
-  computer.
+- Source switching, 2026-11-10: the Source panel's Receiver list switches
+  between the simulated band, a receiver plugged into this computer and an
+  rtl_tcp server, for every interface: the source state lists the `kinds`
+  the engine can open, and a `source` message with `kind` alone switches
+  (protocol version 4 unchanged). The engine keeps the settings of the
+  source it leaves, closes it and opens the one used last of the chosen
+  kind with its saved settings, demodulation included; it reads the new
+  source only once the previous one has let the receiver go, as both may
+  need the same device. `settings.json` records the source in use, which
+  Radiolack opens at the next start unless `--rtl-sdr` or `--rtl-tcp` names
+  one; a saved source it cannot open gives the simulated band. Tested with
+  the fakes and in three browsers; not yet with a receiver.
+- Debian package, 2026-11-10: `packaging/build_deb.py` builds an
+  architecture-independent package with dpkg-deb alone, from the Python
+  package as it is: the package in the system's `dist-packages`,
+  byte-compiled at installation, the `radiolack` command, a menu entry and
+  an icon. The window takes the program name `radiolack`, its application
+  id on Wayland and its class on X11, so that the desktop matches it with
+  the menu entry and the icon. A development version carries the time and
+  commit of the last commit, and `.dirty` with uncommitted changes, so that
+  a later build installs over an earlier one. A maintainer is required:
+  dpkg warns about an installed package without one every time it reads its
+  database. Tested by building, extracting and running the package; not yet
+  installed.
+- Licence, 2026-11-10: `LICENSE` holds the GPL's text as the Free Software
+  Foundation publishes it (Debian's `/usr/share/common-licenses/GPL-3` is
+  the same file), the README states it, and the Debian package carries the
+  notice Debian expects in `/usr/share/doc/radiolack/copyright`. The Python
+  package carries `LICENSE` too, built with Debian 12's setuptools (66) as
+  with the latest (84), but `pyproject.toml` does not name the licence: its
+  SPDX form needs setuptools 77, so Debian 12's would refuse the README's
+  installation without build isolation, and the older table form is
+  deprecated, with 18 February 2027 as setuptools' deadline.
+- Next step: the owner makes the repository public, installs the Debian
+  package and checks v0 on their computer; then versioned releases, the APT
+  repository and the update alert.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
 - `main` keeps the current tool until v0 is merged.

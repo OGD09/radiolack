@@ -21,7 +21,8 @@ from pathlib import Path
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
-from radiolack.store import Store
+from radiolack.sources import Sources
+from radiolack.store import SETTINGS_FILE, Store
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, free_port
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
@@ -65,9 +66,10 @@ class BrowserTest(unittest.TestCase):
             cls.browsers[name] = browser
         expect.set_options(timeout=TIMEOUT_MS)
 
-    def serve(self, source: RtlTcpSource | None = None, store: Store | None = None) -> str:
+    def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
+              sources: Sources | None = None) -> str:
         """The address of a server started for this test."""
-        server = LocalServer(source=source, store=store)
+        server = LocalServer(source=source, store=store, sources=sources)
         server.start()
         self.addCleanup(server.stop)
         return server.url
@@ -228,6 +230,34 @@ class BrowserTest(unittest.TestCase):
                     field.blur()        # the change applies when the field loses the focus
                     for page in (first, second):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_receiver_list_switches_the_source_for_every_interface(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        address = f"{LOOPBACK}:{free_port()}"     # the rtl_tcp server used last: nothing listens there
+        Store(directory).save(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": address}}}})
+        url = self.serve(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP), store=Store(directory))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                receiver = first.locator("#src-device")
+                expect(receiver).to_be_enabled()
+                expect(receiver).to_have_value("synthetic")
+                expect(first.locator('#src-device option[value="soapy"]')).to_be_disabled()
+                expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
+                receiver.select_option("rtl_sdr")
+                for page in (first, second):
+                    expect(page.locator("#src-device")).to_have_value("rtl_sdr")
+                    expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                receiver.select_option("rtl_tcp")
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(
+                        f"Waiting for rtl_tcp at {address}: connection refused\N{HORIZONTAL ELLIPSIS}")
+                    expect(page.locator("#src-address")).to_have_value(address)
+                second.locator("#src-device").select_option("synthetic")
+                for page in (first, second):
+                    expect(page.locator("#src-device")).to_have_value("synthetic")
+                    expect(page.locator("#src-address")).to_be_hidden()
 
     def test_the_rtl_tcp_server_address_changes_in_the_source_panel(self):
         # Nothing listens on these ports: the source waits, refused.

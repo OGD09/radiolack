@@ -27,7 +27,8 @@ handshake, so a page from another site cannot read the stream.
     "centre_hz": 145000000.0, "sample_rate_hz": 2400000.0, "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
     "dc_removal": true,
-    "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm", "dc_removal"]}
+    "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm", "dc_removal"],
+    "kinds": ["synthetic", "rtl_sdr", "rtl_tcp"]}
    ```
 
    (`gains_db` shortened here.)
@@ -46,6 +47,7 @@ handshake, so a page from another site cannot read the stream.
    | `range_hz` | Lowest and highest centre frequency the source takes. |
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
    | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. |
+   | `kinds` | Kinds of source the engine may switch to, `kind` among them; empty when it reads one source only. |
 
 3. Then the demodulation settings, a JSON text message, sent again whenever
    they change, whichever interface changed them. They are the same for
@@ -198,7 +200,8 @@ Radiolack stops, the server closes the stream with code 1001 (going away).
 ## From the interface
 
 A `source` text message changes the settings it names, among those listed in
-`settable`; the others stay as they are:
+`settable`, or switches to another kind of source; the others stay as they
+are:
 
 ```json
 {"type": "source", "centre_hz": 433500000}
@@ -206,6 +209,7 @@ A `source` text message changes the settings it names, among those listed in
 
 | Field | Value |
 | --- | --- |
+| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. |
 | `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes 900001 to 3200000 Hz, librtlsdr's upper range. |
@@ -327,7 +331,9 @@ do once it connects.
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
   source's `address` became settable, without a new version: an interface
   leaves out the settings it does not know, and changes only those listed
-  in `settable`.
+  in `settable`. On 2026-11-10, the source state's `kinds` and a `source`
+  message's `kind`, also without a new version: an interface that does not
+  know them reads the state as before and never switches.
 - 3 (2026-11-09): the demodulation settings, the `demod` and `audio`
   messages, audio frames, the channel level and squelch in spectrum frames
   (frame format 2), and the command's type in errors.

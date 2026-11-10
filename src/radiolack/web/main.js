@@ -1054,18 +1054,19 @@ function bindRange(id, key, fmt, after) {
 
 // Source: what the engine captures, and the receiver settings it takes. The
 // engine's state is the reference: a change shows once the engine sends it
-// back, to every interface. The source is chosen when Radiolack starts, but an
-// rtl_tcp source can move to another server address. DC removal is the
-// engine's own setting for any source, and antenna power comes with a later
-// step.
+// back, to every interface. The Receiver list switches between the kinds of
+// source the engine opens, each with its own saved settings, and an rtl_tcp
+// source can move to another server address. DC removal is the engine's own
+// setting for any source, and antenna power comes with a later step.
 let manualGainDb = null;    // the last manual gain, offered again when automatic gain is turned off
 const nearestIndex = (values, v) => values.reduce((best, x, i) => (Math.abs(x - v) < Math.abs(values[best] - v) ? i : best), 0);
 function sourceNote() {
   if (!source) return '';
   let text = '';
   if (source.kind === 'synthetic') {
-    text = '2 m band simulated by the engine. Start Radiolack with --rtl-sdr to use the RTL-SDR receiver '
-      + 'plugged into this computer, or with --rtl-tcp for one served by rtl_tcp.';
+    text = source.kinds.length > 1 ? '2 m band simulated by the engine. Choose a receiver in the list above.'
+      : '2 m band simulated by the engine. Start Radiolack with --rtl-sdr to use the RTL-SDR receiver '
+        + 'plugged into this computer, or with --rtl-tcp for one served by rtl_tcp.';
   } else if (source.kind === 'rtl_sdr' || source.kind === 'rtl_tcp') {
     const where = source.kind === 'rtl_sdr' ? 'on this computer, through rtl_tcp run by Radiolack'
       : `through rtl_tcp at ${source.address}`;
@@ -1083,7 +1084,11 @@ function selectRate(select, rateHz) {
 }
 function syncSource() {
   const settable = new Set(streamState === 'open' && source ? source.settable : []);
-  $('#src-device').value = source ? source.kind : '';   // no entry is selected before the engine answers
+  const deviceEl = $('#src-device');
+  const kinds = streamState === 'open' && source ? source.kinds : [];
+  for (const option of deviceEl.options) option.disabled = !kinds.includes(option.value);
+  deviceEl.disabled = kinds.length < 2;
+  deviceEl.value = source ? source.kind : '';   // no entry is selected before the engine answers
   $('#src-note').textContent = sourceNote();
   const addressEl = $('#src-address');
   $('#src-address-field').hidden = !source || !source.settable.includes('address');
@@ -1126,6 +1131,12 @@ for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm')]) {
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
 }
+// Another receiver: the engine closes the one in use and opens the new one
+// with its saved settings, for every interface.
+$('#src-device').addEventListener('change', (e) => {
+  const kind = e.target.value;
+  if (!source || kind === source.kind || !stream.sendSource({ kind })) syncSource();
+});
 // The engine reads the address and says why it refuses one; an emptied field
 // or the address in use changes nothing.
 $('#src-address').addEventListener('change', (e) => {

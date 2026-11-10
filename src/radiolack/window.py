@@ -12,6 +12,9 @@ import signal
 from urllib.parse import urlsplit
 
 TITLE = "Radiolack"
+# The program's name for the desktop: the window's class and application id,
+# which match its menu entry (radiolack.desktop) and name its icon.
+PROGRAM = "radiolack"
 DEFAULT_SIZE = (1280, 800)
 # Shown until the page paints; matches --bg in the interface.
 BACKGROUND = "#0a0c0f"
@@ -47,6 +50,7 @@ def show(url: str) -> None:
     view.set_background_color(background)
     view.connect("decide-policy", _stay_on_origin, _origin(url), WebKit2)
 
+    Gtk.Window.set_default_icon_name(PROGRAM)   # once installed with its icon; otherwise none
     window = Gtk.Window(title=TITLE)
     window.set_default_size(*DEFAULT_SIZE)
     window.add(view)
@@ -87,7 +91,9 @@ def _load_toolkit():
     else:
         raise WindowUnavailable("WebKitGTK is not installed")
     try:
-        from gi.repository import Gdk, GLib, Gtk, WebKit2
+        from gi.repository import GLib
+        GLib.set_prgname(PROGRAM)   # before GTK starts, which otherwise names it after the script
+        from gi.repository import Gdk, Gtk, WebKit2
     except ImportError as error:
         raise WindowUnavailable(f"GTK or WebKitGTK failed to load: {error}") from None
     if not hasattr(WebKit2, "WebsitePolicies"):

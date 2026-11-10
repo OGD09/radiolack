@@ -127,11 +127,13 @@ const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences'];
  * @property {number[]} gainsDb         manual gains the tuner offers, lowest first
  * @property {[number, number]} rangeHz centre frequencies the source takes
  * @property {Setting[]} settable       settings an interface may change
+ * @property {string[]} kinds           kinds of source the engine may switch to; empty: it reads one only
  */
 
 /**
  * Changes to ask of the engine; the others stay as they are.
  * @typedef {object} SourceChanges
+ * @property {string} [kind]            another kind of source, among SourceState.kinds, asked alone
  * @property {string} [address]         of an rtl_tcp server: HOST, PORT or HOST:PORT
  * @property {number} [centreHz]
  * @property {number} [rateHz]
@@ -269,6 +271,7 @@ export function decodeSource(message) {
     gainsDb: m.gains_db.slice(),
     rangeHz: [m.range_hz[0], m.range_hz[1]],
     settable: m.settable.filter((/** @type {string} */ name) => SETTINGS.includes(name)),
+    kinds: Array.isArray(m.kinds) ? m.kinds.filter((/** @type {unknown} */ kind) => typeof kind === 'string') : [],
   };
 }
 
@@ -386,6 +389,7 @@ export class EngineStream {
   sendSource(changes) {
     /** @type {Record<string, string | number | boolean | null>} */
     const message = { type: 'source' };
+    if (changes.kind !== undefined) message.kind = changes.kind;
     if (changes.address !== undefined) message.address = changes.address;
     if (changes.centreHz !== undefined) message.centre_hz = changes.centreHz;
     if (changes.rateHz !== undefined) message.sample_rate_hz = changes.rateHz;

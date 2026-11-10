@@ -233,6 +233,12 @@ class RtlTcpSource:
         the address is only the way to the receiver."""
         return self.kind
 
+    @property
+    def reopen(self) -> dict[str, Any]:
+        """What opens this receiver again (sources.py): the address comes
+        from the saved settings."""
+        return {"kind": self.kind}
+
     def _settable(self) -> list[str]:
         """The settings an interface may change."""
         return ["address", *_SETTINGS]
@@ -495,6 +501,10 @@ class RtlSdrSource(RtlTcpSource):
         """The engine saves settings per receiver, as given: rtl_tcp's port
         changes at each start."""
         return f"{self.kind} {self.device}"
+
+    @property
+    def reopen(self) -> dict[str, Any]:
+        return {"kind": self.kind, "device": self.device}
 
     def _settable(self) -> list[str]:
         return list(_SETTINGS)      # the source chooses where its rtl_tcp listens

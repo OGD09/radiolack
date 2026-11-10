@@ -16,6 +16,7 @@ import aiohttp
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
+from radiolack.sources import Sources
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
@@ -533,6 +534,58 @@ class RtlSdrStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runs.stopping(), {pid})
         with self.assertRaises(ProcessLookupError):     # ended, and its exit status collected
             os.kill(pid, 0)
+
+
+@unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+class SourceSwitchStreamTest(unittest.IsolatedAsyncioTestCase):
+    """An interface switches the engine's source for every interface: the
+    simulated band, then the fake rtl_tcp program as a receiver on this
+    computer, then the simulated band again."""
+
+    async def asyncSetUp(self):
+        self.runs = FakeRtlTcpRuns(self)
+        self.server = LocalServer(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    def connect(self):
+        return self.session.ws_connect(f"{self.server.url}stream",
+                                       origin=f"http://{LOOPBACK_HOST}:{self.server.port}")
+
+    @staticmethod
+    async def next_of(ws, kind: str) -> dict:
+        """The next JSON message of type ``kind``."""
+        while (message := await next_text(ws))["type"] != kind:
+            pass
+        return message
+
+    async def test_an_interface_switches_the_source_for_all(self):
+        async with self.connect() as first, self.connect() as second:
+            for ws in (first, second):
+                self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
+                state = await ws.receive_json(timeout=5)
+                self.assertEqual((state["kind"], state["kinds"]), ("synthetic", ["synthetic", "rtl_sdr", "rtl_tcp"]))
+            await first.send_json({"type": "source", "kind": "rtl_sdr", "ppm": 1})
+            self.assertEqual(await self.next_of(first, "error"), {
+                "type": "error", "command": "source",
+                "message": "the kind of source changes on its own, without other settings"})
+            await first.send_json({"type": "source", "kind": "rtl_sdr"})
+            for ws in (first, second):
+                state = await self.next_of(ws, "source")
+                while (state["kind"], state["status"]) != ("rtl_sdr", "streaming"):
+                    state = await self.next_of(ws, "source")
+                self.assertEqual(state["tuner"], "Rafael Micro R820T")
+            [(pid, _)] = self.runs.started()
+            await second.send_json({"type": "source", "kind": "synthetic"})
+            for ws in (first, second):
+                while (await self.next_of(ws, "source"))["kind"] != "synthetic":
+                    pass
+            deadline = time.monotonic() + 5
+            while self.runs.stopping() != {pid}:
+                self.assertLess(time.monotonic(), deadline, "rtl_tcp still runs")
+                await asyncio.sleep(0.05)
 
 
 class LocalServerLifecycleTest(unittest.TestCase):

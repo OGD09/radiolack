@@ -12,14 +12,16 @@ control it and listen to it over the local network.
 rtl_tcp, which it runs itself for a receiver plugged into this computer, or
 simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
-spectrum and the waterfall with WebGL2. The Source panel sets the receiver's
+spectrum and the waterfall with WebGL2. The Source panel switches between the
+simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
-bookmarks are kept from one start to the next. The remote access switch is
+bookmarks are kept from one start to the next, and Radiolack installs as a
+package on Debian and Ubuntu. The remote access switch is
 only the mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
 milestones and the decisions are in
 [docs/design/scoping.md](docs/design/scoping.md).
@@ -40,12 +42,41 @@ English, with no translations.
   the spectrum and the waterfall stay empty.
 - For an RTL-SDR receiver: rtl_tcp, which comes with librtlsdr. Debian and
   Ubuntu: `sudo apt install rtl-sdr`.
-- Windows and macOS are planned for the public release.
+- Windows and macOS, each with its own installer, are planned for the public
+  release.
 
 ## Installation
 
-From the repository, in a virtual environment that can see the system's
-PyGObject:
+### Debian and Ubuntu package
+
+On Debian 12 or later and Ubuntu 24.04 or later, Radiolack installs as a
+Debian package for the system's Python, with the `radiolack` command, a menu
+entry and an icon. Build the package from the repository, with your name and
+address as its maintainer; building needs only Python and dpkg-deb:
+
+```bash
+python3 packaging/build_deb.py --maintainer "Your Name <you@example.org>"
+```
+
+It prints the package's path, `dist/radiolack_VERSION_all.deb`. Install
+that file with apt, which also installs what Radiolack needs (aiohttp,
+NumPy, PyGObject, GTK 3 and WebKitGTK) and the rtl-sdr package it
+recommends:
+
+```bash
+sudo apt install ./dist/radiolack_VERSION_all.deb
+```
+
+Radiolack then shows in the applications menu. A package built from a later
+commit installs over an earlier one, and `sudo apt remove radiolack` removes
+it, leaving your settings and bookmarks. DEBFULLNAME and DEBEMAIL, as
+Debian's tools read them, can give the maintainer instead of
+`--maintainer`. Radiolack does not update itself yet.
+
+### From the repository
+
+For development, install Radiolack from the repository, in a virtual
+environment that can see the system's PyGObject:
 
 ```bash
 python3 -m venv --system-site-packages .venv
@@ -67,7 +98,10 @@ installs without downloading anything. To run without installing, use
 radiolack
 ```
 
-opens the interface in a desktop window. Closing the window stops Radiolack.
+opens the interface in a desktop window, on the source used last: the
+simulated 2 m band the first time. The Source panel's Receiver list switches
+to a receiver ([RTL-SDR receivers](#rtl-sdr-receivers)). Closing the window
+stops Radiolack.
 
 | Option | Effect |
 | --- | --- |
@@ -75,8 +109,8 @@ opens the interface in a desktop window. Closing the window stops Radiolack.
 | `--ui browser` | Opens the interface in the default web browser. |
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
-| `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the simulated band, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
-| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the simulated band. The Source panel can change the address. Not with `--rtl-sdr`. |
+| `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Source panel can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -102,8 +136,17 @@ for invalid options.
 
 ## RTL-SDR receivers
 
-Radiolack reads RTL-SDR receivers through rtl_tcp. For a receiver plugged
-into this computer, Radiolack runs rtl_tcp itself:
+Radiolack reads RTL-SDR receivers through rtl_tcp. The Source panel's
+Receiver list switches between the simulated band ("Synthetic band (2 m)"),
+a receiver plugged into this computer ("RTL-SDR · this computer") and a
+receiver behind an rtl_tcp server ("RTL-SDR · rtl_tcp"), for every open
+interface; its other entries are not available yet. Each keeps its own
+settings, demodulation included, and Radiolack opens the one used last at
+the next start. "RTL-SDR · this computer" opens the receiver used last, the
+first one plugged in the first time, and "RTL-SDR · rtl_tcp" connects to
+the address used last. The options below choose one on the command line.
+
+For a receiver plugged into this computer, Radiolack runs rtl_tcp itself:
 
 ```bash
 radiolack --rtl-sdr
@@ -230,8 +273,9 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 
 - `settings.json` holds each receiver's settings: the Source panel's and the
   demodulation settings (VFO, mode, filter width, squelch). The simulated
-  band and each `--rtl-sdr` device have their own; rtl_tcp has one set
-  whatever its address, which is saved with them.
+  band and each receiver plugged into this computer, by index or serial
+  number, have their own; rtl_tcp has one set whatever its address, which is
+  saved with them. It also records the source in use, for the next start.
   It also holds the interface's own settings: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and the scanners' settings. Remote access is never saved: it is off
@@ -286,8 +330,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 
 The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
-they use a temporary settings folder, never yours. GitHub
-Actions runs them against the installed package on Python 3.11 and 3.15.
+they use a temporary settings folder, never yours. Where dpkg-deb is
+installed, they also build the Debian package in a temporary folder and run
+its command. GitHub Actions runs them against Radiolack installed with pip,
+on Python 3.11 and 3.15.
 
 The interface's JavaScript carries JSDoc types, which TypeScript checks
 without producing any file. The check needs Node.js and downloads TypeScript
@@ -300,8 +346,8 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
-panel, a change made in one interface showing in another, the bookmarks and
-the saved interface settings. They
+panel and its Receiver list, a change made in one interface showing in
+another, the bookmarks and the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -372,11 +418,28 @@ src/radiolack/
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you
+  sources.py    opens each kind of source, for the Receiver list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
   window.py     desktop window (GTK 3 and WebKitGTK)
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents
+packaging/      Debian package: build script, menu entry, icon and licence notice
 jsconfig.json   settings of the interface's type check
+LICENSE         GNU General Public License, version 3
 ```
+
+## Licence
+
+Copyright 2026 OGD09
+
+Radiolack is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+Radiolack is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the GNU General Public License, in
+[LICENSE](LICENSE), for more details.

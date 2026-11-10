@@ -14,8 +14,9 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   background thread; interface files and the `/stream` WebSocket), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings and the bookmarks with clients, sends
-  audio to those that ask, passes their changes on, restores and saves the
-  settings; idle without clients), `store` (settings and bookmarks files in
+  audio to those that ask, passes their changes on, switches between kinds
+  of sources, restores and saves the settings and the source in use; idle
+  without clients), `store` (settings and bookmarks files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, unreadable files set
   aside), `bookmarks` (bookmarks and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
@@ -23,7 +24,8 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
-  waiting state), `synthetic` (simulated 2 m
+  waiting state), `sources` (opens each kind of source from its saved
+  record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
@@ -33,6 +35,11 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   (band plan loader) carry JSDoc types; `main.js` still holds the mockup's code under
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
+- `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
+  Python package as it is), `radiolack.desktop` (menu entry),
+  `radiolack.svg` (icon) and `copyright` (the package's licence notice). The
+  window's program name, `window.PROGRAM`, matches the menu entry's and the
+  icon's names: change them together.
 - `docs/design/protocol.md`: the stream between engine and interface. Change
   it with the engine, the server and `stream.js`, and raise the protocol
   version for any incompatible change.
@@ -51,8 +58,11 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   browsers installed (README.md, Tests).
 - Run without installing: `PYTHONPATH=src python3 -m radiolack` (window) or
   `--ui none` (address only).
+- Debian package: `python3 packaging/build_deb.py --maintainer "Name <address>"`
+  writes `dist/radiolack_VERSION_all.deb` (needs dpkg-deb);
+  `tests/test_packaging.py` builds one in a temporary folder.
 - CI (GitHub Actions): `.github/workflows/tests.yml` runs the unittest
-  command against the installed package on Python 3.11 and 3.15;
+  command against the package installed with pip on Python 3.11 and 3.15;
   `.github/workflows/interface.yml` runs the type check and the browser tests
   when the package, the tests or pyproject.toml change. Keep their job and
   step timeouts, their concurrency cancellation, the path filters and the
@@ -69,7 +79,13 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   opens the receiver, as soon as an interface opens (the default window
   included), and `radiolack --rtl-tcp` tunes the receiver behind a running
   rtl_tcp: tests and checks use the fake rtl_tcp server of `tests/fakes.py`
-  or the fake rtl_tcp program `tests/fake_rtl_tcp.py` instead.
+  or the fake rtl_tcp program `tests/fake_rtl_tcp.py` instead. `radiolack`
+  without either option reopens the source used last, which may be a
+  receiver, and choosing a receiver in the Source panel's list opens it: a
+  check started with a temporary `XDG_CONFIG_HOME` begins on the simulated
+  band.
+- Never install, upgrade or remove the Debian package, or any system
+  package: that needs sudo, which the owner runs.
 - Never connect to Gqrx (it may be running: connecting to its remote control
   starts its DSP) and never write its configuration (`~/.config/gqrx/`).
 - Tests use ephemeral ports, never fixed ones (in particular not 1234, 1235,
@@ -115,3 +131,7 @@ keeps what the rewrite reuses from the airband explorer, which stays on `main`.
   structure.
 - Update README.md, and docs/design/ when relevant, with every user-facing
   change.
+- Radiolack is GPL-3.0-or-later (`LICENSE`): a new dependency, or code or
+  data taken from elsewhere, needs a licence compatible with it.
+  `pyproject.toml` leaves the licence out while a supported system's
+  setuptools cannot read its SPDX form (setuptools 77; Debian 12 has 66).

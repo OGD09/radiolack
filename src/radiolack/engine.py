@@ -18,6 +18,12 @@ client like the source's: it takes each block's mean off its samples, so that
 a constant offset, such as an RTL-SDR's, does not show as a spike at the
 centre frequency. It also removes a signal exactly on the centre frequency.
 
+With the sources it may open (sources.py), the engine switches to another
+kind of source when a client asks: the source in use closes, keeping its
+settings, and the new one starts from those saved for its receiver. Without
+a source to start with, it opens the one used last, the first kind the first
+time.
+
 The engine also keeps the bookmarks, shared by every client like the
 settings, and the interfaces' preferences, which a new interface starts with.
 With a store (store.py), it starts from what was saved: the settings saved
@@ -37,7 +43,7 @@ import dataclasses
 import logging
 import math
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 import numpy as np
@@ -68,6 +74,7 @@ class Source(Protocol):
     that state changes. ``settings_key`` names the receiver whose settings
     the engine saves: each key has its own. ``given`` names the settings
     chosen when the source was made, which saved ones do not replace.
+    ``reopen`` is what opens the same receiver again (sources.py).
     """
 
     kind: str
@@ -79,6 +86,10 @@ class Source(Protocol):
     @property
     def settings_key(self) -> str:
         """Such as "rtl_sdr 0": the kind of source and which receiver."""
+
+    @property
+    def reopen(self) -> dict[str, Any]:
+        """Such as {"kind": "rtl_sdr", "device": "0"}, as JSON values."""
 
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples once they have arrived, or ``None`` when
@@ -112,6 +123,10 @@ class FixedSource:
     def settings_key(self) -> str:
         return self.kind
 
+    @property
+    def reopen(self) -> dict[str, Any]:
+        return {"kind": self.kind}
+
     def describe(self) -> dict[str, Any]:
         centre = self.centre_hz
         return {"kind": self.kind, "status": "streaming", "detail": "", "address": None,
@@ -127,6 +142,17 @@ class FixedSource:
 
     async def wait_closed(self) -> None:
         """Nothing to wait for."""
+
+
+class SourceOpener(Protocol):
+    """Opens sources by kind (sources.py): ``kinds``, the first being the
+    default, are those an engine may switch between."""
+
+    kinds: Sequence[str]
+
+    def open(self, reopen: Mapping[str, object]) -> Source:
+        """A new source from what ``Source.reopen`` gave; raises ValueError
+        when it cannot be opened."""
 
 
 class Subscription:
@@ -210,14 +236,19 @@ class Subscription:
 
 
 class Engine:
-    """Turn a source into display frames and audio for any number of clients."""
+    """Turn a source into display frames and audio for any number of clients.
 
-    def __init__(self, source: Source, *, store: Store | None = None, frame_rate: float = FRAME_RATE,
+    The engine reads ``source``, or without one the source that ``sources``
+    opened last, and switches between the kinds of ``sources`` when a client
+    asks."""
+
+    def __init__(self, source: Source | None = None, *, sources: SourceOpener | None = None,
+                 store: Store | None = None, frame_rate: float = FRAME_RATE,
                  analyzer: SpectrumAnalyzer | None = None, queue_size: int = CLIENT_QUEUE,
                  save_delay_s: float = SAVE_DELAY_S) -> None:
         if frame_rate <= 0:
             raise ValueError(f"the frame rate must be positive, not {frame_rate}")
-        self.source = source
+        self._sources = sources
         self.analyzer = analyzer if analyzer is not None else SpectrumAnalyzer()
         self._frame_rate = frame_rate
         self._queue_size = queue_size
@@ -228,6 +259,7 @@ class Engine:
         self._sequence = 0
         self._demodulator = Demodulator()   # used by one block at a time
         self._capture: tuple[float, float] | None = None    # centre and rate of the last block
+        self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
         # What each client receives first, in this order, then again whenever it changes.
         self._states: dict[str, Callable[[Subscription], dict[str, Any]]] = {
             "source": lambda _: self.state(),
@@ -250,22 +282,31 @@ class Engine:
         # The other receivers' settings are written back as they were read.
         self._receivers = ({key: value for key, value in receivers.items() if isinstance(value, dict)}
                            if isinstance(receivers, dict) else {})
-        saved = self._receivers.get(source.settings_key, {})
-        saved_source = saved.get("source")
-        self._restore_source(saved_source)
-        described = source.describe()
-        # Unless saved, the VFO starts a quarter of the span above the centre, clear of the DC spike.
-        self._demod = DemodSettings(
-            frequency_hz=float(round(described["centre_hz"] + described["sample_rate_hz"] / 4)))
-        self._restore_demod(saved.get("demod"))
+        saved_choice = settings.get("source")
+        # What opens each kind of source again: the receiver used last of that kind.
+        self._reopen: dict[str, dict[str, Any]] = {}
+        if isinstance(saved_choice, dict) and isinstance(saved_choice.get("kind"), str):
+            self._reopen[saved_choice["kind"]] = saved_choice
+        if source is not None:
+            self.source = source
+        elif sources is not None:
+            self.source = _open_saved(sources, saved_choice)
+        else:
+            raise ValueError("an engine needs a source, or sources to open one")
+        self._reopen[self.source.kind] = self.source.reopen
+        saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
+        self._adopt()
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
         self._preferences = _saved_preferences(settings.get("interface"))
         if store is not None:
             self._saved = self._contents()      # nothing to write until something changes,
-            if _given_differ(self.state(), saved_source, source.given):
-                del self._saved[SETTINGS_FILE]  # but a given setting replaces the saved one at the next write
+            # but a source or a setting given at start replaces the saved one at the next write.
+            default_choice = {"kind": self._sources.kinds[0]} if self._sources is not None else None
+            if (_given_differ(self.state(), saved_source, self.source.given)
+                    or self._sources is not None
+                    and (saved_choice if saved_choice is not None else default_choice) != self.source.reopen):
+                del self._saved[SETTINGS_FILE]
             self._store = store
-        source.on_change = self._source_changed
 
     def subscribe(self) -> Subscription:
         """The messages for a new client, starting with the source state, the
@@ -289,12 +330,19 @@ class Engine:
         engine's own setting."""
         described = self.source.describe()
         return {"type": "source", **described, "dc_removal": self._dc_removal,
-                "settable": [*described["settable"], "dc_removal"]}
+                "settable": [*described["settable"], "dc_removal"],
+                "kinds": list(self._sources.kinds) if self._sources is not None else []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
-        """Change settings: ``dc_removal`` is the engine's own, the others go
-        to the source. Raises ValueError, changing nothing, when one is
-        refused. Every client then receives the new state."""
+        """Change settings: ``kind`` switches to another kind of source, and
+        comes alone; ``dc_removal`` is the engine's own; the others go to the
+        source. Raises ValueError, changing nothing, when one is refused.
+        Every client then receives the new state."""
+        if "kind" in changes:
+            if len(changes) > 1:
+                raise ValueError("the kind of source changes on its own, without other settings")
+            self._switch(changes["kind"])
+            return
         dc_removal = changes.get("dc_removal", self._dc_removal)
         if not isinstance(dc_removal, bool):
             raise ValueError("DC removal must be true or false")
@@ -380,8 +428,10 @@ class Engine:
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
-        and the latest changes are saved."""
+        like those switched away from, and the latest changes are saved."""
         await self.source.wait_closed()
+        if self._closing:
+            await asyncio.wait(set(self._closing))
         if self._store is None:
             return
         self._save_now.set()
@@ -396,11 +446,18 @@ class Engine:
                 await self._wanted.wait()
                 if self._closed:
                     return
-                block = max(self.analyzer.fft_size, round(self.source.sample_rate_hz / self._frame_rate))
-                samples = await self.source.read(block)
-                if samples is None:
-                    continue        # the source is waiting: check that clients still listen
-                capture = (self.source.centre_hz, self.source.sample_rate_hz)
+                if self._closing:
+                    # The new source may need the same receiver: it starts once released.
+                    closing = set(self._closing)
+                    await asyncio.wait(closing)     # unlike gather, a cancellation leaves them running
+                    self._closing -= closing
+                    continue
+                source = self.source
+                block = max(self.analyzer.fft_size, round(source.sample_rate_hz / self._frame_rate))
+                samples = await source.read(block)
+                if samples is None or source is not self.source:
+                    continue        # waiting, so check that clients still listen; or switched away from
+                capture = (source.centre_hz, source.sample_rate_hz)
                 if capture != self._capture:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
@@ -422,6 +479,59 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("demod")
         self._settings_changed()
+
+    def _switch(self, kind: object) -> None:
+        """Read a source of ``kind`` in place of this one: the receiver used
+        last of that kind, with its saved settings. The source in use closes,
+        and its settings are kept for when it comes back."""
+        sources = self._sources
+        if sources is None:
+            raise ValueError("this source cannot be changed")
+        if not isinstance(kind, str) or kind not in sources.kinds:
+            raise ValueError(f"unknown kind of source: {str(kind)[:40]!r}")
+        if kind != self.source.kind:
+            try:
+                new = sources.open(self._reopen.get(kind, {"kind": kind}))
+            except ValueError as error:
+                log.warning("the saved %s receiver is not used: %s", kind, error)
+                new = sources.open({"kind": kind})
+            old = self.source
+            self._receivers[old.settings_key] = self._receiver_settings()
+            old.on_change = None
+            old.close()
+            self._closing.add(asyncio.ensure_future(self._release(old)))
+            self.source = new
+            self._reopen[kind] = new.reopen
+            self._adopt()
+            self._demod_changed()
+        self._source_changed()
+
+    @staticmethod
+    async def _release(source: Source) -> None:
+        """Wait for a source switched away from to release its receiver."""
+        try:
+            await source.wait_closed()
+        except Exception:
+            log.exception("the %s source did not close cleanly", source.kind)
+
+    def _adopt(self) -> None:
+        """Start the source in use from the settings saved for its receiver,
+        apart from those it was given, and the demodulation settings saved
+        with them."""
+        saved = self._receivers.get(self.source.settings_key, {})
+        self._restore_source(saved.get("source"))
+        described = self.source.describe()
+        # Unless saved, the VFO starts a quarter of the span above the centre, clear of the DC spike.
+        self._demod = DemodSettings(
+            frequency_hz=float(round(described["centre_hz"] + described["sample_rate_hz"] / 4)))
+        self._restore_demod(saved.get("demod"))
+        self._capture = None
+        self.source.on_change = self._source_changed
+
+    def _receiver_settings(self) -> dict[str, Any]:
+        """The settings saved for the receiver in use."""
+        state = self.state()
+        return {"source": {name: state[name] for name in state["settable"]}, "demod": self._demod.describe()}
 
     def _restore_source(self, saved: object) -> None:
         """Apply the source settings saved for this receiver one at a time,
@@ -450,14 +560,12 @@ class Engine:
                 log.warning("the saved setting %s is not used: %s", name, error)
 
     def _contents(self) -> dict[str, dict[str, Any]]:
-        """What the settings and bookmarks files hold, as things stand."""
-        state = self.state()
-        receivers = {**self._receivers, self.source.settings_key: {
-            "source": {name: state[name] for name in state["settable"]},
-            "demod": self._demod.describe(),
-        }}
-        return {SETTINGS_FILE: {"receivers": receivers, "interface": dict(self._preferences)},
-                BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
+        """What the settings and bookmarks files hold, as things stand: with
+        sources to open, which source opens at the next start."""
+        settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
+        settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
+        settings["interface"] = dict(self._preferences)
+        return {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
 
     def _settings_changed(self) -> None:
         """Save soon. ``wait_closed`` saves what changes after ``close``."""
@@ -514,6 +622,17 @@ class Engine:
             subscription.put_frame(frame)
             if audio is not None:
                 subscription.put_audio(audio)
+
+
+def _open_saved(sources: SourceOpener, saved: object) -> Source:
+    """The source used last, or the default kind's when none was saved or it
+    cannot be opened."""
+    if isinstance(saved, dict):
+        try:
+            return sources.open(saved)
+        except ValueError as error:
+            log.warning("the saved source is not used: %s", error)
+    return sources.open({"kind": sources.kinds[0]})
 
 
 def _given_differ(state: Mapping[str, Any], saved: object, given: frozenset[str]) -> bool:

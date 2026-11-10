@@ -1,9 +1,10 @@
 """Tests for the engine: frames, source state and demodulation settings for
 every client, audio for the clients that ask, idle without clients, changes
-passed to the source, DC removal, bookmarks and preferences, saved settings,
-clean stop."""
+passed to the source, switching to another kind of source, DC removal,
+bookmarks and preferences, saved settings, clean stop."""
 
 import asyncio
+import contextlib
 import json
 import tempfile
 import time
@@ -27,6 +28,39 @@ STATES = ("source", "demod", "bookmarks", "preferences", "storage")     # what a
 
 async def next_message(subscription: Subscription):
     return await asyncio.wait_for(subscription.get(), timeout=5)
+
+
+def ready_messages(subscription: Subscription) -> list:
+    """The messages ready for a client, now."""
+    messages = []
+    with contextlib.suppress(asyncio.QueueEmpty):
+        while True:
+            messages.append(subscription.get_nowait())
+    return messages
+
+
+class OtherSource(FakeSource):
+    """Another kind of fake source, on another frequency."""
+
+    kind = "other"
+    centre_hz = FAKE_CENTRE_HZ + 1e6
+
+
+class FakeSources:
+    """Opens fake sources by kind, and keeps what it opened."""
+
+    kinds = ("test", "other")
+
+    def __init__(self, **factories) -> None:
+        self.factories = {"test": FakeSource, "other": OtherSource, **factories}
+        self.opened: list[FakeSource] = []
+
+    def open(self, reopen) -> FakeSource:
+        factory = self.factories.get(reopen.get("kind"))
+        if factory is None:
+            raise ValueError(f"unknown kind of source: {reopen.get('kind')!r}")
+        self.opened.append(factory())
+        return self.opened[-1]
 
 
 async def next_frame(subscription: Subscription) -> bytes | None:
@@ -84,7 +118,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
             "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
-            "dc_removal": True, "settable": ["dc_removal"],
+            "dc_removal": True, "settable": ["dc_removal"], "kinds": [],    # this engine has one source only
         })
         self.assertEqual(subscription.get_nowait(), {
             "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
@@ -310,6 +344,96 @@ class EngineSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(source.closed)
 
 
+class SourceSwitchTest(unittest.IsolatedAsyncioTestCase):
+    """An engine that switches between fake sources, without a store."""
+
+    async def asyncSetUp(self):
+        self.sources = FakeSources()
+        self.engine = Engine(sources=self.sources)
+        self.addAsyncCleanup(self.stop, self.engine)
+
+    @staticmethod
+    async def stop(engine: Engine) -> None:
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+    async def test_starts_with_the_first_kind_and_lists_them_all(self):
+        state = self.engine.state()
+        self.assertEqual((state["kind"], state["kinds"]), ("test", ["test", "other"]))
+
+    async def test_another_kind_replaces_the_source_for_every_client(self):
+        first, second = self.engine.subscribe(), self.engine.subscribe()
+        for subscription in (first, second):
+            ready_messages(subscription)
+        self.engine.configure({"kind": "other"})
+        old, new = self.sources.opened
+        self.assertTrue(old.closed)
+        self.assertIs(self.engine.source, new)
+        for subscription in (first, second):
+            states = {message["type"]: message for message in ready_messages(subscription)}
+            self.assertEqual(states["source"]["kind"], "other")
+            # The new receiver's own VFO: by default, a quarter of its span above its centre.
+            self.assertEqual(states["demod"]["frequency_hz"], OtherSource.centre_hz + FAKE_RATE_HZ / 4)
+
+    async def test_each_kind_comes_back_with_its_settings(self):
+        self.engine.configure_demod({"frequency_hz": FAKE_CENTRE_HZ + 10_000, "mode": "AM"})
+        self.engine.configure({"kind": "other"})
+        self.assertEqual(self.engine.demod_state()["mode"], "NFM")
+        self.engine.configure({"kind": "test"})
+        demod = self.engine.demod_state()
+        self.assertEqual((demod["frequency_hz"], demod["mode"]), (FAKE_CENTRE_HZ + 10_000, "AM"))
+        self.assertEqual(len(self.sources.opened), 3)     # a new source each time
+
+    async def test_the_kind_comes_alone_and_must_be_one_of_the_kinds(self):
+        for changes in ({"kind": "other", "dc_removal": False}, {"kind": "radio"}, {"kind": 1}, {"kind": None}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.engine.configure(changes)
+        self.assertEqual((self.engine.source.kind, len(self.sources.opened)), ("test", 1))
+        self.assertTrue(self.engine.state()["dc_removal"])
+
+    async def test_the_kind_in_use_keeps_its_source(self):
+        source = self.engine.source
+        subscription = self.engine.subscribe()
+        ready_messages(subscription)
+        self.engine.configure({"kind": "test"})
+        self.assertIs(self.engine.source, source)
+        self.assertFalse(source.closed)
+        self.assertEqual([message["type"] for message in ready_messages(subscription)], ["source"])
+
+    async def test_an_engine_without_sources_keeps_its_source(self):
+        engine = Engine(FakeSource())
+        self.addAsyncCleanup(self.stop, engine)
+        self.assertEqual(engine.state()["kinds"], [])
+        with self.assertRaisesRegex(ValueError, "cannot be changed"):
+            engine.configure({"kind": "test"})
+
+    async def test_the_new_source_reads_once_the_old_one_released_its_receiver(self):
+        released = asyncio.Event()
+
+        class SlowRelease(FakeSource):
+            async def wait_closed(self) -> None:
+                await released.wait()
+
+        sources = FakeSources(test=SlowRelease)
+        engine = Engine(sources=sources)
+        runner = asyncio.ensure_future(engine.run())
+
+        async def stop() -> None:
+            released.set()
+            await self.stop(engine)
+            await asyncio.wait_for(runner, timeout=5)
+        self.addAsyncCleanup(stop)
+        subscription = engine.subscribe()
+        self.assertEqual(FRAME_HEADER.unpack_from(await next_frame(subscription))[4], FAKE_CENTRE_HZ)
+        engine.configure({"kind": "other"})
+        await asyncio.sleep(0.2)
+        self.assertEqual(sources.opened[1].reads, 0)     # the first one still holds the receiver
+        released.set()
+        while FRAME_HEADER.unpack_from(await next_frame(subscription))[4] != OtherSource.centre_hz:
+            pass
+        self.assertGreater(sources.opened[1].reads, 0)
+
+
 CALLING = {"frequency_hz": 145_500_000.0, "name": "FM calling", "mode": "NFM", "scan": True}
 
 
@@ -328,8 +452,10 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
     def read(self, name: str) -> dict:
         return json.loads((self.directory / name).read_text(encoding="utf-8"))
 
-    def engine(self, source: Source | None = None, **options) -> Engine:
-        engine = Engine(source if source is not None else FakeSource(), store=Store(self.directory), **options)
+    def engine(self, source: Source | None = None, sources: FakeSources | None = None, **options) -> Engine:
+        if source is None and sources is None:
+            source = FakeSource()
+        engine = Engine(source, sources=sources, store=Store(self.directory), **options)
         self.addAsyncCleanup(self.stop, engine)
         return engine
 
@@ -444,6 +570,34 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         before = (self.directory / SETTINGS_FILE).read_bytes()
         await self.stop(self.engine(RtlTcpSource("192.0.2.10", 40000)))
         self.assertEqual((self.directory / SETTINGS_FILE).read_bytes(), before)
+
+    async def test_opens_the_source_used_last(self):
+        self.write(SETTINGS_FILE, {"source": {"kind": "other"}})
+        self.assertEqual(self.engine(sources=FakeSources()).source.kind, "other")
+
+    async def test_a_saved_source_that_cannot_open_gives_way_to_the_first_kind(self):
+        self.write(SETTINGS_FILE, {"source": {"kind": "gone"}})
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            engine = self.engine(sources=FakeSources())
+        self.assertEqual(engine.source.kind, "test")
+        await self.stop(engine)
+        self.assertEqual(self.read(SETTINGS_FILE)["source"], {"kind": "test"})
+
+    async def test_the_source_in_use_opens_at_the_next_start(self):
+        engine = self.engine(sources=FakeSources(), save_delay_s=0.05)
+        engine.configure({"kind": "other"})
+        await self.saved(SETTINGS_FILE, lambda content: content.get("source") == {"kind": "other"})
+        await self.stop(engine)
+        self.assertEqual(self.engine(sources=FakeSources()).source.kind, "other")
+
+    async def test_a_source_given_at_start_replaces_the_one_used_last(self):
+        self.write(SETTINGS_FILE, {"source": {"kind": "other"}})
+        await self.stop(self.engine(FakeSource(), sources=FakeSources(), save_delay_s=60))
+        self.assertEqual(self.read(SETTINGS_FILE)["source"], {"kind": "test"})
+
+    async def test_the_first_kind_unchanged_writes_nothing(self):
+        await self.stop(self.engine(sources=FakeSources()))
+        self.assertFalse((self.directory / SETTINGS_FILE).exists())
 
     async def test_a_failed_save_reaches_the_clients_until_a_save_works(self):
         engine = self.engine(save_delay_s=0.01)

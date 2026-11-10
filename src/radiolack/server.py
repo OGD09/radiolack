@@ -21,7 +21,7 @@ from pathlib import Path
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from .engine import Engine, Source, Subscription
+from .engine import Engine, Source, SourceOpener, Subscription
 from .store import Store
 from .synthetic import SyntheticBand
 
@@ -238,13 +238,17 @@ class LocalServer:
 
     The port is bound in the constructor, so a busy port raises ``OSError``
     before anything starts. Use it as a context manager: entering starts the
-    server, leaving stops it. The engine reads ``source``, by default the
-    synthetic band, and closes it when the server stops. With a ``store``,
-    the engine starts from the saved settings and saves their changes.
+    server, leaving stops it. The engine reads ``source``, or without one the
+    source that ``sources`` opened last, and closes it when the server stops;
+    with ``sources``, an interface may switch to another kind of source.
+    Without either, it reads the synthetic band. With a ``store``, the engine
+    starts from the saved settings and saves their changes.
     """
 
-    def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None) -> None:
+    def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
+                 sources: SourceOpener | None = None) -> None:
         self._source = source
+        self._sources = sources
         self._store = store
         self._sock = _bind(port)
         self.port: int = self._sock.getsockname()[1]
@@ -294,7 +298,8 @@ class LocalServer:
             self._ready.set()
 
     async def _serve(self) -> None:
-        engine = Engine(self._source if self._source is not None else SyntheticBand(), store=self._store)
+        source = SyntheticBand() if self._source is None and self._sources is None else self._source
+        engine = Engine(source, sources=self._sources, store=self._store)
         runner = web.AppRunner(create_app(self.port, engine), handle_signals=False)
         await runner.setup()
         try:
