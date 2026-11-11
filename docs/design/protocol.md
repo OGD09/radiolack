@@ -1,6 +1,6 @@
 # Interface protocol
 
-How the engine and the interface talk. Protocol version 5, 2026-11-10.
+How the engine and the interface talk. Protocol version 6, 2026-11-11.
 
 The interface opens one WebSocket to `/stream` on the server that served it.
 The server accepts the connection only when its `Host` header names the
@@ -9,13 +9,21 @@ the interface's own origin (`http://127.0.0.1:<port>` or
 `http://localhost:<port>`). Browsers always send `Origin` with a WebSocket
 handshake, so a page from another site cannot read the stream.
 
+A device that remote access serves, a remote client, opens its stream on
+remote access's HTTPS server instead, with its session cookie
+([Remote access](#remote-access)). It receives the same messages, apart
+from this computer's own states, and may not change this computer's own
+settings.
+
 ## From the engine
 
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 5}
+   {"type": "hello", "protocol": 6, "remote": false}
    ```
+
+   `remote` is true for a remote client.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -46,7 +54,7 @@ handshake, so a page from another site cannot read the stream.
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. |
    | `range_hz` | Lowest and highest centre frequency the source takes. |
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
-   | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. |
+   | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. Never `address` for a remote client. |
    | `kinds` | Kinds of source the engine may switch to, `kind` among them; empty when it reads one source only. |
 
 3. Then the demodulation settings, a JSON text message, sent again whenever
@@ -99,8 +107,8 @@ handshake, so a page from another site cannot read the stream.
    {"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
    ```
 
-6. Then the storage state, a JSON text message, sent again whenever it
-   changes:
+6. Then, to this computer's interfaces only, the storage state, a JSON text
+   message, sent again whenever it changes:
 
    ```json
    {"type": "storage", "directory": "~/.config/radiolack", "saving": true, "problem": ""}
@@ -112,8 +120,8 @@ handshake, so a page from another site cannot read the stream.
    | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
    | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-7. Then the update state, a JSON text message, sent again whenever it
-   changes:
+7. Then, to this computer's interfaces only, the update state, a JSON text
+   message, sent again whenever it changes:
 
    ```json
    {"type": "update", "status": "available", "version": "0.3.0", "latest": "0.4.0", "detail": "", "check_at_start": true}
@@ -127,7 +135,32 @@ handshake, so a page from another site cannot read the stream.
    | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
    | `check_at_start` | Whether the engine checks when it starts. |
 
-8. Binary spectrum frames, about 30 per second while the source streams.
+8. Then, to this computer's interfaces only, remote access's state, a JSON
+   text message, sent again whenever it changes:
+
+   ```json
+   {"type": "remote", "on": true, "port": 8443,
+    "urls": ["https://studio.local:8443/", "https://192.168.1.20:8443/"],
+    "code": "K7PM-3XQH", "blocked": false,
+    "devices": [{"id": "5f0c2a91", "label": "iPhone · Safari", "paired": 1794000000,
+                 "seen": 1794003600, "connected": true}],
+    "fingerprint": "3A 4B … 9F", "problem": ""}
+   ```
+
+   (`fingerprint` shortened here.)
+
+   | Field | Meaning |
+   | --- | --- |
+   | `on` | Whether remote access listens. False at each start. |
+   | `port` | The port it listens on, or will. |
+   | `urls` | What a device opens: by this computer's mDNS name, when its host name is a valid one, then by each address it listens on. Empty while off. |
+   | `code` | The access code, in two groups of four characters, while on; null while off. |
+   | `blocked` | Too many wrong codes were entered (10): the code no longer works until a new one is made. |
+   | `devices` | The paired devices, in the order they were paired: `id`, which a `remote` message names; `label`, such as `iPhone · Safari`, made of known words only; `paired` and `seen`, when it was paired and last used, in Unix time, the latter to the hour; `connected`, whether it has a stream open. |
+   | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
+   | `problem` | Why remote access could not turn on, in sentences for the user, or empty. |
+
+9. Binary spectrum frames, about 30 per second while the source streams.
    Each frame is a 40-byte little-endian header followed by one byte per FFT
    bin:
 
@@ -162,40 +195,40 @@ handshake, so a page from another site cannot read the stream.
    the automatic one, which is NaN while the engine has no noise estimate
    (the VFO outside the span); the squelch then stays closed.
 
-9. Binary audio frames, about 30 per second, only to an interface that asked
-   for audio (`audio` message). Each frame is a 16-byte little-endian header
-   followed by 16-bit samples:
+10. Binary audio frames, about 30 per second, only to an interface that asked
+    for audio (`audio` message). Each frame is a 16-byte little-endian header
+    followed by 16-bit samples:
 
-   | Offset | Type | Field |
-   | --- | --- | --- |
-   | 0 | uint8 | kind: 2, an audio frame |
-   | 1 | uint8 | audio format version: 1 |
-   | 2 | uint16 | reserved, 0 |
-   | 4 | uint32 | position of the first sample, counted at the audio rate, wrapping at 2^32 |
-   | 8 | float64 | audio rate, Hz |
-   | 16 | int16[] | mono samples, full scale 32767 |
+    | Offset | Type | Field |
+    | --- | --- | --- |
+    | 0 | uint8 | kind: 2, an audio frame |
+    | 1 | uint8 | audio format version: 1 |
+    | 2 | uint16 | reserved, 0 |
+    | 4 | uint32 | position of the first sample, counted at the audio rate, wrapping at 2^32 |
+    | 8 | float64 | audio rate, Hz |
+    | 16 | int16[] | mono samples, full scale 32767 |
 
-   The audio rate is 12 kHz for the usual receiver rates; at an unusual
-   sample rate it comes within 0.5% of it, such as 12026.2 Hz at
-   2345678 Hz. A frame follows the previous one when its position is the
-   previous position plus the previous number of samples; otherwise samples
-   are missing, such as frames the engine dropped for a slow client.
+    The audio rate is 12 kHz for the usual receiver rates; at an unusual
+    sample rate it comes within 0.5% of it, such as 12026.2 Hz at
+    2345678 Hz. A frame follows the previous one when its position is the
+    previous position plus the previous number of samples; otherwise samples
+    are missing, such as frames the engine dropped for a slow client.
 
-   In NFM the audio is the FM discriminator's output, full scale at 5 kHz of
-   deviation, with a 750 µs de-emphasis (unit gain at 1 kHz), a high-pass
-   filter at 280 Hz that removes CTCSS tones and a low-pass filter at
-   3.5 kHz. In AM it is the envelope over the carrier's level, less one:
-   the modulation, 0.8 of full scale at 100%, whatever the signal's
-   strength. In USB and LSB it is the channel's real part, and in CW too,
-   with the VFO at 700 Hz in the channel, so that a carrier on the VFO
-   sounds at 700 Hz; an AGC brings a steady signal to 0.4 of full scale and
-   lets the gain come back at 10 dB per second. AM, USB, LSB and CW audio
-   runs from 100 Hz to 5 kHz. The audio is silent while the squelch is
-   closed, with 5 ms fades, and in the modes not in `audio_modes`. It lags
-   its samples by the filters' delay and the squelch's look-ahead: about
-   40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
+    In NFM the audio is the FM discriminator's output, full scale at 5 kHz of
+    deviation, with a 750 µs de-emphasis (unit gain at 1 kHz), a high-pass
+    filter at 280 Hz that removes CTCSS tones and a low-pass filter at
+    3.5 kHz. In AM it is the envelope over the carrier's level, less one:
+    the modulation, 0.8 of full scale at 100%, whatever the signal's
+    strength. In USB and LSB it is the channel's real part, and in CW too,
+    with the VFO at 700 Hz in the channel, so that a carrier on the VFO
+    sounds at 700 Hz; an AGC brings a steady signal to 0.4 of full scale and
+    lets the gain come back at 10 dB per second. AM, USB, LSB and CW audio
+    runs from 100 Hz to 5 kHz. The audio is silent while the squelch is
+    closed, with 5 ms fades, and in the modes not in `audio_modes`. It lags
+    its samples by the filters' delay and the squelch's look-ahead: about
+    40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
 
-10. An error, to one interface only, when the engine refuses a message from
+11. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -204,9 +237,9 @@ handshake, so a page from another site cannot read the stream.
     ```
 
 What is waiting for an interface goes out in this order: the source state,
-the demodulation settings, the bookmarks, the storage state and the update
-state, each when it changed (and the preferences at the start), then
-errors, then audio frames, then spectrum frames. A client that reads too
+the demodulation settings, the bookmarks, the storage state, the update
+state and remote access's state, each when it changed (and the preferences
+at the start), then errors, then audio frames, then spectrum frames. A client that reads too
 slowly loses its oldest frames: the engine keeps the latest four spectrum
 frames and fifteen audio frames (half a second) for it and never slows down
 for one client; it keeps its latest states, and up to eight errors. When
@@ -301,8 +334,37 @@ turns its check at start on or off, for the next starts:
 ```
 
 The engine starts a check unless one is running, saves the check at start
-with its settings, and every interface receives the update state as it
-changes. It refuses other fields, and values other than true or false.
+with its settings, and this computer's interfaces receive the update state
+as it changes. It refuses other fields, and values other than true or false.
+
+A `remote` message changes remote access ([Remote access](#remote-access)),
+one setting at a time:
+
+```json
+{"type": "remote", "on": true}
+{"type": "remote", "port": 8444}
+{"type": "remote", "new_code": true}
+{"type": "remote", "forget": "5f0c2a91"}
+```
+
+| Field | Value |
+| --- | --- |
+| `on` | `true` or `false`. Turning on gives remote access a new server certificate, for this computer's current addresses, and listens; turning off closes the remote streams, then releases the port. Both go on in the background: the remote access state tells how it went, with a `problem` when remote access could not turn on. |
+| `port` | From 1024 to 65535, for the next turn-on: only while remote access is off. |
+| `new_code` | `true`: a new access code, which no wrong code has been tried against. Every device is forgotten, and its streams close. |
+| `forget` | A paired device's `id`: the device is forgotten, and its streams close. |
+
+The engine refuses a message without a setting or with more than one, an
+unknown or invalid setting, or a device it does not know, and answers the
+sender with an error. This computer's interfaces receive remote access's
+state as it changes.
+
+A remote client may send `source`, `demod`, `bookmark` and `audio`
+messages, but neither `preferences`, `update` nor `remote` messages, nor a
+`source` message that names `address`: the engine refuses them with the
+error "only Radiolack's interface on the computer may change this". A remote
+interface starts from the preferences the engine sends, and keeps its
+changes to itself.
 
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
@@ -320,6 +382,53 @@ tuner is unknown: `range_hz` spans every frequency an rtl_tcp command can
 carry, any gain passes, and the source brings both within what the tuner can
 do once it connects.
 
+## Remote access
+
+While on, remote access serves the interface and the stream over HTTPS, with
+a server certificate from Radiolack's local authority, on the port and the
+addresses its state gives. It answers only peers whose own address is
+private (the ranges README.md lists, under Remote access), and only requests
+whose `Host` header names it as one of its `urls` does; while off or turning
+off, it answers every request with 503. Its answers carry
+`Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer`.
+
+| Request | Answer |
+| --- | --- |
+| `GET /` | The interface, `index.html`, to a paired device; the pairing page, `pair.html`, to any other. |
+| `GET /certificate` | The local authority's root certificate, in PEM, as an attachment of type `application/x-x509-ca-cert`, which a device installs. |
+| `GET /<file>` | An interface file, as on the loopback server. Before pairing, only `pair.js`, `pair.css` and `style.css`: 403 for the others. |
+| `POST /pair` | Checks an access code, below. |
+| `GET /stream` | The stream, to a paired device. |
+
+A device is paired while it sends the `__Host-radiolack` cookie that the
+right code gave it. The engine keeps only the cookie's SHA-256, forgets a
+device unused for 90 days and pairs up to 20 devices.
+
+`/pair` takes a JSON body of up to 4 KiB, such as `{"code": "k7pm 3xqh"}`,
+from a page of the same origin: its `Origin` header must be `https://`
+followed by its `Host` header. The code ignores case, spaces and dashes.
+Codes are checked one at a time, and the answer is JSON, with a sentence for
+the user in `error`:
+
+| Status | Body | When |
+| --- | --- | --- |
+| 200 | `{"paired": true}` | The right code, with the session cookie (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, 400 days), or a device paired already. |
+| 400 | `{"error": "Send the access code."}` | No `code` text in the body. |
+| 403 | `{"error": "Wrong code."}` | A wrong code, answered after a second. |
+| 409 | `{"error": …}` | 20 devices are paired already. |
+| 429 | `{"error": …}` | 10 wrong codes were entered: the code no longer works until a new one is made. |
+
+Other refusals are plain text: 403 for another origin, 413 for a larger
+body, 415 for a body that is not `application/json`, and 503 while off.
+
+The stream needs the same origin too. Its handshake succeeds whatever the
+cookie, so that the page learns why the stream closes: with code 4001 at
+once for a device that is not paired, and later when the device is
+forgotten or a new code is made; with code 4002 when remote access turns
+off. The server pings a remote client every 20 s, and drops one that stops
+answering.
+
 ## Connection life
 
 - The engine computes frames only while at least one client listens. The
@@ -335,9 +444,9 @@ do once it connects.
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
   number. It ignores a source state, demodulation settings, bookmarks, a
-  storage state or an update state with a missing or malformed field, and
-  leaves out source settings it does not know and preferences that are not
-  numbers, true or false, texts or null.
+  storage state, an update state or a remote access state with a missing or
+  malformed field, and leaves out source settings it does not know and
+  preferences that are not numbers, true or false, texts or null.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -349,11 +458,21 @@ do once it connects.
   reload: the page and the engine come from different versions.
 - When the stream drops, the interface shows a waiting state and reconnects
   after 250 ms, then after twice as long each time, up to 4 s.
+- A remote client whose stream closes with code 4001 stops. If its stream
+  had opened, it reloads its page, which is then the pairing page;
+  otherwise, as reloading would bring the same page back, it asks for a
+  reload. One whose stream closes with code 4002 reconnects in the same way
+  as after a drop, saying that remote access is off on the computer, until
+  a hello comes.
 - While its page is hidden, the interface closes the stream, unless it plays
   audio; it opens it again when the page shows.
 
 ## Versions
 
+- 6 (2026-11-11): remote access: the hello's `remote`, remote access's
+  state, the `remote` message, the HTTPS server, remote clients and their
+  close codes 4001 and 4002. The storage and update states go to this
+  computer's interfaces only.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

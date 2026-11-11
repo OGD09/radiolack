@@ -90,7 +90,7 @@ const S = {
   showPlan: true, showMarks: true, split: 0.4,
   sql: -80, sqlAuto: true, ctcss: 'detect', agc: 'slow', nr: false, notch: false, blanker: false, volume: 70,
   peakOn: true, peakThr: 12, peakMarks: true, memDwell: 0.25, memResume: 2,
-  autoHide: true, keepAwake: false, remote: false,
+  autoHide: true, keepAwake: false,
 };
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [] };    // band plan, empty until loaded
@@ -155,6 +155,7 @@ function resetBuffers() {
 // The stream closes while the page is hidden, unless the audio plays, and
 // the engine idles without clients.
 let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
+let streamOpened = false;   // the stream opened at least once on this page
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
 const typingIn = new Set(); // Source fields the user is typing in, which the engine's state leaves as they are
@@ -164,6 +165,8 @@ let storage = null;         // where the engine saves the settings (stream.js St
 let update = null;          // what the engine's update check found (stream.js UpdateState), once received
 let updateNote = '';        // why this interface's last update request did not reach the engine
 let noticeClosed = '';      // the update notice closed on this page: its status and version
+let remoteState = null;     // remote access (stream.js RemoteState), once received: this computer's interfaces only
+let remoteNote = '';        // why this interface's last remote access change did not happen
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
@@ -250,6 +253,12 @@ const stream = new EngineStream({
     updateNote = '';
     syncUpdate();
   },
+  onRemote: (state) => {
+    remoteState = state;
+    remoteNote = '';
+    syncRemote();
+    updateStatus();
+  },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
       demodError = message;     // the engine's settings came back before the error
@@ -270,13 +279,23 @@ const stream = new EngineStream({
       syncUpdate();
       return;
     }
+    if (command === 'remote') {
+      remoteNote = `Refused: ${message}.`;
+      syncRemote();
+      return;
+    }
     sourceError = message;
     pendingTune = null;
     syncSource();       // the controls show the engine's settings again
   },
   onState: (state) => {
+    // The computer forgot this device: the server now serves the pairing page.
+    // A refusal before the stream ever opened would come back at each reload.
+    if (state === 'unpaired' && streamOpened) { location.reload(); return; }
+    if (state === 'open') streamOpened = true;
     streamState = state;
     if (state !== 'open') { rateSince = 0; frameRate = 0; audio.reset(); }
+    if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
     syncSource();
     updateStatus();
   },
@@ -738,14 +757,18 @@ function updateStatus() {
     }
   } else if (streamState === 'waiting') {
     text = 'Waiting for the engine…';
+  } else if (streamState === 'remote-off') {
+    text = 'Remote access is off on the computer: waiting for it…';
   } else if (streamState === 'incompatible') {
     text = 'Engine from another version: reload the page';
+  } else if (streamState === 'unpaired') {
+    text = 'This device is not paired: reload the page';
   } else {
     text = 'Connecting to the engine…';
   }
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
-  $('#status').textContent = `${text}${S.remote ? ' · remote access on' : ''}`;
+  $('#status').textContent = `${text}${remoteState?.on ? ' · remote access on' : ''}`;
 }
 
 // ------------------------------------------------------------------ layout and view
@@ -1417,7 +1440,7 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'edit', 'del'].find((n) => el.dataset[n]);
+  const name = ['id', 'edit', 'del', 'forget'].find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -1528,6 +1551,7 @@ function noticeKey() {
   return update && (update.status === 'available' || update.status === 'installed') ? `${update.status} ${update.latest}` : '';
 }
 function syncUpdate() {
+  $('#st-update-section').hidden = !update;     // this computer's interfaces only
   const text = update ? UPDATE_TEXTS[update.status](update) : '';
   $('#st-update').textContent = [text, updateNote].filter(Boolean).join(' ');
   const start = $('#st-update-start');
@@ -1539,22 +1563,33 @@ function syncUpdate() {
   noticeEl.hidden = !key || key === noticeClosed;
 }
 
-// Remote access (mock): the desktop app would open its web server to the local network.
-const REMOTE_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';   // no 0/O or 1/I to misread
-function newRemoteCode() {
-  const s = Array.from(crypto.getRandomValues(new Uint8Array(8)), (n) => REMOTE_CODE_CHARS[n % REMOTE_CODE_CHARS.length]).join('');
-  return `${s.slice(0, 4)}-${s.slice(4)}`;
-}
-const remoteMsg = (text) => { $('#st-remote-msg').textContent = text; };
-bindCheck('st-remote', 'remote', () => {
-  $('#st-remote-info').hidden = !S.remote;
-  if (S.remote && !$('#st-remote-code').textContent) $('#st-remote-code').textContent = newRemoteCode();
-  remoteMsg('');
-  updateStatus();
+// Remote access: devices on the local network reach the engine over HTTPS
+// with the access code. Only this computer's interfaces receive its state
+// and change it. Turning on goes on in the engine: the state then says
+// whether it listens, or why not.
+const remotePortEl = $('#st-remote-port');
+const notConnected = (what) => `Not connected to the engine: ${what}.`;
+const setRemoteNote = (text) => { remoteNote = text; syncRemote(); };
+$('#st-remote').addEventListener('change', (e) => {
+  if (!stream.setRemoteAccess(e.target.checked)) setRemoteNote(notConnected('remote access did not change'));
+});
+remotePortEl.addEventListener('input', () => typingIn.add(remotePortEl));
+remotePortEl.addEventListener('blur', () => { if (typingIn.delete(remotePortEl)) syncRemote(); });
+remotePortEl.addEventListener('change', () => {
+  typingIn.delete(remotePortEl);
+  const port = Number(remotePortEl.value);
+  if (!Number.isInteger(port) || port < Number(remotePortEl.min) || port > Number(remotePortEl.max)) {
+    setRemoteNote(`The port must be a whole number from ${remotePortEl.min} to ${remotePortEl.max}.`);
+  } else if (!stream.setRemotePort(port)) {
+    setRemoteNote(notConnected('the port did not change'));
+  }
 });
 $('#st-remote-renew').addEventListener('click', () => {
-  $('#st-remote-code').textContent = newRemoteCode();
-  remoteMsg('New code: devices already connected must enter it again.');
+  if (!stream.renewRemoteCode()) setRemoteNote(notConnected('the code did not change'));
+});
+$('#st-remote-devices').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-forget]');
+  if (b && !stream.forgetRemoteDevice(b.dataset.forget)) setRemoteNote(notConnected('the device was not forgotten'));
 });
 $('#st-remote-copy').addEventListener('click', () => {
   const urlEl = $('#st-remote-url');
@@ -1564,14 +1599,48 @@ $('#st-remote-copy').addEventListener('click', () => {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    remoteMsg('Address selected: copy it from the browser menu.');
+    setRemoteNote('Address selected: copy it from the browser menu.');
   };
   if (!navigator.clipboard) { selectUrl(); return; }
-  navigator.clipboard.writeText(urlEl.textContent).then(() => remoteMsg('Address copied.'), selectUrl);
+  navigator.clipboard.writeText(urlEl.textContent).then(() => setRemoteNote('Address copied.'), selectUrl);
 });
+// When a paired device last used remote access, which the engine notes to the hour.
+function fmtSeen(seconds) {
+  const age = Date.now() / 1000 - seconds;
+  if (age < 3600) return 'used in the last hour';
+  if (age < 86400) return `used ${Math.floor(age / 3600)} h ago`;
+  const days = Math.floor(age / 86400);
+  return `used ${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+function renderRemoteDevices() {
+  const list = $('#st-remote-devices'), refocus = focusedIn(list);
+  list.innerHTML = remoteState.devices.map((d) => `<li class="device"><span class="name">${escapeHtml(d.label)}</span>`
+    + `<span class="num">${d.connected ? 'connected' : fmtSeen(d.seenS)}</span>`
+    + `<button type="button" class="link" data-forget="${escapeHtml(d.id)}" aria-label="Forget ${escapeHtml(d.label)}">Forget</button></li>`).join('')
+    || '<li class="empty">No paired device</li>';
+  focusAgain(list, refocus);
+}
+function syncRemote() {
+  const r = remoteState;
+  $('#st-remote-section').hidden = !r;
+  if (!r) return;
+  $('#st-remote').checked = r.on;
+  if (!typingIn.has(remotePortEl)) remotePortEl.value = String(r.port);
+  remotePortEl.disabled = r.on;     // the engine changes it only while off
+  $('#st-remote-info').hidden = !r.on;
+  $('#st-remote-url').textContent = r.urls[0] ?? '';
+  $('#st-remote-urls').textContent = r.urls.length > 1 ? `Or: ${r.urls.slice(1).join(', ')}` : '';
+  $('#st-remote-code').textContent = r.code ?? '';
+  const blocked = r.blocked ? 'Too many wrong codes: the code no longer works. Make a new code.' : '';
+  $('#st-remote-msg').textContent = [r.problem, blocked, remoteNote].filter(Boolean).join(' ');
+  renderRemoteDevices();
+  $('#st-remote-fp-field').hidden = !r.fingerprint;
+  $('#st-remote-fingerprint').textContent = r.fingerprint ?? '';
+}
 
 // Where the engine saves the settings and bookmarks, and what went wrong with its files.
 function syncStorage() {
+  $('#st-storage-section').hidden = !storage;   // this computer's interfaces only
   let text = '';
   if (storage && storage.directory === null) text = 'Settings and bookmarks are not saved.';
   else if (storage) text = `Settings and bookmarks are saved in ${storage.directory}.`;
@@ -1583,9 +1652,10 @@ function syncStorage() {
 // This interface's own settings. The engine keeps them for the next start,
 // as the page's address, and with it the browser's storage, changes with
 // the port. They leave out the engine's settings (VFO, mode, filter,
-// squelch, receiver), the settings that have no effect yet (CTCSS, AGC,
-// noise reduction, notch, blanker, keeping the screen on), and remote
-// access, which never turns on by itself.
+// squelch, receiver, remote access) and the settings that have no effect
+// yet (CTCSS, AGC, noise reduction, notch, blanker, keeping the screen on).
+// A device that remote access serves starts from them but keeps its own
+// changes to itself: the engine keeps only this computer's.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
   'peakOn', 'peakThr', 'peakMarks', 'memDwell', 'memResume', 'autoHide'];
@@ -1633,7 +1703,7 @@ function applyPreferences(values) {
 }
 // Changed preferences go to the engine, which writes them to the disk soon after.
 function savePreferences() {
-  if (!preferencesLoaded) return;
+  if (!preferencesLoaded || stream.remote) return;
   const values = preferencesNow(), json = JSON.stringify(values);
   if (json !== savedPreferences && stream.savePreferences(values)) savedPreferences = json;
 }

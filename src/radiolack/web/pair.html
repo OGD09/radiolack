@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  Radiolack pairing page: what remote access serves a device until it enters
+  the access code. Such a device may load only this page, pair.js, the
+  styles and the certificate, and send the code.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c0f">
+<title>Radiolack</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="pair.css">
+<script type="module" src="pair.js"></script>
+</head>
+<body>
+<main class="pair">
+  <h1>Radiolack</h1>
+  <p>Radiolack on this computer lets the devices that enter its access code control it and hear it from the local network.</p>
+
+  <h2>1. Install the certificate</h2>
+  <p>Once per device: the browser then trusts Radiolack's pages without warning. The certificate only vouches for addresses and names of local networks, not for other websites.</p>
+  <p><a class="btn primary" href="certificate">Download the certificate</a></p>
+  <details>
+    <summary>iPhone and iPad</summary>
+    <ol>
+      <li>Download the certificate, in Safari, and allow the download.</li>
+      <li>In Settings, open Profile Downloaded, or General, VPN &amp; Device Management, then the Radiolack profile.</li>
+      <li>Under More Details, check that its SHA-256 fingerprint is the one that Radiolack's settings show on the computer, then install the profile.</li>
+      <li>In Settings, General, About, Certificate Trust Settings, turn on full trust for Radiolack.</li>
+      <li>Come back to this page and reload it.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>Android</summary>
+    <ol>
+      <li>Download the certificate.</li>
+      <li>In Settings, search for "CA certificate", choose Install a certificate, CA certificate, then the downloaded file.</li>
+      <li>In Settings, Trusted credentials, User, check that its SHA-256 fingerprint is the one that Radiolack's settings show on the computer.</li>
+      <li>Come back to this page and reload it.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>Other devices</summary>
+    <p>Import the certificate as an authority that identifies websites, in the browser's or the system's certificate settings, and check its SHA-256 fingerprint against the one that Radiolack's settings show on the computer.</p>
+  </details>
+
+  <h2>2. Enter the access code</h2>
+  <form id="pair-form" novalidate>
+    <label for="pair-code">The code that Radiolack's settings show on the computer</label>
+    <div class="row">
+      <input id="pair-code" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="20" placeholder="XXXX-XXXX" required>
+      <button type="submit" class="btn primary" id="pair-submit">Connect</button>
+    </div>
+  </form>
+  <p class="note" id="pair-msg" role="status"></p>
+</main>
+</body>
+</html>

@@ -1,13 +1,15 @@
 /*
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
  * state, the demodulation settings, the bookmarks, the saved preferences, the
- * storage state and the update state from the engine, and takes this
- * interface's changes, its preferences, its request for audio and its update
- * requests to it (docs/design/protocol.md). It reconnects by itself after a
- * disconnection.
+ * storage state, the update state and remote access's state from the engine,
+ * and takes this interface's changes, its preferences, its request for audio,
+ * its update requests and its remote access settings to it
+ * (docs/design/protocol.md). It reconnects by itself after a disconnection.
+ * On a device that remote access serves, the engine sends neither the
+ * storage, update nor remote access state, and takes none of their changes.
  */
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 const FRAME_KIND_SPECTRUM = 1;
 const FRAME_VERSION = 2;
 const HEADER_BYTES = 40;
@@ -17,9 +19,11 @@ const AUDIO_VERSION = 1;
 const AUDIO_HEADER_BYTES = 16;
 const RETRY_FIRST_MS = 250;
 const RETRY_MAX_MS = 4000;
+const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no longer
+const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences', 'update'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences', 'update', 'remote'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -113,7 +117,31 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {boolean} checkAtStart   the engine checks when it starts
  */
 
-/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences' | 'update'} Command */
+/**
+ * A device paired with remote access.
+ * @typedef {object} RemoteDevice
+ * @property {string} id            names it in forget requests
+ * @property {string} label         such as "iPhone · Safari"
+ * @property {number} pairedS       when it was paired, in Unix time
+ * @property {number} seenS         when it was last used, in Unix time, to the hour
+ * @property {boolean} connected    it has a stream open
+ */
+
+/**
+ * Remote access: other devices on the local network reach Radiolack over
+ * HTTPS with an access code. This computer's interfaces only.
+ * @typedef {object} RemoteState
+ * @property {boolean} on
+ * @property {number} port              where it listens, or will
+ * @property {string[]} urls            what a device opens, by name then by address; empty while off
+ * @property {string | null} code       the access code, while on
+ * @property {boolean} blocked          too many wrong codes: the code works again once renewed
+ * @property {RemoteDevice[]} devices   paired, in the order they were
+ * @property {string | null} fingerprint  SHA-256 of the certificate devices install; null before the first turn-on
+ * @property {string} problem           why it could not turn on, or ""
+ */
+
+/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences' | 'update' | 'remote'} Command */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -160,9 +188,12 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * "connecting" before the first answer, "open" once the engine greeted the
- * interface, "waiting" while it retries after a disconnection, and
- * "incompatible" when the engine speaks another protocol version.
- * @typedef {'connecting' | 'open' | 'waiting' | 'incompatible'} StreamState
+ * interface, "waiting" while it retries after a disconnection,
+ * "remote-off" while it retries after the computer turned remote access
+ * off, "unpaired" once the computer no longer knows this device, which must
+ * pair again (the stream then stops), and "incompatible" when the engine
+ * speaks another protocol version.
+ * @typedef {'connecting' | 'open' | 'waiting' | 'remote-off' | 'unpaired' | 'incompatible'} StreamState
  */
 
 /**
@@ -175,6 +206,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(values: Preferences) => void} onPreferences  sent next, once per connection: the latest saved
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
+ * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -358,6 +390,38 @@ export function decodeUpdate(message) {
 }
 
 /**
+ * Decode a remote access message. Returns null when a field is missing or
+ * malformed.
+ * @param {any} message  a parsed JSON message of type "remote"
+ * @returns {RemoteState | null}
+ */
+export function decodeRemote(message) {
+  /** @param {unknown} value */
+  const textOrNull = (value) => value === null || typeof value === 'string';
+  /** @param {any} d */
+  const device = (d) => d !== null && typeof d === 'object' && typeof d.id === 'string'
+    && typeof d.label === 'string' && Number.isSafeInteger(d.paired) && Number.isSafeInteger(d.seen)
+    && typeof d.connected === 'boolean';
+  const m = message;
+  const valid = typeof m.on === 'boolean' && Number.isSafeInteger(m.port) && Array.isArray(m.urls)
+    && m.urls.every((/** @type {unknown} */ url) => typeof url === 'string') && textOrNull(m.code)
+    && typeof m.blocked === 'boolean' && Array.isArray(m.devices) && m.devices.every(device)
+    && textOrNull(m.fingerprint) && typeof m.problem === 'string';
+  if (!valid) return null;
+  return {
+    on: m.on,
+    port: m.port,
+    urls: m.urls.slice(),
+    code: m.code,
+    blocked: m.blocked,
+    devices: m.devices.map((/** @type {any} */ d) => (
+      { id: d.id, label: d.label, pairedS: d.paired, seenS: d.seen, connected: d.connected })),
+    fingerprint: m.fingerprint,
+    problem: m.problem,
+  };
+}
+
+/**
  * The fields of a bookmark command, named as the engine names them.
  * @param {BookmarkFields} fields
  */
@@ -387,6 +451,8 @@ export class EngineStream {
   #running = false;
   #greeted = false;
   #incompatible = false;
+  #remote = false;        // the engine serves this interface through remote access
+  #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
   #audio = false;         // this interface wants audio
@@ -400,6 +466,15 @@ export class EngineStream {
   constructor(handlers, url = streamUrl()) {
     this.#handlers = handlers;
     this.#url = url;
+  }
+
+  /**
+   * Whether the engine serves this interface through remote access, as its
+   * last hello said: it then sends neither the storage, update nor remote
+   * access state, and refuses their changes.
+   */
+  get remote() {
+    return this.#remote;
   }
 
   /** Connect, unless already connected or connecting. */
@@ -516,6 +591,46 @@ export class EngineStream {
   }
 
   /**
+   * Turn remote access on or off: this computer's interfaces receive its
+   * state as it changes, which says why it could not turn on. Returns false,
+   * sending nothing, when the stream is not open.
+   * @param {boolean} on
+   * @returns {boolean}
+   */
+  setRemoteAccess(on) {
+    return this.#send({ type: 'remote', on });
+  }
+
+  /**
+   * Change the port remote access listens on, while it is off. Returns
+   * false, sending nothing, when the stream is not open.
+   * @param {number} port
+   * @returns {boolean}
+   */
+  setRemotePort(port) {
+    return this.#send({ type: 'remote', port });
+  }
+
+  /**
+   * Make a new access code: every paired device is forgotten and must enter
+   * it. Returns false, sending nothing, when the stream is not open.
+   * @returns {boolean}
+   */
+  renewRemoteCode() {
+    return this.#send({ type: 'remote', new_code: true });
+  }
+
+  /**
+   * Forget a paired device, which must enter the code again. Returns false,
+   * sending nothing, when the stream is not open.
+   * @param {string} id
+   * @returns {boolean}
+   */
+  forgetRemoteDevice(id) {
+    return this.#send({ type: 'remote', forget: id });
+  }
+
+  /**
    * Whether this interface wants audio: the engine sends audio frames only
    * then, on this connection and the next ones.
    * @param {boolean} on
@@ -563,7 +678,7 @@ export class EngineStream {
     this.#awaitedId = 0;
     socket.addEventListener('message', (event) => this.#receive(socket, event));
     // A failed connection fires "error" then "close": the retry is scheduled on "close" only.
-    socket.addEventListener('close', () => this.#closed(socket));
+    socket.addEventListener('close', (event) => this.#closed(socket, event.code));
   }
 
   /**
@@ -619,6 +734,9 @@ export class EngineStream {
     } else if (message.type === 'update') {
       const update = decodeUpdate(message);
       if (update) this.#handlers.onUpdate(update);
+    } else if (message.type === 'remote') {
+      const remote = decodeRemote(message);
+      if (remote) this.#handlers.onRemote(remote);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);
@@ -637,13 +755,18 @@ export class EngineStream {
       return;
     }
     this.#greeted = true;
+    this.#remote = message.remote === true;
+    this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));
     this.#handlers.onState('open');
   }
 
-  /** @param {WebSocket} socket */
-  #closed(socket) {
+  /**
+   * @param {WebSocket} socket
+   * @param {number} code  the close code
+   */
+  #closed(socket, code) {
     if (socket !== this.#socket) return;
     this.#socket = null;
     if (!this.#running) return;
@@ -652,11 +775,18 @@ export class EngineStream {
       this.#handlers.onState('incompatible');
       return;
     }
+    if (code === CLOSE_NOT_PAIRED) {
+      // Reconnecting would meet the same refusal: the page must pair this device again.
+      this.#running = false;
+      this.#handlers.onState('unpaired');
+      return;
+    }
+    if (code === CLOSE_REMOTE_OFF) this.#remoteOff = true;
     this.#retry();
   }
 
   #retry() {
-    this.#handlers.onState('waiting');
+    this.#handlers.onState(this.#remoteOff ? 'remote-off' : 'waiting');
     const delay = this.#retryMs;
     this.#retryMs = Math.min(RETRY_MAX_MS, delay * 2);
     this.#timer = window.setTimeout(() => { if (this.#running) this.#connect(); }, delay);

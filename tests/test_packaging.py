@@ -174,8 +174,8 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(self.package.name, f"radiolack_{self.field('Version')}_all.deb")
         self.assertEqual(self.field("Maintainer"), "A Name <a@example.org>")
         depends = self.field("Depends")
-        for needed in ("python3 (>= 3.11)", "python3-aiohttp", "python3-numpy", "python3-gi", "gir1.2-gtk-3.0",
-                       "gir1.2-webkit2-4.1", "ca-certificates"):
+        for needed in ("python3 (>= 3.11)", "python3-aiohttp", "python3-cryptography", "python3-numpy", "python3-gi",
+                       "gir1.2-gtk-3.0", "gir1.2-webkit2-4.1", "ca-certificates"):
             self.assertIn(needed, depends)
         self.assertEqual(self.field("Recommends"), "rtl-sdr")
 

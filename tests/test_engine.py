@@ -17,11 +17,12 @@ import numpy as np
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack import __version__
 from radiolack.engine import Engine, Source, Subscription
+from radiolack.remote import RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
-from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, FakeSource, FakeUpdates
+from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, FakeSource, FakeUpdates, free_port
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
@@ -814,6 +815,32 @@ class UpdateTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(updates.cancelled)
         engine.check_updates()      # closed: nothing starts
         self.assertEqual(updates.checks, 1)
+
+
+class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
+    """The devices that remote access serves share the radio, not this
+    computer's own states and settings."""
+
+    async def test_a_remote_client_gets_neither_storage_updates_nor_remote_access(self):
+        access = RemoteAccess()
+        engine = Engine(FakeSource(), remote=access)
+        self.addCleanup(engine.close)
+        local, remote = engine.subscribe(), engine.subscribe(remote=True)
+        self.assertEqual([message["type"] for message in ready_messages(local)], [*STATES, "remote"])
+        self.assertEqual([message["type"] for message in ready_messages(remote)],
+                         ["source", "demod", "bookmarks", "preferences"])
+        access.set_port(9000)
+        self.assertEqual(ready_messages(local), [{"type": "remote", **access.describe()}])
+        self.assertEqual(ready_messages(remote), [])
+        engine.configure({"dc_removal": False})     # the radio's states reach both
+        self.assertEqual([message["type"] for message in ready_messages(remote)], ["source"])
+        self.assertEqual([message["type"] for message in ready_messages(local)], ["source"])
+
+    async def test_a_remote_client_may_not_change_the_rtl_tcp_address(self):
+        engine = Engine(RtlTcpSource(LOOPBACK, free_port()), remote=RemoteAccess())   # never connects
+        self.addCleanup(engine.close)
+        self.assertEqual(set(engine.state()["settable"]) - set(engine.state(remote=True)["settable"]), {"address"})
+        self.assertEqual(engine.state(remote=True)["address"], engine.state()["address"])
 
 
 if __name__ == "__main__":
