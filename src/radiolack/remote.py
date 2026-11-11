@@ -353,9 +353,10 @@ def host_name() -> str:
 
 
 def remote_urls(host: str, addresses: Sequence[str], port: int) -> list[str]:
-    """Where devices reach remote access: by this computer's mDNS name, then
-    by each address."""
-    return [f"https://{name}:{port}/" for name in ([f"{host}.local"] if host else []) + list(addresses)]
+    """Where devices reach remote access: by each address, then by this
+    computer's mDNS name, which also leads to its IPv6 addresses, if any,
+    where remote access does not listen: an iPhone then fails to open it."""
+    return [f"https://{name}:{port}/" for name in list(addresses) + ([f"{host}.local"] if host else [])]
 
 
 def is_private(address: str) -> bool:

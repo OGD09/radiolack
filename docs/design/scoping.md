@@ -603,8 +603,11 @@ These costs wait for v4:
   the refused peers, hosts, origins, codes, cookies and plain HTTP, the
   remote devices' rights, and turning on and off on 127.0.0.1; the browser
   tests pair a device and share the receiver with it; the Package workflow
-  turns remote access on in each system's container. Not yet checked on a
-  phone.
+  turns remote access on in each system's container. Checked on an iPhone
+  on 2026-11-11, on a home Wi-Fi: the certificate, pairing, shared tuning
+  and audio work by the computer's address. By its `.local` name, which
+  Avahi also gives the computer's IPv6 address, where remote access does
+  not listen, Safari opened nothing, so Settings gives the addresses first.
 - Next steps: v1 continues with listening on the iPhone, then interface
   settings per device; the owner's choice about the button that installs an
   update is still open.

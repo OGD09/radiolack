@@ -143,7 +143,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             "devices": [], "fingerprint": None, "problem": ""})
         self.assert_refused(self.port)
         state = await self.turn_on()
-        self.assertEqual(state["urls"], [f"https://{HOST}.local:{self.port}/", f"https://{LOOPBACK}:{self.port}/"])
+        self.assertEqual(state["urls"], [f"https://{LOOPBACK}:{self.port}/", f"https://{HOST}.local:{self.port}/"])
         self.assertRegex(state["code"], r"^[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$")
         self.assertRegex(state["fingerprint"], r"^[0-9A-F]{2}( [0-9A-F]{2}){31}$")
         state = await self.turn_off()

@@ -281,9 +281,11 @@ class AddressTest(unittest.TestCase):
                 self.assertTrue(is_private(address))
                 self.assertFalse(address.startswith("127."))
 
-    def test_urls_name_the_computer_first(self):
+    def test_urls_give_the_addresses_before_the_name(self):
+        # The name also leads to the computer's IPv6 addresses, if any, where
+        # remote access does not listen: an iPhone then fails to open it.
         self.assertEqual(remote_urls(HOST, ["192.168.1.20", "10.0.0.2"], 9443), [
-            "https://radiolack-test.local:9443/", "https://192.168.1.20:9443/", "https://10.0.0.2:9443/"])
+            "https://192.168.1.20:9443/", "https://10.0.0.2:9443/", "https://radiolack-test.local:9443/"])
         self.assertEqual(remote_urls("", ["192.168.1.20"], 8443), ["https://192.168.1.20:8443/"])
 
     def test_the_host_name_is_one_dns_label_or_nothing(self):

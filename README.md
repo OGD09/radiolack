@@ -351,11 +351,15 @@ firewall: when this computer runs one, let the local network reach the port,
 for instance `sudo ufw allow from 192.168.1.0/24 to any port 8443 proto tcp`
 with ufw.
 
-Settings shows the address to open, `https://NAME.local:8443/` with this
-computer's host name, which works on networks where mDNS resolves such names
-(Avahi on Linux; iOS, macOS, Android and Windows resolve them), and the
-same with each address of this computer, which always works. On each device,
-once:
+Settings shows the addresses to open: first `https://ADDRESS:8443/` with
+this computer's private addresses, home networks' ranges first, which work
+wherever the device reaches them; then `https://NAME.local:8443/` with its
+host name, which works on networks where mDNS resolves such names (Avahi on
+Linux; iOS, macOS, Android and Windows resolve them), unless this computer
+also has an IPv6 address: the name then leads there too, where remote access
+does not listen, and an iPhone opens it slowly or not at all. When the
+router gives this computer another address, turn remote access off and on,
+then open the new address and enter the code again. On each device, once:
 
 1. Open the address. The browser warns that the connection is not private:
    Radiolack's certificate comes from Radiolack's own local authority, which

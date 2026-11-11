@@ -140,7 +140,7 @@ settings.
 
    ```json
    {"type": "remote", "on": true, "port": 8443,
-    "urls": ["https://studio.local:8443/", "https://192.168.1.20:8443/"],
+    "urls": ["https://192.168.1.20:8443/", "https://studio.local:8443/"],
     "code": "K7PM-3XQH", "blocked": false,
     "devices": [{"id": "5f0c2a91", "label": "iPhone · Safari", "paired": 1794000000,
                  "seen": 1794003600, "connected": true}],
@@ -153,7 +153,7 @@ settings.
    | --- | --- |
    | `on` | Whether remote access listens. False at each start. |
    | `port` | The port it listens on, or will. |
-   | `urls` | What a device opens: by this computer's mDNS name, when its host name is a valid one, then by each address it listens on. Empty while off. |
+   | `urls` | What a device opens: by each address it listens on, then by this computer's mDNS name, when its host name is a valid one. The name also leads to the computer's IPv6 addresses, if any, where remote access does not listen. Empty while off. |
    | `code` | The access code, in two groups of four characters, while on; null while off. |
    | `blocked` | Too many wrong codes were entered (10): the code no longer works until a new one is made. |
    | `devices` | The paired devices, in the order they were paired: `id`, which a `remote` message names; `label`, such as `iPhone · Safari`, made of known words only; `paired` and `seen`, when it was paired and last used, in Unix time, the latter to the hour; `connected`, whether it has a stream open. |
