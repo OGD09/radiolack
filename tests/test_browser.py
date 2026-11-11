@@ -214,6 +214,31 @@ class BrowserTest(unittest.TestCase):
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
 
+    def test_the_end_of_a_touch_asks_the_audio_to_start(self):
+        # A tap activates the page only once the finger leaves the screen, and
+        # only then does Safari on the iPhone let the audio start. Headless
+        # browsers start it earlier, Firefox at times without any gesture, so
+        # the audio stays suspended here and the test counts the page's
+        # requests to start it.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser):
+                context = self.browsers[browser].new_context()
+                self.addCleanup(context.close)
+                context.add_init_script(   # before the interface's scripts
+                    "window.resumes = 0;"
+                    " AudioContext.prototype.resume = () => { window.resumes += 1; return Promise.resolve(); };")
+                errors: list[str] = []
+                page = self.watched_page(context, browser, errors)
+                page.goto(url)
+                expect(page.locator("#dm-audio-note")).to_have_text(
+                    "Audio starts with a click, a tap or a key press on the page.")
+                for event in ("new PointerEvent('pointerup', { pointerType: 'touch' })", "new Event('touchend')"):
+                    before = page.evaluate("() => window.resumes")
+                    page.evaluate(f"() => window.dispatchEvent({event})")
+                    self.assertGreater(page.evaluate("() => window.resumes"), before, event)
+                self.assertEqual(errors, [])
+
     def test_bookmarks_are_shared(self):
         for browser in BROWSERS:
             url = self.serve()      # no bookmark yet

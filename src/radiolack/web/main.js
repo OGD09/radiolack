@@ -1263,7 +1263,7 @@ function syncAudioNote() {
   let text = '';
   if (demodError) text = `Change refused: ${demodError}.`;
   else if (!audioModes.includes(S.mode)) text = `${S.mode} is not demodulated yet: only ${audioModes.join(' and ')} plays.`;
-  else if (audioState === 'blocked') text = 'Audio starts with a click or a key press on the page.';
+  else if (audioState === 'blocked') text = 'Audio starts with a click, a tap or a key press on the page.';
   else if (audioState === 'failed') text = 'Audio cannot play in this browser.';
   const el = $('#dm-audio-note');
   if (el.textContent !== text) el.textContent = text;

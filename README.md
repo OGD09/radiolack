@@ -289,8 +289,8 @@ threshold set by hand below the noise keeps it open.
 Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
-click or key press on the page, and the Demod panel then says so. Nothing is
-recorded.
+click, tap or key press on the page, and the Demod panel then says so.
+Nothing is recorded.
 
 ## Settings and bookmarks
 

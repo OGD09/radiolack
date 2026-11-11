@@ -1,13 +1,17 @@
 /*
  * Audio output: plays the engine's audio frames (stream.js) on this device,
  * through an AudioWorklet (audio-worklet.js) and a volume control. Browsers
- * may hold the audio until the user clicks or presses a key on the page; it
- * then starts with that gesture.
+ * may hold the audio until the user clicks, taps or presses a key on the
+ * page; it then starts with that gesture.
  */
 
 const WORKLET_URL = 'audio-worklet.js';
 const PROCESSOR_NAME = 'radiolack-audio';
-const GESTURES = ['pointerdown', 'keydown'];
+// The events that let a browser start the audio it holds (HTML's
+// activation-triggering input events): a mouse press, a key press, and the
+// end of a touch, since a tap counts only once the finger leaves the screen
+// (Safari on the iPhone, for one).
+const GESTURES = ['pointerdown', 'pointerup', 'touchend', 'keydown'];
 const VOLUME_TIME_S = 0.02;     // volume changes glide over about this long, without clicks
 
 /**

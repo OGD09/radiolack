@@ -597,12 +597,14 @@ These costs wait for v4:
   engine), shows the addresses, the code, the paired devices and the
   authority's fingerprint, and a device that is not paired gets a pairing
   page, which offers the certificate and asks for the code. Protocol
-  version 6. The tests check the certificates' chain and name constraints
-  with OpenSSL, the refused peers, hosts, origins, codes, cookies and plain
-  HTTP, the remote devices' rights, and turning on and off on 127.0.0.1;
-  the browser tests pair a device and share the receiver with it; the
-  Package workflow turns remote access on in each system's container. Not
-  yet checked on a phone.
+  version 6. A tap starts the audio once the finger leaves the screen, as
+  Safari on the iPhone requires (moved forward from the iPhone step). The
+  tests check the certificates' chain and name constraints with OpenSSL,
+  the refused peers, hosts, origins, codes, cookies and plain HTTP, the
+  remote devices' rights, and turning on and off on 127.0.0.1; the browser
+  tests pair a device and share the receiver with it; the Package workflow
+  turns remote access on in each system's container. Not yet checked on a
+  phone.
 - Next steps: v1 continues with listening on the iPhone, then interface
   settings per device; the owner's choice about the button that installs an
   update is still open.
