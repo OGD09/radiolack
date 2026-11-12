@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import inspect
 import json
 import logging
 import os
@@ -59,6 +60,11 @@ _REMOTE_KEEPALIVE_S = 15.0      # an idle HTTPS connection closes after this lon
 _REMOTE_BODY_LIMIT = 4 * 1024   # a pairing request's body
 _WRONG_CODE_DELAY_S = 1.0       # a wrong code is answered this late, and codes are checked one at a time
 _PAIRING_FILES = frozenset({"pair.js", "pair.css", "style.css"})   # what a device loads before pairing
+# How long stopping remote access waits for its requests: aiohttp 3.9 moved
+# that setting from the sites, where it now warns, to the runner, while
+# aiohttp 3.8 (Debian 12) takes it on the sites only.
+_REMOTE_SHUTDOWN = {"shutdown_timeout": _CLOSE_TIMEOUT_S}
+_SHUTDOWN_ON_RUNNER = "shutdown_timeout" in inspect.signature(web.BaseRunner.__init__).parameters
 _CLOSE_REASONS = {CLOSE_NOT_PAIRED: b"This device is not paired.", CLOSE_REMOTE_OFF: b"Remote access is off."}
 _BLOCKED = "Too many wrong codes: make a new code in Radiolack's settings on the computer."
 
@@ -403,11 +409,13 @@ class RemoteListener:
                 raise _Refusal(f"Port {port} is in use by another program: choose another port.") from None
             raise _Refusal(f"Remote access cannot listen on {address}, port {port}: "
                            f"{error.strerror or error}.") from None
-        runner = web.AppRunner(self._app(), handle_signals=False, keepalive_timeout=_REMOTE_KEEPALIVE_S)
+        runner = web.AppRunner(self._app(), handle_signals=False, keepalive_timeout=_REMOTE_KEEPALIVE_S,
+                               **(_REMOTE_SHUTDOWN if _SHUTDOWN_ON_RUNNER else {}))
         try:
             await runner.setup()
             for sock in sockets:
-                await web.SockSite(runner, sock, ssl_context=context, shutdown_timeout=_CLOSE_TIMEOUT_S).start()
+                await web.SockSite(runner, sock, ssl_context=context,
+                                   **({} if _SHUTDOWN_ON_RUNNER else _REMOTE_SHUTDOWN)).start()
         except BaseException:
             try:
                 await runner.cleanup()
