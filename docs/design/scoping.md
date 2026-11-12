@@ -64,6 +64,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | Scanners in the protocol: a `scanner` state (the settings, the scan running, its progress and why it stopped), a `peaks` message (at most 50 recent signals, at most once a second and only when they change), the observations, sent only to an interface that asks for them, and `scanner` and `observations` messages from the interfaces. The protocol stays at version 6, and the hello lists the scanners that the engine runs: a newer page on an older engine greys out only what that engine lacks, and an older page ignores the new messages. Version 7 would stop every page loaded between a package's installation and Radiolack's restart, since the server reads the interface from the disk at each request: a device facing a computer without a window could then neither use Radiolack nor restart it. Serving the interface as it was read at start would remove that case for every later version; it does not depend on v2 and is left for later. |
 | 2026-11-12 | v2's budget and order: the scanners add at most 2% of one core on the owner's laptop (spike 4); a scan without any interface costs what the engine costs for one, 12 to 15% of one core, and rtl_tcp, while it runs. Pull requests, in this order, each with its documentation and tests: this design; detection and its list in the engine, with the shared settings and the ignored frequencies, in place of the interface's own detection; the memory scan in the engine, in place of the interface's; the observations and the History tab; the sweep, with which the memory scan also visits the bookmarks outside the receiver's span. The tests need no receiver: detection and the memory scan run on the simulated band, the sweep against the fake rtl_tcp, which gains carriers at fixed frequencies. |
 | 2026-11-12 | History and paired devices, as the owner chose: every interface may clear the History, a paired device's included, as it changes the bookmarks; Clear and Clear all wait for a second press on every device. With the observations' pull request, a channel gathers the signals found within 1.5 kHz of it or within a quarter of their width, as the list of the signals found does, so that a wide FM signal whose centre of power moves with the voice stays one channel. |
+| 2026-11-12 | The sweep, as the owner chose, comes alone in its pull request; the memory scan's visits to the bookmarks outside the receiver's span come in the next. Its windows lie a quarter of the sample rate apart at most, the first and the last a tenth of the rate inside the range, and a narrower range gets two: every frequency of the range then lies in the part that detection searches of a window, but a signal at a window's centre only in its neighbours'. So the time per window holds two searches of detection, each averaging half of it, and a signal is confirmed, two detections in a row, within one window, without waiting for the settling of the next. A window's time counts from its first samples, which the source labels with the settings they were taken with; the sweep moves on when, 2 s after asking for a window, the samples still come from elsewhere, as when the tuner keeps the frequency within its range. A client's stop, or a window that the receiver refuses, brings the receiver and the VFO back; tuning by hand and another source leave them where they are, and while the sweep runs, the receiver's saved settings are those it comes back to, so that a restart meanwhile finds the receiver where the user left it. The scanner state names the scan that its stop reason is about, so that each tab shows only its own, and while the sweep runs, the memory scan's bookmarks are those of the span it comes back to, which a memory scan started then watches. Set aside: the sweep on the simulated band, which does not tune. |
 
 ## Scope
 
@@ -749,9 +750,36 @@ These costs wait for v4:
   Tune, Bookmark and the confirmed clears from two interfaces; checked by
   hand in a browser on the simulated band with a prepared file, at a
   phone's width too.
+- Sweep in the engine, 2026-11-12, v2's fourth pull request:
+  `scanners.py` places the sweep's windows across a range and follows its
+  progress, each window's two searches, the next window and the passes,
+  leaving a window whose samples do not come; detection averages half the
+  time per window for each search while it sweeps. The engine steps the
+  receiver from window to window, for every client and without any client,
+  brings the receiver and the VFO back when a client stops it or the
+  receiver refuses a window, stops it when an interface tunes by hand or
+  chooses another source, and saves the receiver's settings as they will
+  be once back; one scan runs at a time (`engine.py`). The scanner state
+  carries the range and the time per window, saved with the settings, the
+  sweep's progress and the scan that the stop reason is about, and the
+  `scanner` message changes them and starts the sweep (`stream.js`). The
+  Sweep tab sets the range and the time per window, starts and stops the
+  sweep and shows its pass and window, and the status line names it
+  (`index.html`, `main.js`). A centre frequency or sample rate changed by
+  hand now stops a scan at once, from the settings asked of the source
+  rather than those of its samples, which on rtl_tcp came 0.4 s later and
+  let the memory scan tune the VFO meanwhile. Protocol version 6 stays, the
+  hello listing `sweep`. The tests check the windows and their coverage of
+  the range, the sweep's steps, the engine's sweep with a fake receiver
+  that tunes and with the fake rtl_tcp, whose carriers sit at fixed
+  frequencies, its stops, returns and refusals, its run without any client,
+  one scan at a time, and in the three browsers, two interfaces following a
+  sweep of the fake rtl_tcp program until one stops it; checked by hand in
+  a browser against the fake rtl_tcp program.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones). v2's pull requests follow, one at a time: next, the sweep.
+  Milestones). v2's pull requests follow, one at a time: next, the memory
+  scan's visits to the ticked bookmarks outside the receiver's span.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

@@ -19,7 +19,8 @@ address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. The engine also
-finds the signals in the span, which every interface lists
+finds the signals in the span, which every interface lists, watches the
+ticked bookmarks and sweeps a range with a receiver that tunes
 ([Scanners](#scanners)). Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
@@ -347,8 +348,41 @@ receiver open, until an interface stops it. Tuning by hand from any
 interface (the VFO, the centre frequency or the sample rate), choosing
 another receiver, or no ticked bookmark left in the span stops it. Whether
 it runs is never saved, so none runs at start; the resume time is the same
-for every interface and kept for the next start. The sweep is not available
-yet.
+for every interface and kept for the next start.
+
+The Sweep tab's sweep runs in the engine too, the same for every interface,
+with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
+It steps the receiver across a range, 430 to 440 MHz by default, window
+after window, pass after pass, and detection searches each window as it
+does the span: the signals found there join the Peaks list and the History.
+The windows lie a quarter of the sample rate apart at most, the first and
+the last a tenth of the rate inside the range, so that every frequency of
+the range lies in the part that detection searches of a window, even one at
+the centre of another window, where the DC spike shows. Once the
+receiver's samples come from a window, the sweep stays there the time per
+window (0.5 s by default, from 0.25 to 2 s), long enough for detection to
+find a signal there twice in a row, then asks for the next one; it also
+moves on when, 2 s after asking for a window, the samples still come from
+elsewhere. At 2.4 MS/s, a pass of the 17 windows of 430 to 440 MHz takes
+about 16 s, the receiver taking 0.4 s to settle at each. The spectrum and
+the waterfall show each window, and the VFO stays inside it.
+
+Any interface starts and stops the sweep, a paired device's included, and
+every interface shows the pass and the window it is at; their status lines
+add "sweep" while it runs. One scan runs at a time: starting the sweep
+stops the memory scan, and starting the memory scan stops the sweep. The
+sweep starts only when the receiver tunes to every window of the range. It
+goes on with no interface open until an interface stops it, which brings
+the receiver back to its centre frequency and the VFO where they were when
+it started, as does a receiver that refuses a window. Tuning by hand from
+any interface (the VFO, the centre frequency or the sample rate) or
+choosing another receiver stops it, leaving the receiver where it is.
+While it runs, the receiver's settings saved are those it comes back to,
+and the Bookmarks tab lists the ticked bookmarks of that span, which the
+memory scan watches once started. A new range starts a running sweep again
+from its first window. Whether it runs is never saved; the range and the
+time per window are the same for every interface and kept for the next
+start.
 
 The engine keeps the channels where it found signals for 90 days: for each
 one, when it was first and last heard, how many transmissions, how long it
@@ -381,8 +415,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start,
   and the scanners' settings: whether detection is on, its threshold, the
-  ignored frequencies and the memory scan's resume time
-  ([Scanners](#scanners)). It also holds the own
+  ignored frequencies, the memory scan's resume time, and the sweep's range
+  and time per window ([Scanners](#scanners)). It also holds the own
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
@@ -472,8 +506,8 @@ current addresses, each time remote access turns on.
 A paired device gets the interface, the spectrum and the audio, and shares
 the receiver with every other interface: its changes to the VFO, the mode,
 the receiver's settings, the source, the bookmarks and the scanners reach
-everyone, and it may clear the History. A memory scan started from a phone
-goes on with the phone locked ([Scanners](#scanners)). It
+everyone, and it may clear the History. A memory scan or a sweep started
+from a phone goes on with the phone locked ([Scanners](#scanners)). It
 cannot change what belongs to this computer, remote access itself, the update
 check and the rtl_tcp server's address, and does not see where the settings
 are saved.
@@ -621,8 +655,8 @@ The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
-another, the bookmarks, the signals found, the memory scan, the History and
-the saved interface settings. They
+another, the bookmarks, the signals found, the memory scan, the sweep, the
+History and the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -846,7 +880,8 @@ src/radiolack/
                 interfaces, sends audio to those that ask, and saves the
                 settings and the observations
   scanners.py   detection: the signals in the receiver's span, their list
-                and the ignored frequencies; the memory scan
+                and the ignored frequencies; the memory scan; the sweep's
+                windows and progress
   observations.py
                 the channels where signals were found, for the History
   remote.py     remote access: access code, paired devices and their

@@ -93,17 +93,19 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * The engine's scanners, shared by every interface: signal detection and the
- * memory scan.
+ * The engine's scanners, shared by every interface: signal detection, the
+ * memory scan and the sweep.
  * @typedef {object} ScannerState
  * @property {boolean} detection    the engine looks for signals in its spectra
  * @property {number} thresholdDb   how far above the local noise a signal rises
  * @property {number[]} ignoredHz   frequencies whose signals are not listed, lowest first
  * @property {number} resumeS       how long the memory scan waits, once the squelch closed, before it watches again
- * @property {string | null} scan   the scan that runs: "memory", or null
+ * @property {string | null} scan   the scan that runs: "memory", "sweep", or null
  * @property {string | null} stopped
- *   why the latest scan stopped: "tuned", "source" or "bookmarks"; null when an interface stopped it, or none ran
+ *   why the latest scan stopped: "tuned", "source", "bookmarks" or "range"; null when an interface stopped it, or none ran
+ * @property {string | null} stoppedScan  the scan that `stopped` is about: "memory" or "sweep", or null
  * @property {MemoryScanState} memory
+ * @property {SweepState | null} sweep  null with an engine older than the sweep
  */
 
 /**
@@ -115,11 +117,25 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * The sweep's settings and progress.
+ * @typedef {object} SweepState
+ * @property {number} lowHz        the range it sweeps, from this frequency
+ * @property {number} highHz       to this one
+ * @property {number} windowS      the time per window
+ * @property {number | null} windows  how many windows the range takes; null while it does not run
+ * @property {number | null} window   the window the receiver is asked for, from 0
+ * @property {number | null} passes   the passes done
+ */
+
+/**
  * Scanner settings to change; the others stay as they are.
  * @typedef {object} ScannerChanges
  * @property {boolean} [detection]
  * @property {number} [thresholdDb]
  * @property {number} [resumeS]
+ * @property {number} [sweepLowHz]
+ * @property {number} [sweepHighHz]
+ * @property {number} [sweepWindowS]
  */
 
 /**
@@ -409,7 +425,8 @@ export function decodeBookmarks(message) {
 
 /**
  * Decode a scanner state message. Returns null when a field is missing or
- * malformed.
+ * malformed, apart from the sweep's, which an engine older than the sweep
+ * does not send: without them, or with one malformed, the sweep is null.
  * @param {any} message  a parsed JSON message of type "scanner"
  * @returns {ScannerState | null}
  */
@@ -433,7 +450,33 @@ export function decodeScanner(message) {
     resumeS: m.resume_s,
     scan: m.scan,
     stopped: m.stopped,
+    stoppedScan: typeof m.stopped_scan === 'string' ? m.stopped_scan : null,
     memory: { watched: memory.watched.slice(), state: memory.state, bookmarkId: memory.bookmark_id },
+    sweep: decodeSweep(m),
+  };
+}
+
+/**
+ * The sweep's settings and progress in a scanner state message, or null when
+ * one is missing or malformed.
+ * @param {any} m  a parsed JSON message of type "scanner"
+ * @returns {SweepState | null}
+ */
+function decodeSweep(m) {
+  const progress = m.sweep;
+  if (progress === null || typeof progress !== 'object') return null;
+  const counts = [progress.windows, progress.window, progress.passes];
+  const valid = [m.sweep_low_hz, m.sweep_high_hz, m.sweep_window_s].every(
+    (/** @type {unknown} */ v) => typeof v === 'number' && Number.isFinite(v) && v > 0)
+    && (counts.every((n) => n === null) || counts.every((n) => Number.isSafeInteger(n) && n >= 0));
+  if (!valid) return null;
+  return {
+    lowHz: m.sweep_low_hz,
+    highHz: m.sweep_high_hz,
+    windowS: m.sweep_window_s,
+    windows: progress.windows,
+    window: progress.window,
+    passes: progress.passes,
   };
 }
 
@@ -721,15 +764,19 @@ export class EngineStream {
     if (changes.detection !== undefined) message.detection = changes.detection;
     if (changes.thresholdDb !== undefined) message.threshold_db = changes.thresholdDb;
     if (changes.resumeS !== undefined) message.resume_s = changes.resumeS;
+    if (changes.sweepLowHz !== undefined) message.sweep_low_hz = changes.sweepLowHz;
+    if (changes.sweepHighHz !== undefined) message.sweep_high_hz = changes.sweepHighHz;
+    if (changes.sweepWindowS !== undefined) message.sweep_window_s = changes.sweepWindowS;
     return this.#send({ type: 'scanner', ...message });
   }
 
   /**
-   * Start the memory scan ("memory"), or stop the scan that runs (null):
-   * every interface then receives the scanner state, or this one an error,
-   * such as when no ticked bookmark lies in the receiver's span. Returns
-   * false, sending nothing, when the stream is not open.
-   * @param {'memory' | null} scan
+   * Start a scan, the memory scan ("memory") or the sweep ("sweep"), or stop
+   * the scan that runs (null): every interface then receives the scanner
+   * state, or this one an error, such as when no ticked bookmark lies in the
+   * receiver's span, or when the receiver does not tune. Returns false,
+   * sending nothing, when the stream is not open.
+   * @param {'memory' | 'sweep' | null} scan
    * @returns {boolean}
    */
   setScan(scan) {

@@ -2,7 +2,9 @@
 span's edges and centre, the detector's average over one capture, the list
 of signals found twice in a row, ignored frequencies; for the memory scan:
 the bookmarks it watches, their channels' power and noise, and its progress
-from channel to channel; and the checks of the values the interfaces give."""
+from channel to channel; for the sweep: its windows across a range and its
+progress from window to window; and the checks of the values the interfaces
+give."""
 
 import math
 import unittest
@@ -11,9 +13,11 @@ from unittest import mock
 import numpy as np
 
 from radiolack.bookmarks import Bookmark
-from radiolack.scanners import (ACTIVE_S, CHECK_S, DEFAULT_THRESHOLD_DB, HOLD_S, MAX_IGNORED, MERGE_HZ, ChannelWatch,
-                                Detection, Detector, MemoryScan, Signals, checked_frequency, checked_resume,
-                                checked_threshold, find_signals, local_noise, watched_channels)
+from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
+                                MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, ChannelWatch, Detection, Detector,
+                                MemoryScan, Signals, Sweep, SweepWindows, checked_frequency, checked_resume,
+                                checked_sweep_range, checked_threshold, checked_window, find_signals, local_noise,
+                                search_blocks, sweep_windows, watched_channels)
 from radiolack.spectrum import SpectrumAnalyzer
 
 SIZE = 8192
@@ -143,6 +147,15 @@ class DetectorTest(unittest.TestCase):
         detector.add(noise(1), CENTRE_HZ, RATE_HZ, DEFAULT_THRESHOLD_DB)
         detector.reset()
         self.assertIsNone(detector.add(noise(2), CENTRE_HZ, RATE_HZ, DEFAULT_THRESHOLD_DB))
+
+    def test_a_search_may_average_another_number_of_blocks(self):
+        detector = Detector(blocks=10)
+        loud = noise(1)
+        add_signal(loud, 5000, 25.0)
+        self.assertIsNone(detector.add(loud, CENTRE_HZ, RATE_HZ, DEFAULT_THRESHOLD_DB, 2))
+        [found] = detector.add(loud, CENTRE_HZ, RATE_HZ, DEFAULT_THRESHOLD_DB, 2)
+        self.assertAlmostEqual(found.frequency_hz, frequency_of(5000), delta=BIN_HZ)
+        self.assertEqual(detector.add(noise(2), CENTRE_HZ, RATE_HZ, DEFAULT_THRESHOLD_DB, 1), [])
 
     def test_needs_a_block(self):
         with self.assertRaises(ValueError):
@@ -373,6 +386,87 @@ class MemoryScanTest(unittest.TestCase):
         self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
 
 
+class SweepWindowsTest(unittest.TestCase):
+    RATES_HZ = (900_001.0, 1_024_000.0, 2_048_000.0, 2_400_000.0, 3_200_000.0)
+
+    @staticmethod
+    def centres(windows: SweepWindows) -> np.ndarray:
+        return np.array([windows.centre(index) for index in range(windows.count)])
+
+    def test_first_and_last_lie_a_tenth_of_the_rate_inside_the_range_at_most_a_quarter_apart(self):
+        for (low, high), count in (((430e6, 440e6), 17), ((118e6, 137e6), 32), ((1240e6, 1300e6), 101)):
+            with self.subTest(low=low, high=high):
+                windows = sweep_windows(low, high, RATE_HZ)
+                centres = self.centres(windows)
+                self.assertEqual(windows.count, count)
+                self.assertEqual((centres[0], centres[-1]), (low + 0.1 * RATE_HZ, high - 0.1 * RATE_HZ))
+                self.assertTrue(np.all(centres == np.round(centres)))
+                steps = np.diff(centres)
+                self.assertLessEqual(steps.max(), 0.25 * RATE_HZ + 1)
+                self.assertGreaterEqual(steps.min(), steps.max() - 1)
+
+    def test_a_narrow_range_gets_two_windows_a_quarter_of_the_rate_apart_around_its_middle(self):
+        for width_hz in (1.0, 25_000.0, 0.2 * RATE_HZ, 0.45 * RATE_HZ):
+            with self.subTest(width_hz=width_hz):
+                windows = sweep_windows(CENTRE_HZ, CENTRE_HZ + width_hz, RATE_HZ)
+                middle = CENTRE_HZ + width_hz / 2
+                self.assertEqual(list(self.centres(windows)),
+                                 [round(middle - 0.125 * RATE_HZ), round(middle + 0.125 * RATE_HZ)])
+
+    def test_every_frequency_lies_in_a_searched_part_even_with_the_centre_off_by_15_percent(self):
+        for rate in self.RATES_HZ:
+            for low, high in ((430e6, 440e6), (118e6, 137e6), (144e6, 146e6), (145e6, 145.1e6),
+                              (145e6, 145e6 + 0.2 * rate + 2_000), (145e6, 145e6 + 0.46 * rate)):
+                centres = self.centres(sweep_windows(low, high, rate))
+                frequencies = np.concatenate((np.linspace(low, high, 5001), centres,
+                                              centres + DC_GAP_HZ, centres - DC_GAP_HZ))
+                frequencies = frequencies[(frequencies >= low) & (frequencies <= high)]
+                for offset in np.linspace(-0.15, 0.15, 13) * rate:
+                    with self.subTest(rate=rate, low=low, high=high, offset=offset):
+                        # The searched part, a bin narrower on each side.
+                        distances = np.abs(frequencies[:, None] - centres[None, :] - offset)
+                        searched = ((distances > DC_GAP_HZ + rate / 8192)
+                                    & (distances < USABLE_FRACTION * rate - rate / 8192))
+                        self.assertTrue(searched.any(axis=1).all())
+
+
+class SweepTest(unittest.TestCase):
+    WINDOWS = SweepWindows(430e6, 600e3, 3)
+
+    def blocks(self, sweep: Sweep, now: float, centre_hz: float, count: int) -> list[float | None]:
+        return [sweep.step(now, centre_hz) for _ in range(count)]
+
+    def test_reads_its_searches_in_each_window_then_goes_on_pass_after_pass(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=2, now=0.0)
+        self.assertEqual((sweep.window, sweep.passes, sweep.centre_hz), (0, 0, 430e6))
+        per_window = SWEEP_SEARCHES * 2
+        self.assertEqual(self.blocks(sweep, 1.0, 430e6, per_window), [None] * (per_window - 1) + [430.6e6])
+        self.assertEqual(self.blocks(sweep, 2.0, 430.6e6, per_window)[-1], 431.2e6)
+        self.assertEqual((sweep.window, sweep.passes), (2, 0))
+        self.assertEqual(self.blocks(sweep, 3.0, 431.2e6, per_window)[-1], 430e6)
+        self.assertEqual((sweep.window, sweep.passes), (0, 1))
+
+    def test_blocks_of_another_window_do_not_count_and_one_that_does_not_come_is_left(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=10.0)
+        self.assertEqual(self.blocks(sweep, 10.5, 145e6, 5), [None] * 5)
+        self.assertIsNone(sweep.step(10.0 + GIVE_UP_S - 0.01, 145e6))
+        self.assertEqual(sweep.step(10.0 + GIVE_UP_S, 145e6), 430.6e6)
+        self.assertEqual(self.blocks(sweep, 13.0, 430.6e6, SWEEP_SEARCHES)[-1], 431.2e6)
+
+    def test_fewer_blocks_apply_at_once_and_a_restart_begins_with_the_first_window(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=4, now=0.0)
+        self.assertEqual(self.blocks(sweep, 1.0, 430e6, 3), [None] * 3)
+        sweep.search_blocks = 1
+        self.assertEqual(sweep.step(1.0, 430e6), 430.6e6)
+        sweep.restart(SweepWindows(1240e6, 500e3, 5), 2.0)
+        self.assertEqual((sweep.window, sweep.passes, sweep.windows.count, sweep.centre_hz), (0, 0, 5, 1240e6))
+
+    def test_each_window_searches_twice_whatever_its_time(self):
+        self.assertEqual(SWEEP_SEARCHES, 2)
+        self.assertEqual([search_blocks(window_s, 30.0) for window_s in (0.25, 0.5, 1.0, 2.0)], [4, 8, 15, 30])
+        self.assertEqual(search_blocks(0.25, 4.0), 1)
+
+
 class CheckTest(unittest.TestCase):
     def test_frequencies(self):
         self.assertEqual(checked_frequency(145_500_000.4, "a frequency"), 145_500_000.0)
@@ -396,6 +490,23 @@ class CheckTest(unittest.TestCase):
         for value in (-0.1, 8.1, True, "2", None, float("nan"), float("inf"), 10 ** 400):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 0 to 8"):
                 checked_resume(value)
+
+    def test_times_per_window(self):
+        self.assertEqual(checked_window(0.25), 0.25)
+        self.assertEqual(checked_window(2), 2.0)
+        for value in (0.2, 2.1, 0, True, "0.5", None, float("nan"), float("inf"), 10 ** 400):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 0.25 to 2"):
+                checked_window(value)
+
+    def test_sweep_ranges(self):
+        self.assertEqual(checked_sweep_range(430e6, 440_000_000.4), (430e6, 440e6))
+        self.assertEqual(checked_sweep_range(1, 2), (1.0, 2.0))
+        for low, high in ((440e6, 430e6), (430e6, 430e6), (430e6, 430_000_000.4)):
+            with self.subTest(low=low, high=high), self.assertRaisesRegex(ValueError, "must lie below its highest"):
+                checked_sweep_range(low, high)
+        for low, high in ((0, 440e6), (430e6, None), ("430 MHz", 440e6), (430e6, 1e12)):
+            with self.subTest(low=low, high=high), self.assertRaisesRegex(ValueError, "must be a number"):
+                checked_sweep_range(low, high)
 
 
 if __name__ == "__main__":

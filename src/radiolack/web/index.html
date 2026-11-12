@@ -207,14 +207,14 @@
         <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Restore</button></p>
       </div>
       <div data-tab-panel="sweep" hidden>
-        <p class="note">The sweep chains several receiver windows into a wide panorama, then looks for peaks in it. Useful on 70 cm (10 MHz) and 23 cm (60 MHz).</p>
         <div class="grid2">
-          <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" value="430.000"></div>
-          <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" value="440.000"></div>
-          <div class="field"><label for="sw-dwell">Time per window</label><select id="sw-dwell"><option>0.25 s</option><option selected>0.5 s</option><option>1 s</option></select></div>
-          <div class="field"><label for="sw-thr">Threshold</label><select id="sw-thr"><option>8 dB</option><option selected>12 dB</option><option>18 dB</option></select></div>
+          <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" inputmode="decimal" autocomplete="off" disabled></div>
+          <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" inputmode="decimal" autocomplete="off" disabled></div>
         </div>
-        <div class="row"><button type="button" class="btn primary" disabled>Start</button><span class="note">Not available yet.</span></div>
+        <div class="field"><label for="sw-window">Time per window <output id="sw-window-v"></output></label><input id="sw-window" type="range" min="0.25" max="2" step="0.25" disabled></div>
+        <p class="note" id="sw-note" role="status" hidden></p>
+        <div class="row"><button type="button" class="btn primary" id="sw-start" disabled>Start</button><span class="note" id="sw-state"></span></div>
+        <p class="note">The sweep steps the receiver across the range in overlapping windows, pass after pass, and lists the signals it finds in Peaks and the History. It needs a receiver that tunes, such as an RTL-SDR. It goes on without any interface; tuning by hand stops it, and Stop brings the receiver back.</p>
       </div>
       <div data-tab-panel="memory" hidden>
         <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5" disabled></div>

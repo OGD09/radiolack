@@ -417,6 +417,40 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#status")).not_to_contain_text("memory scan")
                 expect(first.locator("#mem-note")).to_be_hidden()
 
+    def test_every_interface_follows_the_sweep_until_one_stops_it(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                home = first.locator("#src-center").input_value()
+                for page in (first, second):
+                    page.locator(SCANNERS_PANEL).click()
+                    page.locator('#scan-tabs button[data-tab="sweep"]').click()
+                    expect(page.locator("#sw-to")).to_have_value("440.0000")
+                    expect(page.locator("#sw-state")).to_have_text("Stopped")
+                field = first.locator("#sw-from")
+                field.fill("1240")      # above the range's end: the whole range moves
+                field.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#sw-from")).to_have_value("1240.0000")
+                    expect(page.locator("#sw-to")).to_have_value("1250.0000")
+                first.locator("#sw-window").press("ArrowRight")
+                for page in (first, second):
+                    expect(page.locator("#sw-window-v")).to_have_text("0.75 s")
+                first.locator("#sw-start").click()
+                for page in (first, second):     # 17 windows of 2.4 MHz, a quarter of the rate apart at most
+                    expect(page.locator("#sw-state")).to_have_text(re.compile(r"^Pass 1, window ([2-9]|1\d) of 17$"))
+                    expect(page.locator("#sw-start")).to_have_text("Stop")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} sweep")
+                second.locator("#sw-start").click()
+                for page in (first, second):
+                    expect(page.locator("#sw-state")).to_have_text("Stopped")
+                    expect(page.locator("#sw-start")).to_have_text("Start")
+                    expect(page.locator("#status")).not_to_contain_text("sweep")
+                    expect(page.locator("#src-center")).to_have_value(home)     # the receiver came back
+                expect(first.locator("#sw-note")).to_be_hidden()
+
     def test_the_history_tunes_bookmarks_and_clears_the_channels_kept(self):
         for browser in BROWSERS:
             directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"

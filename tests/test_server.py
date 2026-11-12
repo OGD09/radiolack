@@ -28,7 +28,9 @@ from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns
 STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update", "remote")
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
-                 "scan": None, "stopped": None, "memory": {"watched": [], "state": None, "bookmark_id": None}}
+                 "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
+                 "stopped_scan": None, "memory": {"watched": [], "state": None, "bookmark_id": None},
+                 "sweep": {"windows": None, "window": None, "passes": None}}
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -194,7 +196,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks", "memory", "history"]})
+                             {"type": "hello", "protocol": 6, "remote": False,
+                              "scanners": ["peaks", "memory", "history", "sweep"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -389,7 +392,12 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 "scanner", "the threshold must be a number of dB from 6 to 30"),
             '{"type": "scanner", "ignore": 145e6, "restore": true}': (
                 "scanner", "ignore, restore and scan come alone in their message"),
-            '{"type": "scanner", "scan": "sweep"}': ("scanner", 'a scan is "memory", or null to stop it'),
+            '{"type": "scanner", "scan": "panorama"}': (
+                "scanner", 'a scan is "memory" or "sweep", or null to stop it'),
+            '{"type": "scanner", "scan": "sweep"}': (
+                "scanner", "the sweep needs a receiver that tunes, such as an RTL-SDR"),
+            '{"type": "scanner", "sweep_low_hz": 440e6}': (
+                "scanner", "the sweep's lowest frequency must lie below its highest"),
             '{"type": "scanner", "scan": "memory"}': ("scanner", "no ticked bookmark lies in the receiver's span"),
             '{"type": "scanner", "resume_s": 9}': (
                 "scanner", "the resume time must be a number of seconds from 0 to 8"),
