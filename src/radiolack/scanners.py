@@ -25,6 +25,18 @@ filter, and the local noise there, from the same bin powers. ``MemoryScan``
 follows the scan: it tunes to the strongest channel that would open the
 squelch, checks that the squelch opens there, listens while it stays open,
 waits the resume time once it closes, then watches them all again.
+
+The sweep steps the receiver across a range in overlapping windows
+(``sweep_windows``), as the airband explorer did: the first and last
+windows' centres lie a tenth of the rate inside the range, and the windows
+at most a quarter of the rate apart, so that every frequency of the range
+lies in the part of some window that detection searches, its centre and its
+edges included, even with the receiver's centre off by 15% of the rate.
+``Sweep`` follows its progress: once the samples of a window come, it reads
+there the blocks of SWEEP_SEARCHES searches, so that a signal found in two
+of them is listed without the next window's help, then asks for the next
+window, pass after pass. A window whose samples do not come while others do
+is left after GIVE_UP_S.
 """
 
 from __future__ import annotations
@@ -40,7 +52,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, passband_hz
 
-SCANNERS = ("peaks", "memory", "history")   # what the engine runs, as the hello lists it
+SCANNERS = ("peaks", "memory", "history", "sweep")   # what the engine runs, as the hello lists it
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency
@@ -63,6 +75,13 @@ RESUME_RANGE_S = (0.0, 8.0)
 DEFAULT_RESUME_S = 2.0              # the memory scan watches again once the squelch stayed closed this long
 CHECK_S = 0.25                      # once tuned to a channel, how long its squelch has to open
 HOLD_S = 1.0                        # a channel whose squelch did not open is not tuned to again within this
+SWEEP_EDGE = 0.1                    # the first and last windows' centres lie this far inside the range,
+SWEEP_STEP = 0.25                   # and the windows at most this far apart, as fractions of the rate
+SWEEP_SEARCHES = 2                  # detection searches in each window
+WINDOW_RANGE_S = (0.25, 2.0)        # the sweep's time per window
+DEFAULT_WINDOW_S = 0.5
+DEFAULT_SWEEP_HZ = (430_000_000.0, 440_000_000.0)  # the 70 cm band
+GIVE_UP_S = 2.0                     # a window whose samples do not come within this long, while others do, is left
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,16 +163,17 @@ class Detector:
         self._count = 0
 
     def add(self, power: np.ndarray, centre_hz: float, rate_hz: float,
-            threshold_db: float) -> list[Detection] | None:
+            threshold_db: float, blocks: int | None = None) -> list[Detection] | None:
         """Add a block's bin powers: the signals found, once ``blocks`` blocks
-        of the same capture have come, and None until then."""
+        of the same capture have come, the detector's own number unless
+        given, and None until then."""
         capture = (centre_hz, rate_hz, len(power))
         if capture != self._capture:
             self._capture = capture
             self.reset()
         self._sum = np.array(power, dtype=np.float64) if self._sum is None else self._sum + power
         self._count += 1
-        if self._count < self._blocks:
+        if self._count < (self._blocks if blocks is None else blocks):
             return None
         mean = self._sum / self._count
         self.reset()
@@ -431,6 +451,86 @@ class MemoryScan:
         self.bookmark_id = None
 
 
+@dataclasses.dataclass(frozen=True)
+class SweepWindows:
+    """A sweep's windows across a range: ``count`` of them, whose centres lie
+    ``step_hz`` apart from ``first_hz`` up."""
+
+    first_hz: float
+    step_hz: float
+    count: int
+
+    def centre(self, index: int) -> float:
+        """The centre frequency of window ``index``, from 0, in whole Hz, as a
+        receiver takes it."""
+        return float(round(self.first_hz + index * self.step_hz))
+
+
+def sweep_windows(low_hz: float, high_hz: float, rate_hz: float) -> SweepWindows:
+    """The windows of a sweep from ``low_hz`` to ``high_hz`` with a receiver
+    that samples at ``rate_hz``: their centres go from a tenth of the rate
+    above the lowest frequency to a tenth below the highest, evenly spaced,
+    at most a quarter of the rate apart. A range too narrow for two such
+    windows gets two a quarter of the rate apart around its middle, each
+    covering the other's centre."""
+    edge, step = SWEEP_EDGE * rate_hz, SWEEP_STEP * rate_hz
+    first, last = low_hz + edge, high_hz - edge
+    if last - first <= step:
+        return SweepWindows((low_hz + high_hz - step) / 2, step, 2)
+    count = math.ceil((last - first) / step) + 1
+    return SweepWindows(first, (last - first) / (count - 1), count)
+
+
+def search_blocks(window_s: float, frame_rate: float) -> int:
+    """The blocks that each of a window's SWEEP_SEARCHES searches averages,
+    for a time per window of ``window_s`` at ``frame_rate`` blocks a second."""
+    return max(1, round(window_s * frame_rate / SWEEP_SEARCHES))
+
+
+class Sweep:
+    """A sweep's progress through its ``windows``: ``window``, from 0, is the
+    one asked of the receiver, and ``passes`` the passes done. Each window
+    reads ``search_blocks`` blocks for each of its SWEEP_SEARCHES searches,
+    from the first block whose samples come from it."""
+
+    def __init__(self, windows: SweepWindows, search_blocks: int, now: float) -> None:
+        self.search_blocks = search_blocks
+        self.restart(windows, now)
+
+    def restart(self, windows: SweepWindows, now: float) -> None:
+        """Start again from the first of ``windows``, asked for at ``now``."""
+        self.windows = windows
+        self.window = 0
+        self.passes = 0
+        self._read = 0          # blocks of the window read so far
+        self._asked_s = now     # when the window was asked for
+
+    @property
+    def centre_hz(self) -> float:
+        """The centre frequency of the window asked of the receiver."""
+        return self.windows.centre(self.window)
+
+    def step(self, now: float, centre_hz: float) -> float | None:
+        """Move on with a block read at ``centre_hz`` and handled at ``now``.
+        Returns the centre frequency of the next window, to ask of the
+        receiver, once this window's blocks have been read, or once GIVE_UP_S
+        passed since it was asked for without its samples while others came;
+        None otherwise."""
+        if centre_hz == self.centre_hz:
+            self._read += 1
+            if self._read < SWEEP_SEARCHES * self.search_blocks:
+                return None
+        elif now - self._asked_s < GIVE_UP_S:
+            return None
+        self.window += 1
+        if self.window == self.windows.count:
+            self.window = 0
+            self.passes += 1
+        self._read = 0
+        self._asked_s = now
+        return self.centre_hz
+
+
 def checked_frequency(value: object, what: str) -> float:
     """A frequency an interface gave, rounded to the Hz; raises ValueError
     when it is not a number within FREQUENCY_RANGE_HZ."""
@@ -457,3 +557,23 @@ def checked_resume(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
         raise ValueError(f"the resume time must be a number of seconds from {low:g} to {high:g}")
     return float(value)
+
+
+def checked_window(value: object) -> float:
+    """A sweep's time per window an interface gave; raises ValueError when it
+    is not a number of seconds within WINDOW_RANGE_S."""
+    low, high = WINDOW_RANGE_S
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ValueError(f"the time per window must be a number of seconds from {low:g} to {high:g}")
+    return float(value)
+
+
+def checked_sweep_range(low_hz: object, high_hz: object) -> tuple[float, float]:
+    """A sweep's range an interface gave, its lowest and highest frequency,
+    rounded to the Hz; raises ValueError unless both are frequencies, the
+    lowest below the highest."""
+    low = checked_frequency(low_hz, "the sweep's lowest frequency")
+    high = checked_frequency(high_hz, "the sweep's highest frequency")
+    if not low < high:
+        raise ValueError("the sweep's lowest frequency must lie below its highest")
+    return low, high

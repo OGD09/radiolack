@@ -160,7 +160,7 @@ let streamState = 'connecting', frameRate = 0, rateFrames = 0, rateSince = 0;
 let streamOpened = false;   // the stream opened at least once on this page
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
-const typingIn = new Set(); // Source fields the user is typing in, which the engine's state leaves as they are
+const typingIn = new Set(); // text fields the user is typing in, which the engine's state leaves as they are
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
@@ -240,6 +240,7 @@ const stream = new EngineStream({
     // A centre that is neither the requested one nor the previous one: another change won.
     if (pendingTune && state.centreHz !== pendingTune.centre && state.centreHz !== pendingTune.previous) pendingTune = null;
     syncSource();
+    syncSweep();          // whether the receiver tunes, as the sweep needs
     updateStatus();
     if (historyShown()) syncHistorySummary();
   },
@@ -249,12 +250,12 @@ const stream = new EngineStream({
     bookmarksChanged();
   },
   onScanner: (state) => {
-    // The memory scan's progress changes the state far more often than the
-    // settings do: the controls follow only a change of the settings or of
-    // the scan that runs, which an interface made.
+    // The scans' progress changes the state far more often than the settings
+    // do: the controls follow only a change of the settings or of the scan
+    // that runs, which an interface made.
     const changed = scanner === null || scannerSettings(scanner) !== scannerSettings(state);
     scanner = state;
-    if (!changed) { syncMem(); return; }
+    if (!changed) { syncMem(); syncSweep(); return; }
     scannerNote = '';
     syncScanner();
   },
@@ -849,6 +850,7 @@ function updateStatus() {
     text = 'Connecting to the engine…';
   }
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
+  if (streamState === 'open' && sweepRuns()) text += ' · sweep';
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
   $('#status').textContent = `${text}${remoteState?.on ? ' · remote access on' : ''}`;
@@ -1046,7 +1048,8 @@ function updatePeakAges() {
 }
 const pkOn = $('#pk-on'), pkThr = $('#pk-thr'), pkThrOut = $('#pk-thr-v');
 // What interfaces change in the scanner state: the settings and the scan that runs.
-const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.scan]);
+const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.scan,
+  s.sweep && [s.sweep.lowHz, s.sweep.highHz, s.sweep.windowS]]);
 // The scanners' controls show the engine's settings once it sent them, and
 // stay off with an engine that lacks the scanner.
 function syncScanner() {
@@ -1066,16 +1069,19 @@ function syncScanner() {
     memResume.value = String(scanner.resumeS);
     memResumeOut.textContent = `${scanner.resumeS} s`;
   }
+  syncSweepSettings();
   syncScannerNote();
   if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
   if (historyShown()) { syncHistorySummary(); syncHistoryNote(); }
   syncMem();
+  syncSweep();
   updateStatus();       // it names the scan that runs
 }
-// The latest refusal shows in both tabs; each tells when the engine that runs
+// The latest refusal shows in every tab; each tells when the engine that runs
 // lacks its scanner.
 const SCANNER_NOTES = [
   ['#pk-note', 'peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
+  ['#sw-note', 'sweep', 'The engine that runs does not sweep: restart Radiolack after its update.'],
   ['#mem-note', 'memory', 'The engine that runs does not scan the bookmarks: restart Radiolack after its update.'],
 ];
 function syncScannerNote() {
@@ -1104,6 +1110,13 @@ function sendScanner(send) {
 // leaves out.
 const MEM_STATES = { checking: 'Checking', listening: 'Listening', waiting: 'Waiting' };
 const MEM_STOPPED = { tuned: 'Stopped: the receiver was tuned by hand.', source: 'Stopped: another receiver was chosen.' };
+// Why the latest scan stopped, in the tab of `scan`: the engine's reason when
+// it is about that scan, or Stopped. An engine older than the sweep names no
+// scan: its reasons are the memory scan's.
+function stoppedText(reasons, scan) {
+  const about = scanner.stoppedScan ?? 'memory';
+  return (about === scan && reasons[scanner.stopped]) || 'Stopped';
+}
 const memStart = $('#mem-start'), memResume = $('#mem-resume'), memResumeOut = $('#mem-resume-v');
 const memoryKnown = () => scanner !== null && stream.scanners.includes('memory');
 const memoryRuns = () => memoryKnown() && scanner.scan === 'memory';
@@ -1121,7 +1134,8 @@ function syncMem() {
     text = b && MEM_STATES[memory.state] ? `${MEM_STATES[memory.state]}: ${b.name}`
       : `Watching ${watched} ${watched === 1 ? 'bookmark' : 'bookmarks'}`;
   } else if (known) {
-    if (watched) text = MEM_STOPPED[scanner.stopped] || 'Stopped';
+    // While the sweep runs, the span is the one it brings the receiver back to.
+    if (watched) text = sweepRuns() ? 'The sweep runs: Start stops it.' : stoppedText(MEM_STOPPED, 'memory');
     else text = bookmarks.some((b) => b.scan) ? 'No ticked bookmark lies in the span.' : 'Tick the bookmarks to scan.';
   }
   const el = $('#mem-state');
@@ -1138,6 +1152,69 @@ function renderMemList() {
     + `${fmtMHz(b.f)}</span></label></li>`).join('')
     || '<li class="empty">No bookmarks</li>';
   focusAgain(list, refocus);
+}
+
+// The engine's sweep steps a receiver that tunes across a range, window after
+// window, the same for every interface: this interface sets the range and
+// the time per window, starts and stops it, and shows where it stands. A new
+// range starts a running sweep again from its first window.
+const SWEEP_STOPPED = {
+  tuned: 'Stopped: the receiver was tuned by hand.',
+  source: 'Stopped: another receiver was chosen.',
+  range: 'Stopped: the receiver did not tune to a window of the range.',
+};
+const swFrom = $('#sw-from'), swTo = $('#sw-to'), swWindow = $('#sw-window'), swWindowOut = $('#sw-window-v');
+const swStart = $('#sw-start');
+const sweepKnown = () => scanner !== null && scanner.sweep !== null && stream.scanners.includes('sweep');
+const sweepRuns = () => sweepKnown() && scanner.scan === 'sweep';
+const sourceTunes = () => source !== null && source.settable.includes('centre_hz');
+// The range's fields show the engine's range, except while the user types in
+// them (typingIn).
+function syncSweepSettings() {
+  const sweep = sweepKnown() ? scanner.sweep : null;
+  for (const el of [swFrom, swTo, swWindow]) el.disabled = !sweep;
+  if (!sweep) return;
+  if (!typingIn.has(swFrom)) swFrom.value = fmtMHz(sweep.lowHz);
+  if (!typingIn.has(swTo)) swTo.value = fmtMHz(sweep.highHz);
+  swWindow.value = String(sweep.windowS);
+  swWindowOut.textContent = `${sweep.windowS} s`;
+}
+function syncSweep() {
+  const known = sweepKnown(), runs = sweepRuns(), sweep = known ? scanner.sweep : null;
+  // The sweep's progress calls this several times a second: an unchanged text is not rewritten.
+  const label = runs ? 'Stop' : 'Start';
+  if (swStart.textContent !== label) swStart.textContent = label;
+  swStart.disabled = !known || (!runs && !sourceTunes());
+  let text = '';
+  if (runs) {
+    text = sweep.windows === null ? 'Sweeping'
+      : `Pass ${sweep.passes + 1}, window ${sweep.window + 1} of ${sweep.windows}`;
+  } else if (known) {
+    if (!sourceTunes()) text = 'The source in use does not tune.';
+    else text = memoryRuns() ? 'The memory scan runs: Start stops it.' : stoppedText(SWEEP_STOPPED, 'sweep');
+  }
+  const el = $('#sw-state');
+  if (el.textContent !== text) el.textContent = text;
+}
+// A new end of the range that would leave it empty moves the other end too,
+// keeping the range's width: the range moves.
+function sendSweepRange(el) {
+  const sweep = sweepKnown() ? scanner.sweep : null;
+  const hz = Math.round(parseFloat(el.value.replace(',', '.')) * 1e6);
+  if (!sweep || !Number.isFinite(hz) || hz === (el === swFrom ? sweep.lowHz : sweep.highHz)) {
+    syncSweepSettings();
+    return;
+  }
+  const width = sweep.highHz - sweep.lowHz;
+  let low = sweep.lowHz, high = sweep.highHz;
+  if (el === swFrom) {
+    low = hz;
+    if (high <= low) high = low + width;
+  } else {
+    high = hz;
+    if (low >= high) low = high - width;
+  }
+  sendScanner(() => stream.setScanner({ sweepLowHz: low, sweepHighHz: high }));
 }
 
 // The engine keeps the channels where it found signals (stream.js
@@ -1737,6 +1814,14 @@ $('#mem-list').addEventListener('change', (e) => {
 memStart.addEventListener('click', () => sendScanner(() => stream.setScan(memoryRuns() ? null : 'memory')));
 memResume.addEventListener('input', () => { memResumeOut.textContent = `${memResume.value} s`; });
 memResume.addEventListener('change', () => sendScanner(() => stream.setScanner({ resumeS: Number(memResume.value) })));
+for (const el of [swFrom, swTo]) {
+  el.addEventListener('input', () => typingIn.add(el));
+  el.addEventListener('change', () => { typingIn.delete(el); sendSweepRange(el); });
+  el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSweepSettings(); });
+}
+swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow.value} s`; });
+swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
+swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
 
 // Settings
 bindCheck('st-autohide', 'autoHide', poke);

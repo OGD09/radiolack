@@ -115,14 +115,19 @@ class FakeRtlTcp:
     the first samples, then a chunk of samples every few milliseconds. The
     first chunk has an odd size and the others an even one, so that every
     later chunk starts with a Q byte. Each I/Q pair is ``fake_codes`` of the
-    current setting. It records the commands it receives, and applies a
-    frequency or sample rate only after ``apply_delay_s``, as samples of the
-    old setting still arrive for a while from a real receiver.
+    current setting; with ``carriers``, a frequency in Hz for each carrier's
+    amplitude in full-scale units, the samples are instead those carriers,
+    the ones within the current setting's band, over white noise of
+    ``noise`` (full-scale units, in I and in Q). It records the commands it
+    receives, and applies a frequency or sample rate only after
+    ``apply_delay_s``, as samples of the old setting still arrive for a while
+    from a real receiver.
     """
 
     def __init__(self, *, port: int = 0, magic: bytes = b"RTL0", tuner_type: int = 5,
                  gain_count: int = 29, header: bool = True, chunk_bytes: int = 1000,
-                 interval_s: float = 0.002, apply_delay_s: float = 0.05) -> None:
+                 interval_s: float = 0.002, apply_delay_s: float = 0.05,
+                 carriers: dict[float, float] | None = None, noise: float = 0.02) -> None:
         self.port = port
         self.magic = magic
         self.tuner_type = tuner_type
@@ -131,6 +136,8 @@ class FakeRtlTcp:
         self.chunk_bytes = chunk_bytes
         self.interval_s = interval_s
         self.apply_delay_s = apply_delay_s
+        self.carriers = carriers
+        self.noise = noise
         self.sending = True             # False: send no samples
         self.frequency_hz = 100_000_000     # left by a previous client
         self.sample_rate_hz = 2_048_000
@@ -139,6 +146,8 @@ class FakeRtlTcp:
         self._writers: set[asyncio.StreamWriter] = set()
         self._handlers: set[asyncio.Task] = set()
         self._server: asyncio.Server | None = None
+        self._rng = np.random.default_rng(7)
+        self._sent = 0                  # carrier samples made so far, for their phases
 
     @property
     def open_connections(self) -> int:
@@ -199,9 +208,14 @@ class FakeRtlTcp:
         await writer.drain()
         await asyncio.sleep(0.01)
         rest, offset = header[5:], 0
+        stream = b""        # carrier samples made and not sent yet
         for size in itertools.chain([self.chunk_bytes + 1], itertools.repeat(self.chunk_bytes)):
             data = b""
-            if self.sending:
+            if self.sending and self.carriers is not None:
+                if len(stream) < size:
+                    stream += self._carrier_samples(size // 2 + 1)
+                data, stream = stream[:size], stream[size:]
+            elif self.sending:
                 pair = bytes(fake_codes(self.frequency_hz, self.sample_rate_hz))
                 start = offset % 2
                 data = (pair * (size // 2 + 2))[start:start + size]
@@ -211,6 +225,20 @@ class FakeRtlTcp:
                 rest = b""
                 await writer.drain()
             await asyncio.sleep(self.interval_s)
+
+    def _carrier_samples(self, count: int) -> bytes:
+        """``count`` I/Q pairs of the carriers within the current setting's
+        band over white noise, as rtl_tcp sends them: unsigned bytes."""
+        rate = float(self.sample_rate_hz)
+        t = (self._sent + np.arange(count)) / rate
+        self._sent += count
+        samples = self._rng.normal(0.0, self.noise, count) + 1j * self._rng.normal(0.0, self.noise, count)
+        for frequency_hz, amplitude in self.carriers.items():
+            offset_hz = frequency_hz - self.frequency_hz
+            if abs(offset_hz) < rate / 2:
+                samples += amplitude * np.exp(2j * np.pi * offset_hz * t)
+        pairs = np.column_stack((samples.real, samples.imag))
+        return np.clip(np.rint(pairs * 127.5 + 127.5), 0, 255).astype(np.uint8).tobytes()
 
 
 class FakeRtlTcpRuns:

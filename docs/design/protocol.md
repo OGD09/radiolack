@@ -21,14 +21,16 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history"]}
+   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history", "sweep"]}
    ```
 
    `remote` is true for a remote client. `scanners` lists the scanners that
    the engine runs: `peaks`, which finds the signals in the span (the
    scanner state and the signals found, below), `memory`, the memory scan
-   (the scanner state's `scan` and `memory`, below), and `history`, which
-   keeps the channels where signals were found (the observations, below).
+   (the scanner state's `scan` and `memory`, below), `history`, which
+   keeps the channels where signals were found (the observations, below),
+   and `sweep`, the sweep (the scanner state's `sweep_low_hz`,
+   `sweep_high_hz`, `sweep_window_s`, `stopped_scan` and `sweep`, below).
    An engine older than the scanners sends no `scanners`: it runs none.
 
 2. Then the source state, a JSON text message, sent again whenever it
@@ -108,8 +110,10 @@ preferences apart from this computer's.
 
    ```json
    {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0],
-    "resume_s": 2.0, "scan": "memory", "stopped": null,
-    "memory": {"watched": [3, 7, 12], "state": "listening", "bookmark_id": 7}}
+    "resume_s": 2.0, "sweep_low_hz": 430000000.0, "sweep_high_hz": 440000000.0, "sweep_window_s": 0.5,
+    "scan": "memory", "stopped": null, "stopped_scan": null,
+    "memory": {"watched": [3, 7, 12], "state": "listening", "bookmark_id": 7},
+    "sweep": {"windows": null, "window": null, "passes": null}}
    ```
 
    | Field | Meaning |
@@ -118,11 +122,17 @@ preferences apart from this computer's.
    | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 30 dB. |
    | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
    | `resume_s` | How long the memory scan waits, once the squelch closed, before it watches every bookmark again, from 0 to 8 s. |
-   | `scan` | The scan that runs: `memory`, or null. |
-   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source) or `bookmarks` (no ticked bookmark lies in the span any more); null while a scan runs, when an interface stopped it and before any. |
-   | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not: those in the part of the span that detection searches, in frequency order. |
+   | `sweep_low_hz`, `sweep_high_hz` | The range the sweep steps the receiver across, the lowest below the highest, each a whole number of Hz from 1 Hz to 100 GHz: 430 to 440 MHz until an interface changes it. |
+   | `sweep_window_s` | How long the sweep reads each window, once the receiver's samples come from there, from 0.25 to 2 s. |
+   | `scan` | The scan that runs: `memory`, `sweep`, or null. |
+   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source), `bookmarks` (no ticked bookmark lies in the span any more) or `range` (the receiver refused a window of the sweep's range); null while a scan runs, when an interface stopped it and before any. |
+   | `stopped_scan` | The scan that `stopped` is about: `memory` or `sweep`; null when `stopped` is. |
+   | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not: those in the part of the span that detection searches, in frequency order. While the sweep runs, the span is the one it brings the receiver back to. |
    | `memory.state` | The memory scan's state: `watching` the bookmarks, `checking` that the squelch opens on the one just tuned to, `listening` while it stays open, `waiting` for `resume_s` since it closed; null while the memory scan does not run. |
    | `memory.bookmark_id` | The bookmark tuned to; null while watching, and while the memory scan does not run. |
+   | `sweep.windows` | How many windows the sweep's range takes at the sample rate; null while the sweep does not run, as are the next two. |
+   | `sweep.window` | The window the receiver is asked for, from 0. |
+   | `sweep.passes` | The passes done since the sweep started, or since its range last changed. |
 
    The memory scan watches every ticked bookmark of the span at once, in
    every block of samples: the power in the passband of its mode's filter,
@@ -138,8 +148,31 @@ preferences apart from this computer's.
    then checks that the squelch opens there within 0.25 s, or it watches
    again without that bookmark for 1 s; it listens while the squelch stays
    open, waits `resume_s` once it closes, listens again if it reopens
-   meanwhile, and then watches again. A scan runs on without any interface,
-   until an interface stops it, or it stops by itself (`stopped`).
+   meanwhile, and then watches again.
+
+   The sweep steps a receiver that tunes, one whose source state lists
+   `centre_hz` in `settable`, across its range, window after window: their
+   centres lie a quarter of the sample rate apart at most, the first and
+   the last a tenth of the rate inside the range, rounded to the Hz; a
+   range narrower than that gets two windows, an eighth of the rate on each
+   side of its middle. The engine asks the receiver for a window's centre
+   frequency, which every interface then receives in the source state, and
+   once the samples come from there, reads `sweep_window_s` of them as two
+   searches of detection in a row, before it asks for the next window; after
+   the last one, a new pass begins with the first. It also moves on when,
+   2 s after asking for a window, the samples still come from another
+   centre frequency. The VFO stays inside each window, as it does whenever
+   the span changes. While the sweep runs, the receiver's settings that the
+   engine saves are those it comes back to: its centre frequency and the
+   VFO when the sweep started. When an interface stops the sweep, or the
+   receiver refuses a window (`range`), the engine asks the receiver for
+   that centre frequency again and puts the VFO back; tuning by hand
+   (`tuned`) or another kind of source (`source`) leaves them as they are.
+
+   One scan runs at a time: starting one stops the other. A scan runs on
+   without any interface, until an interface stops it, or it stops by
+   itself (`stopped`). An interface's change of the centre frequency or
+   the sample rate stops it at once, before the samples show the change.
 
 6. Then the signals found, a JSON text message, sent again when the list
    changes, at most once a second, and at once when a `scanner` message or
@@ -162,7 +195,8 @@ preferences apart from this computer's.
    While detection is on, the engine looks for signals in the bin powers
    it computes for the frames, at their full resolution whatever the
    client. It averages those of 10 blocks of one capture, a third of a
-   second, then keeps each run of bins whose highest rises at least
+   second, or while the sweep runs those of half `sweep_window_s` (at
+   least one block), then keeps each run of bins whose highest rises at least
    `threshold_db` above the local noise, the median of the bins within
    50 kHz, with the bins around it that stay within 4 dB of the threshold.
    It leaves out the outer tenth of the span on each side and 3 kHz on each
@@ -438,16 +472,19 @@ unknown or invalid, when the `id` is unknown (another interface may have
 removed the bookmark) or when there are already 2000 bookmarks. Otherwise
 every interface receives the bookmarks.
 
-A `scanner` message changes the signal detection or the memory scan, the
-same for every interface:
+A `scanner` message changes the signal detection, the memory scan or the
+sweep, the same for every interface:
 
 ```json
 {"type": "scanner", "detection": false}
 {"type": "scanner", "threshold_db": 18}
 {"type": "scanner", "resume_s": 4}
+{"type": "scanner", "sweep_low_hz": 1240000000, "sweep_high_hz": 1300000000}
+{"type": "scanner", "sweep_window_s": 1}
 {"type": "scanner", "ignore": 144800000}
 {"type": "scanner", "restore": true}
 {"type": "scanner", "scan": "memory"}
+{"type": "scanner", "scan": "sweep"}
 {"type": "scanner", "scan": null}
 ```
 
@@ -456,17 +493,22 @@ same for every interface:
 | `detection` | `true` or `false`. Turning detection off empties the list of the signals found. |
 | `threshold_db` | A number from 6 to 30. |
 | `resume_s` | A number from 0 to 8. |
+| `sweep_low_hz`, `sweep_high_hz` | Frequencies from 1 Hz to 100 GHz, rounded to the Hz, the lowest below the highest once the message applies: one may come without the other. A new range starts a running sweep again from its first window. |
+| `sweep_window_s` | A number from 0.25 to 2. A running sweep takes it at once. |
 | `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
 | `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
-| `scan` | `memory` starts the memory scan, unless it runs; null stops the scan that runs, if any. |
+| `scan` | `memory` starts the memory scan, `sweep` the sweep, unless it runs, stopping the other scan; null stops the scan that runs, if any. |
 
-`detection`, `threshold_db` and `resume_s` may come together; `ignore`,
-`restore` and `scan` come alone in their message. The engine refuses the
-whole message, changing nothing, when it has no setting, an unknown or
-invalid one, a new frequency to ignore while 200 are ignored already, or
-the memory scan to start while no ticked bookmark lies in the span
-(`memory.watched` is empty). Otherwise every interface receives the scanner
-state, and the signals found at once if they changed.
+`detection`, `threshold_db`, `resume_s`, `sweep_low_hz`, `sweep_high_hz`
+and `sweep_window_s` may come together; `ignore`, `restore` and `scan`
+come alone in their message. The engine refuses the whole message,
+changing nothing, when it has no setting, an unknown or invalid one, a new
+frequency to ignore while 200 are ignored already, the memory scan to start
+while no ticked bookmark lies in the span (`memory.watched` is empty), the
+sweep to start with a source that does not tune, or the sweep to start or
+a running sweep's new range when the receiver cannot tune to every window
+of the range (its `range_hz`). Otherwise every interface receives the
+scanner state, and the signals found at once if they changed.
 
 An `observations` message asks for the observations, or forgets some of
 them for every interface:
@@ -639,8 +681,11 @@ and later.
 - An interface whose hello does not list `peaks` among its `scanners`, as
   an older engine's, shows that signal detection needs Radiolack to
   restart, and offers none of its settings; one whose hello does not list
-  `memory` does the same for the memory scan, and one whose hello does not
-  list `history` for the History, asking for no observations.
+  `memory` does the same for the memory scan, one whose hello does not
+  list `history` for the History, asking for no observations, and one whose
+  hello does not list `sweep` for the sweep. An interface reads a scanner
+  state without the sweep's fields, as an older engine's, as one without a
+  sweep.
 - The interface asks for the observations when its History shows, then
   every 30 s while it shows and its page is visible.
 - The interface applies the preferences of its page's first connection
@@ -688,7 +733,14 @@ and later.
   `scan`. An older interface ignores the fields it does not know and scans
   the bookmarks itself, as before. Later that day again, the hello's
   `history` scanner, the observations and the `observations` message: an
-  older interface never asks for them.
+  older interface never asks for them. Later still, the hello's `sweep`
+  scanner, the scanner state's `sweep_low_hz`, `sweep_high_hz`,
+  `sweep_window_s`, `stopped_scan` and `sweep`, its `scan` value `sweep`
+  and its `stopped` value `range`, and the `scanner` message's
+  `sweep_low_hz`, `sweep_high_hz`, `sweep_window_s` and `scan` value
+  `sweep`: an older interface ignores the fields it does not know, shows no
+  sweep that runs, and may show why a sweep stopped as if the memory scan
+  had.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
