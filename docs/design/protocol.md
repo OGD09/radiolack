@@ -12,8 +12,8 @@ handshake, so a page from another site cannot read the stream.
 A device that remote access serves, a remote client, opens its stream on
 remote access's HTTPS server instead, with its session cookie
 ([Remote access](#remote-access)). It receives the same messages, apart
-from this computer's own states, and may not change this computer's own
-settings.
+from this computer's own states, with lighter spectrum frames, and may not
+change this computer's own settings.
 
 ## From the engine
 
@@ -186,6 +186,12 @@ settings.
    A frame averages a few FFTs of the latest samples, after DC removal when
    it is on. The interface smooths successive frames for its spectrum trace
    and its waterfall.
+
+   A remote client, whose link may be slower, gets about 15 frames per
+   second, with at most 2048 bins: each of its frames gives the mean power
+   of two of the frames above, each bin the highest of the bins it groups,
+   so that narrow signals stay visible, with the channel level and squelch
+   of the latter. Its frames have a sequence of their own.
 
    The channel level is the mean power, over the same samples, in the VFO's
    channel: a full-scale carrier on the VFO reads 0 dBFS. It is NaN when
@@ -428,6 +434,15 @@ once for a device that is not paired, and later when the device is
 forgotten or a new code is made; with code 4002 when remote access turns
 off. The server pings a remote client every 20 s, and drops one that stops
 answering.
+
+The stream accepts permessage-deflate (RFC 7692), which browsers offer and
+which halves the spectrum frames; a message from the device must stay
+within 64 KiB once inflated. The loopback server's stream does not compress.
+On a link slower than the stream, the server keeps at most about 16 KiB
+unsent in the socket (`TCP_NOTSENT_LOWAT`, where the system has it) and in
+its transport: the engine then drops the device's oldest frames, as for any
+client that reads too slowly, instead of the device hearing the radio later
+and later.
 
 ## Connection life
 

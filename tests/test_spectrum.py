@@ -1,5 +1,5 @@
 """Tests for the display spectrum: levels, frequencies, the noise level
-around the VFO and the frame format."""
+around the VFO, the frame format and frames in fewer bins."""
 
 import math
 import unittest
@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from radiolack.spectrum import (DB_MIN, DB_STEP, FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM,
-                                FRAME_VERSION, SpectrumAnalyzer, blackman_harris, encode_frame)
+                                FRAME_VERSION, SpectrumAnalyzer, blackman_harris, encode_frame, fewer_bins)
 
 RATE = 2_400_000.0
 SIZE = 1024
@@ -99,6 +99,21 @@ class FrameEncodingTest(unittest.TestCase):
         frame = encode_frame(1, 145e6, 2.4e6, -160.0, 0.625, np.zeros(4, np.uint8), -52.25, -60.5, True)
         self.assertEqual(FRAME_HEADER.unpack_from(frame)[2], FLAG_SQUELCH_OPEN)
         self.assertEqual(FRAME_HEADER.unpack_from(frame)[8:], (-52.25, -60.5))
+
+
+class FewerBinsTest(unittest.TestCase):
+    def test_each_bin_keeps_the_highest_code_it_groups(self):
+        codes = np.full(16, 40, np.uint8)
+        codes[5] = 200          # a narrow signal, in the second group of four
+        codes[15] = 90
+        self.assertEqual(fewer_bins(codes, 4).tolist(), [40, 200, 40, 90])
+        self.assertEqual(fewer_bins(codes, 2).tolist(), [200, 90])
+
+    def test_fewer_codes_stay_as_they_are(self):
+        codes = np.arange(8, dtype=np.uint8)
+        for bins in (8, 16):
+            with self.subTest(bins=bins):
+                self.assertIs(fewer_bins(codes, bins), codes)
 
 
 if __name__ == "__main__":

@@ -115,6 +115,18 @@ html, body {
 #tunepad button:active { background: rgba(89, 167, 255, 0.25); }
 #tune-down { left: calc(12px + env(safe-area-inset-left)); }
 #tune-up { right: calc(12px + env(safe-area-inset-right)); }
+/* Shown only for touch input too, under the toolbar: whether this interface plays sound, and a
+   switch for it (main.js). The browser may hold the audio until a tap, and a tap on it is one. */
+#sound {
+  display: none; position: absolute; z-index: 6; top: calc(54px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+  width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border-radius: 50%;
+  background: rgba(14, 17, 22, 0.72); border: 1px solid var(--line); color: var(--text);
+  cursor: pointer; touch-action: manipulation; transition: opacity 0.4s;
+}
+#sound:active { background: rgba(89, 167, 255, 0.25); }
+#sound svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#sound .on, #sound[aria-pressed="true"] .off { display: none; }
+#sound[aria-pressed="true"] .on { display: block; }
 
 body.idle #brand, body.idle #toolbar, body.idle #status, body.idle #tunepad { opacity: 0.2; }
 body.idle #hoverinfo { opacity: 0; }
@@ -252,10 +264,16 @@ table.peaks tr.active .freq-link { color: var(--ok); }
   .mark { font-size: 12px; padding: 3px 8px; }
   #status, #hoverinfo { display: none; }
   #tunepad { display: block; }
-  body.idle #brand, body.idle #toolbar, body.idle #tunepad { opacity: 0.45; }
+  #sound { display: flex; }
+  #sound[hidden] { display: none; }
+  body.idle #brand, body.idle #toolbar, body.idle #tunepad, body.idle #sound { opacity: 0.45; }
 }
 @media (pointer: coarse) and (min-width: 761px) {
   #toolbar button { min-height: 40px; padding: 0 12px; font-size: 13px; }
   #panel { top: calc(54px + env(safe-area-inset-top)); max-height: calc(100% - 66px - env(safe-area-inset-top)); }
+}
+/* Phones in portrait: the toolbar is at the bottom, so the speaker takes the top right corner. */
+@media (pointer: coarse) and (max-width: 760px) {
+  #sound { top: calc(10px + env(safe-area-inset-top)); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

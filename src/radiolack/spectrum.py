@@ -104,6 +104,16 @@ class SpectrumAnalyzer:
         return mean * self.fft_size / (self.enbw * rate_hz)
 
 
+def fewer_bins(codes: np.ndarray, bins: int) -> np.ndarray:
+    """``codes`` in at most ``bins`` bins, each the highest code of the
+    consecutive bins it groups, so that a narrow signal stays visible. Both
+    counts are powers of two; fewer codes than ``bins`` stay as they are."""
+    group = len(codes) // bins
+    if group <= 1:
+        return codes
+    return codes.reshape(-1, group).max(axis=1)
+
+
 def encode_frame(sequence: int, centre_hz: float, sample_rate_hz: float, db_min: float, db_step: float,
                  codes: np.ndarray, level_db: float | None = None, squelch_db: float | None = None,
                  squelch_open: bool = False) -> bytes:

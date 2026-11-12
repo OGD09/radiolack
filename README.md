@@ -289,9 +289,14 @@ threshold set by hand below the noise keeps it open.
 Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
-click, tap or key press on the page, and the Demod panel then says so. On
-an iPhone, Safari keeps playing it with the screen locked and with the
-ringer switch on silent. Nothing is recorded.
+click, tap or key press on the page, as Safari does on an iPhone each time
+the page loads; the Demod panel then says so. On a touch screen, a speaker
+at the top right shows whether the page plays sound: crossed out while the
+browser holds the audio or the volume is 0, with waves while it plays. A
+tap on it starts held audio, mutes playing audio by setting the volume to
+0, or brings the volume back. On an iPhone, Safari keeps playing the audio
+with the screen locked and with the ringer switch on silent. Nothing is
+recorded.
 
 ## Settings and bookmarks
 
@@ -388,6 +393,16 @@ cannot change what belongs to this computer, remote access itself, the update
 check and the rtl_tcp server's address, and does not see where the settings
 are saved. It starts from the saved interface settings but keeps its own
 changes to itself.
+
+A device's link may be slower than this computer's own, so a device gets a
+lighter spectrum: about 15 frames a second instead of 30, in at most 2048
+bins, each showing the strongest of the bins it groups, so that narrow
+signals stay visible; its waterfall keeps its speed. The stream is also
+compressed, as every current browser offers. With the audio, a device
+receives about 0.3 Mbit/s instead of about 2.2 Mbit/s. Its finest zoom is
+coarser: 18.75 kHz wide at 2.4 MS/s, instead of 4.7 kHz. On a slower link,
+the spectrum comes less often and the sound arrives late, by about 5 s at
+0.25 Mbit/s, but no later: Radiolack drops what the link cannot carry.
 
 Settings > Remote access lists the paired devices, says which are connected
 and when each was last used, and forgets one on request; a new code forgets

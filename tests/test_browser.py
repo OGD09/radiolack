@@ -38,6 +38,11 @@ SETTINGS_PANEL = '#toolbar button[data-panel="settings"]'
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
+PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
+FRAME_RATE = re.compile(rf" {DOT} \d+ fps$")     # the frames an interface receives per second, in its status line
+# A remote device's: about 15. A page that loads late may take a backlog in
+# a burst, so the test waits until the rate settles below 21.
+REMOTE_FRAME_RATE = re.compile(rf" {DOT} (?:1?\d|20) fps$")
 # WebKit 27.2 (Playwright 1.64) refuses its own stylesheet for every <select>
 # under the interface's style-src 'self': a WebKit bug without visible effect,
 # which WebKitGTK 2.50 does not have. WebKit words a refused inline style the
@@ -82,16 +87,17 @@ class BrowserTest(unittest.TestCase):
         return server.url
 
     @contextlib.contextmanager
-    def interfaces(self, browser: str, url: str, count: int) -> Iterator[list[Page]]:
+    def interfaces(self, browser: str, url: str, count: int, **options) -> Iterator[list[Page]]:
         """``count`` interfaces at ``url``, each with the Source panel open:
         a click, which lets the audio start. ``self.audio[page]`` counts the
-        audio frames each one receives."""
+        audio frames each one receives. ``options`` go to each browser
+        context, such as a phone's viewport and touch input."""
         errors: list[str] = []
         self.audio: dict[Page, list[int]] = {}
         with contextlib.ExitStack() as stack:
             pages = []
             for _ in range(count):
-                context = self.browsers[browser].new_context()
+                context = self.browsers[browser].new_context(**options)
                 stack.callback(context.close)
                 page = self.watched_page(context, browser, errors)
                 self.audio[page] = received = []
@@ -142,7 +148,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 status = page.locator("#status")
                 expect(status).to_contain_text(f"Synthetic source {DOT} 2.400 MS/s")
-                expect(status).to_contain_text(re.compile(rf" {DOT} \d+ fps$"))     # frames arrive
+                expect(status).to_contain_text(FRAME_RATE)     # frames arrive
                 expect(page.locator("#src-device")).to_have_value("synthetic")
                 expect(page.locator("#src-note")).to_contain_text("2 m band simulated by the engine.")
                 expect(page.locator("#src-address")).to_be_hidden()
@@ -205,6 +211,7 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     self.wait_for_audio(page)
                     expect(page.locator("#m-mode")).to_have_text("NFM")
+                    expect(page.locator("#sound")).to_be_hidden()      # the speaker is for touch input
                 first.locator(DEMOD_PANEL).click()
                 first.locator('#mode-group button[data-mode="AM"]').click()
                 for page in (first, second):
@@ -214,16 +221,17 @@ class BrowserTest(unittest.TestCase):
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
 
-    def test_the_end_of_a_touch_asks_the_audio_to_start(self):
+    def test_held_audio_shows_a_speaker_and_a_touch_asks_it_to_start(self):
         # A tap activates the page only once the finger leaves the screen, and
         # only then does Safari on the iPhone let the audio start. Headless
         # browsers start it earlier, Firefox at times without any gesture, so
         # the audio stays suspended here and the test counts the page's
-        # requests to start it.
+        # requests to start it. On a touch screen, the speaker shows it held:
+        # nothing else does out of the Demod panel.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser):
-                context = self.browsers[browser].new_context()
+                context = self.browsers[browser].new_context(**PHONE)
                 self.addCleanup(context.close)
                 context.add_init_script(   # before the interface's scripts
                     "window.resumes = 0;"
@@ -233,11 +241,41 @@ class BrowserTest(unittest.TestCase):
                 page.goto(url)
                 expect(page.locator("#dm-audio-note")).to_have_text(
                     "Audio starts with a click, a tap or a key press on the page.")
+                speaker = page.get_by_role("button", name="Audio")
+                expect(speaker).to_be_visible()
+                expect(speaker).to_have_attribute("aria-pressed", "false")      # crossed out
                 for event in ("new PointerEvent('pointerup', { pointerType: 'touch' })", "new Event('touchend')"):
                     before = page.evaluate("() => window.resumes")
                     page.evaluate(f"() => window.dispatchEvent({event})")
                     self.assertGreater(page.evaluate("() => window.resumes"), before, event)
+                before = page.evaluate("() => window.resumes")
+                speaker.tap()
+                self.assertGreater(page.evaluate("() => window.resumes"), before, "a tap on the speaker")
+                expect(page.locator("#dm-vol")).to_have_value("70")    # which the tap leaves as it was
                 self.assertEqual(errors, [])
+
+    def test_the_speaker_mutes_and_unmutes_on_a_touch_screen(self):
+        # Muting sets the volume to 0, so that the engine stops sending audio,
+        # and unmuting brings the volume back. A server for each browser: the
+        # page saves its preferences each second, so the engine may still
+        # hold the muted volume when it closes.
+        for browser in BROWSERS:
+            url = self.serve()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
+                self.wait_for_audio(page)
+                speaker = page.get_by_role("button", name="Audio")
+                expect(speaker).to_have_attribute("aria-pressed", "true")
+                speaker.tap()
+                expect(speaker).to_have_attribute("aria-pressed", "false")
+                expect(page.locator("#dm-vol")).to_have_value("0")
+                page.wait_for_timeout(500)      # audio frames already on their way
+                received = len(self.audio[page])
+                page.wait_for_timeout(1000)     # about 30 more if the engine still sent them
+                self.assertEqual(len(self.audio[page]), received)
+                speaker.tap()
+                expect(speaker).to_have_attribute("aria-pressed", "true")
+                expect(page.locator("#dm-vol")).to_have_value("70")
+                self.wait_for_audio(page, received + 3)
 
     def test_the_audio_asks_safari_for_its_playback_session(self):
         # Safari plays the "playback" session with the ringer switch on
@@ -354,6 +392,7 @@ class BrowserTest(unittest.TestCase):
                     device.locator("#pair-code").fill(code.lower())
                     device.locator("#pair-submit").click()
                     expect(device.locator("#status")).to_contain_text("MS/s")      # the interface, with frames
+                    expect(device.locator("#status")).to_contain_text(REMOTE_FRAME_RATE)     # half the frames
                     device.locator(SETTINGS_PANEL).click()
                     expect(device.locator("#st-remote-client")).to_be_visible()
                     for section in ("#st-storage-section", "#st-update-section", "#st-remote-section"):
