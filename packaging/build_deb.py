@@ -3,9 +3,9 @@
 or later.
 
 The package installs Radiolack for the system's Python 3 and its packaged
-libraries (aiohttp, NumPy, PyGObject, GTK 3 and WebKitGTK), with the
-``radiolack`` command, its manual page, a menu entry, an icon, and the
-changelog and licence notice that Debian keeps in /usr/share/doc/radiolack.
+libraries (aiohttp, cryptography, NumPy, PyGObject, GTK 3 and WebKitGTK),
+with the ``radiolack`` command, its manual page, a menu entry, an icon, and
+the changelog and licence notice that Debian keeps in /usr/share/doc/radiolack.
 It also adds Radiolack's APT repository, its source and its key, so that apt
 keeps Radiolack up to date.
 Building needs only Python and dpkg-deb, as found on Debian and Ubuntu:
@@ -69,6 +69,7 @@ LINTIAN_OVERRIDES = f"""\
 DEPENDS = (
     "python3 (>= 3.11)",
     "python3-aiohttp (>= 3.8)",
+    "python3-cryptography (>= 38)",     # remote access's certificates
     "python3-numpy (>= 1:1.24)",
     "python3-gi",
     "gir1.2-gtk-3.0",

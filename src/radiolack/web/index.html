@@ -226,22 +226,32 @@
     <section data-panel="settings" hidden>
       <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
       <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
-      <h3>Storage</h3>
-      <p class="note" id="st-storage" role="status"></p>
-      <h3>Updates</h3>
-      <label class="check"><input id="st-update-start" type="checkbox"> Check for a newer version at start</label>
-      <div class="row"><button type="button" class="btn" id="st-update-check">Check now</button><span class="note" id="st-update" role="status"></span></div>
-      <h3>Remote access</h3>
-      <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
-      <p class="note">A phone or a tablet on the local network opens the address in its browser and enters the code once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
-      <div id="st-remote-info" hidden>
-        <div class="field"><span class="label">Address</span><div class="row"><span class="value" id="st-remote-url">https://192.168.1.20:8443</span><button type="button" class="btn" id="st-remote-copy">Copy</button></div></div>
-        <div class="field"><span class="label">Access code</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">New code</button></div></div>
-        <p class="note">Connected devices: none.</p>
-        <p class="note" id="st-remote-msg" role="status"></p>
-        <p class="note">Example address and code: remote access does not work yet.</p>
+      <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, updates and remote access are set on the computer.</p>
+      <!-- The engine sends these three sections' states to this computer's interfaces only. -->
+      <div id="st-storage-section" hidden>
+        <h3>Storage</h3>
+        <p class="note" id="st-storage" role="status"></p>
       </div>
-      <p class="note">Off by default. Local network only; these settings can only be changed on this computer.</p>
+      <div id="st-update-section" hidden>
+        <h3>Updates</h3>
+        <label class="check"><input id="st-update-start" type="checkbox"> Check for a newer version at start</label>
+        <div class="row"><button type="button" class="btn" id="st-update-check">Check now</button><span class="note" id="st-update" role="status"></span></div>
+      </div>
+      <div id="st-remote-section" hidden>
+        <h3>Remote access</h3>
+        <label class="check"><input id="st-remote" type="checkbox"> Control Radiolack from another device</label>
+        <p class="note">A phone or a tablet on the local network opens the address in its browser, installs Radiolack's certificate and enters the code, once, then gets this interface and the audio. The receiver is shared; each device sets its own volume.</p>
+        <div id="st-remote-info" hidden>
+          <div class="field"><span class="label">Address</span><div class="row"><span class="value" id="st-remote-url"></span><button type="button" class="btn" id="st-remote-copy">Copy</button></div></div>
+          <p class="note" id="st-remote-urls"></p>
+          <div class="field"><span class="label">Access code</span><div class="row"><span class="value code" id="st-remote-code"></span><button type="button" class="btn" id="st-remote-renew">New code</button></div></div>
+        </div>
+        <p class="note" id="st-remote-msg" role="status"></p>
+        <div class="field"><label for="st-remote-port">Port</label><input id="st-remote-port" type="number" min="1024" max="65535" step="1" inputmode="numeric"></div>
+        <div class="field"><span class="label">Paired devices</span><ul class="list" id="st-remote-devices"></ul></div>
+        <div class="field" id="st-remote-fp-field" hidden><span class="label">Certificate fingerprint (SHA-256)</span><span class="value fingerprint" id="st-remote-fingerprint"></span></div>
+        <p class="note">Off at each start. Local network only: a firewall on this computer must let devices reach the port. These settings can only be changed on this computer. A device checks the certificate it installs against this fingerprint. A new code makes every paired device enter it again.</p>
+      </div>
       <h3>Touch</h3>
       <dl class="keys">
         <dt>Tap</dt><dd>Tune</dd>

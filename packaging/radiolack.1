@@ -26,8 +26,21 @@ The Source panel switches between sources.
 Closing the window stops Radiolack; without a window, stop it with
 Ctrl+C.
 .PP
-Radiolack serves its interface on 127.0.0.1 only, so other devices cannot
-reach it, and answers only requests addressed to 127.0.0.1 or localhost.
+Radiolack serves its interface on 127.0.0.1 only, and answers only requests
+addressed to 127.0.0.1 or localhost.
+.PP
+Remote access, which is off at each start and which only this computer's
+interface turns on, in Settings, lets phones, tablets and other computers
+on the local network control Radiolack and hear it.
+Radiolack then also listens over HTTPS, on port 8443 unless Settings
+chooses another, on this computer's private IPv4 addresses, and answers
+only devices on these networks.
+A device installs the certificate of Radiolack's local authority, whose
+SHA\-256 fingerprint Settings shows, and enters the access code that
+Settings shows, once.
+A paired device shares the receiver, but cannot change remote access, the
+update check or the rtl_tcp server's address.
+Never make remote access's port reachable from the Internet.
 .PP
 At each start, unless Settings turns the check off, Radiolack asks its APT
 repository whether a newer version is out, and says so in its interface:
@@ -74,6 +87,11 @@ check for updates at start.
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/bookmarks.json\fR
 The bookmarks.
+.TP
+\fI$XDG_CONFIG_HOME/radiolack/remote.json\fR
+What remote access keeps: its port, its access code, the paired devices
+and its local authority.
+Remote access is off at each start all the same.
 .TP
 \fI/etc/apt/sources.list.d/radiolack.sources\fR
 Radiolack's APT source, which the package adds with the repository's key,

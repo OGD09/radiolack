@@ -1,0 +1,20 @@
+/* Radiolack pairing page: a page of text that scrolls, on style.css's colours and controls. */
+
+html, body { height: auto; min-height: 100%; overflow: auto; }
+.pair {
+  max-width: 36rem; margin: 0 auto; font-size: 15px; line-height: 1.5;
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+    calc(28px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+.pair h1 { margin: 8px 0 4px; font-size: 20px; font-weight: 600; }
+.pair h2 { margin: 24px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.pair p { margin: 8px 0; }
+.pair .btn { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 14px; font-size: 15px; text-decoration: none; }
+.pair details { margin: 8px 0; padding: 8px 12px; background: var(--control); border: 1px solid var(--line); border-radius: 8px; }
+.pair summary { min-height: 32px; cursor: pointer; font-weight: 600; }
+.pair ol { margin: 6px 0; padding-left: 1.4em; }
+.pair li { margin: 4px 0; }
+.pair label { display: block; margin-bottom: 4px; color: var(--muted); }
+.pair .row { gap: 8px; }
+.pair #pair-code { flex: 1 1 auto; min-width: 0; min-height: 40px; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
+.pair .note { font-size: 14px; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a Radiolack command from the outside, as its user starts it.
 
-    python3 packaging/smoke_test.py [--window] [--check-updates] [COMMAND ...]
+    python3 packaging/smoke_test.py [--window] [--check-updates] [--remote] [COMMAND ...]
 
 starts COMMAND, by default ``radiolack`` as the Debian package installs it,
 with ``--ui none`` and an empty settings folder of its own, so that it
@@ -16,11 +16,20 @@ checks that Radiolack
   stream to pages from other origins;
 - ends its update check at start, which may be unavailable but must not
   fail;
+- starts with remote access off;
 - stops on SIGTERM with status 0, without a traceback.
 
 With --check-updates, the update check must also reach Radiolack's APT
 repository, as the installed Debian package's does with the APT source it
 adds: this needs the network.
+
+With --remote, it also turns remote access on, for a few seconds, on an
+ephemeral port of this computer's addresses on its local networks, as the
+interface's settings do, and checks it as a phone would by one of these
+addresses: the certificate that Radiolack gives verifies its HTTPS server;
+an unpaired device gets the pairing page only; a wrong code is refused and
+the right one pairs the device, which then gets the stream; turning remote
+access off releases the port. This needs an address on a local network.
 
 With --window, it also checks that the desktop window's toolkit, GTK 3 and
 WebKitGTK through PyGObject, loads for the radiolack that this Python
@@ -37,10 +46,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import os
 import re
 import signal
+import socket
+import ssl
 import sys
 import tempfile
 from asyncio.subprocess import DEVNULL, PIPE
@@ -216,7 +228,99 @@ async def check_updates(session: aiohttp.ClientSession, url: str, reach: bool) -
     passed(f"checks for updates at start: {status}" + (f" ({detail})" if detail else ""))
 
 
-async def run(command: list[str], window: bool, reach: bool) -> None:
+async def next_remote(ws: aiohttp.ClientWebSocketResponse, until=lambda state: True) -> dict:
+    """The next remote access state that satisfies ``until``."""
+    async for message in ws:
+        if message.type is aiohttp.WSMsgType.TEXT:
+            data = json.loads(message.data)
+            if isinstance(data, dict) and data.get("type") == "remote" and until(data):
+                return data
+    raise CheckFailed(f"the stream closed: {ws.close_code}")
+
+
+def ephemeral_port() -> int:
+    """A port that nothing uses, never remote access's default."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+async def check_remote_off(session: aiohttp.ClientSession, url: str) -> None:
+    async with session.ws_connect(url + "stream", headers={"Origin": url.rstrip("/")}) as ws:
+        state = await within(STEP_TIMEOUT_S, next_remote(ws), "the stream sent no remote access state")
+    check(state.get("on") is False, f"remote access is on at start: {state}")
+    passed("starts with remote access off")
+
+
+async def check_remote(session: aiohttp.ClientSession, url: str) -> None:
+    async with session.ws_connect(url + "stream", headers={"Origin": url.rstrip("/")}) as ws:
+        port = ephemeral_port()
+        await ws.send_json({"type": "remote", "port": port})
+        await ws.send_json({"type": "remote", "on": True})
+        state = await within(STEP_TIMEOUT_S, next_remote(ws, lambda state: state.get("on") or state.get("problem")),
+                             "remote access did not turn on")
+        check(state["on"], f"remote access did not turn on: {state.get('problem')}")
+        urls = state.get("urls") or []
+        # By address: a name ending in .local needs mDNS, which a container lacks.
+        remote = next((u for u in urls if _is_address(u) and urlsplit(u).port == port), None)
+        check(remote, f"remote access gives no address with port {port}: {urls}")
+        passed(f"turns remote access on at {', '.join(urls)}")
+        try:
+            await check_device(session, remote, state.get("code"))
+        finally:
+            await ws.send_json({"type": "remote", "on": False})
+            await within(STEP_TIMEOUT_S, next_remote(ws, lambda state: not state.get("on")),
+                         "remote access did not turn off")
+    host = urlsplit(remote).hostname
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 5)
+    except (OSError, asyncio.TimeoutError):
+        passed("turns remote access off, which releases its port")
+        return
+    writer.close()
+    raise CheckFailed(f"remote access still listens on {host}:{port} once off")
+
+
+async def check_device(session: aiohttp.ClientSession, url: str, code: object) -> None:
+    """Check remote access at ``url`` as a phone does with the access ``code``."""
+    origin = {"Origin": url.rstrip("/")}
+    # The certificate, fetched past the browser's warning, then installed.
+    async with session.get(url + "certificate", ssl=False) as response:
+        check(response.status == 200, f"GET /certificate answered {response.status}")
+        root = await response.text()
+    try:
+        trust = ssl.create_default_context(cadata=root)
+    except (ssl.SSLError, ValueError) as error:
+        raise CheckFailed(f"/certificate is not a certificate: {error}") from None
+    connector = aiohttp.TCPConnector(ssl=trust)
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True)) as device:
+        async with device.get(url) as response:     # verifies the server's certificate
+            page = await response.text()
+        check('id="pair-form"' in page, "an unpaired device does not get the pairing page")
+        async with device.get(url + "main.js") as response:
+            check(response.status == 403, f"an unpaired device's GET /main.js answered {response.status}")
+        passed("remote access's certificate verifies its HTTPS server, which gives the pairing page only")
+        async with device.post(url + "pair", json={"code": "WRONG-CODE"}, headers=origin) as response:
+            check(response.status == 403, f"a wrong code answered {response.status}")
+        async with device.post(url + "pair", json={"code": code}, headers=origin) as response:
+            check(response.status == 200, f"the right code answered {response.status}: {await response.text()}")
+        async with device.ws_connect(url.replace("https:", "wss:", 1) + "stream", headers=origin) as ws:
+            first = await within(STEP_TIMEOUT_S, ws.receive(), "the remote stream said nothing")
+            hello = json.loads(first.data) if first.type is aiohttp.WSMsgType.TEXT else {}
+            check(isinstance(hello, dict) and hello.get("type") == "hello" and hello.get("remote") is True,
+                  f"the remote stream began with {first.data!r:.200}")
+    passed("a device pairs with the code, and only with it, then gets the stream")
+
+
+def _is_address(url: str) -> bool:
+    try:
+        ipaddress.ip_address(urlsplit(url).hostname or "")
+    except ValueError:
+        return False
+    return True
+
+
+async def run(command: list[str], window: bool, reach: bool, remote: bool) -> None:
     version = await output([*command, "--version"], f"{command[-1]} --version")
     check(re.fullmatch(r"radiolack \S+", version), f"--version printed {version!r}")
     passed(f"prints its version: {version}")
@@ -238,6 +342,9 @@ async def run(command: list[str], window: bool, reach: bool) -> None:
                 await check_interface(session, url)
                 await check_stream(session, url)
                 await check_updates(session, url, reach)
+                await check_remote_off(session, url)
+                if remote:
+                    await check_remote(session, url)
         finally:
             if process.returncode is None:
                 process.send_signal(signal.SIGTERM)
@@ -265,11 +372,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-updates", action="store_true",
                         help="also check that the update check reaches Radiolack's APT repository, as the "
                              "installed Debian package's does (needs the network)")
+    parser.add_argument("--remote", action="store_true",
+                        help="also turn remote access on for a few seconds, on an ephemeral port of this "
+                             "computer's local network addresses, and check it as a phone would")
     parser.add_argument("command", nargs="*",
                         help="the command that starts Radiolack, after -- (default: radiolack)")
     args = parser.parse_args(argv)
     try:
-        asyncio.run(run(args.command or ["radiolack"], args.window, args.check_updates))
+        asyncio.run(run(args.command or ["radiolack"], args.window, args.check_updates, args.remote))
     except (CheckFailed, OSError, ValueError, aiohttp.ClientError) as failure:
         print(f"smoke_test: failed: {failure}", file=sys.stderr)
         return 1

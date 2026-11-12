@@ -1,6 +1,7 @@
 """Browser tests: the interface in headless Chromium, Firefox and WebKit,
 driven by Playwright against a server on an ephemeral port, with the
-simulated band or the fake rtl_tcp program: no receiver.
+simulated band or the fake rtl_tcp program: no receiver. Remote access
+listens on 127.0.0.1 only, on another ephemeral port.
 
 They launch browsers, so they run only when the RADIOLACK_BROWSER_TESTS
 environment variable is 1, as in CI, and then need Playwright and its
@@ -16,7 +17,7 @@ import re
 import tempfile
 import time
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
@@ -42,6 +43,9 @@ DOT = "\N{MIDDLE DOT}"  # the status line's separator
 # which WebKitGTK 2.50 does not have. WebKit words a refused inline style the
 # same way, but Chromium and Firefox report those in their own words.
 WEBKIT_SELECT_REFUSAL = "Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'"
+# Chromium and WebKit report a refused request in the console, such as the
+# answer to a wrong access code.
+WRONG_CODE_REFUSAL = "Failed to load resource: the server responded with a status of 403 (Forbidden)"
 # Without a GPU, as on a CI runner, Firefox refuses WebGL2 on Mesa's software
 # renderer: this preference lifts that refusal. Firefox then also needs a
 # display, which xvfb-run gives where there is none.
@@ -68,9 +72,11 @@ class BrowserTest(unittest.TestCase):
         expect.set_options(timeout=TIMEOUT_MS)
 
     def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
-              sources: Sources | None = None, updates: FakeUpdates | None = None) -> str:
+              sources: Sources | None = None, updates: FakeUpdates | None = None,
+              remote_addresses: Callable[[], list[str]] | None = None, host: str | None = None) -> str:
         """The address of a server started for this test."""
-        server = LocalServer(source=source, store=store, sources=sources, updates=updates)
+        server = LocalServer(source=source, store=store, sources=sources, updates=updates,
+                             remote_addresses=remote_addresses, host=host)
         server.start()
         self.addCleanup(server.stop)
         return server.url
@@ -82,6 +88,40 @@ class BrowserTest(unittest.TestCase):
         audio frames each one receives."""
         errors: list[str] = []
         self.audio: dict[Page, list[int]] = {}
+        with contextlib.ExitStack() as stack:
+            pages = []
+            for _ in range(count):
+                context = self.browsers[browser].new_context()
+                stack.callback(context.close)
+                page = self.watched_page(context, browser, errors)
+                self.audio[page] = received = []
+                page.on("websocket", lambda socket, received=received: socket.on(
+                    "framereceived",
+                    lambda payload: received.append(1) if isinstance(payload, bytes) and payload[:1] == bytes(
+                        [AUDIO_FRAME]) else None))
+                page.goto(url)
+                page.locator(SOURCE_PANEL).click()
+                pages.append(page)
+            yield pages
+        self.assertEqual(errors, [], "errors in the interface")
+
+    @contextlib.contextmanager
+    def remote_device(self, browser: str, allowed: tuple[str, ...] = ()) -> Iterator[Page]:
+        """A page in a browser context of its own, like a phone on the local
+        network, which accepts remote access's certificate without having
+        installed it. Console errors other than the ``allowed`` ones fail
+        the test."""
+        errors: list[str] = []
+        context = self.browsers[browser].new_context(ignore_https_errors=True)
+        try:
+            yield self.watched_page(context, browser, errors)
+        finally:
+            context.close()
+        self.assertEqual([error for error in errors if error not in allowed], [], "errors in the remote device's pages")
+
+    @staticmethod
+    def watched_page(context, browser: str, errors: list[str]) -> Page:
+        """A new page whose console errors and uncaught exceptions go to ``errors``."""
 
         def console(message) -> None:
             if message.type != "error":
@@ -90,25 +130,11 @@ class BrowserTest(unittest.TestCase):
                 return
             errors.append(message.text)
 
-        with contextlib.ExitStack() as stack:
-            pages = []
-            for _ in range(count):
-                context = self.browsers[browser].new_context()
-                stack.callback(context.close)
-                page = context.new_page()
-                page.set_default_timeout(TIMEOUT_MS)
-                self.audio[page] = received = []
-                page.on("websocket", lambda socket, received=received: socket.on(
-                    "framereceived",
-                    lambda payload: received.append(1) if isinstance(payload, bytes) and payload[:1] == bytes(
-                        [AUDIO_FRAME]) else None))
-                page.on("console", console)
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(url)
-                page.locator(SOURCE_PANEL).click()
-                pages.append(page)
-            yield pages
-        self.assertEqual(errors, [], "errors in the interface")
+        page = context.new_page()
+        page.set_default_timeout(TIMEOUT_MS)
+        page.on("console", console)
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        return page
 
     def test_shows_the_simulated_band_and_its_settings(self):
         url = self.serve()
@@ -188,6 +214,52 @@ class BrowserTest(unittest.TestCase):
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
 
+    def test_the_end_of_a_touch_asks_the_audio_to_start(self):
+        # A tap activates the page only once the finger leaves the screen, and
+        # only then does Safari on the iPhone let the audio start. Headless
+        # browsers start it earlier, Firefox at times without any gesture, so
+        # the audio stays suspended here and the test counts the page's
+        # requests to start it.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser):
+                context = self.browsers[browser].new_context()
+                self.addCleanup(context.close)
+                context.add_init_script(   # before the interface's scripts
+                    "window.resumes = 0;"
+                    " AudioContext.prototype.resume = () => { window.resumes += 1; return Promise.resolve(); };")
+                errors: list[str] = []
+                page = self.watched_page(context, browser, errors)
+                page.goto(url)
+                expect(page.locator("#dm-audio-note")).to_have_text(
+                    "Audio starts with a click, a tap or a key press on the page.")
+                for event in ("new PointerEvent('pointerup', { pointerType: 'touch' })", "new Event('touchend')"):
+                    before = page.evaluate("() => window.resumes")
+                    page.evaluate(f"() => window.dispatchEvent({event})")
+                    self.assertGreater(page.evaluate("() => window.resumes"), before, event)
+                self.assertEqual(errors, [])
+
+    def test_the_audio_asks_safari_for_its_playback_session(self):
+        # Safari plays the "playback" session with the ringer switch on
+        # silent. The other browsers lack the API, which the test stands in
+        # for, and the audio stays suspended, held until a gesture.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser):
+                context = self.browsers[browser].new_context()
+                self.addCleanup(context.close)
+                context.add_init_script(   # before the interface's scripts
+                    "Object.defineProperty(Navigator.prototype, 'audioSession',"
+                    " { value: { type: 'auto' }, configurable: true });"
+                    " AudioContext.prototype.resume = () => Promise.resolve();")
+                errors: list[str] = []
+                page = self.watched_page(context, browser, errors)
+                page.goto(url)
+                expect(page.locator("#dm-audio-note")).to_have_text(
+                    "Audio starts with a click, a tap or a key press on the page.")
+                self.assertEqual(page.evaluate("() => navigator.audioSession.type"), "playback")
+                self.assertEqual(errors, [])
+
     def test_bookmarks_are_shared(self):
         for browser in BROWSERS:
             url = self.serve()      # no bookmark yet
@@ -225,7 +297,7 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#marks .mark")).to_have_count(0)
                 expect(first.locator("#bm-note")).to_be_hidden()
 
-    def test_preferences_are_kept_for_the_next_interfaces_but_not_remote_access(self):
+    def test_preferences_are_kept_for_the_next_interfaces(self):
         for browser in BROWSERS:
             directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
             url = self.serve(store=Store(directory))    # no preference yet
@@ -234,7 +306,6 @@ class BrowserTest(unittest.TestCase):
                     page.locator(SETTINGS_PANEL).click()
                     expect(page.locator("#st-storage")).to_have_text(
                         f"Settings and bookmarks are saved in {Store(directory).location}.")
-                    page.locator("#st-remote").check()
                     page.locator(DISPLAY_PANEL).click()
                     page.locator("#wf-pal").select_option("gray")
                     page.locator("#ds-grid").uncheck()
@@ -242,8 +313,83 @@ class BrowserTest(unittest.TestCase):
                 with self.interfaces(browser, url, 1) as [page]:
                     expect(page.locator("#wf-pal")).to_have_value("gray")
                     expect(page.locator("#ds-grid")).not_to_be_checked()
-                    expect(page.locator("#st-remote")).not_to_be_checked()
-                    expect(page.locator("#status")).not_to_contain_text("remote access")
+
+    def test_remote_access_says_why_it_cannot_turn_on(self):
+        url = self.serve()      # which finds no address on a local network
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                page.locator(SETTINGS_PANEL).click()
+                expect(page.locator("#st-remote")).not_to_be_checked()
+                expect(page.locator("#st-remote-client")).to_be_hidden()
+                page.locator("#st-remote").click()
+                expect(page.locator("#st-remote-msg")).to_have_text(
+                    "This computer has no address on a local network: connect it to one, "
+                    "then turn remote access on.")
+                expect(page.locator("#st-remote")).not_to_be_checked()
+                expect(page.locator("#st-remote-info")).to_be_hidden()
+                expect(page.locator("#st-remote-devices")).to_have_text("No paired device")
+                expect(page.locator("#status")).not_to_contain_text("remote access")
+
+    def test_a_device_pairs_with_the_code_then_shares_the_receiver_until_forgotten(self):
+        for browser in BROWSERS:
+            url = self.serve(remote_addresses=lambda: [LOOPBACK], host="radiolack-test")
+            port = free_port()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [computer]:
+                computer.locator(SETTINGS_PANEL).click()
+                computer.locator("#st-remote-port").fill(str(port))
+                computer.locator("#st-remote-port").blur()
+                computer.locator("#st-remote").click()
+                expect(computer.locator("#st-remote-url")).to_have_text(f"https://{LOOPBACK}:{port}/")
+                expect(computer.locator("#st-remote-urls")).to_have_text(f"Or: https://radiolack-test.local:{port}/")
+                expect(computer.locator("#st-remote-code")).to_have_text(re.compile(r"^[2-9A-Z]{4}-[2-9A-Z]{4}$"))
+                expect(computer.locator("#st-remote-port")).to_be_disabled()
+                expect(computer.locator("#status")).to_contain_text("remote access on")
+                code = computer.locator("#st-remote-code").inner_text()
+                with self.remote_device(browser, allowed=(WRONG_CODE_REFUSAL,)) as device:
+                    device.goto(f"https://{LOOPBACK}:{port}/")
+                    expect(device.locator('a[href="certificate"]')).to_be_visible()
+                    device.locator("#pair-code").fill("ABCD-EFGH")
+                    device.locator("#pair-submit").click()
+                    expect(device.locator("#pair-msg")).to_have_text("Wrong code.")
+                    device.locator("#pair-code").fill(code.lower())
+                    device.locator("#pair-submit").click()
+                    expect(device.locator("#status")).to_contain_text("MS/s")      # the interface, with frames
+                    device.locator(SETTINGS_PANEL).click()
+                    expect(device.locator("#st-remote-client")).to_be_visible()
+                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section"):
+                        expect(device.locator(section)).to_be_hidden()
+                    expect(device.locator("#status")).not_to_contain_text("remote access")
+                    expect(computer.locator("#st-remote-devices li.device")).to_contain_text("connected")
+                    computer.locator("#st-remote-devices button[data-forget]").click()
+                    expect(device.locator("#pair-form")).to_be_visible()    # reloaded: the pairing page again
+                    expect(computer.locator("#st-remote-devices")).to_have_text("No paired device")
+                computer.locator("#st-remote").click()
+                expect(computer.locator("#st-remote-info")).to_be_hidden()
+                expect(computer.locator("#st-remote-port")).to_be_enabled()
+
+    def test_a_stream_refused_before_it_opened_asks_for_a_reload_instead_of_reloading(self):
+        # As if the browser sent the session cookie with the page but not with
+        # the stream: reloading would bring the same page back, again and again.
+        # Every stream is refused before its hello, as remote access would.
+        def refuse(socket) -> None:
+            server = socket.connect_to_server()
+            server.on_message(lambda _message: socket.close(code=4001, reason="This device is not paired."))
+
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser):
+                context = self.browsers[browser].new_context()
+                self.addCleanup(context.close)
+                errors: list[str] = []
+                page = self.watched_page(context, browser, errors)
+                page.route_web_socket(re.compile(r"/stream$"), refuse)
+                loaded: list[str] = []
+                page.on("request", lambda request: loaded.append(request.url)
+                        if request.is_navigation_request() else None)
+                page.goto(url)
+                expect(page.locator("#status")).to_contain_text("This device is not paired: reload the page")
+                self.assertEqual(loaded, [url])
+                self.assertEqual(errors, [])
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_frequency_correction_is_whole_and_shared(self):

@@ -14,17 +14,22 @@ the history under the tag `v0.1.0`.
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--rtl-sdr`,
   `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
-  background thread; interface files and the `/stream` WebSocket), `engine`
+  background thread; interface files and the `/stream` WebSocket; remote
+  access's HTTPS listener, a second application with a runner of its own,
+  in the same loop), `remote` (remote access: the local certificate
+  authority, with `cryptography`, the access code, paired devices and their
+  sessions, the private addresses to listen on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks and the update check's
   findings with clients, sends audio to those that ask, passes their changes
   on, switches between kinds of sources, restores and saves the settings and
-  the source in use; idle without clients), `updates` (update check: apt run
+  the source in use; idle without clients; remote clients get neither the
+  storage, update nor remote access states), `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
-  Radiolack), `store` (settings and bookmarks files in
-  `$XDG_CONFIG_HOME/radiolack`: whole-file writes, unreadable files set
-  aside), `bookmarks` (bookmarks and their checks), `spectrum`
+  Radiolack), `store` (settings, bookmarks and remote access files in
+  `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
+  only, unreadable files set aside), `bookmarks` (bookmarks and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:
   channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
@@ -41,6 +46,8 @@ the history under the tag `v0.1.0`.
   (band plan loader) carry JSDoc types; `main.js` still holds the mockup's code under
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
+  `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
+  remote access serves to a device that is not paired.
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
   Python package as it is; reproducible: every file carries the last
   commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose
@@ -48,9 +55,12 @@ the history under the tag `v0.1.0`.
   every option of `cli.build_parser()` and no other), `smoke_test.py`
   (checks a Radiolack from the outside: listening on 127.0.0.1 only, Host
   and Origin refusals, interface files and Content-Security-Policy, stream,
-  update check, stop on SIGTERM; `--window` checks that the window's toolkit
-  loads, `--check-updates` that the update check reaches the APT
-  repository),
+  update check, remote access off at start, stop on SIGTERM; `--window`
+  checks that the window's toolkit loads, `--check-updates` that the update
+  check reaches the APT repository, `--remote` that remote access turns on
+  on the computer's private addresses, refuses plain HTTP, other hosts and
+  unpaired devices, pairs one and turns off; run it only where its network
+  is the check's own),
   `release.py` (tags a release on `main` and starts the next development
   version), `apt_repository.py` (builds and signs the APT repository: it
   checks the repository's signature with gpgv, then signs only what the key
@@ -116,8 +126,9 @@ the history under the tag `v0.1.0`.
   Debian package twice and compares the builds, puts it in an APT
   repository signed with a key made for the run, then installs it from
   there, checks that apt reads its APT source, runs it (`smoke_test.py
-  --window --check-updates` under Xvfb: its update check reads the published
-  APT repository), removes it (its source and key stay) and purges it
+  --window --check-updates --remote` under Xvfb: its update check reads the
+  published APT repository, and remote access listens on the container's
+  network), removes it (its source and key stay) and purges it
   on Debian 12 and 13
   and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
   packaging change; `workflows.yml` runs actionlint
@@ -169,9 +180,13 @@ the history under the tag `v0.1.0`.
   with throwaway keys. Only `tests/test_browser.py`
   launches browsers: headless, and only when `RADIOLACK_BROWSER_TESTS=1` is
   set, as in CI.
-- The server listens on 127.0.0.1 only. Listening on other interfaces belongs
-  to remote access (v1): off by default, HTTPS and access code, never turned
-  on implicitly.
+- The server listens on 127.0.0.1 only. Only remote access listens on other
+  interfaces: off at each start, HTTPS and access code, and turned on only by
+  this computer's interface, in Settings. Never turn it on implicitly, and
+  never on the owner's network for a check: the tests make it listen on
+  127.0.0.1 (`remote_addresses`), and `smoke_test.py --remote` runs in CI's
+  containers or in a network namespace of its own (`unshare -rn` with a
+  dummy interface).
 - `data/` holds the airband explorer's personal data: apart from its README,
   never write, replace, regenerate or delete anything there, above all
   `data/airband-peaks.json`. `profiles/` holds personal files: leave them

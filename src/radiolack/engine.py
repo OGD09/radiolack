@@ -30,13 +30,18 @@ With an update check (updates.py), it checks for a newer Radiolack when it
 starts, unless turned off, and when a client asks, and tells every client
 what the check found.
 
+With remote access (remote.py), the engine tells this computer's interfaces
+its state, and saves what it keeps. Remote clients, the devices that remote
+access serves, receive neither that state nor the storage and update states,
+and may not change the rtl_tcp server's address.
+
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
-bookmarks, the preferences and whether to check for updates at start. It
-saves them a moment after they change, as changes come in bursts, and when
-it stops. A saved setting that the receiver refuses keeps its default, and
-one the source was ``given``, such as an address on the command line, keeps
-the given value, which is saved in its place.
+bookmarks, the preferences, whether to check for updates at start and what
+remote access keeps. It saves them a moment after they change, as changes
+come in bursts, and when it stops. A saved setting that the receiver refuses
+keeps its default, and one the source was ``given``, such as an address on
+the command line, keeps the given value, which is saved in its place.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ import numpy as np
 from . import __version__
 from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
+from .remote import REMOTE_FILE, RemoteAccess
 from .spectrum import SpectrumAnalyzer, encode_frame
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
@@ -65,6 +71,8 @@ CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
 MAX_PREFERENCES = 100   # the interfaces' preferences: names and values the engine keeps
+LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
+LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
 _MAX_PREFERENCE_NAME = 40
 _MAX_PREFERENCE_TEXT = 100
 
@@ -175,10 +183,11 @@ class Subscription:
     """What the engine has for one client, in the order it goes out: the
     states that changed (all of them at the start, in the order of
     ``states``), replies to the client's commands, audio frames if the client
-    asked for audio, then the latest display frames."""
+    asked for audio, then the latest display frames. A ``remote`` client is a
+    device that remote access serves."""
 
     def __init__(self, states: Mapping[str, Callable[[Subscription], dict[str, Any]]], frames: int,
-                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO) -> None:
+                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO, remote: bool = False) -> None:
         self._states = dict(states)     # each gives its message for this client
         self._due = set(self._states)
         self._replies: deque[dict[str, Any]] = deque(maxlen=replies)
@@ -186,6 +195,7 @@ class Subscription:
         self._frames: deque[bytes] = deque(maxlen=frames)
         self._ended = False
         self._ready = asyncio.Event()
+        self.remote = remote
         self.audio = False          # the client asked for audio
         self.acknowledged = 0       # id of the client's last demodulation change handled
 
@@ -234,9 +244,11 @@ class Subscription:
             self._audio.clear()
 
     def changed(self, kind: str) -> None:
-        """State ``kind`` changed: the client receives it again."""
-        self._due.add(kind)
-        self._ready.set()
+        """State ``kind`` changed: the client receives it again, unless it
+        never receives that state."""
+        if kind in self._states:
+            self._due.add(kind)
+            self._ready.set()
 
     def reply(self, message: dict[str, Any]) -> None:
         """Answer this client only, such as with the reason for a refused change."""
@@ -257,10 +269,11 @@ class Engine:
     The engine reads ``source``, or without one the source that ``sources``
     opened last, and switches between the kinds of ``sources`` when a client
     asks. It checks for updates with ``updates``; without it, it never
-    does."""
+    does. With ``remote``, it shares and saves remote access's state."""
 
     def __init__(self, source: Source | None = None, *, sources: SourceOpener | None = None,
                  store: Store | None = None, updates: UpdateChecker | None = None,
+                 remote: RemoteAccess | None = None,
                  frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
                  queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S) -> None:
         if frame_rate <= 0:
@@ -277,15 +290,22 @@ class Engine:
         self._demodulator = Demodulator()   # used by one block at a time
         self._capture: tuple[float, float] | None = None    # centre and rate of the last block
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
-        # What each client receives first, in this order, then again whenever it changes.
+        # What each client receives first, in this order, then again whenever
+        # it changes; remote clients, none of LOCAL_STATES.
         self._states: dict[str, Callable[[Subscription], dict[str, Any]]] = {
-            "source": lambda _: self.state(),
+            "source": lambda subscription: self.state(subscription.remote),
             "demod": lambda subscription: self.demod_state(subscription.acknowledged),
             "bookmarks": lambda _: self.bookmarks_state(),
             "preferences": lambda _: self.preferences_state(),
             "storage": lambda _: self.storage_state(),
             "update": lambda _: self.update_state(),
         }
+        self._remote = remote
+        if remote is not None:
+            if store is not None:
+                remote.restore(store.load(REMOTE_FILE))
+            self._states["remote"] = lambda _: self.remote_state()
+            remote.on_change = self._remote_changed
         # Saving: the store once the saved settings apply, what each file held
         # at its latest write, and the task that writes them after a change.
         self._store: Store | None = None
@@ -332,11 +352,14 @@ class Engine:
                 del self._saved[SETTINGS_FILE]
             self._store = store
 
-    def subscribe(self) -> Subscription:
+    def subscribe(self, remote: bool = False) -> Subscription:
         """The messages for a new client, starting with the source state, the
-        demodulation settings, the bookmarks, the preferences, the storage
-        state and the update state."""
-        subscription = Subscription(self._states, self._queue_size)
+        demodulation settings, the bookmarks and the preferences, then, unless
+        ``remote``, the storage state, the update state and remote access's
+        state."""
+        states = {kind: describe for kind, describe in self._states.items()
+                  if not remote or kind not in LOCAL_STATES}
+        subscription = Subscription(states, self._queue_size, remote=remote)
         if self._closed:
             subscription.end()
         else:
@@ -349,12 +372,15 @@ class Engine:
         if not self._clients and not self._closed:
             self._wanted.clear()
 
-    def state(self) -> dict[str, Any]:
+    def state(self, remote: bool = False) -> dict[str, Any]:
         """The source state message (docs/design/protocol.md), with the
-        engine's own setting."""
+        engine's own setting; for a ``remote`` client, without the settings
+        it may not change."""
         described = self.source.describe()
-        return {"type": "source", **described, "dc_removal": self._dc_removal,
-                "settable": [*described["settable"], "dc_removal"],
+        settable = [*described["settable"], "dc_removal"]
+        if remote:
+            settable = [name for name in settable if name not in LOCAL_SETTINGS]
+        return {"type": "source", **described, "dc_removal": self._dc_removal, "settable": settable,
                 "kinds": list(self._sources.kinds) if self._sources is not None else []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
@@ -475,6 +501,13 @@ class Engine:
         self._update_changed()
         self._checking = asyncio.ensure_future(self._check_updates(updates))
 
+    def remote_state(self) -> dict[str, Any]:
+        """The remote access message (docs/design/protocol.md), for this
+        computer's interfaces only."""
+        if self._remote is None:
+            raise RuntimeError("this engine has no remote access")
+        return {"type": "remote", **self._remote.describe()}
+
     def close(self) -> None:
         """Stop for good: every client's messages end with ``None``, the
         source is closed and a running update check stops. Safe to repeat."""
@@ -550,6 +583,13 @@ class Engine:
     def _update_changed(self) -> None:
         for subscription in self._clients:
             subscription.changed("update")
+
+    def _remote_changed(self) -> None:
+        """Remote access changed: this computer's interfaces learn it, and what
+        it keeps is saved if that changed."""
+        for subscription in self._clients:
+            subscription.changed("remote")
+        self._settings_changed()
 
     async def _check_updates(self, updates: UpdateChecker) -> None:
         try:
@@ -642,13 +682,17 @@ class Engine:
                 log.warning("the saved setting %s is not used: %s", name, error)
 
     def _contents(self) -> dict[str, dict[str, Any]]:
-        """What the settings and bookmarks files hold, as things stand: with
-        sources to open, which source opens at the next start."""
+        """What the settings, bookmarks and remote access files hold, as
+        things stand: with sources to open, which source opens at the next
+        start."""
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
-        return {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
+        contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
+        if self._remote is not None:
+            contents[REMOTE_FILE] = self._remote.stored()
+        return contents
 
     def _settings_changed(self) -> None:
         """Save soon. ``wait_closed`` saves what changes after ``close``."""

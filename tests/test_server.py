@@ -24,8 +24,8 @@ from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
-# The states a stream starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update")
+# The states a stream of this computer's interface starts with, after hello, in this order.
+STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update", "remote")
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -190,8 +190,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 5})
-            self.assertEqual(PROTOCOL_VERSION, 5)
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 6, "remote": False})
+            self.assertEqual(PROTOCOL_VERSION, 6)
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             settings = await ws.receive_json(timeout=5)
@@ -205,6 +205,10 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5), {
                 "type": "update", "status": "unavailable", "version": __version__, "latest": None,
                 "detail": "This Radiolack does not check for updates.", "check_at_start": True})
+            # Remote access is off, as at each start, and has never been on.
+            self.assertEqual(await ws.receive_json(timeout=5), {
+                "type": "remote", "on": False, "port": 8443, "urls": [], "code": None, "blocked": False,
+                "devices": [], "fingerprint": None, "problem": ""})
             for _ in range(3):
                 message = await ws.receive(timeout=5)
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)

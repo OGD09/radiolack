@@ -5,8 +5,8 @@ shows a full-screen spectrum and waterfall, demodulates the signal and scans
 the bands. It covers every frequency its receiver tunes, and a colour strip
 under the spectrum names what each range is used for, with detailed plans
 inside the amateur bands. It is a desktop application whose interface is a
-web page, so that a phone, a tablet or another computer will be able to
-control it and listen to it over the local network.
+web page, so that a phone, a tablet or another computer can also control it
+and listen to it over the local network.
 
 **Status: early rewrite.** Radiolack reads an RTL-SDR receiver through
 rtl_tcp, which it runs itself for a receiver plugged into this computer, or
@@ -21,8 +21,9 @@ demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
-package on Debian and Ubuntu. The remote access switch is
-only the mockup's: Radiolack keeps listening on 127.0.0.1 only. The plan, the
+package on Debian and Ubuntu. Remote access, off at each start, lets a phone
+or a tablet on the local network control Radiolack and hear it, over HTTPS
+with an access code ([Remote access](#remote-access)). The plan, the
 milestones and the decisions are in
 [docs/design/scoping.md](docs/design/scoping.md).
 
@@ -34,7 +35,8 @@ English, with no translations.
 
 ## Requirements
 
-- Python 3.11 or later, aiohttp 3.8 or later and NumPy 1.24 or later.
+- Python 3.11 or later, aiohttp 3.8 or later, NumPy 1.24 or later and, for
+  remote access, cryptography 38 or later.
 - For the desktop window on Linux: PyGObject with GTK 3 and WebKitGTK 2.30 or
   later. Debian and Ubuntu: `sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1`.
   Without them, Radiolack shows its interface in a web browser instead.
@@ -52,9 +54,9 @@ English, with no translations.
 On Debian 12 or later and Ubuntu 24.04 or later, Radiolack installs as a
 Debian package for the system's Python, with the `radiolack` command, its
 manual page (`man radiolack`), a menu entry and an icon. apt also installs
-what Radiolack needs (aiohttp, NumPy, PyGObject, GTK 3, WebKitGTK, and the
-certificates that apt needs to read its APT repository over HTTPS) and the
-rtl-sdr package it recommends.
+what Radiolack needs (aiohttp, cryptography, NumPy, PyGObject, GTK 3,
+WebKitGTK, and the certificates that apt needs to read its APT repository
+over HTTPS) and the rtl-sdr package it recommends.
 
 Each release on the repository's Releases page carries its package,
 `radiolack_VERSION_all.deb`, and the package's checksum, `SHA256SUMS`, which
@@ -109,9 +111,10 @@ python3 -m venv --system-site-packages .venv
 ```
 
 The `radiolack` command is then `.venv/bin/radiolack`. On Debian and Ubuntu,
-`sudo apt install python3-aiohttp python3-numpy` provides aiohttp and NumPy
-from the system, and `.venv/bin/pip install --no-build-isolation -e .` then
-installs without downloading anything. To run without installing, use
+`sudo apt install python3-aiohttp python3-cryptography python3-numpy`
+provides aiohttp, cryptography and NumPy from the system, and
+`.venv/bin/pip install --no-build-isolation -e .` then installs without
+downloading anything. To run without installing, use
 `PYTHONPATH=src python3 -m radiolack` from the repository.
 
 ## Usage
@@ -137,10 +140,11 @@ stops Radiolack.
 
 Without a desktop window, stop Radiolack with Ctrl+C.
 
-Radiolack listens on 127.0.0.1 only, so other devices cannot reach it yet. It
-answers only requests addressed to 127.0.0.1 or localhost, which keeps web
-pages from reaching it through DNS rebinding. The desktop window stays on the
-interface: it opens no other page and no new window.
+Radiolack listens on 127.0.0.1 only, unless its settings turn remote access
+on ([Remote access](#remote-access)). It answers only requests addressed to
+127.0.0.1 or localhost, which keeps web pages from reaching it through DNS
+rebinding. The desktop window stays on the interface: it opens no other page
+and no new window.
 
 The interface receives the spectrum, the audio, the receiver state, the
 demodulation settings and the bookmarks from the engine, and sends its
@@ -285,8 +289,9 @@ threshold set by hand below the noise keeps it open.
 Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
-click or key press on the page, and the Demod panel then says so. Nothing is
-recorded.
+click, tap or key press on the page, and the Demod panel then says so. On
+an iPhone, Safari keeps playing it with the screen locked and with the
+ringer switch on silent. Nothing is recorded.
 
 ## Settings and bookmarks
 
@@ -300,10 +305,12 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   saved with them. It also records the source in use, for the next start.
   It also holds the interface's own settings: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
-  mode and the scanners' settings. Remote access is never saved: it is off
-  at each start. Last, it records whether Radiolack checks for updates at
-  start ([Updates](#updates)).
+  mode and the scanners' settings. Last, it records whether Radiolack checks
+  for updates at start ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
+- `remote.json` holds what remote access keeps: its port, its access code,
+  the paired devices and its local authority, but never whether it is on:
+  it is off at each start ([Remote access](#remote-access)).
 
 The window keeps no browser data on disk: WebKit's cache and storage stay in
 memory.
@@ -327,6 +334,69 @@ cannot read as its own, damaged or edited by hand with a mistake, is renamed
 starts without it. A file that cannot be opened, or that a newer Radiolack
 wrote, is left as it is and not saved until the next start. To start again
 from the defaults, delete the folder while Radiolack is stopped.
+
+## Remote access
+
+Remote access lets a phone, a tablet or another computer on the same local
+network control Radiolack and hear it in its web browser. It is off at each
+start, and only this computer's interface turns it on, in Settings > Remote
+access. Radiolack then also listens over HTTPS, on port 8443 or the port
+chosen there while it is off (1024 to 65535), on this computer's addresses
+on its local networks: the private IPv4 ranges (10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16), the range that Tailscale uses (100.64.0.0/10) and
+link-local addresses. It answers only devices whose own address is in these
+ranges, and only requests addressed to this computer's name or one of these
+addresses, which keeps web pages from reaching it through DNS rebinding.
+Never make its port reachable from the Internet. Radiolack never changes the
+firewall: when this computer runs one, let the local network reach the port,
+for instance `sudo ufw allow from 192.168.1.0/24 to any port 8443 proto tcp`
+with ufw.
+
+Settings shows the addresses to open: first `https://ADDRESS:8443/` with
+this computer's private addresses, home networks' ranges first, which work
+wherever the device reaches them; then `https://NAME.local:8443/` with its
+host name, which works on networks where mDNS resolves such names (Avahi on
+Linux; iOS, macOS, Android and Windows resolve them), unless this computer
+also has an IPv6 address: the name then leads there too, where remote access
+does not listen, and an iPhone opens it slowly or not at all. When the
+router gives this computer another address, turn remote access off and on,
+then open the new address and enter the code again. On each device, once:
+
+1. Open the address. The browser warns that the connection is not private:
+   Radiolack's certificate comes from Radiolack's own local authority, which
+   the device does not know yet. Go on to the page.
+2. Download Radiolack's certificate from that page and install it as a
+   trusted authority, as the page explains for iPhone and iPad, Android and
+   other devices. Before trusting it, check that its SHA-256 fingerprint,
+   in the certificate's details on the device, is the one that Settings >
+   Remote access shows. The browser then trusts Radiolack's pages without
+   warning.
+3. Enter the access code that Settings shows. The device stays paired: it
+   then opens the interface at that address directly.
+
+The local authority vouches only for private addresses and for names ending
+in `.local`, `.home.arpa` or `.internal`: name constraints, in the
+certificate that signs Radiolack's, keep it from vouching for any other
+website, and the root's key was destroyed as soon as it signed that
+certificate. Radiolack gives itself a new certificate, for this computer's
+current addresses, each time remote access turns on.
+
+A paired device gets the interface, the spectrum and the audio, and shares
+the receiver with every other interface: its changes to the VFO, the mode,
+the receiver's settings, the source and the bookmarks reach everyone. It
+cannot change what belongs to this computer, remote access itself, the update
+check and the rtl_tcp server's address, and does not see where the settings
+are saved. It starts from the saved interface settings but keeps its own
+changes to itself.
+
+Settings > Remote access lists the paired devices, says which are connected
+and when each was last used, and forgets one on request; a new code forgets
+them all. A forgotten device must enter the code again, and so must a device
+unused for 90 days. A wrong code is answered after a second, and after 10
+wrong codes the code no longer works until Settings makes a new one.
+Turning remote access off closes the devices' connections; their interfaces
+wait for it to be on again. Radiolack keeps a hash of each device's session,
+never the session itself, in `remote.json`, which only you can read.
 
 ## Updates
 
@@ -447,14 +517,19 @@ on the simulated band, in a settings folder of its own and on a free port,
 then checks that it listens on 127.0.0.1 only, refuses requests addressed to
 other hosts and streams from other origins, serves the interface with its
 Content-Security-Policy and every file the interface loads, streams the
-spectrum, ends its update check without failing, and stops on SIGTERM.
-After installing the Debian package, it checks the installed `radiolack`;
-with `--check-updates`, its update check must also reach the APT
-repository, which needs the network:
+spectrum, ends its update check without failing, starts with remote access
+off, and stops on SIGTERM. After installing the Debian package, it checks
+the installed `radiolack`; with `--check-updates`, its update check must
+also reach the APT repository, which needs the network:
 
 ```bash
 python3 packaging/smoke_test.py --check-updates
 ```
+
+With `--remote`, it also turns remote access on for a few seconds, on an
+ephemeral port of this computer's local network addresses, and checks it as
+a phone would: the certificate, the pairing page, a wrong code and the right
+one, the stream, and the port released once off.
 
 ### Continuous integration
 
@@ -470,7 +545,8 @@ services or radio hardware:
   it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and
   26.04, checks that apt reads the source that it adds, runs it there with
   `packaging/smoke_test.py`, whose update check reads the published APT
-  repository with the source and key that the package adds, removes it,
+  repository with the source and key that the package adds, and which pairs
+  a device with remote access on the container's network, removes it,
   which keeps the source and its key,
   then purges it, which removes them, and checks it with lintian; when the
   package or its packaging change.
@@ -616,12 +692,15 @@ untouched (see [data/README.md](data/README.md)).
 ```text
 src/radiolack/
   cli.py        command line
-  server.py     local web server (aiohttp): interface files and the stream
+  server.py     local web server (aiohttp): interface files and the stream,
+                and remote access's HTTPS listener
   engine.py     reads a source, removes its DC offset, shares spectrum
                 frames, the demodulation settings, the bookmarks and the
                 update check's findings with the interfaces, sends audio to
                 those that ask, and saves the settings
-  store.py      settings and bookmarks files
+  remote.py     remote access: access code, paired devices, local
+                authority and certificates, addresses to listen on
+  store.py      settings, bookmarks and remote access files
   bookmarks.py  bookmarks and their checks
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample

@@ -12,6 +12,7 @@ import webbrowser
 from collections.abc import Iterator
 
 from . import __version__, window
+from .remote import private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
 from .server import LOOPBACK_HOST, LocalServer
 from .sources import Sources
@@ -50,7 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it opens the "
                     "receiver used last, the simulated 2 m band the first time; the Source panel "
                     "switches between them. Settings and bookmarks are saved in "
-                    "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack).",
+                    "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack). Remote access, "
+                    "for phones and tablets on the local network, is off at each start: Settings "
+                    "turns it on.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -92,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         source = RtlTcpSource(*args.rtl_tcp)
     try:
         server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
-                             updates=UpdateCheck())
+                             updates=UpdateCheck(), remote_addresses=private_addresses)
     except OSError as error:
         print(f"radiolack: cannot listen on {LOOPBACK_HOST}:{args.port}: "
               f"{error.strerror or error}", file=sys.stderr)
