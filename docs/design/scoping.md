@@ -65,6 +65,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | v2's budget and order: the scanners add at most 2% of one core on the owner's laptop (spike 4); a scan without any interface costs what the engine costs for one, 12 to 15% of one core, and rtl_tcp, while it runs. Pull requests, in this order, each with its documentation and tests: this design; detection and its list in the engine, with the shared settings and the ignored frequencies, in place of the interface's own detection; the memory scan in the engine, in place of the interface's; the observations and the History tab; the sweep, with which the memory scan also visits the bookmarks outside the receiver's span. The tests need no receiver: detection and the memory scan run on the simulated band, the sweep against the fake rtl_tcp, which gains carriers at fixed frequencies. |
 | 2026-11-12 | History and paired devices, as the owner chose: every interface may clear the History, a paired device's included, as it changes the bookmarks; Clear and Clear all wait for a second press on every device. With the observations' pull request, a channel gathers the signals found within 1.5 kHz of it or within a quarter of their width, as the list of the signals found does, so that a wide FM signal whose centre of power moves with the voice stays one channel. |
 | 2026-11-12 | The sweep, as the owner chose, comes alone in its pull request; the memory scan's visits to the bookmarks outside the receiver's span come in the next. Its windows lie a quarter of the sample rate apart at most, the first and the last a tenth of the rate inside the range, and a narrower range gets two: every frequency of the range then lies in the part that detection searches of a window, but a signal at a window's centre only in its neighbours'. So the time per window holds two searches of detection, each averaging half of it, and a signal is confirmed, two detections in a row, within one window, without waiting for the settling of the next. A window's time counts from its first samples, which the source labels with the settings they were taken with; the sweep moves on when, 2 s after asking for a window, the samples still come from elsewhere, as when the tuner keeps the frequency within its range. A client's stop, or a window that the receiver refuses, brings the receiver and the VFO back; tuning by hand and another source leave them where they are, and while the sweep runs, the receiver's saved settings are those it comes back to, so that a restart meanwhile finds the receiver where the user left it. The scanner state names the scan that its stop reason is about, so that each tab shows only its own, and while the sweep runs, the memory scan's bookmarks are those of the span it comes back to, which a memory scan started then watches. Set aside: the sweep on the simulated band, which does not tune. |
+| 2026-11-12 | The memory scan's visits to the ticked bookmarks outside the receiver's span, as the owner validated: only with a receiver that tunes, and only when a ticked bookmark within its reach lies outside the span; otherwise nothing changes, and with the simulated band the scan watches the span's alone. The bookmarks within reach take as few windows as the engine finds, each in the part of a window that detection searches, the span's included, and the scan visits them in turn, in frequency order from the window nearest the receiver, the lowest after the highest. It watches each window for a fixed 1 s once the noise there is known, and again after each channel it stopped on, with no setting of its own; a window whose samples do not come within 2 s is left, as with the sweep. Each visit leaves the bookmarks unwatched for about 0.75 s, the receiver's 0.4 s of settling and the noise's 0.33 s: with N windows, a transmission shorter than about 1.75 × N − 1 s may be missed, 2.5 s with two windows. A stop while watching brings the receiver and the VFO back where the scan found them, once it moved the receiver; on a channel they stay, so that a stop keeps what is heard; tuning by hand and another source leave them where they are. While either scan runs, the receiver's saved settings are those of its start. The protocol stays at version 6: `memory.watched` lists every bookmark the scan visits, the scanner state gains the number of windows and the window visited, and the list marks the ticked bookmarks beyond the receiver's reach. Set aside: a time per window for the memory scan, and windows centred on their bookmarks rather than starting from the lowest, which may come later. |
 
 ## Scope
 
@@ -283,7 +284,8 @@ Designed with the owner on 2026-11-12 (see Decisions).
   Tune and Ignore, and marks on the spectrum.
 - Memory scan in the engine: every ticked bookmark of the receiver's span
   watched at once, a stop on the active one, then on again after the resume
-  time; with the sweep, the bookmarks outside the span too.
+  time; with a receiver that tunes, the bookmarks outside the span too,
+  window after window.
 - Sweep across the receiver windows of a range, with an RTL-SDR.
 - Observations kept across restarts, in a History tab, apart from the
   airband explorer's history.
@@ -776,10 +778,34 @@ These costs wait for v4:
   one scan at a time, and in the three browsers, two interfaces following a
   sweep of the fake rtl_tcp program until one stops it; checked by hand in
   a browser against the fake rtl_tcp program.
+- Memory scan across windows, 2026-11-12, v2's fifth pull request:
+  `scanners.py` places the windows that the ticked bookmarks within a
+  receiver's reach take, as few as it finds, and follows the memory scan
+  from window to window, leaving a window whose samples do not come. The
+  engine plans the windows from the span where the scan started, and again
+  when the ticked bookmarks or the receiver's range change; it asks the
+  receiver for each window in turn while the scan watches, for every
+  client and without any client, watches only the bookmarks of the span
+  asked of the receiver, brings the receiver and the VFO back when the scan
+  stops while watching once it moved the receiver, and saves the
+  receiver's settings of the scan's start while either scan runs
+  (`engine.py`). The scanner state's `memory.watched` lists every bookmark
+  that the scan visits, with the number of windows and the window visited
+  (`stream.js`); the Bookmarks tab shows the window and marks the ticked
+  bookmarks beyond the receiver's reach (`index.html`, `main.js`).
+  Protocol version 6 stays. The tests check the windows' placement and
+  coverage, the visits' steps, the engine's visits with a fake receiver
+  that tunes and with the fake rtl_tcp, its stops and returns, and in the
+  three browsers, two interfaces following a memory scan of the fake
+  rtl_tcp program across windows until one stops it; checked by hand in a
+  browser against the fake rtl_tcp, with a carrier on a bookmark of
+  another window: the scan stays on it, and a stop while it watches brings
+  the receiver back; at a phone's width too.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
-  Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones). v2's pull requests follow, one at a time: next, the memory
-  scan's visits to the ticked bookmarks outside the receiver's span.
+  Decisions, 2026-11-12). With the memory scan's visits to the ticked
+  bookmarks outside the receiver's span, v2's planned pull requests are
+  done too. Left: the owner's acceptance of v1, and of v2 with the
+  receiver (see Milestones).
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

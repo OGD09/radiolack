@@ -111,7 +111,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 /**
  * The memory scan's state.
  * @typedef {object} MemoryScanState
- * @property {number[]} watched     the ticked bookmarks it watches, those of the receiver's span, by id
+ * @property {number[]} watched     the ticked bookmarks it watches, those within the receiver's reach, by id
+ * @property {number | null} windows  how many windows of the receiver they take; null with an older engine
+ * @property {number | null} window   the window the receiver is asked for, from 0; null while it does not run
  * @property {string | null} state  "watching", "checking", "listening" or "waiting"; null while it does not run
  * @property {number | null} bookmarkId  the bookmark tuned to, null while watching
  */
@@ -426,7 +428,9 @@ export function decodeBookmarks(message) {
 /**
  * Decode a scanner state message. Returns null when a field is missing or
  * malformed, apart from the sweep's, which an engine older than the sweep
- * does not send: without them, or with one malformed, the sweep is null.
+ * does not send: without them, or with one malformed, the sweep is null;
+ * and the memory scan's windows, which an engine older than them does not
+ * send: missing or malformed, they are null.
  * @param {any} message  a parsed JSON message of type "scanner"
  * @returns {ScannerState | null}
  */
@@ -451,9 +455,25 @@ export function decodeScanner(message) {
     scan: m.scan,
     stopped: m.stopped,
     stoppedScan: typeof m.stopped_scan === 'string' ? m.stopped_scan : null,
-    memory: { watched: memory.watched.slice(), state: memory.state, bookmarkId: memory.bookmark_id },
+    memory: {
+      watched: memory.watched.slice(),
+      windows: countOrNull(memory.windows),
+      window: countOrNull(memory.window),
+      state: memory.state,
+      bookmarkId: memory.bookmark_id,
+    },
     sweep: decodeSweep(m),
   };
+}
+
+/**
+ * A count in a message: a whole number from 0, or null when it is missing or
+ * malformed.
+ * @param {unknown} n
+ * @returns {number | null}
+ */
+function countOrNull(n) {
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
 /**

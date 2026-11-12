@@ -24,7 +24,11 @@ that detection searches (``watched_channels``), all at once, in every block:
 filter, and the local noise there, from the same bin powers. ``MemoryScan``
 follows the scan: it tunes to the strongest channel that would open the
 squelch, checks that the squelch opens there, listens while it stays open,
-waits the resume time once it closes, then watches them all again.
+waits the resume time once it closes, then watches them all again. With a
+receiver that tunes, the ticked bookmarks outside the span take as few
+windows of the receiver as ``memory_windows`` finds, and ``MemoryTour``
+visits them in turn: VISIT_S on each once its noise is known, and again
+after each channel the scan stopped on.
 
 The sweep steps the receiver across a range in overlapping windows
 (``sweep_windows``), as the airband explorer did: the first and last
@@ -75,6 +79,7 @@ RESUME_RANGE_S = (0.0, 8.0)
 DEFAULT_RESUME_S = 2.0              # the memory scan watches again once the squelch stayed closed this long
 CHECK_S = 0.25                      # once tuned to a channel, how long its squelch has to open
 HOLD_S = 1.0                        # a channel whose squelch did not open is not tuned to again within this
+VISIT_S = 1.0                       # the memory scan watches each window this long once its noise is known
 SWEEP_EDGE = 0.1                    # the first and last windows' centres lie this far inside the range,
 SWEEP_STEP = 0.25                   # and the windows at most this far apart, as fractions of the rate
 SWEEP_SEARCHES = 2                  # detection searches in each window
@@ -449,6 +454,106 @@ class MemoryScan:
     def _watch(self) -> None:
         self.state = "watching"
         self.bookmark_id = None
+
+
+def memory_window(frequency_hz: float, rate_hz: float, low_hz: float, high_hz: float) -> float | None:
+    """The centre frequency, in whole Hz, of the highest window whose
+    searched part holds ``frequency_hz``, as ``watched_channels`` finds it,
+    with a receiver that samples at ``rate_hz`` and tunes from ``low_hz`` to
+    ``high_hz``: the frequency lies in the window's lower half, unless the
+    receiver does not tune that high; None when no window holds it."""
+    above = min(math.floor(frequency_hz + USABLE_FRACTION * rate_hz), math.floor(high_hz))
+    if above - frequency_hz > DC_GAP_HZ and above >= low_hz:
+        return float(above)
+    below = min(math.ceil(frequency_hz - DC_GAP_HZ) - 1, math.floor(high_hz))
+    if frequency_hz - below <= USABLE_FRACTION * rate_hz and below >= low_hz:
+        return float(below)
+    return None
+
+
+def memory_windows(frequencies: Iterable[float], rate_hz: float, low_hz: float,
+                   high_hz: float) -> tuple[float, ...]:
+    """The centre frequencies, lowest first, of as few windows as it takes
+    for each of ``frequencies`` that a window can hold (``memory_window``)
+    to lie in the searched part of one, with a receiver that samples at
+    ``rate_hz`` and tunes from ``low_hz`` to ``high_hz``. From the lowest
+    frequency up, each window is the highest that holds the lowest
+    frequency left, or lies just below a frequency that would fall in its DC
+    gap, if it still holds that lowest one."""
+    reach = USABLE_FRACTION * rate_hz
+    left = sorted({frequency for frequency in frequencies
+                   if memory_window(frequency, rate_hz, low_hz, high_hz) is not None})
+    centres = []
+    while left:
+        lowest = left[0]
+        centre = memory_window(lowest, rate_hz, low_hz, high_hz)
+        assert centre is not None
+        in_gap = [frequency for frequency in left if abs(frequency - centre) <= DC_GAP_HZ]
+        if in_gap and centre > lowest:
+            lower = math.ceil(min(in_gap) - DC_GAP_HZ) - 1
+            if lower - lowest > DC_GAP_HZ and lower >= low_hz:
+                centre = float(lower)
+        centres.append(centre)
+        left = [frequency for frequency in left if not DC_GAP_HZ < abs(frequency - centre) <= reach]
+    return tuple(sorted(centres))
+
+
+class MemoryTour:
+    """The memory scan's visits to the windows of the receiver that hold its
+    bookmarks: ``windows`` holds their centre frequencies, lowest first, and
+    ``window``, from 0, is the one asked of the receiver. Once the samples
+    come from there and the noise of its channels is known, the scan watches
+    them VISIT_S, again after each channel it stopped on, then asks for the
+    next window, the first after the last. A window whose samples do not
+    come while others do is left after GIVE_UP_S, as the sweep does.
+    ``moved`` tells whether it asked the receiver for a window yet."""
+
+    def __init__(self, windows: Sequence[float], centre_hz: float, now: float) -> None:
+        self.moved = False
+        self.restart(windows, centre_hz, now)
+
+    def restart(self, windows: Sequence[float], centre_hz: float, now: float) -> None:
+        """Visit ``windows`` from the one at ``centre_hz``, where the
+        receiver was asked to be at ``now``, or else from the nearest, which
+        the scan asks for once it watches."""
+        if not windows:
+            raise ValueError("the memory scan visits one window at least")
+        self.windows = tuple(windows)
+        self.window = min(range(len(self.windows)), key=lambda index: abs(self.windows[index] - centre_hz))
+        self._due = self.windows[self.window] != centre_hz      # not asked of the receiver yet
+        self._asked_s = now
+        self._until: float | None = None    # when the scan leaves the window, once it watches there
+
+    def step(self, now: float, centre_hz: float, watching: bool, ready: bool) -> float | None:
+        """Move on with a block read at ``centre_hz`` and handled at ``now``:
+        ``watching`` tells whether the scan watches every channel rather than
+        stays on one, and ``ready`` whether the noise of the window's
+        channels is known. Returns the centre frequency of the window to ask
+        of the receiver, or None."""
+        if not watching:
+            self._until = None      # once the scan watches again, the window gets its time again
+            return None
+        if self._due:
+            self._due = False
+        elif len(self.windows) == 1:
+            return None
+        elif centre_hz != self.windows[self.window]:
+            if now - self._asked_s < GIVE_UP_S:
+                return None
+            self.window = (self.window + 1) % len(self.windows)
+        elif not ready:
+            return None
+        elif self._until is None:
+            self._until = now + VISIT_S
+            return None
+        elif now < self._until:
+            return None
+        else:
+            self.window = (self.window + 1) % len(self.windows)
+        self.moved = True
+        self._asked_s = now
+        self._until = None
+        return self.windows[self.window]
 
 
 @dataclasses.dataclass(frozen=True)

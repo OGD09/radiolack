@@ -27,8 +27,11 @@ the history under the tag `v0.1.0`.
   sources, restores and saves the settings and the source in use; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
-  every client, and the sweep, which steps a receiver that tunes across a
-  range and brings it back once a client stops it, one scan at a time;
+  every client and, with a receiver that tunes, visits the ticked
+  bookmarks outside the span window after window, and the sweep, which
+  steps such a receiver across a range, one scan at a time, saving the
+  receiver's settings of its start and bringing the receiver back once
+  stopped;
   keeps the observations, the simulated band's excepted, and
   sends them to the client that asks; idle without clients unless a scan
   runs; remote clients get neither the storage, update nor remote access
@@ -43,7 +46,8 @@ the history under the tag `v0.1.0`.
   `scanners` (detection on the engine's FFTs, averaged over a third of a
   second, against the local noise; the list of the signals found and the
   ignored frequencies; the memory scan's watch of the ticked bookmarks'
-  channels in the same FFTs, and its states; the sweep's windows across a
+  channels in the same FFTs, and its states; the windows that the ticked
+  bookmarks take and the memory scan's visits; the sweep's windows across a
   range and its progress), `observations` (the channels
   where signals were found, for the History: how signals join a channel,
   its counters, the limits and the checks of the saved file),

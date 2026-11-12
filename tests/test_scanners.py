@@ -1,8 +1,9 @@
 """Tests for detection: signals found above the local noise, away from the
 span's edges and centre, the detector's average over one capture, the list
 of signals found twice in a row, ignored frequencies; for the memory scan:
-the bookmarks it watches, their channels' power and noise, and its progress
-from channel to channel; for the sweep: its windows across a range and its
+the bookmarks it watches, their channels' power and noise, its progress
+from channel to channel, the windows its bookmarks take and its visits from
+window to window; for the sweep: its windows across a range and its
 progress from window to window; and the checks of the values the interfaces
 give."""
 
@@ -14,10 +15,11 @@ import numpy as np
 
 from radiolack.bookmarks import Bookmark
 from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
-                                MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, ChannelWatch, Detection, Detector,
-                                MemoryScan, Signals, Sweep, SweepWindows, checked_frequency, checked_resume,
-                                checked_sweep_range, checked_threshold, checked_window, find_signals, local_noise,
-                                search_blocks, sweep_windows, watched_channels)
+                                MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch, Detection, Detector,
+                                MemoryScan, MemoryTour, Signals, Sweep, SweepWindows, checked_frequency,
+                                checked_resume, checked_sweep_range, checked_threshold, checked_window, find_signals,
+                                local_noise, memory_window, memory_windows, search_blocks, sweep_windows,
+                                watched_channels)
 from radiolack.spectrum import SpectrumAnalyzer
 
 SIZE = 8192
@@ -384,6 +386,122 @@ class MemoryScanTest(unittest.TestCase):
         self.assertEqual((scan.state, scan.bookmark_id), ("checking", 1))
         scan.keep([2])
         self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
+
+
+R820T_HZ = (24e6, 1766e6)       # the centre frequencies an RTL-SDR's usual tuner tunes to
+
+
+def watching(frequency_hz: float, centres, rate_hz: float) -> list[float]:
+    """The windows, by their centres, whose searched part holds ``frequency_hz``."""
+    return [centre for centre in centres
+            if DC_GAP_HZ < abs(frequency_hz - centre) <= USABLE_FRACTION * rate_hz]
+
+
+class MemoryWindowsTest(unittest.TestCase):
+    def test_each_frequency_within_reach_lies_in_the_searched_part_of_a_window(self):
+        rng = np.random.default_rng(7)
+        raster = [430e6 + n * 12_500 for n in range(0, 800, 7)]     # across 70 cm
+        dense = [145e6 + n * 5_000 for n in range(60)]               # closer than the DC gap allows
+        spread = list(np.round(rng.uniform(24e6, 1766e6, 200)))
+        edges = [23_100_000.0, 24e6, 1766e6, 1766_900_000.0]    # all within reach at 2.4 MS/s
+        for rate in (250_000.0, 1_024_000.0, 2_400_000.0):
+            for name, frequencies in (("raster", raster), ("dense", dense), ("spread", spread), ("edges", edges)):
+                with self.subTest(rate=rate, frequencies=name):
+                    centres = memory_windows(frequencies, rate, *R820T_HZ)
+                    self.assertEqual(list(centres), sorted(set(centres)))
+                    for centre in centres:
+                        self.assertEqual(centre, round(centre))
+                        self.assertTrue(R820T_HZ[0] <= centre <= R820T_HZ[1])
+                    within = [frequency for frequency in frequencies
+                              if memory_window(frequency, rate, *R820T_HZ) is not None]
+                    if rate == 2_400_000.0 or name != "edges":
+                        self.assertEqual(within, frequencies)
+                    for frequency in within:
+                        self.assertTrue(watching(frequency, centres, rate), frequency)
+
+    def test_takes_as_few_windows_as_the_frequencies_need(self):
+        rate = 2_400_000.0      # a window holds 1.92 MHz
+        cases = (([433e6, 433.5e6, 434.9e6], 1), ([145.5e6, 433.5e6], 2), ([145.5e6, 145.5e6], 1),
+                 ([430e6 + n * 25_000 for n in range(401)], 6), ([], 0))
+        for frequencies, count in cases:
+            with self.subTest(frequencies=frequencies[:3], count=count):
+                self.assertEqual(len(memory_windows(frequencies, rate, *R820T_HZ)), count)
+
+    def test_a_window_moves_below_a_frequency_that_would_fall_in_its_dc_gap(self):
+        rate = 2_400_000.0
+        lowest, other = 433e6, 433e6 + 962_500      # the other one 2.5 kHz above the highest window's centre
+        self.assertEqual(memory_window(lowest, rate, *R820T_HZ), lowest + 960_000)
+        [centre] = memory_windows([lowest, other], rate, *R820T_HZ)
+        self.assertEqual(centre, other - DC_GAP_HZ - 1)
+        self.assertEqual((watching(lowest, [centre], rate), watching(other, [centre], rate)), ([centre], [centre]))
+
+    def test_frequencies_beyond_the_receivers_reach_are_left_out(self):
+        rate = 2_400_000.0
+        self.assertEqual(memory_window(23.5e6, rate, *R820T_HZ), 24.46e6)
+        self.assertIsNone(memory_window(23e6, rate, *R820T_HZ))
+        # Near the top of its range, a window holds the frequency in its upper half.
+        self.assertEqual(memory_window(1766.5e6, rate, *R820T_HZ), 1766e6)
+        self.assertEqual(memory_window(1766e6, rate, *R820T_HZ), 1766e6 - DC_GAP_HZ - 1)
+        self.assertIsNone(memory_window(1767e6, rate, *R820T_HZ))
+        self.assertEqual(memory_windows([10e6, 145.5e6, 2400e6], rate, *R820T_HZ), (146.46e6,))
+        self.assertEqual(memory_windows([10e6, 2400e6], rate, *R820T_HZ), ())
+
+
+class MemoryTourTest(unittest.TestCase):
+    WINDOWS = (430e6, 432e6, 434e6)
+
+    def test_watches_each_window_its_time_once_its_noise_is_known_then_goes_on(self):
+        tour = MemoryTour(self.WINDOWS, 430e6, now=0.0)
+        self.assertEqual((tour.window, tour.moved), (0, False))
+        self.assertIsNone(tour.step(0.1, 430e6, True, False))      # its noise is not known yet
+        self.assertIsNone(tour.step(0.4, 430e6, True, True))       # it is: the window's time starts
+        self.assertIsNone(tour.step(0.4 + VISIT_S - 0.01, 430e6, True, True))
+        self.assertEqual(tour.step(0.4 + VISIT_S, 430e6, True, True), 432e6)
+        self.assertEqual((tour.window, tour.moved), (1, True))
+        self.assertIsNone(tour.step(2.0, 430e6, True, True))       # the first window's samples still come
+        self.assertIsNone(tour.step(2.1, 432e6, True, False))
+        self.assertIsNone(tour.step(2.2, 432e6, True, True))
+        self.assertEqual(tour.step(2.2 + VISIT_S, 432e6, True, True), 434e6)
+        tour.step(3.5, 434e6, True, True)
+        self.assertEqual(tour.step(3.5 + VISIT_S, 434e6, True, True), 430e6)     # the first after the last
+        self.assertEqual(tour.window, 0)
+
+    def test_a_channel_it_stops_on_gives_the_window_its_time_again(self):
+        tour = MemoryTour(self.WINDOWS, 430e6, now=0.0)
+        tour.step(0.0, 430e6, True, True)
+        self.assertIsNone(tour.step(0.5, 430e6, False, True))      # on a channel
+        self.assertIsNone(tour.step(5.0, 430e6, False, True))      # it stays while it listens
+        self.assertIsNone(tour.step(6.0, 430e6, True, True))       # watching again
+        self.assertIsNone(tour.step(6.0 + VISIT_S - 0.01, 430e6, True, True))
+        self.assertEqual(tour.step(6.0 + VISIT_S, 430e6, True, True), 432e6)
+
+    def test_a_window_whose_samples_do_not_come_is_left(self):
+        tour = MemoryTour(self.WINDOWS, 430e6, now=0.0)
+        tour.step(0.0, 430e6, True, True)
+        self.assertEqual(tour.step(VISIT_S, 430e6, True, True), 432e6)
+        self.assertIsNone(tour.step(VISIT_S + GIVE_UP_S - 0.01, 430e6, True, True))
+        self.assertEqual(tour.step(VISIT_S + GIVE_UP_S, 430e6, True, True), 434e6)
+
+    def test_starts_from_the_nearest_window_which_it_asks_for_once_it_watches(self):
+        tour = MemoryTour(self.WINDOWS, 433.1e6, now=0.0)
+        self.assertEqual(tour.window, 2)
+        self.assertIsNone(tour.step(0.1, 433.1e6, False, True))    # on a channel: not yet
+        self.assertEqual(tour.step(0.2, 433.1e6, True, True), 434e6)
+        self.assertEqual((tour.window, tour.moved), (2, True))
+
+    def test_one_window_is_never_left_and_a_restart_goes_on_where_the_receiver_is(self):
+        tour = MemoryTour((145e6,), 145e6, now=0.0)
+        for now in (0.0, 5.0, 50.0):
+            self.assertIsNone(tour.step(now, 145e6, True, True))
+        self.assertIsNone(tour.step(60.0, 146e6, True, True))
+        self.assertFalse(tour.moved)
+        tour.restart(self.WINDOWS, 432e6, now=61.0)
+        self.assertEqual(tour.window, 1)
+        self.assertIsNone(tour.step(61.1, 432e6, True, True))      # it is there already
+        tour.restart((145e6,), 432e6, now=62.0)
+        self.assertEqual(tour.step(62.1, 432e6, True, True), 145e6)
+        with self.assertRaisesRegex(ValueError, "one window at least"):
+            tour.restart((), 145e6, now=63.0)
 
 
 class SweepWindowsTest(unittest.TestCase):

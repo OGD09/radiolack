@@ -240,7 +240,8 @@ const stream = new EngineStream({
     // A centre that is neither the requested one nor the previous one: another change won.
     if (pendingTune && state.centreHz !== pendingTune.centre && state.centreHz !== pendingTune.previous) pendingTune = null;
     syncSource();
-    syncSweep();          // whether the receiver tunes, as the sweep needs
+    syncSweep();          // whether the receiver tunes, as the sweep needs,
+    syncMem();            // and as the memory scan's list tells
     updateStatus();
     if (historyShown()) syncHistorySummary();
   },
@@ -1104,12 +1105,18 @@ function sendScanner(send) {
 }
 
 // The engine's memory scan watches the ticked bookmarks of the receiver's
-// span, the same for every interface: this interface starts and stops it,
-// sets its resume time (syncScanner) and shows where it stands. The list
-// marks the ticked bookmarks that lie outside the span, which the scan
-// leaves out.
+// span, the same for every interface, and with a receiver that tunes visits
+// those outside the span too, window after window: this interface starts
+// and stops it, sets its resume time (syncScanner) and shows where it
+// stands. The list marks the ticked bookmarks that the scan leaves out:
+// beyond the receiver's reach, or outside the span when it does not visit
+// other windows.
 const MEM_STATES = { checking: 'Checking', listening: 'Listening', waiting: 'Waiting' };
-const MEM_STOPPED = { tuned: 'Stopped: the receiver was tuned by hand.', source: 'Stopped: another receiver was chosen.' };
+const MEM_STOPPED = {
+  tuned: 'Stopped: the receiver was tuned by hand.',
+  source: 'Stopped: another receiver was chosen.',
+  range: 'Stopped: the receiver did not tune to a window of the bookmarks.',
+};
 // Why the latest scan stopped, in the tab of `scan`: the engine's reason when
 // it is about that scan, or Stopped. An engine older than the sweep names no
 // scan: its reasons are the memory scan's.
@@ -1120,7 +1127,12 @@ function stoppedText(reasons, scan) {
 const memStart = $('#mem-start'), memResume = $('#mem-resume'), memResumeOut = $('#mem-resume-v');
 const memoryKnown = () => scanner !== null && stream.scanners.includes('memory');
 const memoryRuns = () => memoryKnown() && scanner.scan === 'memory';
-let memWatched = '';        // the watched bookmarks' ids that the list shows, as a text
+// Whether the engine's memory scan visits the bookmarks outside the span: an
+// older engine, which sends no windows, does not.
+const memoryVisits = () => memoryKnown() && scanner.memory.windows !== null && sourceTunes();
+// What the list shows of the scan: the bookmarks it watches, and why it leaves the others out.
+const memListKey = () => (memoryKnown() ? `${memoryVisits()}:${scanner.memory.watched.join(',')}` : '');
+let memListShown = '';      // memListKey() as the list shows it
 function syncMem() {
   const known = memoryKnown(), runs = memoryRuns(), memory = known ? scanner.memory : null;
   const watched = memory ? memory.watched.length : 0;
@@ -1133,22 +1145,24 @@ function syncMem() {
     const b = bookmarks.find((x) => x.id === memory.bookmarkId);
     text = b && MEM_STATES[memory.state] ? `${MEM_STATES[memory.state]}: ${b.name}`
       : `Watching ${watched} ${watched === 1 ? 'bookmark' : 'bookmarks'}`;
+    if (memory.windows > 1 && memory.window !== null) text += `, window ${memory.window + 1} of ${memory.windows}`;
   } else if (known) {
     // While the sweep runs, the span is the one it brings the receiver back to.
     if (watched) text = sweepRuns() ? 'The sweep runs: Start stops it.' : stoppedText(MEM_STOPPED, 'memory');
-    else text = bookmarks.some((b) => b.scan) ? 'No ticked bookmark lies in the span.' : 'Tick the bookmarks to scan.';
+    else if (!bookmarks.some((b) => b.scan)) text = 'Tick the bookmarks to scan.';
+    else text = memoryVisits() ? "No ticked bookmark lies within the receiver's reach." : 'No ticked bookmark lies in the span.';
   }
   const el = $('#mem-state');
   if (el.textContent !== text) el.textContent = text;
-  const ids = memory ? memory.watched.join(',') : '';
-  if (ids !== memWatched) renderMemList();
+  if (memListKey() !== memListShown) renderMemList();
 }
 function renderMemList() {
   const list = $('#mem-list'), refocus = focusedIn(list);
   const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
-  memWatched = known ? scanner.memory.watched.join(',') : '';
+  const left = memoryVisits() ? 'out of reach · ' : 'outside the span · ';
+  memListShown = memListKey();
   list.innerHTML = bookmarks.map((b) => `<li><label class="check"><input type="checkbox" data-id="${b.id}"${b.scan ? ' checked' : ''}>`
-    + `<span>${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? 'outside the span · ' : ''}`
+    + `<span>${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}`
     + `${fmtMHz(b.f)}</span></label></li>`).join('')
     || '<li class="empty">No bookmarks</li>';
   focusAgain(list, refocus);

@@ -31,12 +31,15 @@ shared like the source's and saved with them, ignored frequencies included.
 It keeps what it finds, apart from the simulated band's, as observations
 (observations.py), which a client receives when it asks, and may clear.
 Any client may start a scan, one at a time: the memory scan, which tunes the
-VFO to the ticked bookmarks of the span as they become active, or, with a
-receiver that tunes, the sweep, which steps the receiver across a range in
-windows and brings it back, with the VFO, once a client stops it. A scan
-keeps the engine reading without any client, until a client stops it, tunes
-by hand or chooses another source. Whether it runs is never saved: while
-the sweep runs, the receiver's saved settings are those it comes back to.
+VFO to the ticked bookmarks of the span as they become active, and with a
+receiver that tunes visits those outside the span too, window after window;
+or, with a receiver that tunes, the sweep, which steps the receiver across a
+range in windows and brings it back, with the VFO, once a client stops it.
+A memory scan that stops while it watches, once it moved the receiver,
+brings them back too. A scan keeps the engine reading without
+any client, until a client stops it, tunes by hand or chooses another
+source. Whether it runs is never saved: while a scan runs, the receiver's
+saved settings are those of the scan's start.
 
 The engine also keeps the bookmarks, shared by every client like the
 settings, and the interfaces' preferences (preferences.py), which a new
@@ -81,15 +84,15 @@ from typing import Any, Protocol
 import numpy as np
 
 from . import __version__
-from .bookmarks import Bookmarks
+from .bookmarks import Bookmark, Bookmarks
 from .demod import AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
-                       MAX_IGNORED, Channel, ChannelWatch, Detection, Detector, MemoryScan, Signal, Signals, Sweep,
-                       SweepWindows, checked_frequency, checked_resume, checked_sweep_range, checked_threshold,
-                       checked_window, search_blocks, sweep_windows, watched_channels)
+                       MAX_IGNORED, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal, Signals,
+                       Sweep, SweepWindows, checked_frequency, checked_resume, checked_sweep_range, checked_threshold,
+                       checked_window, memory_window, memory_windows, search_blocks, sweep_windows, watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
@@ -388,22 +391,26 @@ class Engine:
         self._observations_saved_s = time.monotonic()
         self._observations_timer: asyncio.TimerHandle | None = None
         # Scanners: detection's settings, the signals found and the ignored
-        # frequencies; the memory scan's resume time and the channels it
-        # watches; the sweep's range and time per window; the scan, while
-        # one runs, and where a sweep brings the receiver and the VFO back.
+        # frequencies; the memory scan's resume time, the bookmarks it
+        # watches, the windows they take and the channels of the span; the
+        # sweep's range and time per window; the scan, while one runs, and
+        # the receiver's centre frequency and the VFO at its start.
         self._detector = Detector()         # used by one block at a time, like the demodulator
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
         self._signals = Signals()
         self._resume_s = DEFAULT_RESUME_S
         self._watch = ChannelWatch()        # used by one block at a time, like the demodulator
-        self._watched: tuple[Channel, ...] = ()     # the ticked bookmarks of the span
+        self._memory_ids: tuple[int, ...] = ()      # the ticked bookmarks within reach, in frequency order
+        self._windows: tuple[float, ...] = ()       # the centre frequencies of the windows they take
+        self._watched: tuple[Channel, ...] = ()     # while the memory scan runs, the ticked bookmarks of the span
         self._bands = np.empty((0, 2))      # their passbands, one row each
         self._sweep_low_hz, self._sweep_high_hz = DEFAULT_SWEEP_HZ
         self._sweep_window_s = DEFAULT_WINDOW_S
         self._memory: MemoryScan | None = None
+        self._tour: MemoryTour | None = None        # the memory scan's windows, while it runs
         self._sweep: Sweep | None = None
-        self._sweep_home: tuple[float, float] | None = None     # centre frequency and VFO, while a sweep runs
+        self._home: tuple[float, float] | None = None   # centre frequency and VFO at the start of the scan that runs
         # Which scan stopped by itself last, and why; None once a client stopped one, or starts one.
         self._stopped: tuple[str, str] | None = None
         self._restore_scanner(settings.get("scanner"))
@@ -525,7 +532,7 @@ class Engine:
 
     def scanner_state(self) -> dict[str, Any]:
         """The scanner state message (docs/design/protocol.md)."""
-        memory, sweep = self._memory, self._sweep
+        memory, tour, sweep = self._memory, self._tour, self._sweep
         return {"type": "scanner", "detection": self._detection, "threshold_db": self._threshold_db,
                 "ignored_hz": self._signals.ignored, "resume_s": self._resume_s,
                 "sweep_low_hz": self._sweep_low_hz, "sweep_high_hz": self._sweep_high_hz,
@@ -533,7 +540,8 @@ class Engine:
                 "scan": "memory" if memory is not None else "sweep" if sweep is not None else None,
                 "stopped": None if self._stopped is None else self._stopped[1],
                 "stopped_scan": None if self._stopped is None else self._stopped[0],
-                "memory": {"watched": [channel.bookmark_id for channel in self._watched],
+                "memory": {"watched": list(self._memory_ids), "windows": len(self._windows),
+                           "window": None if tour is None else tour.window,
                            "state": None if memory is None else memory.state,
                            "bookmark_id": None if memory is None else memory.bookmark_id},
                 "sweep": {"windows": None if sweep is None else sweep.windows.count,
@@ -594,7 +602,7 @@ class Engine:
                 sweep.search_blocks = search_blocks(window_s, self._frame_rate)
                 if windows is not None:
                     sweep.restart(windows, time.monotonic())
-                    self._tune_sweep(sweep.centre_hz)
+                    self._tune_scan(sweep.centre_hz)
         self._scanner_changed()
         self._settings_changed()
         if self._signals.changed(time.monotonic()):
@@ -769,7 +777,9 @@ class Engine:
                     self._watch_bookmarks()     # in case the source retuned by itself, as when it connects
                 audio = any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
-                channels = self._watched if self._memory is not None else None
+                # The memory scan's channels are those of the span asked of the
+                # receiver: none while the samples still come from another.
+                channels = self._watched if self._memory is not None and capture == self._span() else None
                 sweep = self._sweep
                 power, codes, meter, pcm, detections, levels = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
@@ -783,8 +793,8 @@ class Engine:
                     self._check_peaks()
                     if found and source.kind not in UNRECORDED_KINDS:
                         self._record(found)
-                if channels is not None and source is self.source:
-                    self._step_scan(channels, levels, meter.open)
+                if self._memory is not None and source is self.source:
+                    self._step_memory(channels, levels, meter.open, capture[0])
                 if sweep is not None and sweep is self._sweep and source is self.source:
                     self._step_sweep(sweep, capture[0])
         except Exception:
@@ -877,8 +887,9 @@ class Engine:
         """Start a scan, "memory" or "sweep", unless it runs, stopping the
         other, or stop the scan that runs (None). Raises ValueError, changing
         nothing, for another scan, for the memory scan when no ticked bookmark
-        lies in the span the receiver is or comes back to, and for the sweep
-        when the receiver cannot tune to every window of its range."""
+        lies within the receiver's reach, from the span it is in or comes
+        back to, and for the sweep when the receiver cannot tune to every
+        window of its range."""
         if scan is None:
             self._stop_scan(None)
         elif scan == "memory":
@@ -891,12 +902,17 @@ class Engine:
             raise ValueError('a scan is "memory" or "sweep", or null to stop it')
 
     def _start_memory(self) -> None:
-        if not self._watched:       # of the span a sweep brings the receiver back to
-            raise ValueError("no ticked bookmark lies in the receiver's span")
+        if not self._memory_ids:    # from the span a sweep brings the receiver back to
+            raise ValueError("no ticked bookmark lies within the receiver's reach")
         self._stop_scan(None)       # the sweep, which brings the receiver back
+        centre_hz = self._span()[0]
         self._memory = MemoryScan()
+        self._home = (centre_hz, self._demod.frequency_hz)
         self._stopped = None
         self._wanted.set()          # the scan goes on without any client
+        self._watch_bookmarks()     # the channels of the span
+        if self._memory is not None:    # unless the sweep came back where none lies within reach
+            self._tour = MemoryTour(self._windows, centre_hz, time.monotonic())
 
     def _start_sweep(self) -> None:
         if "centre_hz" not in self.source.describe()["settable"]:
@@ -904,10 +920,10 @@ class Engine:
         windows = self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)
         self._stop_scan(None)       # the memory scan
         self._sweep = Sweep(windows, search_blocks(self._sweep_window_s, self._frame_rate), time.monotonic())
-        self._sweep_home = (self._span()[0], self._demod.frequency_hz)
+        self._home = (self._span()[0], self._demod.frequency_hz)
         self._stopped = None
         self._wanted.set()          # the scan goes on without any client
-        self._tune_sweep(self._sweep.centre_hz)
+        self._tune_scan(self._sweep.centre_hz)
 
     def _sweep_windows(self, low_hz: float, high_hz: float) -> SweepWindows:
         """The sweep's windows from ``low_hz`` to ``high_hz`` at the receiver's
@@ -921,13 +937,14 @@ class Engine:
                              f"it tunes from {low / 1e6:g} to {high / 1e6:g} MHz")
         return windows
 
-    def _tune_sweep(self, centre_hz: float) -> None:
-        """Ask the receiver for a window of the sweep; one that refuses it
-        stops the sweep."""
+    def _tune_scan(self, centre_hz: float) -> None:
+        """Ask the receiver for a window of the scan that runs; one that
+        refuses it stops the scan."""
         try:
             self.source.configure({"centre_hz": centre_hz})
         except ValueError as error:
-            log.warning("the sweep stopped: the receiver did not tune to %.0f Hz: %s", centre_hz, error)
+            scan = "memory scan" if self._memory is not None else "sweep"
+            log.warning("the %s stopped: the receiver did not tune to %.0f Hz: %s", scan, centre_hz, error)
             self._stop_scan("range")
 
     def _step_sweep(self, sweep: Sweep, centre_hz: float) -> None:
@@ -936,7 +953,7 @@ class Engine:
         before = (sweep.window, sweep.passes)
         target = sweep.step(time.monotonic(), centre_hz)
         if target is not None:
-            self._tune_sweep(target)
+            self._tune_scan(target)
         if (sweep.window, sweep.passes) != before:
             self._scanner_changed()
 
@@ -945,30 +962,33 @@ class Engine:
 
     def _stop_scan(self, reason: str | None) -> None:
         """Stop the scan that runs, if one does, for ``reason``: "tuned",
-        "source", "bookmarks" or "range", or None when a client asked. A
-        sweep brings the receiver and the VFO back where they were, unless
-        tuned by hand or left for another source. Without any client, the
-        engine stops reading."""
+        "source", "bookmarks" or "range", or None when a client asked. Unless
+        tuned by hand or left for another source, the receiver and the VFO
+        come back where the scan found them: after a sweep, and after a
+        memory scan that moved the receiver, unless it stays on a channel.
+        Without any client, the engine stops reading."""
         if not self._scanning():
             return
-        home = self._sweep_home
-        scan = "memory" if self._memory is not None else "sweep"
-        self._memory = self._sweep = self._sweep_home = None
+        home, memory, tour = self._home, self._memory, self._tour
+        scan = "memory" if memory is not None else "sweep"
+        self._memory = self._tour = self._sweep = self._home = None
         self._stopped = None if reason is None else (scan, reason)
         if home is not None:
-            if reason not in ("tuned", "source"):
+            back = memory is None or (memory.bookmark_id is None and tour is not None and tour.moved)
+            if back and reason not in ("tuned", "source"):
                 self._go_home(*home)
-            self._watch_bookmarks()     # of the span where the receiver stays
+            self._watch_bookmarks()     # from the span where the receiver stays
         self._scanner_changed()
         if not self._clients and not self._closed:
             self._wanted.clear()
 
     def _go_home(self, centre_hz: float, vfo_hz: float) -> None:
-        """Bring the receiver and the VFO back where the sweep found them."""
-        try:
-            self.source.configure({"centre_hz": centre_hz})
-        except ValueError as error:
-            log.warning("the receiver did not come back to %.0f Hz after the sweep: %s", centre_hz, error)
+        """Bring the receiver and the VFO back where the scan found them."""
+        if self._span()[0] != centre_hz:
+            try:
+                self.source.configure({"centre_hz": centre_hz})
+            except ValueError as error:
+                log.warning("the receiver did not come back to %.0f Hz after the scan: %s", centre_hz, error)
         if vfo_hz != self._demod.frequency_hz:
             self._demod = dataclasses.replace(self._demod, frequency_hz=vfo_hz)
             self._demod_changed()
@@ -980,24 +1000,67 @@ class Engine:
         return described["centre_hz"], described["sample_rate_hz"]
 
     def _watch_bookmarks(self) -> None:
-        """Find the ticked bookmarks of the span, or while a sweep runs of the
-        span it brings the receiver back to, where a memory scan would watch
-        them: the clients learn when they change, and a memory scan left
-        without any stops."""
+        """Find the ticked bookmarks that a memory scan watches, from the
+        span the receiver is in, or while a scan runs the one it started
+        from, and the windows they take; while the memory scan runs, also
+        the channels of the span asked of the receiver. The clients learn
+        when the bookmarks or the windows change: a memory scan then visits
+        the new windows, or stops when none is left."""
         centre_hz, rate_hz = self._span()
-        if self._sweep_home is not None:
-            centre_hz = self._sweep_home[0]
-        watched = watched_channels(self._bookmarks.ticked(), centre_hz, rate_hz)
-        if watched == self._watched:
+        start_hz = centre_hz if self._home is None else self._home[0]
+        ticked = self._bookmarks.ticked()
+        windows, ids = self._memory_plan(ticked, start_hz, rate_hz)
+        watched = watched_channels(ticked, centre_hz, rate_hz) if self._memory is not None else ()
+        if watched != self._watched:
+            self._watched = watched
+            self._bands = np.array([(channel.low_hz, channel.high_hz) for channel in watched]).reshape(-1, 2)
+        if (windows, ids) == (self._windows, self._memory_ids):
             return
-        self._watched = watched
-        self._bands = np.array([(channel.low_hz, channel.high_hz) for channel in watched]).reshape(-1, 2)
+        self._windows, self._memory_ids = windows, ids
         if self._memory is not None:
-            if watched:
-                self._memory.keep(channel.bookmark_id for channel in watched)
+            if ids:
+                self._memory.keep(ids)
+                if self._tour is not None and self._tour.windows != windows:
+                    self._tour.restart(windows, centre_hz, time.monotonic())
             else:
                 self._stop_scan("bookmarks")
         self._scanner_changed()
+
+    def _memory_plan(self, ticked: Sequence[tuple[int, Bookmark]], centre_hz: float,
+                     rate_hz: float) -> tuple[tuple[float, ...], tuple[int, ...]]:
+        """The centre frequencies of the windows that a memory scan visits
+        and the ``ticked`` bookmarks it watches there, by id: those of the
+        span centred on ``centre_hz`` alone, unless the receiver tunes and
+        other ticked bookmarks lie within its reach, which then take as few
+        windows as ``memory_windows`` finds."""
+        span = tuple(channel.bookmark_id for channel in watched_channels(ticked, centre_hz, rate_hz))
+        described = self.source.describe()
+        if "centre_hz" in described["settable"]:
+            low_hz, high_hz = described["range_hz"]
+            reach = [(bookmark_id, bookmark.frequency_hz) for bookmark_id, bookmark in ticked
+                     if memory_window(bookmark.frequency_hz, rate_hz, low_hz, high_hz) is not None]
+            if not {bookmark_id for bookmark_id, _ in reach} <= set(span):
+                windows = memory_windows((frequency for _, frequency in reach), rate_hz, low_hz, high_hz)
+                return windows, tuple(bookmark_id for bookmark_id, _ in reach)
+        return ((centre_hz,) if span else ()), span
+
+    def _step_memory(self, channels: tuple[Channel, ...] | None, levels: tuple[np.ndarray, np.ndarray] | None,
+                     squelch_open: bool, centre_hz: float) -> None:
+        """Move the memory scan on with a block read at ``centre_hz``: on its
+        ``channels``, those of the span asked of the receiver, unless the
+        samples still come from elsewhere (None), then from window to
+        window."""
+        if channels is not None:
+            self._step_scan(channels, levels, squelch_open)
+        scan, tour = self._memory, self._tour
+        if scan is None or tour is None:
+            return
+        window = tour.window
+        target = tour.step(time.monotonic(), centre_hz, scan.state == "watching", levels is not None)
+        if target is not None:
+            self._tune_scan(target)
+        if tour is self._tour and tour.window != window:
+            self._scanner_changed()
 
     def _step_scan(self, channels: tuple[Channel, ...], levels: tuple[np.ndarray, np.ndarray] | None,
                    squelch_open: bool) -> None:
@@ -1054,7 +1117,7 @@ class Engine:
                 log.warning("the saved %s receiver is not used: %s", kind, error)
                 new = sources.open({"kind": kind})
             old = self.source
-            # Saved before the scan stops: a sweep's are those it would have come back to.
+            # Saved before the scan stops: those of the scan's start.
             self._receivers[old.settings_key] = self._receiver_settings()
             self._stop_scan("source")
             old.on_change = None
@@ -1092,13 +1155,15 @@ class Engine:
         self.source.on_change = self._source_changed
 
     def _receiver_settings(self) -> dict[str, Any]:
-        """The settings saved for the receiver in use: while a sweep runs,
-        with the centre frequency and the VFO it comes back to."""
+        """The settings saved for the receiver in use: while a scan runs,
+        with the centre frequency and the VFO at its start."""
         state = self.state()
         source = {name: state[name] for name in state["settable"]}
         demod = self._demod.describe()
-        if self._sweep_home is not None:
-            source["centre_hz"], demod["frequency_hz"] = self._sweep_home
+        if self._home is not None:
+            centre_hz, demod["frequency_hz"] = self._home
+            if "centre_hz" in source:       # not with a source that does not tune
+                source["centre_hz"] = centre_hz
         return {"source": source, "demod": demod}
 
     def _restore_source(self, saved: object) -> None:

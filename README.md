@@ -20,8 +20,8 @@ off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. The engine also
 finds the signals in the span, which every interface lists, watches the
-ticked bookmarks and sweeps a range with a receiver that tunes
-([Scanners](#scanners)). Levels are in
+ticked bookmarks, outside the span too with a receiver that tunes, and
+sweeps a range with such a receiver ([Scanners](#scanners)). Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
 package on Debian and Ubuntu. Remote access, off at each start unless
@@ -331,8 +331,7 @@ found within the last 1.5 s on the spectrum.
 
 The Bookmarks tab's memory scan runs in the engine, the same for every
 interface. It watches every ticked bookmark of the receiver's span at once,
-in the part that detection searches; the list marks the ticked bookmarks
-outside the span, which it leaves out. A bookmark is active when the power
+in the part that detection searches. A bookmark is active when the power
 in its mode's filter would open the squelch, with the squelch's settings:
 8 dB above the noise around it with the automatic squelch. The scan tunes
 the VFO to the active bookmark furthest above its noise, with the
@@ -341,14 +340,41 @@ squelch opens within a quarter of a second and stays open. Once the squelch
 closes, it waits the resume time (2 s by default, from 0 to 8 s), then
 watches every bookmark again.
 
+With a receiver that tunes, such as an RTL-SDR, the memory scan also visits
+the ticked bookmarks outside the span. They take as few windows of the
+receiver as the scan finds, each bookmark in the part of a window that
+detection searches, and it visits them in turn, from the window nearest
+the receiver, the lowest after the highest. Once the receiver's samples
+come from a window and the noise there is known, 0.33 s later, it watches
+that window's bookmarks for 1 s, and for 1 s again after each one it stayed
+on, then moves on; it also moves on when, 2 s after asking for a window,
+the samples still come from elsewhere. At 2.4 MS/s, a window holds
+1.92 MHz, nearly all of the 2 m band; the whole 70 cm band takes six. Each
+visit leaves the bookmarks unwatched for about 0.75 s, the 0.4 s the
+receiver takes to settle and the noise's 0.33 s, and a bookmark is watched
+only while the scan is on its window: with N windows, a transmission
+shorter than about 1.75 × N − 1 s may be missed, 2.5 s with two windows
+and 6 s with four. While every ticked bookmark within the receiver's reach
+lies in the span, the scan never tunes the receiver. The spectrum and the
+waterfall show each window, and the VFO stays inside it, as with the
+sweep. The list marks the ticked bookmarks beyond the receiver's reach,
+which the scan leaves out; with a source that does not tune, such as the
+simulated band, it watches the span's alone, and the list marks the
+others as outside the span.
+
 Any interface starts and stops the memory scan, a paired device's included,
-and every interface shows where it stands; their status lines add "memory
-scan" while it runs. It goes on with no interface open, keeping the
-receiver open, until an interface stops it. Tuning by hand from any
-interface (the VFO, the centre frequency or the sample rate), choosing
-another receiver, or no ticked bookmark left in the span stops it. Whether
-it runs is never saved, so none runs at start; the resume time is the same
-for every interface and kept for the next start.
+and every interface shows where it stands, with the window it is at; their
+status lines add "memory scan" while it runs. It goes on with no interface
+open, keeping the receiver open, until an interface stops it. A stop brings
+the receiver and the VFO back where they were when the scan started, once
+it moved the receiver, unless it is on a bookmark, where they stay; so do
+no ticked bookmark left within reach and a receiver that refuses a window,
+which stop it too. Tuning by hand from any interface (the VFO, the centre
+frequency or the sample rate) or choosing another receiver stops it,
+leaving them where they are. While it runs, the receiver's settings saved
+are those of its start. Whether it runs is never saved, so none runs at
+start; the resume time is the same for every interface and kept for the
+next start.
 
 The Sweep tab's sweep runs in the engine too, the same for every interface,
 with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
@@ -378,11 +404,11 @@ it started, as does a receiver that refuses a window. Tuning by hand from
 any interface (the VFO, the centre frequency or the sample rate) or
 choosing another receiver stops it, leaving the receiver where it is.
 While it runs, the receiver's settings saved are those it comes back to,
-and the Bookmarks tab lists the ticked bookmarks of that span, which the
-memory scan watches once started. A new range starts a running sweep again
-from its first window. Whether it runs is never saved; the range and the
-time per window are the same for every interface and kept for the next
-start.
+and the memory scan's windows are those it would take from that span,
+where a memory scan started then begins. A new range starts a running
+sweep again from its first window. Whether it runs is never saved; the
+range and the time per window are the same for every interface and kept
+for the next start.
 
 The engine keeps the channels where it found signals for 90 days: for each
 one, when it was first and last heard, how many transmissions, how long it
@@ -655,8 +681,8 @@ The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
-another, the bookmarks, the signals found, the memory scan, the sweep, the
-History and the saved interface settings. They
+another, the bookmarks, the signals found, the memory scan, in the span and
+across windows, the sweep, the History and the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -880,8 +906,8 @@ src/radiolack/
                 interfaces, sends audio to those that ask, and saves the
                 settings and the observations
   scanners.py   detection: the signals in the receiver's span, their list
-                and the ignored frequencies; the memory scan; the sweep's
-                windows and progress
+                and the ignored frequencies; the memory scan, its windows
+                and its visits; the sweep's windows and progress
   observations.py
                 the channels where signals were found, for the History
   remote.py     remote access: access code, paired devices and their
