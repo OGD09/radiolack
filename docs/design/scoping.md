@@ -3,7 +3,7 @@
 Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
 on the `rewrite` branch on 2026-11-08), and accepted by the owner the same
 day with one check left (see v0 below). v1, remote access, started on
-2026-11-11.
+2026-11-11. v2, the scanners, was designed with the owner on 2026-11-12.
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
@@ -58,6 +58,11 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | Updates, no install button: the owner keeps the system's software updates, or apt in a terminal, which install a newer Radiolack well enough, and drops the button of 2026-11-10 that would install it with the administrator's password and restart Radiolack. The alert at start stays as it is, and Radiolack installs nothing itself. |
 | 2026-11-12 | Opus leaves v1, as the owner chose: with the lighter stream, a device needs about 0.3 Mbit/s with the PCM audio, which the home Wi-Fi and a VPN carry, so Opus audio comes only if a mobile link shows dropouts. This replaces "then Opus audio" in the first decision of 2026-11-12. |
 | 2026-11-12 | Interface settings per device, as the owner validated: each paired device keeps every preference that its interface gives (the display, the palette, the volume, the tuning step, the band plan's choice of mode, the scanners' settings), starting from this computer's, which it follows until it changes one. This computer's interfaces, which cannot be told apart, keep their one set, that of the interface that changed one last. A device's set goes with it, forgotten in Settings, unused for 90 days or signed out by a new code: paired again, it starts from this computer's. The sets are kept in `remote.json`, in each device's record, so that a device and its settings come and go together; `settings.json` keeps this computer's, today's single set. A set has the limits of today's (100 values), for at most 20 devices. Neither the files' format version nor the protocol's changes: an older Radiolack reads the devices without their settings, which it drops at its next write, and a new protocol version would stop the interface that a running Radiolack reads from the disk at each request, from the installation of a newer package until Radiolack restarts. Set aside: the browser's storage on each device, which Safari erases after seven days of use without a visit to the site and private browsing never keeps, and one set shared with the devices, whose volume and layout would overwrite the window's. The scanners' settings may become the engine's, shared by every interface, when v2 moves the scanners into the engine. |
+| 2026-11-12 | Scanners, as the owner validated: the engine runs them for every interface, and the interface shows and drives them. One detector finds the signals at least a threshold above the local noise, with the airband explorer's method ([`lessons.md`](lessons.md): the median of the nearby bins, the receiver's edges and its centre left out, two detections in a row), in the FFTs that the engine computes anyway, averaged over about a third of a second, at full resolution whatever the device. One list of the signals found, with Tune and Ignore, shows on every interface and marks the spectrum. The memory scan watches every ticked bookmark of the receiver's span at once, from the power of each one's channel in the same FFTs, jumps to the strongest active one, lets the squelch confirm, and goes on once the channel has stayed silent for the resume time: there is no dwell per channel. The sweep steps the receiver across a range in overlapping windows ([`lessons.md`](lessons.md)), with 0.4 s of settling then the time per window at each, pass after pass until stopped, then brings the receiver and the VFO back where they were; its signals join the same list. It needs a source that retunes, an RTL-SDR on this computer or behind an rtl_tcp server whose link keeps up with the receiver: at 2.4 MS/s and 0.5 s per window, a pass takes about 15 s across 70 cm, 30 s across the airband and 1.5 min across 23 cm. The scanners' settings become the engine's, shared and saved with the settings: detection on or off, the threshold, the resume time, the time per window, the sweep's range and up to 200 ignored frequencies, kept across restarts. This replaces "the scanners' settings" among each device's preferences (2026-11-12): only "Mark on the spectrum" and the tab shown stay each interface's own, and the scanner preferences saved so far are dropped. Set aside: detection in each interface, which gives each device its own list, coarser bins on a phone (2048) and no history; a dwell per channel, which takes 2.5 s to go round ten bookmarks at 0.25 s each and misses short bursts; a threshold of the sweep's own; and a panorama of the swept range, which may come later: while it sweeps, the spectrum shows each window as it passes. |
+| 2026-11-12 | Scanners and the one receiver: detection follows the receiver and changes nothing. One scan runs at a time, the memory scan or the sweep, and starting one stops the other. Tuning by hand from any interface (the VFO, the centre frequency, the sample rate or the source) stops it, as the interface's memory scan did; the mode, the filter, the squelch and the gain do not. Every interface may start and stop a scan, paired devices included, as they control the rest of the radio (2026-11-11). A running scan keeps the engine reading, and the receiver open, without any interface, until it is stopped: started from an iPhone, it goes on with the iPhone locked. Whether a scan runs is never saved, so none runs at start, as with remote access. Detection alone keeps nothing open: it runs while the engine reads for an interface or for a scan. Every interface's status line names the scan that runs. |
+| 2026-11-12 | Observations, as the owner validated: the engine keeps what it detects in `observations.json`, in the settings folder, written by the same store as the other files (whole-file writes, readable by the user only, an unreadable file set aside, its problems in Settings > Storage), at most every 10 minutes and when Radiolack stops. It holds one entry per channel, detections within 1.5 kHz of each other merged: when it was first and last detected, how many transmissions, how long it was active, its highest margin and 24 counters by hour of the day. At most 2000 channels, the least recently detected going first, and a channel undetected for 90 days is forgotten: about 0.6 MB at most. Neither the simulated band nor the ignored frequencies are recorded, and nothing but frequencies, times and levels is kept: no audio and no samples. A History tab lists the channels, with Tune, Bookmark and Clear. The observations stay apart from the airband explorer's history: `data/` is neither read nor imported. Set aside: a journal of each transmission (JSON Lines or SQLite, several MB), which may come if the counters fall short, and `$XDG_STATE_HOME`, the XDG folder for a history, which would be a second folder to document, protect and keep apart in the tests. |
+| 2026-11-12 | Scanners in the protocol: a `scanner` state (the settings, the scan running, its progress and why it stopped), a `peaks` message (at most 50 recent signals, at most once a second and only when they change), the observations, sent only to an interface that asks for them, and `scanner` and `observations` messages from the interfaces. The protocol stays at version 6, and the hello lists the scanners that the engine runs: a newer page on an older engine greys out only what that engine lacks, and an older page ignores the new messages. Version 7 would stop every page loaded between a package's installation and Radiolack's restart, since the server reads the interface from the disk at each request: a device facing a computer without a window could then neither use Radiolack nor restart it. Serving the interface as it was read at start would remove that case for every later version; it does not depend on v2 and is left for later. |
+| 2026-11-12 | v2's budget and order: the scanners add at most 2% of one core on the owner's laptop (spike 4); a scan without any interface costs what the engine costs for one, 12 to 15% of one core, and rtl_tcp, while it runs. Pull requests, in this order, each with its documentation and tests: this design; detection and its list in the engine, with the shared settings and the ignored frequencies, in place of the interface's own detection; the memory scan in the engine, in place of the interface's; the observations and the History tab; the sweep, with which the memory scan also visits the bookmarks outside the receiver's span. The tests need no receiver: detection and the memory scan run on the simulated band, the sweep against the fake rtl_tcp, which gains carriers at fixed frequencies. |
 
 ## Scope
 
@@ -268,11 +273,29 @@ Done when, from the owner's iPhone on the home Wi-Fi, the owner can tune and
 listen with less than half a second of delay, and no device connects without
 the code.
 
+### v2: scanners
+
+Designed with the owner on 2026-11-12 (see Decisions).
+
+- Detection in the engine: one list of signals for every interface, with
+  Tune and Ignore, and marks on the spectrum.
+- Memory scan in the engine: every ticked bookmark of the receiver's span
+  watched at once, a stop on the active one, then on again after the resume
+  time; with the sweep, the bookmarks outside the span too.
+- Sweep across the receiver windows of a range, with an RTL-SDR.
+- Observations kept across restarts, in a History tab, apart from the
+  airband explorer's history.
+- Scans started and stopped from any interface, paired devices included,
+  which go on without any interface.
+
+Done when, on the owner's computer with the receiver, every interface shows
+the same signals, a memory scan started from the iPhone stops on an active
+bookmark and goes on with the iPhone locked, a sweep lists the channels
+active across a band and brings the receiver back, the History tab keeps
+what was detected across a restart, and every test passes in CI.
+
 ### Later milestones
 
-- v2, scanners: peak scanner, sweep scanner, memory scan, and an observation
-  store separate from the protected airband history. v1 and v2 can swap if the
-  scanners matter more than remote access.
 - v3, receivers and bands: SoapySDR devices, HF (direct sampling, RTL-SDR Blog
   V4), band plans for the other regions.
 - v4, public release: Windows and macOS builds and installers, code signing,
@@ -285,7 +308,7 @@ the code.
 | 1 | Does the native window (WebKitGTK) draw a full-screen WebGL2 waterfall smoothly and play AudioWorklet audio at a low CPU cost on the owner's laptop? | It chooses the desktop shell. | Done: yes, within the limits below. |
 | 2 | How does an iPhone keep listening with the screen locked? | The owner's phone; Safari interrupts Web Audio in the background. | Answered on 2026-11-12: with Safari's playback audio session, the owner's iPhone keeps playing with the screen locked. |
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Decided on 2026-11-11: a local authority limited by name constraints (see Decisions); to check on the owner's iPhone. |
-| 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | v2 |
+| 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
 
 ### Spike 1 result (2026-11-08)
@@ -677,7 +700,7 @@ These costs wait for v4:
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones), then v2, the scanners, which starts with a design session
-  of its own.
+  Milestones). v2, the scanners, was designed with the owner on 2026-11-12
+  (see Decisions and Milestones); its pull requests follow, one at a time.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
