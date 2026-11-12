@@ -33,6 +33,8 @@ AUDIO_MODES = MODES                 # every mode plays
 CHANNEL_RATE_HZ = 48_000.0
 AUDIO_DECIMATION = 4                # 12 kHz audio
 BANDWIDTH_RANGE_HZ = (100.0, 25_000.0)
+# Each mode's filter width once tuned to a bookmark, as the interface's (main.js MODES).
+MODE_BANDWIDTHS_HZ = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0}
 SQUELCH_RANGE_DB = (-160.0, 0.0)
 SQUELCH_MARGIN_DB = 8.0             # automatic squelch: noise + 8 dB
 SQUELCH_HYSTERESIS_DB = 3.0         # closes this far below the threshold
@@ -130,14 +132,21 @@ def vfo_position_hz(mode: str) -> float:
     return CW_PITCH_HZ if mode == "CW" else 0.0
 
 
+def passband_hz(mode: str, bandwidth_hz: float) -> tuple[float, float]:
+    """The mode's passband, from the VFO's frequency: [0, width] above it in
+    USB, [-width, 0] below it in LSB, [-width / 2, width / 2] around it in
+    the other modes."""
+    low = {"USB": 0.0, "LSB": -bandwidth_hz}.get(mode, -bandwidth_hz / 2)
+    return low, low + bandwidth_hz
+
+
 def channel_taps(mode: str, bandwidth_hz: float, rate_hz: float) -> np.ndarray:
-    """The channel filter: the mode's passband around the VFO, at ``rate_hz``.
-    USB keeps [0, width] above the VFO, LSB [-width, 0] below it, the other
-    modes [-width / 2, width / 2] around it; in CW the passband moves with
-    the VFO to the CW pitch."""
+    """The channel filter: the mode's passband (``passband_hz``) around the
+    VFO, at ``rate_hz``; in CW the passband moves with the VFO to the CW
+    pitch."""
     transition = min(max(0.1 * bandwidth_hz, 100.0), 1_500.0)
     taps = lowpass(bandwidth_hz / 2, transition, rate_hz, CHANNEL_ATTENUATION_DB).astype(np.complex128)
-    centre = vfo_position_hz(mode) + {"USB": bandwidth_hz / 2, "LSB": -bandwidth_hz / 2}.get(mode, 0.0)
+    centre = vfo_position_hz(mode) + sum(passband_hz(mode, bandwidth_hz)) / 2
     if centre:
         taps *= np.exp(2j * np.pi * centre / rate_hz * (np.arange(len(taps)) - (len(taps) - 1) / 2))
     return taps

@@ -15,19 +15,30 @@ dBFS bin powers: not calibrated, and not comparable with the channel meter.
 signal is listed once found in two averaged spectra in a row, so that a
 stray peak of noise is not, and detections close to an entry update it,
 following a slow drift. Ignored frequencies are never listed.
+
+The memory scan watches the ticked bookmarks within the part of the span
+that detection searches (``watched_channels``), all at once, in every block:
+``ChannelWatch`` gives each one's power, in the passband of its mode's
+filter, and the local noise there, from the same bin powers. ``MemoryScan``
+follows the scan: it tunes to the strongest channel that would open the
+squelch, checks that the squelch opens there, listens while it stays open,
+waits the resume time once it closes, then watches them all again.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
-SCANNERS = ("peaks",)               # what the engine runs, as the hello lists it
+from .bookmarks import Bookmark
+from .demod import MODE_BANDWIDTHS_HZ, passband_hz
+
+SCANNERS = ("peaks", "memory")      # what the engine runs, as the hello lists it
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency
@@ -46,6 +57,10 @@ MAX_SIGNALS = 200                   # signals kept, the latest found
 LISTED = 50                         # signals sent to the interfaces
 MAX_IGNORED = 200
 FREQUENCY_RANGE_HZ = (1.0, 1e11)    # as the VFO's and the bookmarks'
+RESUME_RANGE_S = (0.0, 8.0)
+DEFAULT_RESUME_S = 2.0              # the memory scan watches again once the squelch stayed closed this long
+CHECK_S = 0.25                      # once tuned to a channel, how long its squelch has to open
+HOLD_S = 1.0                        # a channel whose squelch did not open is not tuned to again within this
 
 
 @dataclasses.dataclass(frozen=True)
@@ -269,6 +284,145 @@ class Signals:
         return found
 
 
+@dataclasses.dataclass(frozen=True)
+class Channel:
+    """A ticked bookmark that the memory scan watches, with the passband of
+    its mode's filter, in Hz."""
+
+    bookmark_id: int
+    frequency_hz: float
+    mode: str
+    low_hz: float
+    high_hz: float
+
+
+def watched_channels(ticked: Iterable[tuple[int, Bookmark]], centre_hz: float,
+                     rate_hz: float) -> tuple[Channel, ...]:
+    """The channels of the ``ticked`` bookmarks, with their ids, that lie in
+    the part of a span of ``rate_hz`` centred on ``centre_hz`` that
+    detection searches: away from the outer tenth on each side and from the
+    3 kHz on each side of the centre."""
+    channels = []
+    for bookmark_id, bookmark in ticked:
+        if DC_GAP_HZ < abs(bookmark.frequency_hz - centre_hz) <= USABLE_FRACTION * rate_hz:
+            low, high = passband_hz(bookmark.mode, MODE_BANDWIDTHS_HZ[bookmark.mode])
+            channels.append(Channel(bookmark_id, bookmark.frequency_hz, bookmark.mode,
+                                    bookmark.frequency_hz + low, bookmark.frequency_hz + high))
+    return tuple(channels)
+
+
+class ChannelWatch:
+    """The power of the memory scan's channels and the noise there: each
+    block's power in each channel's passband, so that a channel shows as
+    soon as it becomes active, and the local noise in the passband, as
+    detection finds it, in the bin powers averaged over ``blocks`` blocks of
+    one capture. One thread at a time uses it."""
+
+    def __init__(self, blocks: int = DETECTION_BLOCKS) -> None:
+        if blocks < 1:
+            raise ValueError(f"a noise estimate needs at least one block, not {blocks}")
+        self._blocks = blocks
+        self._sum: np.ndarray | None = None
+        self._count = 0
+        self._capture: tuple[float, float, int] | None = None
+        self._noise: np.ndarray | None = None     # running sums of the local noise's bin powers, from 0
+
+    def reset(self) -> None:
+        """Forget the blocks and the noise found so far."""
+        self._sum = None
+        self._count = 0
+        self._noise = None
+
+    def levels(self, power: np.ndarray, centre_hz: float, rate_hz: float, bands: np.ndarray,
+               enbw: float) -> tuple[np.ndarray, np.ndarray] | None:
+        """Each band's power and noise, in dBFS, in a block of bin powers:
+        ``bands`` holds one channel's lowest and highest frequency per row,
+        and ``enbw`` is the FFT window's noise bandwidth in bins. None until
+        the noise is known, ``blocks`` blocks after a new capture."""
+        size = len(power)
+        capture = (centre_hz, rate_hz, size)
+        if capture != self._capture:
+            self._capture = capture
+            self.reset()
+        self._sum = np.array(power, dtype=np.float64) if self._sum is None else self._sum + power
+        self._count += 1
+        if self._count >= self._blocks:
+            db = 10 * np.log10(np.maximum(self._sum / self._count, LEVEL_FLOOR))
+            noise = 10 ** (local_noise(db, rate_hz / size) / 10)
+            self._noise = np.concatenate(([0.0], np.cumsum(noise)))
+            self._sum = None
+            self._count = 0
+        if self._noise is None:
+            return None
+        bin_hz = rate_hz / size
+        first_hz = centre_hz - rate_hz / 2          # the first bin's centre
+        # The bins whose centres lie in each band, one at least.
+        low = np.clip(np.ceil((bands[:, 0] - first_hz) / bin_hz), 0, size - 1).astype(np.intp)
+        high = np.clip(np.ceil((bands[:, 1] - first_hz) / bin_hz), low + 1, size).astype(np.intp)
+        sums = np.concatenate(([0.0], np.cumsum(power, dtype=np.float64)))
+        channel = np.maximum((sums[high] - sums[low]) / enbw, LEVEL_FLOOR)
+        noise = np.maximum((self._noise[high] - self._noise[low]) / enbw, LEVEL_FLOOR)
+        return 10 * np.log10(channel), 10 * np.log10(noise)
+
+
+class MemoryScan:
+    """A memory scan's progress. ``state`` is "watching" every channel,
+    "checking" that the squelch opens on the channel just tuned to,
+    "listening" while it stays open, or "waiting" for the resume time since
+    it closed; ``bookmark_id`` is the bookmark tuned to, None while
+    watching."""
+
+    def __init__(self) -> None:
+        self.state = "watching"
+        self.bookmark_id: int | None = None
+        self._until = 0.0
+        self._held: dict[int, float] = {}      # bookmarks whose squelch did not open, until when
+
+    def step(self, now: float, active: Sequence[tuple[int, float]] | None, squelch_open: bool,
+             resume_s: float) -> int | None:
+        """Move on with a block that ended at ``now``: ``active`` lists the
+        watched bookmarks whose channel would open the squelch, with their
+        margins above the noise, or is None while the noise is unknown, and
+        ``squelch_open`` is the squelch's state at the block's end, on the
+        channel tuned to. Returns the bookmark to tune to, or None."""
+        if self.state == "watching":
+            held = self._held
+            candidates = [(margin, bookmark_id) for bookmark_id, margin in active or ()
+                          if held.get(bookmark_id, -math.inf) <= now]
+            if not candidates:
+                return None
+            _, self.bookmark_id = max(candidates)
+            self.state = "checking"
+            self._until = now + CHECK_S
+            return self.bookmark_id
+        if squelch_open:
+            self.state = "listening"
+        elif self.state == "checking":
+            if now >= self._until:
+                self._held = {bookmark_id: until for bookmark_id, until in self._held.items() if until > now}
+                if self.bookmark_id is not None:
+                    self._held[self.bookmark_id] = now + HOLD_S
+                self._watch()
+        elif self.state == "listening":
+            self.state = "waiting"
+            self._until = now + resume_s
+        elif now >= self._until:
+            self._watch()
+        return None
+
+    def keep(self, bookmark_ids: Iterable[int]) -> None:
+        """Watch only ``bookmark_ids``: away from a bookmark no longer
+        watched, the scan watches every channel again."""
+        kept = set(bookmark_ids)
+        if self.bookmark_id is not None and self.bookmark_id not in kept:
+            self._watch()
+        self._held = {bookmark_id: until for bookmark_id, until in self._held.items() if bookmark_id in kept}
+
+    def _watch(self) -> None:
+        self.state = "watching"
+        self.bookmark_id = None
+
+
 def checked_frequency(value: object, what: str) -> float:
     """A frequency an interface gave, rounded to the Hz; raises ValueError
     when it is not a number within FREQUENCY_RANGE_HZ."""
@@ -285,4 +439,13 @@ def checked_threshold(value: object) -> float:
     low, high = THRESHOLD_RANGE_DB
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
         raise ValueError(f"the threshold must be a number of dB from {low:g} to {high:g}")
+    return float(value)
+
+
+def checked_resume(value: object) -> float:
+    """A resume time an interface gave; raises ValueError when it is not a
+    number of seconds within RESUME_RANGE_S."""
+    low, high = RESUME_RANGE_S
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ValueError(f"the resume time must be a number of seconds from {low:g} to {high:g}")
     return float(value)

@@ -23,7 +23,7 @@ from pathlib import Path
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
-from radiolack.store import SETTINGS_FILE, Store
+from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
@@ -379,6 +379,34 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
                 expect(first.locator("#pk-note")).to_be_hidden()
+
+    def test_every_interface_follows_the_memory_scan_until_one_tunes_by_hand(self):
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            # A beacon of the simulated band, always on the air, and a bookmark outside the span.
+            Store(directory).save(BOOKMARKS_FILE, {"bookmarks": [
+                {"frequency_hz": 144_465_000, "name": "Beacon", "mode": "CW", "scan": True},
+                {"frequency_hz": 433_500_000, "name": "Far away", "mode": "NFM", "scan": True}]})
+            url = self.serve(store=Store(directory))
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    page.locator(SCANNERS_PANEL).click()
+                    page.locator('#scan-tabs button[data-tab="memory"]').click()
+                    expect(page.locator("#mem-list li")).to_have_text(
+                        [re.compile(r"^Beacon"), re.compile(r"^Far away.*outside the span")])
+                    expect(page.locator("#mem-state")).to_have_text("Stopped")
+                first.locator("#mem-start").click()
+                for page in (first, second):
+                    expect(page.locator("#mem-state")).to_have_text(re.compile(r"^(Listening|Waiting): Beacon$"))
+                    expect(page.locator("#mem-start")).to_have_text("Stop")
+                    expect(page.locator("#m-mode")).to_have_text("CW")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} memory scan")
+                second.keyboard.press("ArrowRight")     # one step up: tuning by hand stops the scan
+                for page in (first, second):
+                    expect(page.locator("#mem-state")).to_have_text("Stopped: the receiver was tuned by hand.")
+                    expect(page.locator("#mem-start")).to_have_text("Start")
+                    expect(page.locator("#status")).not_to_contain_text("memory scan")
+                expect(first.locator("#mem-note")).to_be_hidden()
 
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network

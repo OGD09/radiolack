@@ -1,15 +1,20 @@
 """Tests for detection: signals found above the local noise, away from the
 span's edges and centre, the detector's average over one capture, the list
-of signals found twice in a row, ignored frequencies, and the checks of the
-values the interfaces give."""
+of signals found twice in a row, ignored frequencies; for the memory scan:
+the bookmarks it watches, their channels' power and noise, and its progress
+from channel to channel; and the checks of the values the interfaces give."""
 
+import math
 import unittest
 from unittest import mock
 
 import numpy as np
 
-from radiolack.scanners import (ACTIVE_S, DEFAULT_THRESHOLD_DB, MAX_IGNORED, MERGE_HZ, Detection, Detector, Signals,
-                                checked_frequency, checked_threshold, find_signals, local_noise)
+from radiolack.bookmarks import Bookmark
+from radiolack.scanners import (ACTIVE_S, CHECK_S, DEFAULT_THRESHOLD_DB, HOLD_S, MAX_IGNORED, MERGE_HZ, ChannelWatch,
+                                Detection, Detector, MemoryScan, Signals, checked_frequency, checked_resume,
+                                checked_threshold, find_signals, local_noise, watched_channels)
+from radiolack.spectrum import SpectrumAnalyzer
 
 SIZE = 8192
 RATE_HZ = 2_400_000.0
@@ -252,6 +257,112 @@ class SignalsTest(unittest.TestCase):
         self.assertNotIn(146_000_000, signals.ignored)
 
 
+class WatchedChannelsTest(unittest.TestCase):
+    def test_the_ticked_bookmarks_of_the_searched_span_are_watched_with_their_passbands(self):
+        ticked = [(1, Bookmark(CENTRE_HZ - 950_000, "near the edge", "NFM")),
+                  (2, Bookmark(CENTRE_HZ - 970_000, "in the outer tenth", "NFM")),
+                  (3, Bookmark(CENTRE_HZ + 2_000, "on the centre", "AM")),
+                  (4, Bookmark(CENTRE_HZ + 500_000, "upper sideband", "USB")),
+                  (5, Bookmark(CENTRE_HZ + 600_000, "lower sideband", "LSB")),
+                  (6, Bookmark(CENTRE_HZ + 700_000, "beacon", "CW")),
+                  (7, Bookmark(CENTRE_HZ + 800_000, "airband", "AM")),
+                  (8, Bookmark(CENTRE_HZ + 2e6, "elsewhere", "NFM"))]
+        channels = watched_channels(ticked, CENTRE_HZ, RATE_HZ)
+        self.assertEqual([(channel.bookmark_id, channel.mode) for channel in channels],
+                         [(1, "NFM"), (4, "USB"), (5, "LSB"), (6, "CW"), (7, "AM")])
+        self.assertEqual([(channel.low_hz - channel.frequency_hz, channel.high_hz - channel.frequency_hz)
+                          for channel in channels],
+                         [(-5_000, 5_000), (0, 2_700), (-2_700, 0), (-250, 250), (-4_000, 4_000)])
+        self.assertEqual(watched_channels([], CENTRE_HZ, RATE_HZ), ())
+
+
+class ChannelWatchTest(unittest.TestCase):
+    """On the bin powers of the engine's analyzer: a tone of -20 dBFS 300 kHz
+    above the centre, over noise of -40 dBFS across the span."""
+
+    def setUp(self):
+        self.analyzer = SpectrumAnalyzer()
+        count = 4 * self.analyzer.fft_size
+        rng = np.random.default_rng(3)
+        noise = (rng.normal(size=count) + 1j * rng.normal(size=count)) * math.sqrt(1e-4 / 2)
+        tone = 0.1 * np.exp(2j * np.pi * 300_000 / RATE_HZ * np.arange(count))
+        self.power = self.analyzer.power((tone + noise).astype(np.complex64))
+        self.bands = np.array([(CENTRE_HZ + 295_000, CENTRE_HZ + 305_000),     # the tone's channel
+                               (CENTRE_HZ - 405_000, CENTRE_HZ - 395_000)])    # a quiet one
+
+    def levels(self, watch: ChannelWatch, centre_hz: float = CENTRE_HZ):
+        return watch.levels(self.power, centre_hz, RATE_HZ, self.bands, self.analyzer.enbw)
+
+    def test_gives_each_channels_power_and_noise_once_the_noise_is_known(self):
+        watch = ChannelWatch(blocks=2)
+        self.assertIsNone(self.levels(watch))
+        power_db, noise_db = self.levels(watch)
+        in_band_noise_db = 10 * math.log10(1e-4 * 10_000 / RATE_HZ)
+        self.assertAlmostEqual(power_db[0], -20.0, delta=0.3)
+        self.assertAlmostEqual(power_db[1], in_band_noise_db, delta=1.0)
+        for level in noise_db:
+            self.assertAlmostEqual(level, in_band_noise_db, delta=1.0)
+        self.assertIsNotNone(self.levels(watch))        # every block, from then on
+
+    def test_another_capture_waits_for_its_own_noise(self):
+        watch = ChannelWatch(blocks=2)
+        self.levels(watch)
+        self.assertIsNotNone(self.levels(watch))
+        self.assertIsNone(self.levels(watch, CENTRE_HZ + 1_000))
+        watch.reset()
+        self.assertIsNone(self.levels(watch, CENTRE_HZ + 1_000))
+        self.assertIsNotNone(self.levels(watch, CENTRE_HZ + 1_000))
+
+
+class MemoryScanTest(unittest.TestCase):
+    def test_tunes_to_the_strongest_active_channel_listens_waits_and_watches_again(self):
+        scan = MemoryScan()
+        self.assertIsNone(scan.step(0.0, None, False, 2.0))     # the noise is not known yet
+        self.assertIsNone(scan.step(0.1, [], False, 2.0))
+        self.assertEqual(scan.step(0.2, [(1, 10.0), (2, 25.0)], False, 2.0), 2)
+        self.assertEqual((scan.state, scan.bookmark_id), ("checking", 2))
+        self.assertIsNone(scan.step(0.3, [(1, 30.0)], True, 2.0))      # the others wait
+        self.assertEqual((scan.state, scan.bookmark_id), ("listening", 2))
+        scan.step(1.0, [], False, 2.0)
+        self.assertEqual(scan.state, "waiting")
+        scan.step(2.0, [], True, 2.0)       # open again within the resume time
+        self.assertEqual(scan.state, "listening")
+        scan.step(3.0, [], False, 2.0)
+        scan.step(4.9, [(1, 10.0)], False, 2.0)
+        self.assertEqual((scan.state, scan.bookmark_id), ("waiting", 2))
+        self.assertIsNone(scan.step(5.0, [(1, 10.0)], False, 2.0))
+        self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
+        self.assertEqual(scan.step(5.1, [(1, 10.0)], False, 2.0), 1)
+
+    def test_without_a_resume_time_it_watches_again_once_the_squelch_closes(self):
+        scan = MemoryScan()
+        scan.step(0.0, [(1, 10.0)], False, 0.0)
+        scan.step(0.1, [], True, 0.0)
+        scan.step(0.2, [], False, 0.0)
+        scan.step(0.3, [], False, 0.0)
+        self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
+
+    def test_a_channel_whose_squelch_stays_closed_is_held_a_moment(self):
+        scan = MemoryScan()
+        self.assertEqual(scan.step(0.0, [(1, 10.0), (2, 5.0)], False, 2.0), 1)
+        scan.step(CHECK_S - 0.01, [], False, 2.0)
+        self.assertEqual(scan.state, "checking")
+        scan.step(CHECK_S, [], False, 2.0)
+        self.assertEqual(scan.state, "watching")
+        self.assertEqual(scan.step(CHECK_S + 0.01, [(1, 10.0), (2, 5.0)], False, 2.0), 2)
+        scan.step(2 * CHECK_S + 0.01, [], False, 2.0)
+        self.assertIsNone(scan.step(1.0, [(1, 10.0), (2, 5.0)], False, 2.0))      # both held
+        self.assertEqual(scan.step(CHECK_S + HOLD_S, [(1, 10.0), (2, 5.0)], False, 2.0), 1)
+
+    def test_a_bookmark_no_longer_watched_is_left(self):
+        scan = MemoryScan()
+        scan.step(0.0, [(1, 10.0)], False, 2.0)
+        scan.keep([1, 2])
+        self.assertEqual((scan.state, scan.bookmark_id), ("checking", 1))
+        scan.keep([2])
+        self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
+
+
 class CheckTest(unittest.TestCase):
     def test_frequencies(self):
         self.assertEqual(checked_frequency(145_500_000.4, "a frequency"), 145_500_000.0)
@@ -267,6 +378,14 @@ class CheckTest(unittest.TestCase):
         for value in (5.9, 30.1, True, "12", None, float("nan"), float("inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 6 to 30"):
                 checked_threshold(value)
+
+    def test_resume_times(self):
+        self.assertEqual(checked_resume(0), 0.0)
+        self.assertEqual(checked_resume(2.5), 2.5)
+        self.assertEqual(checked_resume(8), 8.0)
+        for value in (-0.1, 8.1, True, "2", None, float("nan"), float("inf"), 10 ** 400):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 0 to 8"):
+                checked_resume(value)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,8 @@ the history under the tag `v0.1.0`.
   to those that ask, passes their changes on, switches between kinds of
   sources, restores and saves the settings and the source in use; keeps the
   interfaces' preferences, this computer's
-  and each paired device's; idle without clients; remote clients get
+  and each paired device's; runs the memory scan, which tunes the VFO for
+  every client; idle without clients unless a scan runs; remote clients get
   neither the storage, update nor remote access states, and lighter
   spectrum frames),
   `updates` (update check: apt run
@@ -37,7 +38,8 @@ the history under the tag `v0.1.0`.
   only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
   `scanners` (detection on the engine's FFTs, averaged over a third of a
   second, against the local noise; the list of the signals found and the
-  ignored frequencies),
+  ignored frequencies; the memory scan's watch of the ticked bookmarks'
+  channels in the same FFTs, and its states),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:

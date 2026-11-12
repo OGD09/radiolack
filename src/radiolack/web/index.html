@@ -216,11 +216,11 @@
         <div class="row"><button type="button" class="btn primary" disabled>Start</button><span class="note">Not available yet.</span></div>
       </div>
       <div data-tab-panel="memory" hidden>
-        <div class="field"><label for="mem-dwell">Dwell per channel <output id="mem-dwell-v"></output></label><input id="mem-dwell" type="range" min="0.1" max="1" step="0.05"></div>
-        <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5"></div>
+        <div class="field"><label for="mem-resume">Resume after silence <output id="mem-resume-v"></output></label><input id="mem-resume" type="range" min="0" max="8" step="0.5" disabled></div>
+        <p class="note" id="mem-note" role="status" hidden></p>
         <ul class="list" id="mem-list"></ul>
-        <div class="row"><button type="button" class="btn primary" id="mem-start">Start</button><span class="note" id="mem-state"></span></div>
-        <p class="note">The scan stops on a channel when the squelch opens.</p>
+        <div class="row"><button type="button" class="btn primary" id="mem-start" disabled>Start</button><span class="note" id="mem-state"></span></div>
+        <p class="note">The scan watches the ticked bookmarks of the receiver's span at once, and stays on an active one while the squelch is open. It goes on without any interface; tuning by hand stops it.</p>
       </div>
     </section>
 

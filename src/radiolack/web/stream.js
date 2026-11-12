@@ -92,18 +92,33 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * The engine's signal detection, shared by every interface.
+ * The engine's scanners, shared by every interface: signal detection and the
+ * memory scan.
  * @typedef {object} ScannerState
  * @property {boolean} detection    the engine looks for signals in its spectra
  * @property {number} thresholdDb   how far above the local noise a signal rises
  * @property {number[]} ignoredHz   frequencies whose signals are not listed, lowest first
+ * @property {number} resumeS       how long the memory scan waits, once the squelch closed, before it watches again
+ * @property {string | null} scan   the scan that runs: "memory", or null
+ * @property {string | null} stopped
+ *   why the latest scan stopped: "tuned", "source" or "bookmarks"; null when an interface stopped it, or none ran
+ * @property {MemoryScanState} memory
  */
 
 /**
- * Detection settings to change; the others stay as they are.
+ * The memory scan's state.
+ * @typedef {object} MemoryScanState
+ * @property {number[]} watched     the ticked bookmarks it watches, those of the receiver's span, by id
+ * @property {string | null} state  "watching", "checking", "listening" or "waiting"; null while it does not run
+ * @property {number | null} bookmarkId  the bookmark tuned to, null while watching
+ */
+
+/**
+ * Scanner settings to change; the others stay as they are.
  * @typedef {object} ScannerChanges
  * @property {boolean} [detection]
  * @property {number} [thresholdDb]
+ * @property {number} [resumeS]
  */
 
 /**
@@ -383,10 +398,26 @@ export function decodeBookmarks(message) {
  */
 export function decodeScanner(message) {
   const m = message;
+  const memory = m.memory;
   const valid = typeof m.detection === 'boolean' && typeof m.threshold_db === 'number'
     && Number.isFinite(m.threshold_db) && Array.isArray(m.ignored_hz)
-    && m.ignored_hz.every((/** @type {unknown} */ f) => typeof f === 'number' && Number.isFinite(f));
-  return valid ? { detection: m.detection, thresholdDb: m.threshold_db, ignoredHz: m.ignored_hz.slice() } : null;
+    && m.ignored_hz.every((/** @type {unknown} */ f) => typeof f === 'number' && Number.isFinite(f))
+    && typeof m.resume_s === 'number' && Number.isFinite(m.resume_s)
+    && (m.scan === null || typeof m.scan === 'string') && (m.stopped === null || typeof m.stopped === 'string')
+    && memory !== null && typeof memory === 'object' && Array.isArray(memory.watched)
+    && memory.watched.every((/** @type {unknown} */ id) => Number.isSafeInteger(id))
+    && (memory.state === null || typeof memory.state === 'string')
+    && (memory.bookmark_id === null || Number.isSafeInteger(memory.bookmark_id));
+  if (!valid) return null;
+  return {
+    detection: m.detection,
+    thresholdDb: m.threshold_db,
+    ignoredHz: m.ignored_hz.slice(),
+    resumeS: m.resume_s,
+    scan: m.scan,
+    stopped: m.stopped,
+    memory: { watched: memory.watched.slice(), state: memory.state, bookmarkId: memory.bookmark_id },
+  };
 }
 
 /**
@@ -547,7 +578,7 @@ export class EngineStream {
 
   /**
    * The scanners the engine runs, as its last hello listed them, such as
-   * "peaks": an older engine runs fewer, or none.
+   * "peaks" and "memory": an older engine runs fewer, or none.
    * @returns {string[]}
    */
   get scanners() {
@@ -637,7 +668,7 @@ export class EngineStream {
   }
 
   /**
-   * Change the engine's signal detection: every interface then receives the
+   * Change the engine's scanner settings: every interface then receives the
    * scanner state, or this one an error. Returns false, sending nothing,
    * when the stream is not open.
    * @param {ScannerChanges} changes
@@ -648,7 +679,20 @@ export class EngineStream {
     const message = {};
     if (changes.detection !== undefined) message.detection = changes.detection;
     if (changes.thresholdDb !== undefined) message.threshold_db = changes.thresholdDb;
+    if (changes.resumeS !== undefined) message.resume_s = changes.resumeS;
     return this.#send({ type: 'scanner', ...message });
+  }
+
+  /**
+   * Start the memory scan ("memory"), or stop the scan that runs (null):
+   * every interface then receives the scanner state, or this one an error,
+   * such as when no ticked bookmark lies in the receiver's span. Returns
+   * false, sending nothing, when the stream is not open.
+   * @param {'memory' | null} scan
+   * @returns {boolean}
+   */
+  setScan(scan) {
+    return this.#send({ type: 'scanner', scan });
   }
 
   /**

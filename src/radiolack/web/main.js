@@ -32,6 +32,8 @@ const AXIS_H = 18;                  // frequency scale under the spectrum, CSS p
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
 const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
 const FIRST_MANUAL_GAIN_DB = 30;    // offered when automatic gain is turned off before any manual gain
+// Each mode's filter width once tuned to a bookmark (bw) is also the engine's,
+// for its memory scan (demod.py, MODE_BANDWIDTHS_HZ): change them together.
 const MODES = {
   NFM: { bw: 10000, min: 4000, max: 25000, step: 500 },
   AM: { bw: 8000, min: 3000, max: 15000, step: 500 },
@@ -89,7 +91,7 @@ const S = {
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
   showPlan: true, showMarks: true, split: 0.4,
   sql: -80, sqlAuto: true, ctcss: 'detect', agc: 'slow', nr: false, notch: false, blanker: false, volume: 70,
-  peakMarks: true, memDwell: 0.25, memResume: 2,
+  peakMarks: true,
   autoHide: true, keepAwake: false,
 };
 const view = { f0: 0, f1: 0 };
@@ -246,7 +248,12 @@ const stream = new EngineStream({
     bookmarksChanged();
   },
   onScanner: (state) => {
+    // The memory scan's progress changes the state far more often than the
+    // settings do: the controls follow only a change of the settings or of
+    // the scan that runs, which an interface made.
+    const changed = scanner === null || scannerSettings(scanner) !== scannerSettings(state);
     scanner = state;
+    if (!changed) { syncMem(); return; }
     scannerNote = '';
     syncScanner();
   },
@@ -703,7 +710,7 @@ function renderMarks() {
     el.title = `${it.b.name} · ${fmtMHz(it.b.f)} MHz · ${it.b.mode}`;
     el.style.left = `${it.x}px`;
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
-    el.addEventListener('click', (e) => { e.stopPropagation(); userTune(); tune(it.b.f, { mode: it.b.mode }); });
+    el.addEventListener('click', (e) => { e.stopPropagation(); tune(it.b.f, { mode: it.b.mode }); });
     marksEl.appendChild(el);
   }
   // Marks are placed left to right: only the first one can reach the dB label column (7 px tick included).
@@ -829,6 +836,7 @@ function updateStatus() {
   } else {
     text = 'Connecting to the engine…';
   }
+  if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
   $('#status').textContent = `${text}${remoteState?.on ? ' · remote access on' : ''}`;
@@ -953,7 +961,6 @@ function tune(f, opts = {}) {
   showVfo(opts.keepView);
 }
 function stepTune(dir, mult = 1) {
-  userTune();
   tune(snapAt(S.vfo) + dir * stepAt(S.vfo) * mult);
 }
 function setMode(mode) {
@@ -1026,8 +1033,10 @@ function updatePeakAges() {
   });
 }
 const pkOn = $('#pk-on'), pkThr = $('#pk-thr'), pkThrOut = $('#pk-thr-v');
-// The detection controls show the engine's settings once it sent them, and
-// stay off with an engine that does not find signals.
+// What interfaces change in the scanner state: the settings and the scan that runs.
+const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.scan]);
+// The scanners' controls show the engine's settings once it sent them, and
+// stay off with an engine that lacks the scanner.
 function syncScanner() {
   const known = scanner !== null && stream.scanners.includes('peaks');
   pkOn.disabled = !known;
@@ -1040,17 +1049,30 @@ function syncScanner() {
   const ignored = scanner ? scanner.ignoredHz.length : 0;
   $('#pk-excluded').textContent = ignored ? `${ignored} ignored ${ignored === 1 ? 'frequency' : 'frequencies'}.` : '';
   $('#pk-restore').hidden = ignored === 0;
+  memResume.disabled = !memoryKnown();
+  if (memoryKnown()) {
+    memResume.value = String(scanner.resumeS);
+    memResumeOut.textContent = `${scanner.resumeS} s`;
+  }
   syncScannerNote();
   if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+  syncMem();
+  updateStatus();       // it names the scan that runs
 }
+// The latest refusal shows in both tabs; each tells when the engine that runs
+// lacks its scanner.
+const SCANNER_NOTES = [
+  ['#pk-note', 'peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
+  ['#mem-note', 'memory', 'The engine that runs does not scan the bookmarks: restart Radiolack after its update.'],
+];
 function syncScannerNote() {
-  let note = scannerNote;
-  if (!note && streamState === 'open' && !stream.scanners.includes('peaks')) {
-    note = 'The engine that runs does not find signals: restart Radiolack after its update.';
+  for (const [selector, name, restart] of SCANNER_NOTES) {
+    let note = scannerNote;
+    if (!note && streamState === 'open' && !stream.scanners.includes(name)) note = restart;
+    const el = $(selector);
+    el.textContent = note;
+    el.hidden = !note;
   }
-  const el = $('#pk-note');
-  el.textContent = note;
-  el.hidden = !note;
 }
 // Send a scanner command: every interface receives the scanner state once
 // the engine applies it. One not sent leaves the controls as the engine's
@@ -1062,56 +1084,45 @@ function sendScanner(send) {
   return sent;
 }
 
-const mem = { running: false, idx: -1, state: 'idle', until: 0, cur: null };
-function memNext(now) {
-  const list = bookmarks.filter((b) => b.scan);
-  if (!list.length) { memStop(); return; }
-  mem.idx = (mem.idx + 1) % list.length;
-  mem.cur = list[mem.idx];
-  tune(mem.cur.f, { mode: mem.cur.mode, keepView: true });
-  meterDb = METER_FLOOR;
-  sqlOpen = false;
-  mem.state = 'settle';
-  mem.until = now + S.memDwell;
-  syncMem();
-}
-function memStart() {
-  if (!bookmarks.some((b) => b.scan)) { $('#mem-state').textContent = 'No bookmark is checked.'; return; }
-  mem.running = true;
-  mem.idx = -1;
-  memNext(performance.now() / 1000);
-  syncMem();
-}
-function memStop() {
-  mem.running = false;
-  mem.state = 'idle';
-  syncMem();
-}
-function memTick(now) {
-  if (!mem.running) return;
-  const before = mem.state;
-  if (mem.state === 'settle') {
-    if (now >= mem.until) { if (sqlOpen) mem.state = 'listen'; else memNext(now); }
-  } else if (mem.state === 'listen') {
-    if (!sqlOpen) { mem.state = 'hang'; mem.until = now + S.memResume; }
-  } else if (mem.state === 'hang') {
-    if (sqlOpen) mem.state = 'listen';
-    else if (now >= mem.until) memNext(now);
-  }
-  if (mem.running && mem.state !== before) syncMem();
-}
-function userTune() { if (mem.running) memStop(); }
+// The engine's memory scan watches the ticked bookmarks of the receiver's
+// span, the same for every interface: this interface starts and stops it,
+// sets its resume time (syncScanner) and shows where it stands. The list
+// marks the ticked bookmarks that lie outside the span, which the scan
+// leaves out.
+const MEM_STATES = { checking: 'Checking', listening: 'Listening', waiting: 'Waiting' };
+const MEM_STOPPED = { tuned: 'Stopped: the receiver was tuned by hand.', source: 'Stopped: another receiver was chosen.' };
+const memStart = $('#mem-start'), memResume = $('#mem-resume'), memResumeOut = $('#mem-resume-v');
+const memoryKnown = () => scanner !== null && stream.scanners.includes('memory');
+const memoryRuns = () => memoryKnown() && scanner.scan === 'memory';
+let memWatched = '';        // the watched bookmarks' ids that the list shows, as a text
 function syncMem() {
-  $('#mem-start').textContent = mem.running ? 'Stop' : 'Start';
-  const name = mem.cur ? mem.cur.name : '';
-  let txt = 'Stopped';
-  if (mem.running) txt = mem.state === 'listen' ? `Listening: ${name}` : mem.state === 'hang' ? `Waiting: ${name}` : `Scanning: ${name}`;
-  $('#mem-state').textContent = txt;
+  const known = memoryKnown(), runs = memoryRuns(), memory = known ? scanner.memory : null;
+  const watched = memory ? memory.watched.length : 0;
+  // The scan's progress calls this several times a second: an unchanged text is not rewritten.
+  const label = runs ? 'Stop' : 'Start';
+  if (memStart.textContent !== label) memStart.textContent = label;
+  memStart.disabled = !known || (!runs && watched === 0);
+  let text = '';
+  if (runs) {
+    const b = bookmarks.find((x) => x.id === memory.bookmarkId);
+    text = b && MEM_STATES[memory.state] ? `${MEM_STATES[memory.state]}: ${b.name}`
+      : `Watching ${watched} ${watched === 1 ? 'bookmark' : 'bookmarks'}`;
+  } else if (known) {
+    if (watched) text = MEM_STOPPED[scanner.stopped] || 'Stopped';
+    else text = bookmarks.some((b) => b.scan) ? 'No ticked bookmark lies in the span.' : 'Tick the bookmarks to scan.';
+  }
+  const el = $('#mem-state');
+  if (el.textContent !== text) el.textContent = text;
+  const ids = memory ? memory.watched.join(',') : '';
+  if (ids !== memWatched) renderMemList();
 }
 function renderMemList() {
   const list = $('#mem-list'), refocus = focusedIn(list);
+  const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
+  memWatched = known ? scanner.memory.watched.join(',') : '';
   list.innerHTML = bookmarks.map((b) => `<li><label class="check"><input type="checkbox" data-id="${b.id}"${b.scan ? ' checked' : ''}>`
-    + `<span>${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span></label></li>`).join('')
+    + `<span>${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? 'outside the span · ' : ''}`
+    + `${fmtMHz(b.f)}</span></label></li>`).join('')
     || '<li class="empty">No bookmarks</li>';
   focusAgain(list, refocus);
 }
@@ -1257,7 +1268,6 @@ $('#src-center').addEventListener('change', (e) => {
   if (!source || !Number.isFinite(hz) || hz === source.centreHz) { syncSource(); return; }
   const previous = source.centreHz;
   if (stream.sendSource({ centreHz: hz })) {
-    userTune();
     pendingTune = { centre: hz, previous, f: hz + (S.vfo - S.fc), opts: {} };   // the VFO keeps its place in the span
   } else {
     syncSource();
@@ -1530,7 +1540,7 @@ function syncBookmarkNote() {
   el.textContent = bookmarkNote;
   el.hidden = !bookmarkNote;
 }
-function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); }
+function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); syncMem(); }
 // A new bookmark is named "Bookmark" and the first number no other one uses.
 function addBookmark(f, mode) {
   const names = new Set(bookmarks.map((b) => b.name));
@@ -1558,7 +1568,7 @@ $('#bm-list').addEventListener('click', (e) => {
     return;
   }
   if (editing) finishEdit(true, false);
-  if (button.dataset.id) { userTune(); tuneAnywhere(b.f, { mode: b.mode }); }
+  if (button.dataset.id) tuneAnywhere(b.f, { mode: b.mode });
   else { editing = { id: b.id, text: b.name }; renderBookmarks(); }
 });
 
@@ -1567,7 +1577,6 @@ function syncScanTabs() {
   for (const b of $$('#scan-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.tab === scanTab));
   for (const p of $$('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== scanTab;
   if (scanTab === 'peaks') renderPeaks();
-  if (scanTab === 'memory') { renderMemList(); syncMem(); }
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
 pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ detection: pkOn.checked })));
@@ -1577,18 +1586,18 @@ bindCheck('pk-marks', 'peakMarks');
 $('#pk-body').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.tune) { userTune(); tuneAnywhere(Number(b.dataset.tune)); }
+  if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
   else if (shownPeaks.has(b.dataset.ignore)) sendScanner(() => stream.ignoreFrequency(shownPeaks.get(b.dataset.ignore)));
 });
 $('#pk-restore').addEventListener('click', () => sendScanner(() => stream.restoreIgnored()));
-bindRange('mem-dwell', 'memDwell', (v) => `${Math.round(v * 1000)} ms`);
-bindRange('mem-resume', 'memResume', (v) => `${v} s`);
 $('#mem-list').addEventListener('change', (e) => {
   const b = bookmarks.find((x) => String(x.id) === e.target.dataset.id);
   // Not sent: the box shows the bookmark's setting again.
   if (b && !sendBookmark(() => stream.changeBookmark(b.id, { scan: e.target.checked }))) renderMemList();
 });
-$('#mem-start').addEventListener('click', () => { if (mem.running) memStop(); else memStart(); });
+memStart.addEventListener('click', () => sendScanner(() => stream.setScan(memoryRuns() ? null : 'memory')));
+memResume.addEventListener('input', () => { memResumeOut.textContent = `${memResume.value} s`; });
+memResume.addEventListener('change', () => sendScanner(() => stream.setScanner({ resumeS: Number(memResume.value) })));
 
 // Settings
 bindCheck('st-autohide', 'autoHide', poke);
@@ -1730,7 +1739,7 @@ function syncStorage() {
 // yet (CTCSS, AGC, noise reduction, notch, blanker, keeping the screen on).
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
-  'peakMarks', 'memDwell', 'memResume', 'autoHide'];
+  'peakMarks', 'autoHide'];
 const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
 const PREFERENCES_SAVE_MS = 1000;
 let preferencesLoaded = false;      // the engine's applied: nothing is saved before
@@ -1784,7 +1793,7 @@ for (const b of $$('#toolbar button')) b.addEventListener('click', () => toggleP
 $('#panel .close').addEventListener('click', closePanel);
 
 function liveUi() {
-  if (openName === 'scanners') { if (scanTab === 'peaks') updatePeakAges(); else if (scanTab === 'memory') syncMem(); }
+  if (openName === 'scanners' && scanTab === 'peaks') updatePeakAges();
   if (openName === 'demod') syncSql();
   if (openName === 'display') syncAutoDisplay();
 }
@@ -1818,7 +1827,7 @@ ctxEl.addEventListener('click', (e) => {
   const b = e.target.closest('button[data-cmd]');
   if (!b || b.disabled) return;
   const f = snapAt(ctxF), seg = segmentAt(ctxF);
-  if (b.dataset.cmd === 'tune') { userTune(); tune(f); }
+  if (b.dataset.cmd === 'tune') tune(f);
   else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
@@ -1885,7 +1894,6 @@ function onDown(e) {
   }
   const x = e.clientX;
   drag = { hit: hitTest(x, touch), x0: x, y0: e.clientY, f0: xToF(x), vfo0: S.vfo, view0: view.f0, moved: false, touch };
-  if (drag.hit !== 'free') userTune();
   if (touch && drag.hit === 'free') {
     longPress = setTimeout(() => {
       longPress = 0;
@@ -1930,7 +1938,7 @@ function onUp(e) {
   guardCtxRelease(e);
   releaseTouch(e);
   if (!drag) return;
-  if (drag.hit === 'free' && !drag.moved) { userTune(); tune(snapAt(drag.f0)); }
+  if (drag.hit === 'free' && !drag.moved) tune(snapAt(drag.f0));
   drag = null;
 }
 function onCancel(e) {
@@ -2015,7 +2023,7 @@ function editFreq() {
     if (apply) {
       const v = parseFloat(input.value.replace(',', '.'));
       const hz = v < 1e5 ? v * 1e6 : v;
-      if (Number.isFinite(hz) && reachable(hz)) { userTune(); tuneAnywhere(hz); }
+      if (Number.isFinite(hz) && reachable(hz)) tuneAnywhere(hz);
     }
     renderFreq();
     freqEl.focus();
@@ -2034,7 +2042,6 @@ freqEl.addEventListener('wheel', (e) => {
   if (!digit) return;
   e.preventDefault();
   if (Math.abs(e.deltaY) < 2) return;
-  userTune();
   tune(S.vfo + (e.deltaY < 0 ? 1 : -1) * Number(digit.dataset.m));
 }, { passive: false });
 
@@ -2139,7 +2146,6 @@ function loop(ts) {
   let lines = 0;
   while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitWfLine(Date.now()); }
   if (lineAcc > 6) lineAcc = 0;
-  memTick(ts / 1000);
   renderSpectrum();
   renderWaterfall();
   renderScales();
