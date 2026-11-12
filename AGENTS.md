@@ -21,10 +21,11 @@ the history under the tag `v0.1.0`.
   their sessions and interface preferences, the private addresses to listen
   on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
-  state, the demodulation settings, the bookmarks and the update check's
-  findings with clients, sends audio to those that ask, passes their changes
-  on, switches between kinds of sources, restores and saves the settings and
-  the source in use; keeps the interfaces' preferences, this computer's
+  state, the demodulation settings, the bookmarks, the scanner state, the
+  signals found and the update check's findings with clients, sends audio
+  to those that ask, passes their changes on, switches between kinds of
+  sources, restores and saves the settings and the source in use; keeps the
+  interfaces' preferences, this computer's
   and each paired device's; idle without clients; remote clients get
   neither the storage, update nor remote access states, and lighter
   spectrum frames),
@@ -34,6 +35,9 @@ the history under the tag `v0.1.0`.
   Radiolack), `store` (settings, bookmarks and remote access files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
   only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
+  `scanners` (detection on the engine's FFTs, averaged over a third of a
+  second, against the local noise; the list of the signals found and the
+  ignored frequencies),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:

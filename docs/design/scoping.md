@@ -697,10 +697,24 @@ These costs wait for v4:
   out by a new code, in the engine and through remote access's server; and
   in the three browsers, that a device's palette outlives a reload of its
   page while this computer's stays as it was.
+- Detection in the engine, 2026-11-12, v2's first pull request:
+  `scanners.py` finds the signals in the engine's spectra, at their full
+  resolution, and keeps their list and the ignored frequencies; the engine
+  sends every interface the scanner state and the list, at most once a
+  second, and saves the settings with the others (`engine.py`,
+  `server.py`). The Peaks tab, the spectrum's marks and Ignore show the
+  engine's list (`stream.js`, `main.js`), and the interface's own detection
+  is gone with its saved threshold. Levels below -150 dBFS count as
+  -150 dBFS: rounding errors of samples without noise, such as the test
+  source's, made a pattern that read as signals. Protocol version 6 stays,
+  the hello listing `peaks`. The tests check the search on synthetic
+  spectra, the list's rules, the engine's list for every client, remote
+  ones included, the settings' checks, their saving and the rate of the
+  list; checked by hand in a browser on the simulated band.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones). v2, the scanners, was designed with the owner on 2026-11-12
-  (see Decisions and Milestones); its pull requests follow, one at a time.
+  Milestones). v2's pull requests follow, one at a time: next, the memory
+  scan in the engine.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

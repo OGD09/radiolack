@@ -25,7 +25,7 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update", "remote")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update", "remote")
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -190,7 +190,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin, compress=15) as ws:
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 6, "remote": False})
+            self.assertEqual(await ws.receive_json(timeout=5),
+                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -198,6 +199,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             settings = await ws.receive_json(timeout=5)
             self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": []})
+            self.assertEqual(await ws.receive_json(timeout=5),
+                             {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": []})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "preferences", "values": {}})
             # Without a settings folder, nothing is saved.
             self.assertEqual(await ws.receive_json(timeout=5),
@@ -210,12 +214,16 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5), {
                 "type": "remote", "on": False, "port": 8443, "urls": [], "code": None, "blocked": False,
                 "devices": [], "fingerprint": None, "problem": ""})
-            for _ in range(3):
+            frames = 0
+            while frames < 3:
                 message = await ws.receive(timeout=5)
+                if is_peaks(message):
+                    continue
                 self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
                 kind, _, _, _, centre, *_ = FRAME_HEADER.unpack_from(message.data)
                 self.assertEqual((kind, centre), (FRAME_KIND_SPECTRUM, FAKE_CENTRE_HZ))
                 self.assertEqual(len(message.data), FRAME_HEADER.size + 8192)
+                frames += 1
 
     async def test_a_refused_change_gets_an_error_for_its_sender_only(self):
         async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
@@ -260,6 +268,19 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 "message": "no such bookmark: another interface may have removed it"})
             await self.assert_no_text(sender)
 
+    async def test_a_scanner_change_reaches_every_client(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "scanner", "ignore": 145_500_000})
+            for ws in (sender, other):
+                self.assertEqual(await next_text(ws), {"type": "scanner", "detection": True, "threshold_db": 12.0,
+                                                       "ignored_hz": [145_500_000.0]})
+            await sender.send_json({"type": "scanner", "detection": "off"})
+            self.assertEqual(await next_text(sender), {
+                "type": "error", "command": "scanner", "message": "detection must be turned on or off: true or false"})
+            await self.assert_no_text(other)
+
     async def test_preferences_are_kept_for_the_next_interfaces(self):
         values = {"palette": "gray", "volume": 0.5, "showPlan": False, "top": None}
         async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
@@ -272,7 +293,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 "type": "error", "command": "preferences", "message": "the preferences must be a JSON object"})
             await self.assert_no_text(other)
         async with self.connect(self.origin) as later:
-            for kind in ("hello", "source", "demod", "bookmarks"):
+            for kind in ("hello", "source", "demod", "bookmarks", "scanner", "peaks"):
                 self.assertEqual((await later.receive_json(timeout=5))["type"], kind)
             self.assertEqual(await later.receive_json(timeout=5), {"type": "preferences", "values": values})
 
@@ -321,6 +342,12 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "preferences", "values": {"palette": [1]}}': (
                 "preferences", "the preference 'palette' must be a number, true or false, a text of at most "
                                "100 characters or null"),
+            '{"type": "scanner"}': ("scanner", "a scanner message needs a setting"),
+            '{"type": "scanner", "sweep": true}': ("scanner", "unknown scanner setting: sweep"),
+            '{"type": "scanner", "threshold_db": 40}': (
+                "scanner", "the threshold must be a number of dB from 6 to 30"),
+            '{"type": "scanner", "ignore": 145e6, "restore": true}': (
+                "scanner", "ignore and restore come alone in their message"),
             '{"type": "update", "install": true}': ("update", "unknown update setting: install"),
             '{"type": "update", "check": 1}': ("update", "check and check_at_start must be true or false"),
             '{"type": "update", "check_at_start": "no"}': (
@@ -335,14 +362,15 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await next_text(ws), {"type": "error", "command": kind, "message": error})
 
     async def assert_no_text(self, ws, duration: float = 0.3):
-        """Only frames arrive on ``ws`` for a while."""
+        """Only frames, and the signals found, arrive on ``ws`` for a while."""
         deadline = time.monotonic() + duration
         while (remaining := deadline - time.monotonic()) > 0:
             try:
                 message = await ws.receive(timeout=remaining)
             except asyncio.TimeoutError:
                 return
-            self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
+            if not is_peaks(message):
+                self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
 
     async def test_accepts_the_localhost_origin(self):
         origin = f"http://localhost:{self.server.port}"
@@ -476,13 +504,19 @@ async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:
     return {state["type"]: state for state in states}
 
 
+def is_peaks(message) -> bool:
+    """Whether a stream message is the list of the signals found, which the
+    engine sends whenever it changes, like frames, and not in answer."""
+    return message.type == aiohttp.WSMsgType.TEXT and json.loads(message.data).get("type") == "peaks"
+
+
 async def next_text(ws) -> dict:
-    """The next JSON message, skipping frames."""
+    """The next JSON message, skipping frames and the signals found."""
     while True:
         message = await ws.receive(timeout=5)
-        if message.type == aiohttp.WSMsgType.TEXT:
+        if message.type == aiohttp.WSMsgType.TEXT and not is_peaks(message):
             return json.loads(message.data)
-        if message.type != aiohttp.WSMsgType.BINARY:
+        if message.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
             raise AssertionError(f"the stream ended: {message}")
 
 

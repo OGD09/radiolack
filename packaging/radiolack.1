@@ -14,7 +14,8 @@ radiolack \- receive\-only SDR receiver with band plans
 \fB\-\-version\fR | \fB\-h\fR | \fB\-\-help\fR
 .SH DESCRIPTION
 Radiolack shows the spectrum and the waterfall of an SDR receiver in a
-desktop window and plays NFM, AM, USB, LSB and CW.
+desktop window, plays NFM, AM, USB, LSB and CW, and lists the signals it
+finds.
 It only receives: it has no transmit function.
 It reads an RTL\-SDR receiver plugged into this computer, or one that an
 rtl_tcp server serves from another computer, and labels every frequency
@@ -97,8 +98,8 @@ Print a summary of the options and exit.
 .SH FILES
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/settings.json\fR
-The settings of each receiver, the preferences of this computer's
-interfaces and whether to check for updates at start.
+The settings of each receiver, the scanners' settings, the preferences of
+this computer's interfaces and whether to check for updates at start.
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/bookmarks.json\fR
 The bookmarks.

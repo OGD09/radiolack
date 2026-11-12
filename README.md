@@ -18,7 +18,9 @@ centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
-Demod panel's CTCSS and processing settings do nothing yet. Levels are in
+Demod panel's CTCSS and processing settings do nothing yet. The engine also
+finds the signals in the span, which every interface lists
+([Scanners](#scanners)). Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
 package on Debian and Ubuntu. Remote access, off at each start unless
@@ -149,8 +151,8 @@ rebinding. The desktop window stays on the interface: it opens no other page
 and no new window.
 
 The interface receives the spectrum, the audio, the receiver state, the
-demodulation settings and the bookmarks from the engine, and sends its
-changes, over a
+demodulation settings, the bookmarks and the signals found from the engine,
+and sends its changes, over a
 WebSocket on the same address
 ([docs/design/protocol.md](docs/design/protocol.md)), which the server
 accepts only from the interface's own origin. The engine computes nothing
@@ -300,6 +302,33 @@ tap on it starts held audio, mutes playing audio by setting the volume to
 with the screen locked and with the ringer switch on silent. Nothing is
 recorded.
 
+## Scanners
+
+The engine looks for signals in the spectrum it computes, whatever each
+interface shows, and every interface lists the same ones: the Scanners
+panel's Peaks tab gives each signal's frequency, how far it rises above the
+noise around it and when it was last found. A signal is found when it rises
+at least the threshold above that noise (12 dB by default, from 6 to 30 dB)
+over a third of a second, twice in a row, away from the outer tenth of the
+span on each side and from the 3 kHz on each side of the centre, where a
+receiver's DC spike shows. The signals found within the last 1.5 s come
+first, strongest first, then the others, latest first. The list keeps the
+signals of the spans the receiver left, and empties when detection is
+turned off or another receiver is chosen. In a channelized range of the
+band plan, a signal shows on its channel.
+
+A click on a frequency tunes to it. Ignore leaves its frequency out of the
+list, for every interface, until Restore brings the ignored frequencies
+back; the spectrum's context menu ignores a frequency too. Whether detection
+is on, its threshold and the ignored frequencies, up to 200, are the same
+for every interface, a paired device's included, and kept for the next
+start. "Mark on the spectrum" is each interface's own: it marks the signals
+found within the last 1.5 s on the spectrum.
+
+The Bookmarks tab's memory scan runs in the interface that starts it, and
+tunes the VFO from one ticked bookmark to the next. The sweep is not
+available yet.
+
 ## Settings and bookmarks
 
 Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
@@ -309,11 +338,14 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   demodulation settings (VFO, mode, filter width, squelch). The simulated
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
-  saved with them. It also records the source in use, for the next start.
-  It also holds the own settings of this computer's interfaces: the
-  display, waterfall and overlay settings, the volume, the tuning step, the
-  band plan's choice of mode and the scanners' settings. Last, it records
-  whether Radiolack checks for updates at start ([Updates](#updates)).
+  saved with them. It also records the source in use, for the next start,
+  and the scanners' settings: whether detection is on, its threshold and the
+  ignored frequencies ([Scanners](#scanners)). It also holds the own
+  settings of this computer's interfaces: the display, waterfall and
+  overlay settings, the volume, the tuning step, the band plan's choice of
+  mode, whether the spectrum marks the signals found and the memory scan's
+  timing. Last, it records whether Radiolack checks for updates at start
+  ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
 - `remote.json` holds what remote access keeps: its port, its access code,
   the paired devices, each with its own interface settings, and its local
@@ -323,7 +355,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 The window keeps no browser data on disk: WebKit's cache and storage stay in
 memory.
 
-Every interface shows the same bookmarks and receiver settings. An
+Every interface shows the same bookmarks, receiver settings and signals
+found. An
 interface on this computer, the window or a browser, opens with the own
 settings of this computer's interface that changed one last, and a paired
 device with its own ([Remote access](#remote-access)); changing them in one
@@ -761,9 +794,12 @@ src/radiolack/
   server.py     local web server (aiohttp): interface files and the stream,
                 and remote access's HTTPS listener
   engine.py     reads a source, removes its DC offset, shares spectrum
-                frames, the demodulation settings, the bookmarks and the
-                update check's findings with the interfaces, sends audio to
-                those that ask, and saves the settings
+                frames, the demodulation settings, the bookmarks, the
+                signals found and the update check's findings with the
+                interfaces, sends audio to those that ask, and saves the
+                settings
+  scanners.py   detection: the signals in the receiver's span, their list
+                and the ignored frequencies
   remote.py     remote access: access code, paired devices and their
                 interface settings, local authority and certificates,
                 addresses to listen on

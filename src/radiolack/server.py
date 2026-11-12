@@ -4,10 +4,10 @@ The server listens on the loopback interface only and runs its own asyncio
 event loop in a background thread, so that the main thread stays free for the
 desktop window toolkit, which must own it. The engine runs in that loop and
 streams its frames, its audio, its source state, its demodulation settings,
-its bookmarks and what its update check found to each interface over a
-WebSocket (``/stream``; see docs/design/protocol.md), which also carries the
-interfaces' changes, their preferences, their requests for audio and for an
-update check.
+its bookmarks, the signals it finds and what its update check found to each
+interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
+also carries the interfaces' changes, their preferences, their requests for
+audio and for an update check.
 
 Remote access (remote.py), once this computer's interface or the command
 line turns it on, adds a second web application to the same loop, with a
@@ -37,6 +37,7 @@ from aiohttp import WSCloseCode, WSMsgType, web
 from .engine import LOCAL_SETTINGS, Engine, Source, SourceOpener, Subscription, UpdateChecker
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
                      is_private, issue_server_certificate, remote_urls, server_context)
+from .scanners import SCANNERS
 from .store import Store
 from .synthetic import SyntheticBand
 
@@ -52,7 +53,7 @@ _REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authori
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "bookmark", "preferences", "update", "remote")
+_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "preferences", "update", "remote")
 _LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
@@ -152,7 +153,8 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
     ``device`` named by its id: the hello, then the engine's messages one way
     and the interface's commands the other, until either side ends it."""
     try:
-        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": device is not None})
+        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": device is not None,
+                            "scanners": list(SCANNERS)})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -221,6 +223,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.configure_demod(changes, subscription, change_id)
         elif kind == "bookmark":
             engine.edit_bookmarks(changes)
+        elif kind == "scanner":
+            engine.configure_scanner(changes)
         elif kind == "preferences":
             values = changes.pop("values", None)
             if changes:

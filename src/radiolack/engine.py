@@ -24,6 +24,11 @@ settings, and the new one starts from those saved for its receiver. Without
 a source to start with, it opens the one used last, the first kind the first
 time.
 
+The engine finds the signals in its spectra (scanners.py) while it reads,
+unless detection is turned off: every client receives the list of the
+signals found, at most once a second, and the scanner settings, which are
+shared like the source's and saved with them, ignored frequencies included.
+
 The engine also keeps the bookmarks, shared by every client like the
 settings, and the interfaces' preferences (preferences.py), which a new
 interface starts with: one set for this computer's interfaces, and one for
@@ -56,6 +61,7 @@ import contextlib
 import dataclasses
 import logging
 import math
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
@@ -67,6 +73,8 @@ from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
+from .scanners import (DEFAULT_THRESHOLD_DB, MAX_IGNORED, Detection, Detector, Signals, checked_frequency,
+                       checked_threshold)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
@@ -78,6 +86,8 @@ CLIENT_QUEUE = 4        # frames kept for a client that falls behind
 CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
+PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
+SCANNER_SETTINGS = ("detection", "threshold_db", "ignore", "restore")
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
 
@@ -309,6 +319,8 @@ class Engine:
             "source": lambda subscription: self.state(subscription.remote),
             "demod": lambda subscription: self.demod_state(subscription.acknowledged),
             "bookmarks": lambda _: self.bookmarks_state(),
+            "scanner": lambda _: self.scanner_state(),
+            "peaks": lambda _: self.peaks_state(),
             "preferences": lambda subscription: self.preferences_state(subscription.device),
             "storage": lambda _: self.storage_state(),
             "update": lambda _: self.update_state(),
@@ -348,6 +360,14 @@ class Engine:
         saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
         self._adopt()
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
+        # Scanners: detection's settings, the signals found and the ignored frequencies.
+        self._detector = Detector()         # used by one block at a time, like the demodulator
+        self._detection = True
+        self._threshold_db = DEFAULT_THRESHOLD_DB
+        self._signals = Signals()
+        self._restore_scanner(settings.get("scanner"))
+        self._peaks_sent_s = -math.inf      # when the clients were last told of the signals
+        self._peaks_timer: asyncio.TimerHandle | None = None
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
         # Updates: whether to check at start, what the latest check found, and the check running.
         self._updates = updates
@@ -367,7 +387,8 @@ class Engine:
 
     def subscribe(self, device: str | None = None) -> Subscription:
         """The messages for a new client, starting with the source state, the
-        demodulation settings, the bookmarks and the preferences, then, unless
+        demodulation settings, the bookmarks, the scanner state, the signals
+        found and the preferences, then, unless
         it is a paired ``device`` that remote access serves, named by its id,
         the storage state, the update state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
@@ -450,6 +471,49 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("bookmarks")
         self._settings_changed()
+
+    def scanner_state(self) -> dict[str, Any]:
+        """The scanner state message (docs/design/protocol.md)."""
+        return {"type": "scanner", "detection": self._detection, "threshold_db": self._threshold_db,
+                "ignored_hz": self._signals.ignored}
+
+    def peaks_state(self) -> dict[str, Any]:
+        """The peaks message: the signals found, as they stand now."""
+        return {"type": "peaks", "peaks": self._signals.describe(time.monotonic())}
+
+    def configure_scanner(self, changes: Mapping[str, object]) -> None:
+        """Change detection's settings, ``detection`` (true or false) and
+        ``threshold_db``, or, each alone in its message, ``ignore`` a
+        frequency or ``restore`` (true) every ignored one. Raises ValueError,
+        changing nothing, when one is refused; otherwise every client receives
+        the scanner state, and the signals found once they changed."""
+        if not changes:
+            raise ValueError("a scanner message needs a setting")
+        for name in changes:
+            if name not in SCANNER_SETTINGS:
+                raise ValueError(f"unknown scanner setting: {str(name)[:40]}")
+        if ("ignore" in changes or "restore" in changes) and len(changes) > 1:
+            raise ValueError("ignore and restore come alone in their message")
+        if "ignore" in changes:
+            self._signals.ignore(checked_frequency(changes["ignore"], "an ignored frequency"))
+        elif "restore" in changes:
+            if changes["restore"] is not True:
+                raise ValueError("restore takes true")
+            self._signals.restore()
+        else:
+            detection = changes.get("detection", self._detection)
+            if not isinstance(detection, bool):
+                raise ValueError("detection must be turned on or off: true or false")
+            threshold_db = (checked_threshold(changes["threshold_db"]) if "threshold_db" in changes
+                            else self._threshold_db)
+            self._detection, self._threshold_db = detection, threshold_db
+            if not detection:
+                self._signals.clear()
+        for subscription in self._clients:
+            subscription.changed("scanner")
+        self._settings_changed()
+        if self._signals.changed(time.monotonic()):
+            self._peaks_changed(at_once=True)
 
     def preferences_state(self, device: str | None = None) -> dict[str, Any]:
         """The preferences message: what a new interface of this computer, or
@@ -535,6 +599,9 @@ class Engine:
         self.source.close()
         if self._checking is not None:
             self._checking.cancel()
+        if self._peaks_timer is not None:
+            self._peaks_timer.cancel()
+            self._peaks_timer = None
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
@@ -572,16 +639,24 @@ class Engine:
                 block = max(self.analyzer.fft_size, round(source.sample_rate_hz / self._frame_rate))
                 samples = await source.read(block)
                 if samples is None or source is not self.source:
-                    continue        # waiting, so check that clients still listen; or switched away from
+                    # Waiting, so check that clients still listen, and that
+                    # signals no longer found are no longer shown as active.
+                    self._check_peaks()
+                    continue        # or switched away from
                 capture = (source.centre_hz, source.sample_rate_hz)
                 if capture != self._capture:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
                 audio = any(subscription.audio for subscription in self._clients)
-                power, codes, meter, pcm = await asyncio.to_thread(
-                    _process_block, self.analyzer, self._demodulator, samples, *capture,
-                    self._dc_removal, self._demod, audio)
+                threshold_db = self._threshold_db if self._detection else None
+                power, codes, meter, pcm, detections = await asyncio.to_thread(
+                    _process_block, self.analyzer, self._demodulator, self._detector, samples, *capture,
+                    self._dc_removal, self._demod, audio, threshold_db)
                 self._publish(capture, power, codes, meter, pcm)
+                # Detection turned off, or another source, meanwhile: these signals are not news.
+                if detections is not None and self._detection and source is self.source:
+                    self._signals.update(detections, time.monotonic())
+                    self._check_peaks()
         except Exception:
             log.exception("the engine stopped")
             self.close()
@@ -606,6 +681,34 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("remote")
         self._settings_changed()
+
+    def _check_peaks(self) -> None:
+        """Tell the clients of the signals found once the list changed, such
+        as when a signal is no longer active."""
+        if self._signals.changed(time.monotonic()):
+            self._peaks_changed()
+
+    def _peaks_changed(self, at_once: bool = False) -> None:
+        """The signals found changed: the clients receive them now when
+        ``at_once``, as after an interface's change, or when they last did at
+        least PEAKS_INTERVAL_S ago, and otherwise once that long has passed."""
+        if self._closed:
+            return
+        wait = 0.0 if at_once else self._peaks_sent_s + PEAKS_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            if self._peaks_timer is None:
+                self._peaks_timer = asyncio.get_running_loop().call_later(wait, self._send_peaks)
+            return
+        if self._peaks_timer is not None:
+            self._peaks_timer.cancel()
+        self._send_peaks()
+
+    def _send_peaks(self) -> None:
+        """Every client receives the signals found, as they stand when it does."""
+        self._peaks_timer = None
+        self._peaks_sent_s = time.monotonic()
+        for subscription in self._clients:
+            subscription.changed("peaks")
 
     async def _check_updates(self, updates: UpdateChecker) -> None:
         try:
@@ -642,6 +745,9 @@ class Engine:
             self._reopen[kind] = new.reopen
             self._adopt()
             self._demod_changed()
+            self._signals.clear()       # found by another receiver
+            if self._signals.changed(time.monotonic()):
+                self._peaks_changed(at_once=True)
         self._source_changed()
 
     @staticmethod
@@ -697,12 +803,45 @@ class Engine:
             except ValueError as error:
                 log.warning("the saved setting %s is not used: %s", name, error)
 
+    def _restore_scanner(self, saved: object) -> None:
+        """Apply the saved scanner settings one at a time: one that is not
+        valid keeps its default, and the ignored frequencies beyond the first
+        MAX_IGNORED are left out."""
+        if saved is None:
+            return
+        if not isinstance(saved, dict):
+            log.warning("the saved scanner settings are not used")
+            return
+        detection = saved.get("detection", self._detection)
+        if isinstance(detection, bool):
+            self._detection = detection
+        else:
+            log.warning("the saved setting detection is not used")
+        if "threshold_db" in saved:
+            try:
+                self._threshold_db = checked_threshold(saved["threshold_db"])
+            except ValueError as error:
+                log.warning("the saved setting threshold_db is not used: %s", error)
+        ignored = saved.get("ignored_hz", [])
+        if not isinstance(ignored, list):
+            log.warning("the saved ignored frequencies are not used")
+            return
+        if len(ignored) > MAX_IGNORED:
+            log.warning("only the first %d saved ignored frequencies are used", MAX_IGNORED)
+        for value in ignored[:MAX_IGNORED]:
+            try:
+                self._signals.ignore(checked_frequency(value, "an ignored frequency"))
+            except ValueError as error:
+                log.warning("a saved ignored frequency is not used: %s", error)
+
     def _contents(self) -> dict[str, dict[str, Any]]:
         """What the settings, bookmarks and remote access files hold, as
         things stand: with sources to open, which source opens at the next
         start."""
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
+        settings["scanner"] = {"detection": self._detection, "threshold_db": self._threshold_db,
+                               "ignored_hz": self._signals.ignored}
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
         contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
@@ -821,16 +960,23 @@ def _saved_check_at_start(saved: object) -> bool:
     return value
 
 
-def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, samples: np.ndarray,
-                   centre_hz: float, rate_hz: float, dc_removal: bool, settings: DemodSettings,
-                   audio: bool) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None]:
-    """The bin powers, the display codes, the channel meter and, with
-    ``audio``, the audio of a block of samples, worked out in a worker
-    thread."""
+def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detector: Detector,
+                   samples: np.ndarray, centre_hz: float, rate_hz: float, dc_removal: bool,
+                   settings: DemodSettings, audio: bool, threshold_db: float | None,
+                   ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None]:
+    """The bin powers, the display codes, the channel meter, with ``audio``
+    the audio, and once ``detector`` has averaged enough blocks, the signals
+    found, of a block of samples, worked out in a worker thread. Detection
+    is off without ``threshold_db``."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
     power = analyzer.power(samples)
     noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz)
     meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio)
-    return power, analyzer.codes(power), meter, pcm
+    if threshold_db is None:
+        detector.reset()
+        detections = None
+    else:
+        detections = detector.add(power, centre_hz, rate_hz, threshold_db)
+    return power, analyzer.codes(power), meter, pcm, detections

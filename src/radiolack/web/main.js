@@ -89,7 +89,7 @@ const S = {
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
   showPlan: true, showMarks: true, split: 0.4,
   sql: -80, sqlAuto: true, ctcss: 'detect', agc: 'slow', nr: false, notch: false, blanker: false, volume: 70,
-  peakOn: true, peakThr: 12, peakMarks: true, memDwell: 0.25, memResume: 2,
+  peakMarks: true, memDwell: 0.25, memResume: 2,
   autoHide: true, keepAwake: false,
 };
 const view = { f0: 0, f1: 0 };
@@ -124,11 +124,9 @@ let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
 let meterSqlDb = null;              // the squelch threshold in use, from the frames; null while unknown
 const autoWf = { min: -101, max: -57 };
 const floorSample = new Float32Array(1024);
-const PEAK_MERGE_HZ = 1500;         // detections closer than this update the same entry
-const PEAK_LIST_MAX = 200;
-const peaks = [];                   // { f, ch, first, last, hits, margin }
-const excluded = [];                // frequencies ignored by the peak scanner
-const isExcluded = (f) => excluded.some((x) => Math.abs(x - f) <= PEAK_MERGE_HZ);
+let peaks = [];                     // the signals the engine found (stream.js Peak), as last received
+let peaksAt = 0;                    // performance.now() when they came: their ages count on from there
+let peaksVersion = 0;               // lists received, for the spectrum's marks
 let DPR = 1, GLS = 1, appW = 0, specH = 0, wfH = 0, layoutPending = false;
 let specVals = null, peakVals = null, specColumns = null;
 const markerCorners = new Float32Array(MAX_MARKERS * 6);
@@ -163,6 +161,8 @@ let sourceError = '';       // why the engine refused this interface's last chan
 const typingIn = new Set(); // Source fields the user is typing in, which the engine's state leaves as they are
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
+let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
+let scannerNote = '';       // why this interface's last scanner change did not happen
 let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
 let update = null;          // what the engine's update check found (stream.js UpdateState), once received
 let updateNote = '';        // why this interface's last update request did not reach the engine
@@ -245,6 +245,17 @@ const stream = new EngineStream({
     bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan }));
     bookmarksChanged();
   },
+  onScanner: (state) => {
+    scanner = state;
+    scannerNote = '';
+    syncScanner();
+  },
+  onPeaks: (list) => {
+    peaks = list;
+    peaksAt = performance.now();
+    peaksVersion += 1;
+    if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+  },
   onPreferences: applyPreferences,
   onStorage: (state) => {
     storage = state;
@@ -271,6 +282,11 @@ const stream = new EngineStream({
     if (command === 'bookmark') {
       bookmarkNote = `Change refused: ${message}.`;
       syncBookmarkNote();
+      return;
+    }
+    if (command === 'scanner') {
+      scannerNote = `Change refused: ${message}.`;
+      syncScanner();        // the controls show the engine's settings again
       return;
     }
     if (command === 'preferences') {
@@ -300,6 +316,7 @@ const stream = new EngineStream({
     if (state !== 'open') { rateSince = 0; frameRate = 0; audio.reset(); }
     if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
     syncSource();
+    syncScanner();
     updateStatus();
   },
 });
@@ -557,7 +574,7 @@ let specKey = '';                   // what the spectrum shows: drawn again only
 function renderSpectrum() {
   if (!spectrumView || !specColumns) return;
   const W = spectrumView.width, H = spectrumView.height, s = GLS, top = displayTop();
-  const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakOn && S.peakMarks}`;
+  const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks} ${peaksVersion}`;
   if (key === specKey) return;
   specKey = key;
   const plotH = Math.max(2, H - Math.round(AXIS_H * s));
@@ -575,13 +592,14 @@ function renderSpectrum() {
       yOf(Math.floor(top / dbStep) * dbStep), (dbStep / S.range) * plotH];
   }
   let markerCount = 0;
-  if (S.peakOn && S.peakMarks) {
-    const now = performance.now(), span = view.f1 - view.f0;
+  if (S.peakMarks) {
+    const span = view.f1 - view.f0;
     for (const p of peaks) {
       if (markerCount >= MAX_MARKERS) break;
-      if (now - p.last > 1500 || isExcluded(p.f) || p.f < view.f0 || p.f > view.f1) continue;
-      const x = ((p.f - view.f0) / span) * W;
-      const bi = clamp(Math.round((p.f - fStart()) / binHz()), 0, S.nb - 1);
+      const f = p.frequencyHz;
+      if (!p.active || f < view.f0 || f > view.f1) continue;
+      const x = ((f - view.f0) / span) * W;
+      const bi = clamp(Math.round((f - fStart()) / binHz()), 0, S.nb - 1);
       const y = clamp(yOf(avgDb[bi]) - 6 * s, 12 * s, plotH);
       markerCorners.set([x - 4 * s, y - 7 * s, x + 4 * s, y - 7 * s, x, y], markerCount * 6);
       markerCount += 1;
@@ -968,73 +986,80 @@ function applyDemod(state) {
 }
 
 // ------------------------------------------------------------------ scanners
-// Channelized FM snaps to the 12.5 kHz raster. Narrow signals keep 100 Hz
-// precision and merge with the nearest entry, so bin jitter does not split
-// one transmitter into several rows and slow drift (Doppler) is followed.
-function registerPeak(f, width, margin, now) {
-  const seg = segmentAt(f);
-  const ch = width >= 4000 && Boolean(seg && seg.step >= 12500);
-  const fq = ch ? Math.round(f / 12500) * 12500 : Math.round(f / 100) * 100;
-  if (isExcluded(fq)) return;
-  let e = null, best = PEAK_MERGE_HZ;
-  for (const p of peaks) {
-    const dist = Math.abs(p.f - fq);
-    if (dist <= best) { best = dist; e = p; }
+// The engine finds the signals and keeps their list, the same for every
+// interface, and its detection settings; this interface shows them. In a
+// channelized range of the band plan, a signal shows on its channel when it
+// is wide, as a voice moves an FM signal's centre of power, or close to it;
+// others show to the nearest 100 Hz.
+function peakShownHz(p) {
+  const f = p.frequencyHz, seg = segmentAt(f);
+  if (seg && seg.step >= 12500) {
+    const channel = Math.round(f / seg.step) * seg.step;
+    if (p.widthHz >= 4000 || Math.abs(f - channel) <= 1500) return channel;
   }
-  if (!e) {
-    e = { f: fq, ch, first: now, last: now, hits: 0, margin };
-    peaks.push(e);
-    if (peaks.length > PEAK_LIST_MAX) {
-      peaks.sort((a, b) => b.last - a.last);
-      peaks.length = PEAK_LIST_MAX;
-    }
-  } else if (ch) {
-    e.f = fq;
-    e.ch = true;
-  } else if (!e.ch) {
-    e.f = Math.round((e.f + (fq - e.f) * 0.3) / 100) * 100;
-  }
-  e.last = now;
-  e.hits += 1;
-  e.margin = margin;
+  return Math.round(f / 100) * 100;
 }
-function scanPeaks(now) {
-  if (!S.peakOn || !avgPrimed) return;
-  const nb = S.nb, bin = binHz(), f0 = fStart(), thr = floorDb + S.peakThr;
-  const lo = Math.floor(nb * 0.05), hi = Math.ceil(nb * 0.95);
-  let i = lo;
-  while (i < hi) {
-    if (avgDb[i] <= thr) { i += 1; continue; }
-    let j = i, maxDb = -300, wsum = 0, fsum = 0;
-    while (j < hi && avgDb[j] > thr - 4) {
-      wsum += avgLin[j];
-      fsum += avgLin[j] * j;
-      if (avgDb[j] > maxDb) maxDb = avgDb[j];
-      j += 1;
-    }
-    registerPeak(f0 + (fsum / wsum + 0.5) * bin, (j - i) * bin, maxDb - floorDb, now);
-    i = j + 1;
-  }
-}
+// The engine sends the list when it changes: the time since each inactive signal was found counts on here.
+const peakSeen = (p, now) => (p.active ? 'active' : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
+let shownPeaks = new Map();         // each row's shown frequency → the engine's, which Ignore sends
 function renderPeaks() {
-  const now = performance.now();
-  const rows = peaks.filter((p) => !isExcluded(p.f));
-  rows.sort((a, b) => {
-    const aa = now - a.last < 1500, ba = now - b.last < 1500;
-    if (aa !== ba) return aa ? -1 : 1;
-    return aa ? b.margin - a.margin : b.last - a.last;
-  });
-  $('#pk-body').innerHTML = rows.length
-    ? rows.slice(0, 40).map((p) => {
-      const ago = (now - p.last) / 1000, active = ago < 1.5;
-      return `<tr class="${active ? 'active' : ''}">`
-        + `<td><button type="button" class="freq-link" data-act="tune" data-f="${p.f}" title="Listen">${fmtMHz(p.f)}</button></td>`
-        + `<td>+${Math.round(p.margin)} dB</td><td>${active ? 'active' : `${fmtAgo(ago)} ago`}</td>`
-        + `<td class="acts"><button type="button" class="link" data-act="ignore" data-f="${p.f}">Ignore</button></td></tr>`;
+  const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
+  shownPeaks = new Map();
+  list.innerHTML = peaks.length
+    ? peaks.map((p) => {
+      const f = peakShownHz(p);
+      shownPeaks.set(String(f), p.frequencyHz);
+      return `<tr class="${p.active ? 'active' : ''}">`
+        + `<td><button type="button" class="freq-link" data-tune="${f}" title="Listen">${fmtMHz(f)}</button></td>`
+        + `<td>+${Math.round(p.marginDb)} dB</td><td class="seen">${peakSeen(p, now)}</td>`
+        + `<td class="acts"><button type="button" class="link" data-ignore="${f}">Ignore</button></td></tr>`;
     }).join('')
-    : '<tr><td colspan="4" class="empty">No peak detected</td></tr>';
-  $('#pk-excluded').textContent = excluded.length ? `${excluded.length} ignored ${excluded.length === 1 ? 'frequency' : 'frequencies'}.` : '';
-  $('#pk-restore').hidden = excluded.length === 0;
+    : `<tr><td colspan="4" class="empty">${scanner && !scanner.detection ? 'Detection is off' : 'No peak detected'}</td></tr>`;
+  focusAgain(list, refocus);
+}
+// Between lists, only the times since the inactive signals were found change.
+function updatePeakAges() {
+  const now = performance.now();
+  $$('#pk-body td.seen').forEach((cell, i) => {
+    const text = peaks[i] ? peakSeen(peaks[i], now) : '';
+    if (cell.textContent !== text) cell.textContent = text;
+  });
+}
+const pkOn = $('#pk-on'), pkThr = $('#pk-thr'), pkThrOut = $('#pk-thr-v');
+// The detection controls show the engine's settings once it sent them, and
+// stay off with an engine that does not find signals.
+function syncScanner() {
+  const known = scanner !== null && stream.scanners.includes('peaks');
+  pkOn.disabled = !known;
+  pkThr.disabled = !known;
+  if (scanner) {
+    pkOn.checked = scanner.detection;
+    pkThr.value = String(scanner.thresholdDb);
+    pkThrOut.textContent = `${scanner.thresholdDb} dB`;
+  }
+  const ignored = scanner ? scanner.ignoredHz.length : 0;
+  $('#pk-excluded').textContent = ignored ? `${ignored} ignored ${ignored === 1 ? 'frequency' : 'frequencies'}.` : '';
+  $('#pk-restore').hidden = ignored === 0;
+  syncScannerNote();
+  if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+}
+function syncScannerNote() {
+  let note = scannerNote;
+  if (!note && streamState === 'open' && !stream.scanners.includes('peaks')) {
+    note = 'The engine that runs does not find signals: restart Radiolack after its update.';
+  }
+  const el = $('#pk-note');
+  el.textContent = note;
+  el.hidden = !note;
+}
+// Send a scanner command: every interface receives the scanner state once
+// the engine applies it. One not sent leaves the controls as the engine's
+// settings are.
+function sendScanner(send) {
+  const sent = send();
+  scannerNote = sent ? '' : 'Not connected to the engine: the scanner did not change.';
+  if (sent) syncScannerNote(); else syncScanner();
+  return sent;
 }
 
 const mem = { running: false, idx: -1, state: 'idle', until: 0, cur: null };
@@ -1424,6 +1449,7 @@ function loadPlan() {
     renderPlanList();
     lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
     updateOverlays();
+    if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();     // signals show on their channels now
   });
 }
 // Bookmarks belong to the engine: changes go to it, and every interface
@@ -1485,7 +1511,7 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'edit', 'del', 'forget'].find((n) => el.dataset[n]);
+  const name = ['id', 'edit', 'del', 'forget', 'tune', 'ignore'].find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -1544,16 +1570,17 @@ function syncScanTabs() {
   if (scanTab === 'memory') { renderMemList(); syncMem(); }
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
-bindCheck('pk-on', 'peakOn');
-bindRange('pk-thr', 'peakThr', (v) => `${v} dB`);
+pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ detection: pkOn.checked })));
+pkThr.addEventListener('input', () => { pkThrOut.textContent = `${pkThr.value} dB`; });
+pkThr.addEventListener('change', () => sendScanner(() => stream.setScanner({ thresholdDb: Number(pkThr.value) })));
 bindCheck('pk-marks', 'peakMarks');
 $('#pk-body').addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-act]');
+  const b = e.target.closest('button');
   if (!b) return;
-  const f = Number(b.dataset.f);
-  if (b.dataset.act === 'tune') { userTune(); tune(f); } else { excluded.push(f); renderPeaks(); }
+  if (b.dataset.tune) { userTune(); tuneAnywhere(Number(b.dataset.tune)); }
+  else if (shownPeaks.has(b.dataset.ignore)) sendScanner(() => stream.ignoreFrequency(shownPeaks.get(b.dataset.ignore)));
 });
-$('#pk-restore').addEventListener('click', () => { excluded.length = 0; renderPeaks(); });
+$('#pk-restore').addEventListener('click', () => sendScanner(() => stream.restoreIgnored()));
 bindRange('mem-dwell', 'memDwell', (v) => `${Math.round(v * 1000)} ms`);
 bindRange('mem-resume', 'memResume', (v) => `${v} s`);
 $('#mem-list').addEventListener('change', (e) => {
@@ -1703,7 +1730,7 @@ function syncStorage() {
 // yet (CTCSS, AGC, noise reduction, notch, blanker, keeping the screen on).
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
-  'peakOn', 'peakThr', 'peakMarks', 'memDwell', 'memResume', 'autoHide'];
+  'peakMarks', 'memDwell', 'memResume', 'autoHide'];
 const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
 const PREFERENCES_SAVE_MS = 1000;
 let preferencesLoaded = false;      // the engine's applied: nothing is saved before
@@ -1757,7 +1784,7 @@ for (const b of $$('#toolbar button')) b.addEventListener('click', () => toggleP
 $('#panel .close').addEventListener('click', closePanel);
 
 function liveUi() {
-  if (openName === 'scanners') { if (scanTab === 'peaks') renderPeaks(); else if (scanTab === 'memory') syncMem(); }
+  if (openName === 'scanners') { if (scanTab === 'peaks') updatePeakAges(); else if (scanTab === 'memory') syncMem(); }
   if (openName === 'demod') syncSql();
   if (openName === 'display') syncAutoDisplay();
 }
@@ -1795,7 +1822,7 @@ ctxEl.addEventListener('click', (e) => {
   else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
-  else if (b.dataset.cmd === 'ignore') { excluded.push(f); renderPeaks(); }
+  else if (b.dataset.cmd === 'ignore') sendScanner(() => stream.ignoreFrequency(f));
   closeCtx();
 });
 // A press outside the menu only dismisses it: on the views it must not also tune or start a drag.
@@ -2102,7 +2129,7 @@ try {
 // ------------------------------------------------------------------ main loop
 // Frames are integrated as they arrive; each animation frame commits the
 // waterfall lines that are due and redraws only the views that changed.
-let lastTs = performance.now(), lineAcc = 0, lastUi = 0, lastPeakScan = 0;
+let lastTs = performance.now(), lineAcc = 0, lastUi = 0;
 function loop(ts) {
   const dt = Math.min(0.1, Math.max(0, (ts - lastTs) / 1000));
   lastTs = ts;
@@ -2112,7 +2139,6 @@ function loop(ts) {
   let lines = 0;
   while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitWfLine(Date.now()); }
   if (lineAcc > 6) lineAcc = 0;
-  if (ts - lastPeakScan > 300) { lastPeakScan = ts; scanPeaks(ts); }
   memTick(ts / 1000);
   renderSpectrum();
   renderWaterfall();
@@ -2131,6 +2157,7 @@ loadPlan();
 renderBookmarks();
 renderMemList();
 syncScanTabs();
+syncScanner();
 syncUpdate();
 updateStatus();
 showVfo();
