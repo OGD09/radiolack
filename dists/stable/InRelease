@@ -5,18 +5,18 @@ Origin: Radiolack
 Label: Radiolack
 Suite: stable
 Codename: stable
-Date: Thu, 12 Nov 2026 13:45:32 +0000
+Date: Thu, 12 Nov 2026 21:08:04 +0000
 Architectures: all
 Components: main
 Description: Radiolack, a receive-only SDR receiver
 Acquire-By-Hash: yes
 SHA256:
- 3e344909f9b5df46829791dc6a73dd027ea4537f71ff890660acc0913767c726 5465 main/binary-all/Packages
- b36e2615a22307f5637a9f737d0a87d1bac1d706187e36f6a24e50ecd1d851cf 952 main/binary-all/Packages.gz
+ 13dfa0c68858d20687a3e6979f120443507b692c8f9374eb5e9724e272f80801 6402 main/binary-all/Packages
+ 36e4335d496367beb070afd6869bf69ab33068f5bfc9ad2d58cd36698f87dd30 1015 main/binary-all/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQ05izIs+XgB9tgmhRRVMHHv22ekwUCavXDAwAKCRBRVMHHv22e
-k1SoAP4rePIenHeA7xL8xXxpKUuycS7KEs7IxcnAnSkBS9AUHwEAqmcsrrUiWlYf
-x/ja0flnlhUlenNeOCKW43MnvTvIWgQ=
-=7Z7+
+iHUEARYKAB0WIQQ05izIs+XgB9tgmhRRVMHHv22ekwUCavYqvAAKCRBRVMHHv22e
+k+vLAP9WanwZRMOCPuv7pUJk4GaBHHw68bazDcg5X828glRStgD/f4sxdLExzywj
+dtfn466pkTalhMa9aZzLRcpCjNXaOgQ=
+=/wiU
 -----END PGP SIGNATURE-----
