@@ -102,11 +102,14 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         await self.local.send_json({"type": "remote", "on": False})
         return await self.next_remote(lambda state: not state["on"])
 
-    def device(self, user_agent: str = IPHONE, resolver: AbstractResolver | None = None) -> aiohttp.ClientSession:
+    def device(self, user_agent: str = IPHONE, resolver: AbstractResolver | None = None,
+               cookie_jar: aiohttp.CookieJar | None = None) -> aiohttp.ClientSession:
         """A phone's browser, which trusts the certificate: it keeps cookies,
-        those of addresses too."""
+        those of addresses too, in ``cookie_jar`` if given."""
         connector = aiohttp.TCPConnector(ssl=self.trust, resolver=resolver or aiohttp.DefaultResolver())
-        session = aiohttp.ClientSession(connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True),
+        if cookie_jar is None:
+            cookie_jar = aiohttp.CookieJar(unsafe=True)
+        session = aiohttp.ClientSession(connector=connector, cookie_jar=cookie_jar,
                                         headers={"User-Agent": user_agent})
         self.addAsyncCleanup(session.close)
         return session
@@ -385,6 +388,10 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         device = self.device()
         await self.pair(device)
         await self.next_remote(lambda state: state["devices"])
+        # The device hangs up first: the server's loop ends before a TLS
+        # connection still open has finished closing, and leaves its socket
+        # to the garbage collector, which warns of it in a later test.
+        await device.close()
         await asyncio.to_thread(self.server.stop)
         saved = json.loads((self.directory / REMOTE_FILE).read_text("utf-8"))
         self.assertEqual(set(saved), {"version", "port", "code", "wrong_codes", "devices", "authority"})
@@ -400,7 +407,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                          (False, self.port, state["fingerprint"]))
         self.assertEqual([d["label"] for d in restarted["devices"]], ["iPhone · Safari"])
         self.assertEqual((await self.turn_on())["code"], state["code"])
-        self.assertIn(b"main.js", (await self.get(device))[2])
+        # The same device comes back with its cookies: it is still paired.
+        self.assertIn(b"main.js", (await self.get(self.device(cookie_jar=device.cookie_jar)))[2])
 
 
 class WithoutAddressTest(unittest.IsolatedAsyncioTestCase):
