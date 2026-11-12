@@ -56,6 +56,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | Lighter stream for remote devices, as the owner chose: about 15 spectrum frames per second, each the mean power of two, in at most 2048 bins, each the highest of the bins it groups, so that narrow signals stay visible, and deflate (RFC 7692) on remote access's stream; this computer's window keeps every frame and every bin. Measured on the simulated band, a device's spectrum drops from 2 Mbit/s to 0.12 Mbit/s, about 0.3 Mbit/s with the PCM audio. A device's finest zoom becomes 16 of its bins, 18.75 kHz at 2.4 MS/s instead of 4.7 kHz. Set aside for now: a device that sends its view and gets only the visible bins, which keeps the detail but loses the waterfall's history at each zoom. When frames come slower than its lines, the waterfall repeats the latest frame, so that it keeps its speed. A remote stream keeps at most 16 KiB unsent, in its socket and its transport: over a link slower than the stream, the system's send queue otherwise grew without end and the delay with it (15.6 s after 60 s at 250 kbit/s), whereas the engine now drops old frames and the delay stays near 5 s at that rate, held by the TLS layer's buffers; Opus audio should leave them empty on such links. |
 | 2026-11-12 | Remote access without a window, answering open question 3: the owner chose an option at start. `--remote [PORT]` turns remote access on at start, as Settings does, on PORT or the port used last, which it keeps, so that a computer without a window chooses its port too. Radiolack prints the addresses, the authority's fingerprint and the access code, as the owner agreed: a computer without a display has nowhere else to show them, and the code then lands wherever the output goes, a service's journal for instance. When remote access cannot turn on, without an address on a local network yet or on a port in use, Radiolack exits with status 1, so that a service manager starts it again. Only this computer turns remote access on, by its interface or by this option, which replaces "only this computer's interfaces turn it on" (2026-11-11); whether it is on is still never saved, and no setting turns it on. Settings stays on 127.0.0.1, which an SSH tunnel reaches. Set aside: Settings as the only way, through an SSH tunnel after each start, which a computer that restarts alone could not follow. |
 | 2026-11-12 | Updates, no install button: the owner keeps the system's software updates, or apt in a terminal, which install a newer Radiolack well enough, and drops the button of 2026-11-10 that would install it with the administrator's password and restart Radiolack. The alert at start stays as it is, and Radiolack installs nothing itself. |
+| 2026-11-12 | Opus leaves v1, as the owner chose: with the lighter stream, a device needs about 0.3 Mbit/s with the PCM audio, which the home Wi-Fi and a VPN carry, so Opus audio comes only if a mobile link shows dropouts. This replaces "then Opus audio" in the first decision of 2026-11-12. |
 
 ## Scope
 
@@ -187,9 +188,11 @@ flowchart LR
 - v0: the engine sends 16-bit PCM over WebSocket to the local window, which
   plays it with an AudioWorklet. The local window uses the same path as remote
   clients, so v1 only adds compression and the network hop.
-- v1: PCM on the local network (192 kbit/s for 12 kHz mono), Opus at about
-  32 kbit/s for slower links, decoded by WebCodecs or by a WebAssembly decoder
-  where WebCodecs lacks Opus.
+- v1: PCM (192 kbit/s for 12 kHz mono), on the local network and through a
+  VPN, where a device's whole stream needs about 0.3 Mbit/s. Opus, at about
+  32 kbit/s, decoded by WebCodecs or by a WebAssembly decoder where
+  WebCodecs lacks Opus, comes only if a mobile link shows dropouts (decided
+  on 2026-11-12).
 - iPhone with the screen locked: Safari may interrupt Web Audio when the
   screen locks or the page goes to the background. With Safari's "playback"
   audio session (`navigator.audioSession`), which iOS also plays with the
@@ -249,8 +252,9 @@ there gets a fix release.
 - Settings > Remote access as in the mockup: HTTPS, access code, connected
   devices.
 - Remote clients: the same UI, touch input, shared receiver, a volume per
-  device; PCM audio on the local network, Opus for slower links. The engine
-  keeps each device's interface settings apart (v0 keeps one set).
+  device; PCM audio, and Opus only if a mobile link shows dropouts (decided
+  on 2026-11-12). The engine keeps each device's interface settings apart
+  (v0 keeps one set).
 - iPhone: listening with the screen on and with the screen locked (spike 2:
   Safari's playback audio session).
 - Use from outside the home (decided on 2026-11-12): Radiolack runs next to
@@ -656,7 +660,7 @@ These costs wait for v4:
   busy port; `smoke_test.py --remote` starts Radiolack with it and pairs a
   device with what it printed, in CI's containers or a network namespace
   of its own.
-- Next steps: v1 continues with remote use from outside the home (see
-  Decisions, 2026-11-12): Opus audio, then interface settings per device.
+- Next steps: v1 ends with interface settings per device; Opus waits for
+  a mobile link that shows dropouts (see Decisions, 2026-11-12).
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
