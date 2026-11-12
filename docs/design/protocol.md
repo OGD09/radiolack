@@ -21,10 +21,13 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false}
+   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks"]}
    ```
 
-   `remote` is true for a remote client.
+   `remote` is true for a remote client. `scanners` lists the scanners that
+   the engine runs: `peaks`, which finds the signals in the span (the
+   scanner state and the signals found, below). An engine older than the
+   scanners sends no `scanners`: it runs none.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -97,7 +100,59 @@ preferences apart from this computer's.
 
    They come in frequency order, then by name, ignoring case: at most 2000.
 
-5. Then the preferences, a JSON text message sent once: the latest that an
+5. Then the scanner state, a JSON text message, sent again whenever it
+   changes, whichever interface changed it. The engine saves it with the
+   other settings:
+
+   ```json
+   {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0]}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `detection` | Whether the engine looks for signals in its spectra. |
+   | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 30 dB. |
+   | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
+
+6. Then the signals found, a JSON text message, sent again when the list
+   changes, at most once a second, and at once when a `scanner` message or
+   a switch to another kind of source changed it:
+
+   ```json
+   {"type": "peaks", "peaks": [
+     {"frequency_hz": 145637800, "width_hz": 5273, "margin_db": 30.1, "active": true, "age_s": 0.0},
+     {"frequency_hz": 144800012, "width_hz": 7617, "margin_db": 20.6, "active": false, "age_s": 12.4}]}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `frequency_hz` | The signal's centre of power, a whole number of Hz. |
+   | `width_hz` | The width of the bins it covered, in Hz, when last found. |
+   | `margin_db` | How far its highest bin rose above the local noise when last found, in dB. |
+   | `active` | Whether it was found within the last 1.5 s. |
+   | `age_s` | Seconds since it was last found, when the message was sent. |
+
+   While detection is on, the engine looks for signals in the bin powers
+   it computes for the frames, at their full resolution whatever the
+   client. It averages those of 10 blocks of one capture, a third of a
+   second, then keeps each run of bins whose highest rises at least
+   `threshold_db` above the local noise, the median of the bins within
+   50 kHz, with the bins around it that stay within 4 dB of the threshold.
+   It leaves out the outer tenth of the span on each side and 3 kHz on each
+   side of the centre frequency, and levels below -150 dBFS count as
+   -150 dBFS. A signal is listed once found in two searches in a row;
+   a later detection within 1.5 kHz of it, or within a quarter of its
+   width, updates it, its frequency moving 30% of the way to the
+   detection's. The engine keeps the 200 signals found last, in the spans
+   the receiver left too, and sends 50: the active ones first, strongest
+   first, then the others, latest found first. The list changes when a
+   signal comes or goes, becomes active or inactive, or moves by 100 Hz or
+   1 dB: the time since a signal was found does not change it, so an
+   interface counts that time on from `age_s`. The list empties when
+   detection turns off and when the engine switches to another kind of
+   source.
+
+7. Then the preferences, a JSON text message sent once: the latest that an
    interface of this computer gave the engine (`preferences` message), or
    to a remote client, the latest that an interface of its device gave,
    and this computer's while its device has given none; they are kept for
@@ -110,7 +165,7 @@ preferences apart from this computer's.
    {"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
    ```
 
-6. Then, to this computer's interfaces only, the storage state, a JSON text
+8. Then, to this computer's interfaces only, the storage state, a JSON text
    message, sent again whenever it changes:
 
    ```json
@@ -123,7 +178,7 @@ preferences apart from this computer's.
    | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
    | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-7. Then, to this computer's interfaces only, the update state, a JSON text
+9. Then, to this computer's interfaces only, the update state, a JSON text
    message, sent again whenever it changes:
 
    ```json
@@ -138,73 +193,73 @@ preferences apart from this computer's.
    | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
    | `check_at_start` | Whether the engine checks when it starts. |
 
-8. Then, to this computer's interfaces only, remote access's state, a JSON
-   text message, sent again whenever it changes:
+10. Then, to this computer's interfaces only, remote access's state, a JSON
+    text message, sent again whenever it changes:
 
-   ```json
-   {"type": "remote", "on": true, "port": 8443,
-    "urls": ["https://192.168.1.20:8443/", "https://studio.local:8443/"],
-    "code": "K7PM-3XQH", "blocked": false,
-    "devices": [{"id": "5f0c2a91", "label": "iPhone · Safari", "paired": 1794000000,
-                 "seen": 1794003600, "connected": true}],
-    "fingerprint": "3A 4B … 9F", "problem": ""}
-   ```
+    ```json
+    {"type": "remote", "on": true, "port": 8443,
+     "urls": ["https://192.168.1.20:8443/", "https://studio.local:8443/"],
+     "code": "K7PM-3XQH", "blocked": false,
+     "devices": [{"id": "5f0c2a91", "label": "iPhone · Safari", "paired": 1794000000,
+                  "seen": 1794003600, "connected": true}],
+     "fingerprint": "3A 4B … 9F", "problem": ""}
+    ```
 
-   (`fingerprint` shortened here.)
+    (`fingerprint` shortened here.)
 
-   | Field | Meaning |
-   | --- | --- |
-   | `on` | Whether remote access listens. False at each start. |
-   | `port` | The port it listens on, or will. |
-   | `urls` | What a device opens: by each address it listens on, then by this computer's mDNS name, when its host name is a valid one. The name also leads to the computer's IPv6 addresses, if any, where remote access does not listen. Empty while off. |
-   | `code` | The access code, in two groups of four characters, while on; null while off. |
-   | `blocked` | Too many wrong codes were entered (10): the code no longer works until a new one is made. |
-   | `devices` | The paired devices, in the order they were paired: `id`, which a `remote` message names; `label`, such as `iPhone · Safari`, made of known words only; `paired` and `seen`, when it was paired and last used, in Unix time, the latter to the hour; `connected`, whether it has a stream open. |
-   | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
-   | `problem` | Why remote access could not turn on, in sentences for the user, or empty. |
+    | Field | Meaning |
+    | --- | --- |
+    | `on` | Whether remote access listens. False at each start. |
+    | `port` | The port it listens on, or will. |
+    | `urls` | What a device opens: by each address it listens on, then by this computer's mDNS name, when its host name is a valid one. The name also leads to the computer's IPv6 addresses, if any, where remote access does not listen. Empty while off. |
+    | `code` | The access code, in two groups of four characters, while on; null while off. |
+    | `blocked` | Too many wrong codes were entered (10): the code no longer works until a new one is made. |
+    | `devices` | The paired devices, in the order they were paired: `id`, which a `remote` message names; `label`, such as `iPhone · Safari`, made of known words only; `paired` and `seen`, when it was paired and last used, in Unix time, the latter to the hour; `connected`, whether it has a stream open. |
+    | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
+    | `problem` | Why remote access could not turn on, in sentences for the user, or empty. |
 
-9. Binary spectrum frames, about 30 per second while the source streams.
-   Each frame is a 40-byte little-endian header followed by one byte per FFT
-   bin:
+11. Binary spectrum frames, about 30 per second while the source streams.
+    Each frame is a 40-byte little-endian header followed by one byte per FFT
+    bin:
 
-   | Offset | Type | Field |
-   | --- | --- | --- |
-   | 0 | uint8 | kind: 1, a spectrum frame |
-   | 1 | uint8 | frame format version: 2 |
-   | 2 | uint16 | flags: bit 0 set while the squelch is open; the other bits are 0 |
-   | 4 | uint32 | sequence number, wrapping at 2^32 |
-   | 8 | float64 | centre frequency, Hz |
-   | 16 | float64 | sample rate, Hz: the width of the frame |
-   | 24 | float32 | level of code 0, dBFS |
-   | 28 | float32 | level step per code, dB |
-   | 32 | float32 | channel level, dBFS: NaN when nothing is received there |
-   | 36 | float32 | squelch threshold in use, dBFS: NaN while unknown |
-   | 40 | uint8[] | one code per bin, lowest frequency first |
+    | Offset | Type | Field |
+    | --- | --- | --- |
+    | 0 | uint8 | kind: 1, a spectrum frame |
+    | 1 | uint8 | frame format version: 2 |
+    | 2 | uint16 | flags: bit 0 set while the squelch is open; the other bits are 0 |
+    | 4 | uint32 | sequence number, wrapping at 2^32 |
+    | 8 | float64 | centre frequency, Hz |
+    | 16 | float64 | sample rate, Hz: the width of the frame |
+    | 24 | float32 | level of code 0, dBFS |
+    | 28 | float32 | level step per code, dB |
+    | 32 | float32 | channel level, dBFS: NaN when nothing is received there |
+    | 36 | float32 | squelch threshold in use, dBFS: NaN while unknown |
+    | 40 | uint8[] | one code per bin, lowest frequency first |
 
-   With `n` bins, bin `i` is centred on `centre - rate / 2 + i * rate / n`,
-   and code `c` stands for `level0 + c * step` dBFS. Code 0 also stands for
-   every lower level. A full-scale tone centred on a bin reads 0 dBFS; levels
-   are not calibrated in dBm.
+    With `n` bins, bin `i` is centred on `centre - rate / 2 + i * rate / n`,
+    and code `c` stands for `level0 + c * step` dBFS. Code 0 also stands for
+    every lower level. A full-scale tone centred on a bin reads 0 dBFS; levels
+    are not calibrated in dBm.
 
-   A frame averages a few FFTs of the latest samples, after DC removal when
-   it is on. The interface smooths successive frames for its spectrum trace
-   and its waterfall.
+    A frame averages a few FFTs of the latest samples, after DC removal when
+    it is on. The interface smooths successive frames for its spectrum trace
+    and its waterfall.
 
-   A remote client, whose link may be slower, gets about 15 frames per
-   second, with at most 2048 bins: each of its frames gives the mean power
-   of two of the frames above, each bin the highest of the bins it groups,
-   so that narrow signals stay visible, with the channel level and squelch
-   of the latter. Its frames have a sequence of their own.
+    A remote client, whose link may be slower, gets about 15 frames per
+    second, with at most 2048 bins: each of its frames gives the mean power
+    of two of the frames above, each bin the highest of the bins it groups,
+    so that narrow signals stay visible, with the channel level and squelch
+    of the latter. Its frames have a sequence of their own.
 
-   The channel level is the mean power, over the same samples, in the VFO's
-   channel: a full-scale carrier on the VFO reads 0 dBFS. It is NaN when
-   the VFO lies outside the span. The squelch opens once the power averaged
-   over 10 ms reaches the threshold and closes 3 dB below it; the flag gives
-   its state at the end of the samples. The threshold is `squelch_db`, or
-   the automatic one, which is NaN while the engine has no noise estimate
-   (the VFO outside the span); the squelch then stays closed.
+    The channel level is the mean power, over the same samples, in the VFO's
+    channel: a full-scale carrier on the VFO reads 0 dBFS. It is NaN when
+    the VFO lies outside the span. The squelch opens once the power averaged
+    over 10 ms reaches the threshold and closes 3 dB below it; the flag gives
+    its state at the end of the samples. The threshold is `squelch_db`, or
+    the automatic one, which is NaN while the engine has no noise estimate
+    (the VFO outside the span); the squelch then stays closed.
 
-10. Binary audio frames, about 30 per second, only to an interface that asked
+12. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -237,7 +292,7 @@ preferences apart from this computer's.
     its samples by the filters' delay and the squelch's look-ahead: about
     40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
 
-11. An error, to one interface only, when the engine refuses a message from
+13. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -246,9 +301,9 @@ preferences apart from this computer's.
     ```
 
 What is waiting for an interface goes out in this order: the source state,
-the demodulation settings, the bookmarks, the storage state, the update
-state and remote access's state, each when it changed (and the preferences
-at the start), then errors, then audio frames, then spectrum frames. A client that reads too
+the demodulation settings, the bookmarks, the scanner state, the signals
+found, the storage state, the update state and remote access's state, each
+when it changed (and the preferences at the start), then errors, then audio frames, then spectrum frames. A client that reads too
 slowly loses its oldest frames: the engine keeps the latest four spectrum
 frames and fifteen audio frames (half a second) for it and never slows down
 for one client; it keeps its latest states, and up to eight errors. When
@@ -323,6 +378,30 @@ unknown or invalid, when the `id` is unknown (another interface may have
 removed the bookmark) or when there are already 2000 bookmarks. Otherwise
 every interface receives the bookmarks.
 
+A `scanner` message changes the signal detection, the same for every
+interface:
+
+```json
+{"type": "scanner", "detection": false}
+{"type": "scanner", "threshold_db": 18}
+{"type": "scanner", "ignore": 144800000}
+{"type": "scanner", "restore": true}
+```
+
+| Field | Value |
+| --- | --- |
+| `detection` | `true` or `false`. Turning detection off empties the list of the signals found. |
+| `threshold_db` | A number from 6 to 30. |
+| `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
+| `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
+
+`detection` and `threshold_db` may come together; `ignore` and `restore`
+come alone in their message. The engine refuses the whole message, changing
+nothing, when it has no setting, an unknown or invalid one, or a new
+frequency to ignore while 200 are ignored already. Otherwise every
+interface receives the scanner state, and the signals found at once if they
+changed.
+
 A `preferences` message gives the engine this interface's preferences,
 which replace the ones it kept for this computer's interfaces, or for the
 remote client's device:
@@ -370,8 +449,8 @@ unknown or invalid setting, or a device it does not know, and answers the
 sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
-A remote client may send `source`, `demod`, `bookmark`, `preferences` and
-`audio` messages, but neither `update` nor `remote` messages, nor a
+A remote client may send `source`, `demod`, `bookmark`, `scanner`,
+`preferences` and `audio` messages, but neither `update` nor `remote` messages, nor a
 `source` message that names `address`: the engine refuses them with the
 error "only Radiolack's interface on the computer may change this". Its
 `preferences` are its device's own: they change neither this computer's
@@ -467,9 +546,13 @@ and later.
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
   number. It ignores a source state, demodulation settings, bookmarks, a
-  storage state, an update state or a remote access state with a missing or
-  malformed field, and leaves out source settings it does not know and
-  preferences that are not numbers, true or false, texts or null.
+  scanner state, a list of signals found, a storage state, an update state
+  or a remote access state with a missing or malformed field, and leaves
+  out source settings it does not know and preferences that are not
+  numbers, true or false, texts or null.
+- An interface whose hello does not list `peaks` among its `scanners`, as
+  an older engine's, shows that signal detection needs Radiolack to
+  restart, and offers none of its settings.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -503,7 +586,13 @@ and later.
   and one that sends them to an engine that refuses them receives an
   error, the rest working. A new version would stop the interface that a
   running Radiolack serves, which it reads from the disk at each request,
-  from the installation of a newer package until Radiolack restarts.
+  from the installation of a newer package until Radiolack restarts. On
+  2026-11-12 also, for the same reason and without a new version: the
+  hello's `scanners`, the scanner state, the signals found and the
+  `scanner` message, as detection moved from the interface to the engine.
+  An older interface ignores messages of unknown types and finds signals
+  itself, as before; a newer one learns from the hello whether the engine
+  finds them.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

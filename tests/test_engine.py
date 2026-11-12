@@ -27,7 +27,8 @@ from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, F
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
-STATES = ("source", "demod", "bookmarks", "preferences", "storage", "update")    # what a new client gets first
+# What a new client gets first; a remote client, without the last two.
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update")
 
 
 async def next_message(subscription: Subscription):
@@ -153,6 +154,9 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "audio_modes": list(MODES), "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
+        self.assertEqual(subscription.get_nowait(),
+                         {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": []})
+        self.assertEqual(subscription.get_nowait(), {"type": "peaks", "peaks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
@@ -692,7 +696,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         engine.set_preferences({"volume": 30})
         self.assertEqual(waiting(subscription), [])
         later = engine.subscribe()
-        self.assertEqual(waiting(later)[3], {"type": "preferences", "values": {"volume": 30}})
+        self.assertEqual(waiting(later)[STATES.index("preferences")], {"type": "preferences", "values": {"volume": 30}})
         for values in ([1], {"volume": [30]}, {"volume": float("inf")}, {"big": 2 ** 60},
                        {f"name {n}": n for n in range(101)}):
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "preference"):
@@ -870,7 +874,7 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
         local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
         self.assertEqual([message["type"] for message in ready_messages(local)], [*STATES, "remote"])
         self.assertEqual([message["type"] for message in ready_messages(remote)],
-                         ["source", "demod", "bookmarks", "preferences"])
+                         list(STATES[:-2]))
         access.set_port(9000)
         self.assertEqual(ready_messages(local), [{"type": "remote", **access.describe()}])
         self.assertEqual(ready_messages(remote), [])
@@ -950,3 +954,166 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+async def next_peaks(subscription: Subscription, until=lambda peaks: True) -> list[dict]:
+    """The signals found, from the next peaks message whose list satisfies ``until``."""
+    while True:
+        message = await next_message(subscription)
+        if isinstance(message, dict) and message["type"] == "peaks" and until(message["peaks"]):
+            return message["peaks"]
+
+
+def kinds_of(messages: list) -> list[str]:
+    """The types of the JSON messages among ``messages``."""
+    return [message["type"] for message in messages if isinstance(message, dict)]
+
+
+class ScannerTest(unittest.IsolatedAsyncioTestCase):
+    """Detection in the engine: the signals found and the scanner settings,
+    the same for every client, and saved."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "radiolack"
+
+    def engine(self, source: Source | None = None, run: bool = True, **options) -> Engine:
+        engine = Engine(source if source is not None else FakeSource(), **options)
+        task = asyncio.ensure_future(engine.run()) if run else None
+
+        async def stop():
+            engine.close()
+            if task is not None:
+                await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def test_every_client_receives_the_signals_found(self):
+        engine = self.engine()
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        for subscription in (local, remote):
+            [found] = await next_peaks(subscription, until=bool)
+            self.assertAlmostEqual(found["frequency_hz"], FAKE_TONE_HZ, delta=FAKE_RATE_HZ / 8192)
+            self.assertEqual((found["active"], found["age_s"]), (True, 0.0))
+            self.assertGreater(found["margin_db"], 12.0)
+
+    async def test_scanner_changes_reach_every_client_and_are_checked(self):
+        engine = self.engine(run=False)
+        subscriptions = [engine.subscribe(), engine.subscribe(device="5f0c2a91")]
+        for subscription in subscriptions:
+            waiting(subscription)
+        engine.configure_scanner({"threshold_db": 20, "detection": True})
+        for subscription in subscriptions:
+            self.assertEqual(waiting(subscription), [
+                {"type": "scanner", "detection": True, "threshold_db": 20.0, "ignored_hz": []}])
+        refused = ({}, {"threshold": 20}, {"detection": "on"}, {"detection": None}, {"threshold_db": 5},
+                   {"threshold_db": 31}, {"threshold_db": "12"}, {"threshold_db": float("nan")},
+                   {"ignore": 145e6, "restore": True}, {"ignore": 145e6, "detection": False},
+                   {"ignore": "145 MHz"}, {"ignore": 0}, {"restore": False}, {"restore": 1})
+        for changes in refused:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_scanner(changes)
+        self.assertEqual(engine.scanner_state(),
+                         {"type": "scanner", "detection": True, "threshold_db": 20.0, "ignored_hz": []})
+        for subscription in subscriptions:
+            self.assertEqual(waiting(subscription), [])
+
+    async def test_an_ignored_frequency_leaves_the_list_at_once_and_stays_out(self):
+        source = FakeSource()
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        [found] = await next_peaks(subscription, until=bool)
+        engine.configure_scanner({"ignore": found["frequency_hz"] + 500})
+        self.assertEqual(kinds_of(waiting(subscription)), ["scanner", "peaks"])
+        self.assertEqual(engine.scanner_state()["ignored_hz"], [found["frequency_hz"] + 500])
+        self.assertEqual(engine.peaks_state()["peaks"], [])
+        reads = source.reads
+        while source.reads < reads + 30:    # three searches
+            await asyncio.sleep(0.01)
+        self.assertEqual(engine.peaks_state()["peaks"], [])
+        engine.configure_scanner({"restore": True})
+        self.assertEqual(kinds_of(waiting(subscription)), ["scanner"])     # the list is the same, until found again
+        await next_peaks(subscription, until=bool)
+
+    async def test_detection_turned_off_empties_the_list_and_finds_nothing(self):
+        source = FakeSource()
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        await next_peaks(subscription, until=bool)
+        engine.configure_scanner({"detection": False})
+        self.assertEqual(waiting(subscription)[:2], [
+            {"type": "scanner", "detection": False, "threshold_db": 12.0, "ignored_hz": []},
+            {"type": "peaks", "peaks": []}])
+        reads = source.reads
+        while source.reads < reads + 30:
+            await asyncio.sleep(0.01)
+        self.assertNotIn("peaks", kinds_of(waiting(subscription)))
+        engine.configure_scanner({"detection": True})
+        await next_peaks(subscription, until=bool)
+
+    async def test_another_receiver_starts_an_empty_list(self):
+        engine = self.engine(sources=FakeSources())
+        subscription = engine.subscribe()
+        await next_peaks(subscription, until=bool)
+        engine.configure({"kind": "other"})
+        self.assertEqual(engine.peaks_state()["peaks"], [])
+        self.assertIn("peaks", kinds_of(waiting(subscription)))
+        [found] = await next_peaks(subscription, until=bool)    # the other source's tone
+        self.assertAlmostEqual(found["frequency_hz"], FAKE_TONE_HZ + 1e6, delta=FAKE_RATE_HZ / 8192)
+
+    async def test_the_list_goes_out_at_most_once_an_interval(self):
+        engine = self.engine(run=False)
+        subscription = engine.subscribe()
+        waiting(subscription)
+        with mock.patch("radiolack.engine.PEAKS_INTERVAL_S", 0.2):
+            for _ in range(3):
+                engine._peaks_changed()
+            self.assertEqual(kinds_of(waiting(subscription)), ["peaks"])
+            started = time.monotonic()
+            self.assertEqual((await next_message(subscription))["type"], "peaks")     # the next two, together
+            self.assertGreaterEqual(time.monotonic() - started, 0.15)
+            engine._peaks_changed(at_once=True)      # after an interface's change
+            self.assertEqual(kinds_of(waiting(subscription)), ["peaks"])
+            engine._peaks_changed()
+            engine.close()
+            self.assertIsNone(engine._peaks_timer)
+
+    async def test_the_scanner_settings_are_saved_with_the_others(self):
+        engine = self.engine(run=False, store=Store(self.directory), save_delay_s=0.01)
+        engine.configure_scanner({"detection": False, "threshold_db": 18.5})
+        engine.configure_scanner({"ignore": 145_500_000.4})
+        engine.configure_scanner({"ignore": 144_800_000})
+        engine.close()
+        await engine.wait_closed()
+        saved = json.loads((self.directory / SETTINGS_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(saved["scanner"], {"detection": False, "threshold_db": 18.5,
+                                            "ignored_hz": [144_800_000.0, 145_500_000.0]})
+        again = self.engine(run=False, store=Store(self.directory))
+        self.assertEqual(again.scanner_state(), {"type": "scanner", "detection": False, "threshold_db": 18.5,
+                                                 "ignored_hz": [144_800_000.0, 145_500_000.0]})
+
+    async def test_saved_scanner_settings_that_are_not_valid_keep_their_defaults(self):
+        self.directory.mkdir()
+        settings = self.directory / SETTINGS_FILE
+        for saved, expected in (
+                ({"detection": "yes", "threshold_db": 99,
+                  "ignored_hz": [145e6, "x", 0, 10 ** 400, 145e6 + 100, 144e6]},
+                 (True, 12.0, [144e6, 145e6])),
+                ({"ignored_hz": {"145e6": True}}, (True, 12.0, [])),
+                ([1], (True, 12.0, [])),
+                ({"ignored_hz": [144e6 + n * 10_000 for n in range(250)]}, (True, 12.0, None))):
+            with self.subTest(saved=saved):
+                settings.write_text(json.dumps({"version": 1, "scanner": saved}), encoding="utf-8")
+                with self.assertLogs("radiolack.engine", "WARNING"):
+                    engine = Engine(FakeSource(), store=Store(self.directory))
+                state = engine.scanner_state()
+                engine.close()
+                detection, threshold_db, ignored = expected
+                self.assertEqual((state["detection"], state["threshold_db"]), (detection, threshold_db))
+                if ignored is None:
+                    self.assertEqual(state["ignored_hz"], [144e6 + n * 10_000 for n in range(200)])
+                else:
+                    self.assertEqual(state["ignored_hz"], ignored)

@@ -1,9 +1,10 @@
 /*
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
- * state, the demodulation settings, the bookmarks, the saved preferences, the
- * storage state, the update state and remote access's state from the engine,
- * and takes this interface's changes, its preferences, its request for audio,
- * its update requests and its remote access settings to it
+ * state, the demodulation settings, the bookmarks, the scanner state, the
+ * signals the engine found, the saved preferences, the storage state, the
+ * update state and remote access's state from the engine, and takes this
+ * interface's changes, its preferences, its request for audio, its update
+ * requests and its remote access settings to it
  * (docs/design/protocol.md). It reconnects by itself after a disconnection.
  * On a device that remote access serves, the engine sends neither the
  * storage, update nor remote access state, and takes none of their changes;
@@ -24,7 +25,7 @@ const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no lon
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'preferences', 'update', 'remote'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'preferences', 'update', 'remote'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -91,6 +92,31 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * The engine's signal detection, shared by every interface.
+ * @typedef {object} ScannerState
+ * @property {boolean} detection    the engine looks for signals in its spectra
+ * @property {number} thresholdDb   how far above the local noise a signal rises
+ * @property {number[]} ignoredHz   frequencies whose signals are not listed, lowest first
+ */
+
+/**
+ * Detection settings to change; the others stay as they are.
+ * @typedef {object} ScannerChanges
+ * @property {boolean} [detection]
+ * @property {number} [thresholdDb]
+ */
+
+/**
+ * A signal the engine found while it runs.
+ * @typedef {object} Peak
+ * @property {number} frequencyHz   its centre of power
+ * @property {number} widthHz
+ * @property {number} marginDb      its highest bin above the local noise, when last found
+ * @property {boolean} active       found within the last 1.5 s
+ * @property {number} ageS          seconds since it was last found, when the engine sent the list
+ */
+
+/**
  * An interface's own settings, by name, which the engine keeps for the next
  * interfaces: numbers, true or false, short texts or null.
  * @typedef {Record<string, number | boolean | string | null>} Preferences
@@ -142,7 +168,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} problem           why it could not turn on, or ""
  */
 
-/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'preferences' | 'update' | 'remote'} Command */
+/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'preferences' | 'update' | 'remote'} Command */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -204,6 +230,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(source: SourceState) => void} onSource  sent first, then at every change
  * @property {(demod: DemodState) => void} onDemod     sent next, then at every change this interface has not overtaken
  * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
+ * @property {(scanner: ScannerState) => void} onScanner    sent next, then at every change
+ * @property {(peaks: Peak[]) => void} onPeaks
+ *   sent next, then when the list changes, at most about once a second: active signals first, strongest first
  * @property {(values: Preferences) => void} onPreferences
  *   sent next, once per connection: the latest saved for this computer's interfaces, or for this device
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
@@ -347,6 +376,41 @@ export function decodeBookmarks(message) {
 }
 
 /**
+ * Decode a scanner state message. Returns null when a field is missing or
+ * malformed.
+ * @param {any} message  a parsed JSON message of type "scanner"
+ * @returns {ScannerState | null}
+ */
+export function decodeScanner(message) {
+  const m = message;
+  const valid = typeof m.detection === 'boolean' && typeof m.threshold_db === 'number'
+    && Number.isFinite(m.threshold_db) && Array.isArray(m.ignored_hz)
+    && m.ignored_hz.every((/** @type {unknown} */ f) => typeof f === 'number' && Number.isFinite(f));
+  return valid ? { detection: m.detection, thresholdDb: m.threshold_db, ignoredHz: m.ignored_hz.slice() } : null;
+}
+
+/**
+ * Decode a peaks message. Returns null when an entry is missing a field or
+ * holds a malformed one.
+ * @param {any} message  a parsed JSON message of type "peaks"
+ * @returns {Peak[] | null}
+ */
+export function decodePeaks(message) {
+  if (!Array.isArray(message.peaks)) return null;
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @type {Peak[]} */
+  const peaks = [];
+  for (const p of message.peaks) {
+    const valid = p !== null && typeof p === 'object' && finite(p.frequency_hz) && finite(p.width_hz)
+      && finite(p.margin_db) && typeof p.active === 'boolean' && finite(p.age_s);
+    if (!valid) return null;
+    peaks.push({ frequencyHz: p.frequency_hz, widthHz: p.width_hz, marginDb: p.margin_db, active: p.active, ageS: p.age_s });
+  }
+  return peaks;
+}
+
+/**
  * Decode a preferences message. Returns null unless its values are a JSON
  * object; values that are not numbers, true or false, texts or null are left
  * out.
@@ -454,6 +518,8 @@ export class EngineStream {
   #greeted = false;
   #incompatible = false;
   #remote = false;        // the engine serves this interface through remote access
+  /** @type {string[]} */
+  #scanners = [];         // the scanners the engine runs, as its last hello listed them
   #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
@@ -477,6 +543,15 @@ export class EngineStream {
    */
   get remote() {
     return this.#remote;
+  }
+
+  /**
+   * The scanners the engine runs, as its last hello listed them, such as
+   * "peaks": an older engine runs fewer, or none.
+   * @returns {string[]}
+   */
+  get scanners() {
+    return this.#scanners.slice();
   }
 
   /** Connect, unless already connected or connecting. */
@@ -559,6 +634,40 @@ export class EngineStream {
    */
   removeBookmark(id) {
     return this.#send({ type: 'bookmark', action: 'remove', id });
+  }
+
+  /**
+   * Change the engine's signal detection: every interface then receives the
+   * scanner state, or this one an error. Returns false, sending nothing,
+   * when the stream is not open.
+   * @param {ScannerChanges} changes
+   * @returns {boolean}
+   */
+  setScanner(changes) {
+    /** @type {Record<string, boolean | number>} */
+    const message = {};
+    if (changes.detection !== undefined) message.detection = changes.detection;
+    if (changes.thresholdDb !== undefined) message.threshold_db = changes.thresholdDb;
+    return this.#send({ type: 'scanner', ...message });
+  }
+
+  /**
+   * Ask the engine to ignore a frequency: its signals leave the list, for
+   * every interface, and stay out of it. Returns false, sending nothing,
+   * when the stream is not open.
+   * @param {number} frequencyHz
+   * @returns {boolean}
+   */
+  ignoreFrequency(frequencyHz) {
+    return this.#send({ type: 'scanner', ignore: frequencyHz });
+  }
+
+  /**
+   * Ask the engine to ignore no frequency any more, as `ignoreFrequency`.
+   * @returns {boolean}
+   */
+  restoreIgnored() {
+    return this.#send({ type: 'scanner', restore: true });
   }
 
   /**
@@ -728,6 +837,12 @@ export class EngineStream {
     } else if (message.type === 'bookmarks') {
       const bookmarks = decodeBookmarks(message);
       if (bookmarks) this.#handlers.onBookmarks(bookmarks);
+    } else if (message.type === 'scanner') {
+      const scanner = decodeScanner(message);
+      if (scanner) this.#handlers.onScanner(scanner);
+    } else if (message.type === 'peaks') {
+      const peaks = decodePeaks(message);
+      if (peaks) this.#handlers.onPeaks(peaks);
     } else if (message.type === 'preferences') {
       const values = decodePreferences(message);
       if (values) this.#handlers.onPreferences(values);
@@ -759,6 +874,8 @@ export class EngineStream {
     }
     this.#greeted = true;
     this.#remote = message.remote === true;
+    this.#scanners = Array.isArray(message.scanners)
+      ? message.scanners.filter((/** @type {unknown} */ name) => typeof name === 'string') : [];
     this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));

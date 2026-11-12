@@ -34,6 +34,7 @@ SOURCE_PANEL = '#toolbar button[data-panel="source"]'
 DEMOD_PANEL = '#toolbar button[data-panel="demod"]'
 DISPLAY_PANEL = '#toolbar button[data-panel="display"]'
 BANDS_PANEL = '#toolbar button[data-panel="bands"]'
+SCANNERS_PANEL = '#toolbar button[data-panel="scanners"]'
 SETTINGS_PANEL = '#toolbar button[data-panel="settings"]'
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
@@ -353,6 +354,31 @@ class BrowserTest(unittest.TestCase):
                 with self.interfaces(browser, url, 1) as [page]:
                     expect(page.locator("#wf-pal")).to_have_value("gray")
                     expect(page.locator("#ds-grid")).not_to_be_checked()
+
+    def test_every_interface_lists_the_signals_the_engine_finds(self):
+        url = self.serve()      # the simulated band, whose beacons are always on the air
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    page.locator(SCANNERS_PANEL).click()
+                    expect(page.locator("#pk-on")).to_be_checked()
+                    expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
+                frequency = first.locator("#pk-body button[data-tune]").first.get_attribute("data-tune")
+                first.locator(f'#pk-body button[data-ignore="{frequency}"]').click()
+                for page in (first, second):
+                    expect(page.locator("#pk-excluded")).to_have_text("1 ignored frequency.")
+                    expect(page.locator(f'#pk-body button[data-tune="{frequency}"]')).to_have_count(0)
+                second.locator("#pk-restore").click()
+                for page in (first, second):    # the engine's state after the restore still has detection on
+                    expect(page.locator("#pk-restore")).to_be_hidden()
+                second.locator("#pk-on").uncheck()
+                for page in (first, second):
+                    expect(page.locator("#pk-on")).not_to_be_checked()
+                    expect(page.locator("#pk-body .empty")).to_have_text("Detection is off")
+                first.locator("#pk-on").check()
+                for page in (first, second):
+                    expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
+                expect(first.locator("#pk-note")).to_be_hidden()
 
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network
