@@ -39,6 +39,10 @@ PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its change
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
+# An init script that keeps the audio held, as Safari does until a gesture:
+# the audio context reads suspended, whatever the browser does. Headless
+# browsers start it earlier, Firefox and WebKit at times without any gesture.
+HELD_AUDIO = "Object.defineProperty(AudioContext.prototype, 'state', { get: () => 'suspended', configurable: true });"
 FRAME_RATE = re.compile(rf" {DOT} \d+ fps$")     # the frames an interface receives per second, in its status line
 # A remote device's: about 15. A page that loads late may take a backlog in
 # a burst, so the test waits until the rate settles below 21.
@@ -223,18 +227,17 @@ class BrowserTest(unittest.TestCase):
 
     def test_held_audio_shows_a_speaker_and_a_touch_asks_it_to_start(self):
         # A tap activates the page only once the finger leaves the screen, and
-        # only then does Safari on the iPhone let the audio start. Headless
-        # browsers start it earlier, Firefox at times without any gesture, so
-        # the audio stays suspended here and the test counts the page's
-        # requests to start it. On a touch screen, the speaker shows it held:
-        # nothing else does out of the Demod panel.
+        # only then does Safari on the iPhone let the audio start. The audio
+        # stays held here, and the test counts the page's requests to start
+        # it. On a touch screen, the speaker shows it held: nothing else does
+        # out of the Demod panel.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser):
                 context = self.browsers[browser].new_context(**PHONE)
                 self.addCleanup(context.close)
                 context.add_init_script(   # before the interface's scripts
-                    "window.resumes = 0;"
+                    HELD_AUDIO + " window.resumes = 0;"
                     " AudioContext.prototype.resume = () => { window.resumes += 1; return Promise.resolve(); };")
                 errors: list[str] = []
                 page = self.watched_page(context, browser, errors)
@@ -280,16 +283,15 @@ class BrowserTest(unittest.TestCase):
     def test_the_audio_asks_safari_for_its_playback_session(self):
         # Safari plays the "playback" session with the ringer switch on
         # silent. The other browsers lack the API, which the test stands in
-        # for, and the audio stays suspended, held until a gesture.
+        # for, and the audio stays held.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser):
                 context = self.browsers[browser].new_context()
                 self.addCleanup(context.close)
                 context.add_init_script(   # before the interface's scripts
-                    "Object.defineProperty(Navigator.prototype, 'audioSession',"
-                    " { value: { type: 'auto' }, configurable: true });"
-                    " AudioContext.prototype.resume = () => Promise.resolve();")
+                    HELD_AUDIO + " Object.defineProperty(Navigator.prototype, 'audioSession',"
+                    " { value: { type: 'auto' }, configurable: true });")
                 errors: list[str] = []
                 page = self.watched_page(context, browser, errors)
                 page.goto(url)
