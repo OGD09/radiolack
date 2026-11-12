@@ -165,6 +165,16 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(signals.describe(0.3), [{"frequency_hz": 145_500_100, "width_hz": 600, "margin_db": 21.0,
                                                   "active": True, "age_s": 0.0}])
 
+    def test_an_update_returns_the_listed_signals_found_in_it(self):
+        signals = Signals()
+        self.assertEqual(signals.update([carrier(145_500_000)], 0.0), [])     # a candidate only
+        [found] = signals.update([carrier(145_500_200, 21.0), carrier(145_500_400, 22.0),  # one signal
+                                  carrier(146_000_000)], 0.3)                             # a new candidate
+        self.assertEqual((found.frequency_hz, found.margin_db, found.last_s), (145_500_190.0, 22.0, 0.3))
+        found.margin_db = 0.0       # a copy: the list keeps its own
+        self.assertEqual(signals.describe(0.3)[0]["margin_db"], 22.0)
+        self.assertEqual(len(signals.update([carrier(145_500_000), carrier(146_000_000)], 0.6)), 2)
+
     def test_a_signal_found_once_is_not_listed(self):
         signals = Signals()
         signals.update([carrier(145_500_000)], 0.0)

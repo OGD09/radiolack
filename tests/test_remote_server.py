@@ -227,7 +227,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.pair(device, "WRONG"), (200, {"paired": True}))
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
-                         {"type": "hello", "protocol": 6, "remote": True, "scanners": ["peaks", "memory"]})
+                         {"type": "hello", "protocol": 6, "remote": True, "scanners": ["peaks", "memory", "history"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(6)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
@@ -297,6 +297,10 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         while (state := await next_text(self.local))["type"] != "scanner":
             continue
         self.assertEqual(state["threshold_db"], 20.0)
+        await ws.send_json({"type": "observations", "clear_all": True})    # as the owner chose
+        while (message := await next_text(ws))["type"] != "observations":
+            self.assertNotEqual(message["type"], "error")
+        self.assertEqual(message["channels"], [])
         for command in ({"type": "remote", "on": False}, {"type": "remote", "new_code": True},
                         {"type": "update", "check": True}, {"type": "source", "address": "192.168.1.2:1234"}):
             with self.subTest(command=command):

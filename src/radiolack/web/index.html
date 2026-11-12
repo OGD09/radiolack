@@ -193,6 +193,7 @@
         <button type="button" data-tab="peaks">Peaks</button>
         <button type="button" data-tab="sweep">Sweep</button>
         <button type="button" data-tab="memory">Bookmarks</button>
+        <button type="button" data-tab="history">History</button>
       </div>
       <div data-tab-panel="peaks">
         <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
@@ -221,6 +222,15 @@
         <ul class="list" id="mem-list"></ul>
         <div class="row"><button type="button" class="btn primary" id="mem-start" disabled>Start</button><span class="note" id="mem-state"></span></div>
         <p class="note">The scan watches the ticked bookmarks of the receiver's span at once, and stays on an active one while the squelch is open. It goes on without any interface; tuning by hand stops it.</p>
+      </div>
+      <div data-tab-panel="history" hidden>
+        <p class="note" id="hist-note" role="status" hidden></p>
+        <table class="peaks">
+          <thead><tr><th>Frequency</th><th>Heard</th><th>Active</th><th>Last heard</th><th></th></tr></thead>
+          <tbody id="hist-body"></tbody>
+        </table>
+        <div class="row"><span class="note" id="hist-summary"></span><button type="button" class="link" id="hist-clear-all" hidden>Clear all</button></div>
+        <p class="note">Radiolack keeps the channels where it found signals for 90 days, apart from the simulated band's: when, how often, how long and how far above the noise they were heard, nothing more. Clearing forgets them for every interface.</p>
       </div>
     </section>
 

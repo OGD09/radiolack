@@ -2,9 +2,10 @@
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
  * state, the demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the storage state, the
- * update state and remote access's state from the engine, and takes this
- * interface's changes, its preferences, its request for audio, its update
- * requests and its remote access settings to it
+ * update state and remote access's state from the engine, and the
+ * observations when this interface asks, and takes this interface's
+ * changes, its preferences, its request for audio, its update requests and
+ * its remote access settings to it
  * (docs/design/protocol.md). It reconnects by itself after a disconnection.
  * On a device that remote access serves, the engine sends neither the
  * storage, update nor remote access state, and takes none of their changes;
@@ -25,7 +26,7 @@ const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no lon
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'preferences', 'update', 'remote'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'update', 'remote'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -132,6 +133,20 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A channel where the engine found signals, which it keeps across restarts.
+ * Times are seconds since 1970, UTC.
+ * @typedef {object} Observation
+ * @property {number} frequencyHz
+ * @property {number} firstS          when first found
+ * @property {number} lastS           when last found
+ * @property {number} transmissions
+ * @property {number} activeS         how long it was active, its transmissions together
+ * @property {number} marginDb        its highest margin above the local noise
+ * @property {number[]} hours
+ *   how many of its transmissions began in each hour of the day, from 0 h, on the engine's computer
+ */
+
+/**
  * An interface's own settings, by name, which the engine keeps for the next
  * interfaces: numbers, true or false, short texts or null.
  * @typedef {Record<string, number | boolean | string | null>} Preferences
@@ -183,7 +198,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} problem           why it could not turn on, or ""
  */
 
-/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'preferences' | 'update' | 'remote'} Command */
+/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'update' | 'remote'} Command */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -248,6 +263,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(scanner: ScannerState) => void} onScanner    sent next, then at every change
  * @property {(peaks: Peak[]) => void} onPeaks
  *   sent next, then when the list changes, at most about once a second: active signals first, strongest first
+ * @property {(observations: Observation[]) => void} onObservations
+ *   sent when this interface asks for them, or cleared some: the latest found first
  * @property {(values: Preferences) => void} onPreferences
  *   sent next, once per connection: the latest saved for this computer's interfaces, or for this device
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
@@ -439,6 +456,30 @@ export function decodePeaks(message) {
     peaks.push({ frequencyHz: p.frequency_hz, widthHz: p.width_hz, marginDb: p.margin_db, active: p.active, ageS: p.age_s });
   }
   return peaks;
+}
+
+/**
+ * Decode an observations message. Returns null when it holds no list, or
+ * holds a malformed channel.
+ * @param {any} message  a parsed JSON message of type "observations"
+ * @returns {Observation[] | null}
+ */
+export function decodeObservations(message) {
+  if (!Array.isArray(message.channels)) return null;
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @type {Observation[]} */
+  const channels = [];
+  for (const c of message.channels) {
+    const valid = c !== null && typeof c === 'object' && finite(c.frequency_hz) && finite(c.first_s)
+      && finite(c.last_s) && Number.isSafeInteger(c.transmissions) && finite(c.active_s) && finite(c.margin_db)
+      && Array.isArray(c.hours) && c.hours.length === 24
+      && c.hours.every((/** @type {unknown} */ n) => Number.isSafeInteger(n));
+    if (!valid) return null;
+    channels.push({ frequencyHz: c.frequency_hz, firstS: c.first_s, lastS: c.last_s, transmissions: c.transmissions,
+      activeS: c.active_s, marginDb: c.margin_db, hours: c.hours.slice() });
+  }
+  return channels;
 }
 
 /**
@@ -715,6 +756,35 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine for the channels where it found signals, which come to
+   * this interface only (`onObservations`). Returns false, sending nothing,
+   * when the stream is not open.
+   * @returns {boolean}
+   */
+  askObservations() {
+    return this.#send({ type: 'observations' });
+  }
+
+  /**
+   * Ask the engine to forget the channel within 1.5 kHz of a frequency, for
+   * every interface; this one then receives the channels left. Returns
+   * false, sending nothing, when the stream is not open.
+   * @param {number} frequencyHz
+   * @returns {boolean}
+   */
+  clearObservation(frequencyHz) {
+    return this.#send({ type: 'observations', clear: frequencyHz });
+  }
+
+  /**
+   * Ask the engine to forget every channel, as `clearObservation`.
+   * @returns {boolean}
+   */
+  clearObservations() {
+    return this.#send({ type: 'observations', clear_all: true });
+  }
+
+  /**
    * Give the engine this interface's preferences, which the next interfaces
    * of this computer, or of this device through remote access, start with;
    * open interfaces keep theirs. Returns false, sending nothing, when the
@@ -887,6 +957,9 @@ export class EngineStream {
     } else if (message.type === 'peaks') {
       const peaks = decodePeaks(message);
       if (peaks) this.#handlers.onPeaks(peaks);
+    } else if (message.type === 'observations') {
+      const observations = decodeObservations(message);
+      if (observations) this.#handlers.onObservations(observations);
     } else if (message.type === 'preferences') {
       const values = decodePreferences(message);
       if (values) this.#handlers.onPreferences(values);

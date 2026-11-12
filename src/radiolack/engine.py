@@ -28,6 +28,8 @@ The engine finds the signals in its spectra (scanners.py) while it reads,
 unless detection is turned off: every client receives the list of the
 signals found, at most once a second, and the scanner settings, which are
 shared like the source's and saved with them, ignored frequencies included.
+It keeps what it finds, apart from the simulated band's, as observations
+(observations.py), which a client receives when it asks, and may clear.
 Any client may start the memory scan, which tunes the VFO to the ticked
 bookmarks of the span as they become active, and keeps the engine reading
 without any client, until a client stops it, tunes by hand or chooses
@@ -51,11 +53,14 @@ both, in fewer bins.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
-bookmarks, the preferences, whether to check for updates at start and what
-remote access keeps. It saves them a moment after they change, as changes
-come in bursts, and when it stops. A saved setting that the receiver refuses
-keeps its default, and one the source was ``given``, such as an address on
-the command line, keeps the given value, which is saved in its place.
+bookmarks, the preferences, whether to check for updates at start, what
+remote access keeps and the observations. It saves them a moment after they
+change, as changes come in bursts, and when it stops; the observations,
+which change with every signal found, at most every 10 minutes, unless a
+client cleared some, and when it stops. A saved setting that the receiver
+refuses keeps its default, and one the source was ``given``, such as an
+address on the command line, keeps the given value, which is saved in its
+place.
 """
 
 from __future__ import annotations
@@ -75,13 +80,14 @@ import numpy as np
 from . import __version__
 from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter
+from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_THRESHOLD_DB, MAX_IGNORED, Channel, ChannelWatch, Detection,
-                       Detector, MemoryScan, Signals, checked_frequency, checked_resume, checked_threshold,
+                       Detector, MemoryScan, Signal, Signals, checked_frequency, checked_resume, checked_threshold,
                        watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
-from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
+from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
 
 FRAME_RATE = 30.0       # display frames per second
@@ -91,8 +97,11 @@ CLIENT_QUEUE = 4        # frames kept for a client that falls behind
 CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
+OBSERVATIONS_SAVE_S = 600.0     # the observations are written at most this often, and when the engine stops
+UNRECORDED_KINDS = ("synthetic",)   # sources whose signals are not observations: the simulated band
 PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
 SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "ignore", "restore", "scan")
+OBSERVATIONS_FIELDS = ("clear", "clear_all")
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
 
@@ -300,7 +309,8 @@ class Engine:
                  store: Store | None = None, updates: UpdateChecker | None = None,
                  remote: RemoteAccess | None = None,
                  frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
-                 queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S) -> None:
+                 queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S,
+                 observations_save_s: float = OBSERVATIONS_SAVE_S) -> None:
         if frame_rate <= 0:
             raise ValueError(f"the frame rate must be positive, not {frame_rate}")
         self._sources = sources
@@ -364,6 +374,14 @@ class Engine:
         self._reopen[self.source.kind] = self.source.reopen
         saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
+        # Observations: what detection found, kept across restarts. Their file
+        # is written at the next save once due: observations_save_s after its
+        # latest write, or at once after a client cleared some.
+        self._observations = Observations(store.load(OBSERVATIONS_FILE) if store is not None else None, time.time())
+        self._observations_save_s = observations_save_s
+        self._observations_due = False
+        self._observations_saved_s = time.monotonic()
+        self._observations_timer: asyncio.TimerHandle | None = None
         # Scanners: detection's settings, the signals found and the ignored
         # frequencies; the memory scan's resume time, the channels it watches
         # and the scan, while one runs.
@@ -390,7 +408,7 @@ class Engine:
         self._update = UpdateResult("idle") if reason is None else UpdateResult("unavailable", detail=reason)
         self._checking: asyncio.Future | None = None
         if store is not None:
-            self._saved = self._contents()      # nothing to write until something changes,
+            self._saved = self._contents(observations=True)     # nothing to write until something changes,
             # but a source or a setting given at start replaces the saved one at the next write.
             default_choice = {"kind": self._sources.kinds[0]} if self._sources is not None else None
             if (_given_differ(self.state(), saved_source, self.source.given)
@@ -546,6 +564,36 @@ class Engine:
         if self._signals.changed(time.monotonic()):
             self._peaks_changed(at_once=True)
 
+    def observations_state(self) -> dict[str, Any]:
+        """The observations message: the channels where detection found
+        signals, the latest found first."""
+        if self._observations.forget(time.time()):
+            self._observations_changed()
+        return {"type": "observations", "channels": self._observations.describe()}
+
+    def configure_observations(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Answer a client's observations message, which without any field
+        asks for the observations; alone in it, ``clear`` forgets the channel
+        within 1.5 kHz of a frequency, if there is one, and ``clear_all``
+        (true) forgets them all. The client then receives the observations.
+        Raises ValueError, changing nothing, when refused."""
+        for name in changes:
+            if name not in OBSERVATIONS_FIELDS:
+                raise ValueError(f"unknown observations field: {str(name)[:40]}")
+        if len(changes) > 1:
+            raise ValueError("clear and clear_all come alone in their message")
+        if "clear" in changes:
+            cleared = self._observations.clear(checked_frequency(changes["clear"], "a channel to clear"))
+        elif "clear_all" in changes:
+            if changes["clear_all"] is not True:
+                raise ValueError("clear_all takes true")
+            cleared = self._observations.clear_all()
+        else:
+            cleared = False
+        if cleared:
+            self._observations_changed(soon=True)
+        subscription.reply(self.observations_state())
+
     def preferences_state(self, device: str | None = None) -> dict[str, Any]:
         """The preferences message: what a new interface of this computer, or
         of the paired ``device``, starts with. A device that gave none starts
@@ -633,6 +681,9 @@ class Engine:
         if self._peaks_timer is not None:
             self._peaks_timer.cancel()
             self._peaks_timer = None
+        if self._observations_timer is not None:
+            self._observations_timer.cancel()
+            self._observations_timer = None
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
@@ -648,7 +699,8 @@ class Engine:
         self._save_now.set()
         if self._saver is not None:
             await asyncio.gather(self._saver, return_exceptions=True)
-        await self._save()      # also what a failed write left unsaved
+        self._observations_due = True
+        await self._save()      # also what a failed write left unsaved, and the observations
 
     async def run(self) -> None:
         """Produce frames until closed or cancelled, having started the update
@@ -689,8 +741,10 @@ class Engine:
                 self._publish(capture, power, codes, meter, pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
                 if detections is not None and self._detection and source is self.source:
-                    self._signals.update(detections, time.monotonic())
+                    found = self._signals.update(detections, time.monotonic())
                     self._check_peaks()
+                    if found and source.kind not in UNRECORDED_KINDS:
+                        self._record(found)
                 if channels is not None and source is self.source:
                     self._step_scan(channels, levels, meter.open)
         except Exception:
@@ -750,6 +804,34 @@ class Engine:
     def _scanner_changed(self) -> None:
         for subscription in self._clients:
             subscription.changed("scanner")
+
+    def _record(self, found: Sequence[Signal]) -> None:
+        """Keep the signals found in a search as observations, at this
+        computer's time and hour."""
+        now = time.time()
+        self._observations.record(found, now, time.localtime(now).tm_hour)
+        self._observations_changed()
+
+    def _observations_changed(self, soon: bool = False) -> None:
+        """The observations changed: their file is written once
+        ``observations_save_s`` passed since its latest write, or ``soon``,
+        with the next save, as after a client cleared some. ``wait_closed``
+        writes it in any case."""
+        if self._store is None or self._closed:
+            return
+        if soon:
+            if self._observations_timer is not None:
+                self._observations_timer.cancel()
+            self._observations_save_due()
+        elif self._observations_timer is None and not self._observations_due:
+            wait = self._observations_saved_s + self._observations_save_s - time.monotonic()
+            self._observations_timer = asyncio.get_running_loop().call_later(max(0.0, wait),
+                                                                             self._observations_save_due)
+
+    def _observations_save_due(self) -> None:
+        self._observations_timer = None
+        self._observations_due = True
+        self._settings_changed()
 
     def _start_scan(self, scan: object) -> None:
         """Start the memory scan ("memory"), unless it runs, or stop the scan
@@ -955,10 +1037,10 @@ class Engine:
             except ValueError as error:
                 log.warning("a saved ignored frequency is not used: %s", error)
 
-    def _contents(self) -> dict[str, dict[str, Any]]:
+    def _contents(self, observations: bool = False) -> dict[str, dict[str, Any]]:
         """What the settings, bookmarks and remote access files hold, as
-        things stand: with sources to open, which source opens at the next
-        start."""
+        things stand, and with ``observations`` the observations file: with
+        sources to open, which source opens at the next start."""
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
         settings["scanner"] = {"detection": self._detection, "threshold_db": self._threshold_db,
@@ -968,6 +1050,8 @@ class Engine:
         contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
         if self._remote is not None:
             contents[REMOTE_FILE] = self._remote.stored()
+        if observations:
+            contents[OBSERVATIONS_FILE] = self._observations.stored()
         return contents
 
     def _settings_changed(self) -> None:
@@ -989,14 +1073,19 @@ class Engine:
 
     async def _save(self) -> None:
         """Write the files whose content changed since their latest write, in a
-        worker thread, as the disk may be slow. Clients learn when the storage
-        state changes."""
+        worker thread, as the disk may be slow, the observations' once due.
+        Clients learn when the storage state changes."""
         store = self._store
         if store is None:
             return
         before = self.storage_state()
+        observations = self._observations_due
+        if observations:
+            self._observations_due = False
+            self._observations_saved_s = time.monotonic()
+            self._observations.forget(time.time())
         try:
-            for name, content in self._contents().items():
+            for name, content in self._contents(observations).items():
                 if content != self._saved.get(name) and await asyncio.to_thread(store.save, name, content):
                     self._saved[name] = content
         except Exception:

@@ -63,6 +63,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | Observations, as the owner validated: the engine keeps what it detects in `observations.json`, in the settings folder, written by the same store as the other files (whole-file writes, readable by the user only, an unreadable file set aside, its problems in Settings > Storage), at most every 10 minutes and when Radiolack stops. It holds one entry per channel, detections within 1.5 kHz of each other merged: when it was first and last detected, how many transmissions, how long it was active, its highest margin and 24 counters by hour of the day. At most 2000 channels, the least recently detected going first, and a channel undetected for 90 days is forgotten: about 0.6 MB at most. Neither the simulated band nor the ignored frequencies are recorded, and nothing but frequencies, times and levels is kept: no audio and no samples. A History tab lists the channels, with Tune, Bookmark and Clear. The observations stay apart from the airband explorer's history: `data/` is neither read nor imported. Set aside: a journal of each transmission (JSON Lines or SQLite, several MB), which may come if the counters fall short, and `$XDG_STATE_HOME`, the XDG folder for a history, which would be a second folder to document, protect and keep apart in the tests. |
 | 2026-11-12 | Scanners in the protocol: a `scanner` state (the settings, the scan running, its progress and why it stopped), a `peaks` message (at most 50 recent signals, at most once a second and only when they change), the observations, sent only to an interface that asks for them, and `scanner` and `observations` messages from the interfaces. The protocol stays at version 6, and the hello lists the scanners that the engine runs: a newer page on an older engine greys out only what that engine lacks, and an older page ignores the new messages. Version 7 would stop every page loaded between a package's installation and Radiolack's restart, since the server reads the interface from the disk at each request: a device facing a computer without a window could then neither use Radiolack nor restart it. Serving the interface as it was read at start would remove that case for every later version; it does not depend on v2 and is left for later. |
 | 2026-11-12 | v2's budget and order: the scanners add at most 2% of one core on the owner's laptop (spike 4); a scan without any interface costs what the engine costs for one, 12 to 15% of one core, and rtl_tcp, while it runs. Pull requests, in this order, each with its documentation and tests: this design; detection and its list in the engine, with the shared settings and the ignored frequencies, in place of the interface's own detection; the memory scan in the engine, in place of the interface's; the observations and the History tab; the sweep, with which the memory scan also visits the bookmarks outside the receiver's span. The tests need no receiver: detection and the memory scan run on the simulated band, the sweep against the fake rtl_tcp, which gains carriers at fixed frequencies. |
+| 2026-11-12 | History and paired devices, as the owner chose: every interface may clear the History, a paired device's included, as it changes the bookmarks; Clear and Clear all wait for a second press on every device. With the observations' pull request, a channel gathers the signals found within 1.5 kHz of it or within a quarter of their width, as the list of the signals found does, so that a wide FM signal whose centre of power moves with the voice stays one channel. |
 
 ## Scope
 
@@ -730,10 +731,27 @@ These costs wait for v4:
   client, its stops and its run without any client, and in the three
   browsers, two interfaces following a scan until one tunes by hand;
   checked by hand in a browser on the simulated band.
+- Observations and the History tab, 2026-11-12, v2's third pull request:
+  `observations.py` keeps the channels where the engine found signals,
+  from the signals listed in each search, with the times, transmissions,
+  active time, highest margin and hours of each, at most 2000 for 90 days;
+  the engine records them, except on the simulated band, keeps them in
+  `observations.json`, written at most every 10 minutes, after a clear and
+  at stop, and answers an interface's `observations` message, a paired
+  device's included, with them, after forgetting one channel or all if
+  asked (`engine.py`, `server.py`, `store.py`). The History tab lists them
+  with Tune, Bookmark and Clear, asks for them while it shows and confirms
+  each clear with a second press, as `window.confirm()` would stop the
+  page's audio (`stream.js`, `main.js`). Protocol version 6 stays, the hello
+  listing `history`. The tests check the recording rules, the forgetting,
+  the file's checks, the engine's recording, its refusals, the file's
+  writing at most every interval and at stop, and in the three browsers,
+  Tune, Bookmark and the confirmed clears from two interfaces; checked by
+  hand in a browser on the simulated band with a prepared file, at a
+  phone's width too.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones). v2's pull requests follow, one at a time: next, the
-  observations and the History tab.
+  Milestones). v2's pull requests follow, one at a time: next, the sweep.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

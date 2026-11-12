@@ -21,14 +21,15 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory"]}
+   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history"]}
    ```
 
    `remote` is true for a remote client. `scanners` lists the scanners that
    the engine runs: `peaks`, which finds the signals in the span (the
-   scanner state and the signals found, below), and `memory`, the memory
-   scan (the scanner state's `scan` and `memory`, below). An engine older
-   than the scanners sends no `scanners`: it runs none.
+   scanner state and the signals found, below), `memory`, the memory scan
+   (the scanner state's `scan` and `memory`, below), and `history`, which
+   keeps the channels where signals were found (the observations, below).
+   An engine older than the scanners sends no `scanners`: it runs none.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -318,7 +319,37 @@ preferences apart from this computer's.
     its samples by the filters' delay and the squelch's look-ahead: about
     40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
 
-13. An error, to one interface only, when the engine refuses a message from
+13. The observations, a JSON text message, to one interface only, when it
+    asks for them (`observations` message): the channels where the engine
+    found signals, the latest found first.
+
+    ```json
+    {"type": "observations", "channels": [
+      {"frequency_hz": 145500000, "first_s": 1794000000, "last_s": 1794350000, "transmissions": 12,
+       "active_s": 95.0, "margin_db": 31.0,
+       "hours": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 10, 0, 0, 0, 0]}]}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `frequency_hz` | The channel's frequency, a whole number of Hz: it moves 30% of the way to each signal found there. |
+    | `first_s`, `last_s` | When a signal was first and last found there, in Unix time, to the second. |
+    | `transmissions` | How many transmissions: a signal found there more than 1.5 s after the previous one begins a new one. |
+    | `active_s` | How long signals were found there, in seconds, to the tenth: the time between detections at most 1.5 s apart. |
+    | `margin_db` | How far the strongest rose above the local noise, in dB, to the tenth. |
+    | `hours` | 24 counts: how many transmissions began in each hour of the day, from 0:00, in the local time of the engine's computer. |
+
+    The engine records the signals listed in each search (the signals
+    found, above), with every kind of source but the simulated band: the
+    ignored frequencies, which are not listed, never are. A signal within
+    1.5 kHz of a channel, or within a quarter of its own width, counts for
+    the nearest; any other begins a channel. The engine keeps at most 2000
+    channels, the least recently found leaving first, and forgets a channel
+    not found for 90 days. It keeps them in `observations.json`, written at
+    most every 10 minutes, a second after a client clears some, and when it
+    stops.
+
+14. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -329,10 +360,13 @@ preferences apart from this computer's.
 What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
 found, the storage state, the update state and remote access's state, each
-when it changed (and the preferences at the start), then errors, then audio frames, then spectrum frames. A client that reads too
+when it changed (and the preferences at the start), then the observations
+and errors, in the order of the messages they answer, then audio frames,
+then spectrum frames. A client that reads too
 slowly loses its oldest frames: the engine keeps the latest four spectrum
 frames and fifteen audio frames (half a second) for it and never slows down
-for one client; it keeps its latest states, and up to eight errors. When
+for one client; it keeps its latest states, and up to eight observations
+and errors together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -434,6 +468,25 @@ the memory scan to start while no ticked bookmark lies in the span
 (`memory.watched` is empty). Otherwise every interface receives the scanner
 state, and the signals found at once if they changed.
 
+An `observations` message asks for the observations, or forgets some of
+them for every interface:
+
+```json
+{"type": "observations"}
+{"type": "observations", "clear": 145500000}
+{"type": "observations", "clear_all": true}
+```
+
+| Field | Value |
+| --- | --- |
+| `clear` | A frequency from 1 Hz to 100 GHz: the channel nearest to it, within 1.5 kHz, is forgotten; none is when no channel lies that close. |
+| `clear_all` | `true`: every channel is forgotten. |
+
+`clear` and `clear_all` come alone in their message. The engine refuses
+the whole message, changing nothing, when it has an unknown or invalid
+field. Otherwise it answers the sender alone with the observations, after
+the change if any: the other interfaces see it when they next ask.
+
 A `preferences` message gives the engine this interface's preferences,
 which replace the ones it kept for this computer's interfaces, or for the
 remote client's device:
@@ -482,7 +535,7 @@ sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
-`preferences` and `audio` messages, but neither `update` nor `remote` messages, nor a
+`observations`, `preferences` and `audio` messages, but neither `update` nor `remote` messages, nor a
 `source` message that names `address`: the engine refuses them with the
 error "only Radiolack's interface on the computer may change this". Its
 `preferences` are its device's own: they change neither this computer's
@@ -578,14 +631,18 @@ and later.
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
   number. It ignores a source state, demodulation settings, bookmarks, a
-  scanner state, a list of signals found, a storage state, an update state
-  or a remote access state with a missing or malformed field, and leaves
+  scanner state, a list of signals found, observations, a storage state, an
+  update state or a remote access state with a missing or malformed field,
+  and leaves
   out source settings it does not know and preferences that are not
   numbers, true or false, texts or null.
 - An interface whose hello does not list `peaks` among its `scanners`, as
   an older engine's, shows that signal detection needs Radiolack to
   restart, and offers none of its settings; one whose hello does not list
-  `memory` does the same for the memory scan.
+  `memory` does the same for the memory scan, and one whose hello does not
+  list `history` for the History, asking for no observations.
+- The interface asks for the observations when its History shows, then
+  every 30 s while it shows and its page is visible.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -629,7 +686,9 @@ and later.
   the hello's `memory` scanner, the scanner state's `resume_s`, `scan`,
   `stopped` and `memory`, and the `scanner` message's `resume_s` and
   `scan`. An older interface ignores the fields it does not know and scans
-  the bookmarks itself, as before.
+  the bookmarks itself, as before. Later that day again, the hello's
+  `history` scanner, the observations and the `observations` message: an
+  older interface never asks for them.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

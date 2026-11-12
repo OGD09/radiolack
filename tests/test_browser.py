@@ -23,7 +23,7 @@ from pathlib import Path
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
-from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
+from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
@@ -63,6 +63,15 @@ FIREFOX_PREFS = {"webgl.force-enabled": True}
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
+
+
+def kept_channel(frequency_hz: int, last_s: float) -> dict:
+    """A channel of observations.json, first heard a day before ``last_s``,
+    twice, both times at noon."""
+    hours = [0] * 24
+    hours[12] = 2
+    return {"frequency_hz": frequency_hz, "first_s": last_s - 86_400, "last_s": last_s, "transmissions": 2,
+            "active_s": 30.0, "margin_db": 20.0, "hours": hours}
 
 
 @unittest.skipUnless(ENABLED, "browser tests run only with RADIOLACK_BROWSER_TESTS=1")
@@ -346,7 +355,7 @@ class BrowserTest(unittest.TestCase):
                 with self.interfaces(browser, url, 1) as [page]:
                     page.locator(SETTINGS_PANEL).click()
                     expect(page.locator("#st-storage")).to_have_text(
-                        f"Settings and bookmarks are saved in {Store(directory).location}.")
+                        f"Settings, bookmarks and history are saved in {Store(directory).location}.")
                     page.locator(DISPLAY_PANEL).click()
                     page.locator("#wf-pal").select_option("gray")
                     page.locator("#ds-grid").uncheck()
@@ -407,6 +416,50 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#mem-start")).to_have_text("Start")
                     expect(page.locator("#status")).not_to_contain_text("memory scan")
                 expect(first.locator("#mem-note")).to_be_hidden()
+
+    def test_the_history_tunes_bookmarks_and_clears_the_channels_kept(self):
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            heard = time.time()
+            Store(directory).save(OBSERVATIONS_FILE, {"channels": [
+                kept_channel(433_500_000, heard - 7200), kept_channel(145_500_000, heard - 600)]})
+            url = self.serve(store=Store(directory))    # the simulated band, which is not recorded
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    page.locator(SCANNERS_PANEL).click()
+                    page.locator('#scan-tabs button[data-tab="history"]').click()
+                    # The latest heard first.
+                    expect(page.locator("#hist-body button[data-tune]")).to_have_text(["145.5000", "433.5000"])
+                    expect(page.locator("#hist-summary")).to_have_text(
+                        "2 channels. The simulated band is not recorded.")
+                expect(first.locator("#hist-body tr").first).to_contain_text("10 min ago")
+                tune = first.locator('#hist-body button[data-tune="145500000"]')
+                expect(tune).to_have_attribute("title", re.compile(
+                    rf"^Listen {DOT} first heard .* most often from 12:00, on the engine's computer$"))
+                tune.click()
+                for page in (first, second):    # the VFO is shared
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145500000")
+                first.locator('#hist-body button[data-mark="145500000"]').click()
+                expect(first.locator("#hist-note")).to_have_text("145.5000 MHz added to the bookmarks as Bookmark 1.")
+                expect(first.locator("#marks .mark")).to_have_text(["Bookmark 1"])
+                clear = first.locator('#hist-body button[data-clear="433500000"]')
+                clear.click()       # a first press asks for a second one
+                expect(clear).to_have_text("Confirm")
+                clear.click()
+                expect(first.locator("#hist-body button[data-tune]")).to_have_text(["145.5000"])
+                expect(first.locator("#hist-note")).to_be_hidden()
+                # The other interface sees the change once it asks again, as when its tab shows.
+                second.locator('#scan-tabs button[data-tab="peaks"]').click()
+                second.locator('#scan-tabs button[data-tab="history"]').click()
+                expect(second.locator("#hist-body button[data-tune]")).to_have_text(["145.5000"])
+                clear_all = second.locator("#hist-clear-all")
+                clear_all.click()
+                expect(clear_all).to_have_text("Confirm: clear all")
+                clear_all.click()
+                expect(second.locator("#hist-body .empty")).to_have_text("No channel recorded yet")
+                expect(second.locator("#hist-summary")).to_have_text("The simulated band is not recorded.")
+                expect(clear_all).to_be_hidden()
+                expect(second.locator("#hist-note")).to_be_hidden()
 
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network

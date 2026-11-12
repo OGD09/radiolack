@@ -194,7 +194,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks", "memory"]})
+                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks", "memory", "history"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -302,6 +302,24 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 state = await next_text(ws)
                 self.assertEqual((state["scan"], state["stopped"], state["memory"]["state"]), (None, None, None))
 
+    async def test_the_observations_go_to_the_client_that_asks(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "observations", "clear_all": True})
+            self.assertEqual(await next_text(sender), {"type": "observations", "channels": []})
+            for _ in range(100):    # the fake source's tone, found and recorded again
+                await sender.send_json({"type": "observations"})
+                if channels := (await next_text(sender))["channels"]:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("nothing was recorded")
+            [channel] = channels
+            self.assertEqual(sorted(channel), ["active_s", "first_s", "frequency_hz", "hours", "last_s",
+                                               "margin_db", "transmissions"])
+            await self.assert_no_text(other)
+
     async def test_preferences_are_kept_for_the_next_interfaces(self):
         values = {"palette": "gray", "volume": 0.5, "showPlan": False, "top": None}
         async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
@@ -375,6 +393,12 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "scanner", "scan": "memory"}': ("scanner", "no ticked bookmark lies in the receiver's span"),
             '{"type": "scanner", "resume_s": 9}': (
                 "scanner", "the resume time must be a number of seconds from 0 to 8"),
+            '{"type": "observations", "forget": 145e6}': ("observations", "unknown observations field: forget"),
+            '{"type": "observations", "clear": 145e6, "clear_all": true}': (
+                "observations", "clear and clear_all come alone in their message"),
+            '{"type": "observations", "clear": "145 MHz"}': (
+                "observations", "a channel to clear must be a number from 1 Hz to 1e+11 Hz"),
+            '{"type": "observations", "clear_all": 1}': ("observations", "clear_all takes true"),
             '{"type": "update", "install": true}': ("update", "unknown update setting: install"),
             '{"type": "update", "check": 1}': ("update", "check and check_at_start must be true or false"),
             '{"type": "update", "check_at_start": "no"}': (
