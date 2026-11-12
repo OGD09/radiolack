@@ -24,7 +24,8 @@ the history under the tag `v0.1.0`.
   findings with clients, sends audio to those that ask, passes their changes
   on, switches between kinds of sources, restores and saves the settings and
   the source in use; idle without clients; remote clients get neither the
-  storage, update nor remote access states), `updates` (update check: apt run
+  storage, update nor remote access states, and lighter spectrum frames),
+  `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
   Radiolack), `store` (settings, bookmarks and remote access files in

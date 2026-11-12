@@ -6,6 +6,7 @@ bookmarks and preferences, update checks, saved settings, clean stop."""
 import asyncio
 import contextlib
 import json
+import math
 import tempfile
 import time
 import unittest
@@ -47,6 +48,22 @@ class OtherSource(FakeSource):
 
     kind = "other"
     centre_hz = FAKE_CENTRE_HZ + 1e6
+
+
+class AlternatingSource(FakeSource):
+    """A fake source whose tone reads -20 dBFS, then -30 dBFS, in turn."""
+
+    async def read(self, count: int) -> np.ndarray | None:
+        samples = await super().read(count)
+        if samples is not None and self.reads % 2 == 0:
+            samples = samples * np.float32(10 ** -0.5)
+        return samples
+
+
+async def stop(engine: Engine, task: asyncio.Future) -> None:
+    engine.close()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 class FakeSources:
@@ -819,7 +836,7 @@ class UpdateTest(unittest.IsolatedAsyncioTestCase):
 
 class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
     """The devices that remote access serves share the radio, not this
-    computer's own states and settings."""
+    computer's own states and settings, and get lighter frames."""
 
     async def test_a_remote_client_gets_neither_storage_updates_nor_remote_access(self):
         access = RemoteAccess()
@@ -835,6 +852,30 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
         engine.configure({"dc_removal": False})     # the radio's states reach both
         self.assertEqual([message["type"] for message in ready_messages(remote)], ["source"])
         self.assertEqual([message["type"] for message in ready_messages(local)], ["source"])
+
+    async def test_a_remote_client_gets_one_frame_for_two_blocks_in_fewer_bins(self):
+        source = AlternatingSource()
+        engine = Engine(source, queue_size=64)
+        task = asyncio.ensure_future(engine.run())
+        self.addAsyncCleanup(stop, engine, task)
+        local, remote = engine.subscribe(), engine.subscribe(remote=True)
+        while source.reads < 9:
+            await asyncio.sleep(0.01)
+        # Both clients' frames at once: each block reached the local client.
+        local_frames, remote_frames = ([message for message in waiting(subscription) if isinstance(message, bytes)]
+                                       for subscription in (local, remote))
+        self.assertGreaterEqual(len(local_frames), 8)
+        self.assertEqual({len(frame) - FRAME_HEADER.size for frame in local_frames}, {8192})
+        self.assertEqual(len(remote_frames), len(local_frames) // 2)
+        for index, frame in enumerate(remote_frames):
+            _, _, _, sequence, centre, rate, *_ = FRAME_HEADER.unpack_from(frame)
+            self.assertEqual((sequence, centre, rate), (index, FAKE_CENTRE_HZ, FAKE_RATE_HZ))
+            codes = np.frombuffer(frame, np.uint8, offset=FRAME_HEADER.size)
+            self.assertEqual(len(codes), 2048)
+            self.assertEqual(int(np.argmax(codes)), FAKE_TONE_BIN // 4)
+            # The mean power of -20 and -30 dBFS: neither the louder block nor a mean in dB.
+            self.assertAlmostEqual(level_db(frame, FAKE_TONE_BIN // 4), 10 * math.log10((1e-2 + 1e-3) / 2),
+                                   delta=0.4)
 
     async def test_a_remote_client_may_not_change_the_rtl_tcp_address(self):
         engine = Engine(RtlTcpSource(LOOPBACK, free_port()), remote=RemoteAccess())   # never connects

@@ -18,8 +18,10 @@ from unittest import mock
 import aiohttp
 from aiohttp.abc import AbstractResolver
 
+from radiolack.engine import REMOTE_BINS
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE
-from radiolack.server import CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer
+from radiolack.server import CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer, _limit_unsent
+from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import Store
 from tests.fakes import LOOPBACK, FakeSource, free_port
 from tests.test_server import next_text, read_start
@@ -116,8 +118,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         async with device.post(f"{self.base}pair", json={"code": code}, **kwargs) as response:
             return response.status, await response.json(content_type=None)
 
-    async def remote_stream(self, device: aiohttp.ClientSession):
-        ws = await device.ws_connect(f"wss://{LOOPBACK}:{self.port}/stream", origin=self.origin)
+    async def remote_stream(self, device: aiohttp.ClientSession, **kwargs):
+        ws = await device.ws_connect(f"wss://{LOOPBACK}:{self.port}/stream", origin=self.origin, **kwargs)
         self.addAsyncCleanup(ws.close)
         return ws
 
@@ -302,6 +304,22 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(message["type"], ("storage", "update", "remote"))
         self.assertEqual(message["frequency_hz"], 145_020_000)
 
+    async def test_a_remote_device_gets_lighter_frames_deflated(self):
+        await self.turn_on()
+        device = self.device()
+        await self.pair(device)
+        ws = await self.remote_stream(device, compress=15)     # offers deflate, as browsers do
+        self.assertEqual(ws.compress, 15)
+        while (message := await ws.receive(timeout=5)).type is aiohttp.WSMsgType.TEXT:
+            continue
+        self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
+        self.assertEqual(FRAME_HEADER.unpack_from(message.data)[0], FRAME_KIND_SPECTRUM)
+        self.assertEqual(len(message.data), FRAME_HEADER.size + REMOTE_BINS)
+        # A device's message must fit the limit once inflated: a megabyte of
+        # spaces, which deflates to a few kilobytes, is far over it.
+        await ws.send_str(json.dumps({"type": "demod", "padding": " " * (1 << 20)}))
+        self.assertEqual(await self.closed(ws), aiohttp.WSCloseCode.MESSAGE_TOO_BIG)
+
     async def test_forgetting_a_device_or_making_a_new_code_closes_its_streams(self):
         await self.turn_on()
         first, second = self.device(), self.device()
@@ -399,6 +417,27 @@ class WithoutAddressTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state["on"], state["problem"]), (False, (
             "This computer has no address on a local network: connect it to one, then turn remote access on.")))
         self.assertIsNone(state["fingerprint"])
+
+
+class UnsentLimitTest(unittest.IsolatedAsyncioTestCase):
+    """A device's stream keeps few bytes unsent, so that a slow link does not
+    make it hear the radio later and later."""
+
+    async def test_the_socket_and_the_transport_hold_little(self):
+        accepted: asyncio.Future = asyncio.get_running_loop().create_future()
+        listener = await asyncio.start_server(lambda _reader, writer: accepted.set_result(writer), LOOPBACK, 0)
+        self.addAsyncCleanup(listener.wait_closed)
+        self.addCleanup(listener.close)
+        _, client = await asyncio.open_connection(LOOPBACK, listener.sockets[0].getsockname()[1])
+        self.addCleanup(client.close)
+        server_side = await asyncio.wait_for(accepted, timeout=5)
+        self.addCleanup(server_side.close)
+        _limit_unsent(server_side.transport)
+        self.assertEqual(server_side.transport.get_write_buffer_limits()[1], 16 * 1024)
+        if hasattr(socket, "TCP_NOTSENT_LOWAT"):
+            sock = server_side.transport.get_extra_info("socket")
+            self.assertEqual(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NOTSENT_LOWAT), 16 * 1024)
+        _limit_unsent(None)     # a request whose connection already closed
 
 
 if __name__ == "__main__":

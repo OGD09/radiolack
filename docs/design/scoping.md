@@ -53,6 +53,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | Updates, first part: the owner chose the alert before the button. Radiolack says when a newer version is out and sends the user to the system's software updates, which install it from the APT repository; the button that installs it, with the administrator's password, comes later if still wanted. The check needs no privilege: it runs apt as the user, with Radiolack's APT source alone and none of the system's apt configuration (other repositories, proxies, hooks), in a temporary folder, so that it never touches the system's package lists, and compares the repository's latest version with the installed package's. Only a Radiolack that runs from the Debian package checks. A check that fails stays in Settings: the notice shows only a newer version, or one installed since the start, which runs once Radiolack restarts. |
 | 2026-11-11 | Remote access, answering spike 3: Radiolack makes its own local certificate authority, which each device installs once, after checking its fingerprint against Settings. Safari's WebSocket refuses a certificate that the device does not trust, even after the user accepts the warning, so plain self-signed certificates would not do. The root's key signs one intermediate, which name constraints limit to private IPv4 addresses and to names ending in `.local`, `.home.arpa` and `.internal`, then is destroyed: even stolen, the authority can vouch for no Internet site. The intermediate signs a new server certificate at each turn-on. Set aside: Tailscale certificates (a third-party account, an app on each device, names published in Certificate Transparency logs, the VPN even at home) and a domain with Let's Encrypt (a yearly cost, DNS credentials on the computer, routers that block private DNS answers); the user's own certificate may come later. Remote access is off at each start, and only this computer's interfaces turn it on; it listens on port 8443 by default, on this computer's private IPv4 addresses only, for peers on those networks, and never asks for a port forward or touches the firewall. A device pairs with an 8-character code (40 bits), answered after a second when wrong; 10 wrong codes block it until a new code is made, which signs every device out. A paired device keeps a `__Host-` session cookie, of which the computer keeps only a hash, until it is forgotten in Settings or unused for 90 days. Paired devices control the radio, sources and bookmarks included, but not remote access, the update check, the rtl_tcp server's address or where the settings are saved. `remote.json` keeps the port, the code, the paired devices and the authority, which replaces "Remote access is never saved" (2026-11-09): whether it is on is never saved. A key for the other accounts of a shared computer, which reach 127.0.0.1 as it is, waits for v4. Order: remote access, then listening on the iPhone (touch gesture, audio session, wake lock), then interface settings per device. |
 | 2026-11-12 | v1 goes on with remote use from outside the home, then interface settings per device; this replaces the order of 2026-11-11. Listening on the iPhone ends without a wake lock: with Safari's playback audio session, the iPhone keeps playing with its screen locked (spike 2). Away from home, Radiolack runs on a computer next to the receiver, without a window, and devices reach it through the user's VPN: rtl_tcp's samples (16 Mbit/s at 1.024 MS/s) are too much for most links. A device's stream carries 2.2 Mbit/s: 2 Mbit/s of spectrum (30 frames per second) and 0.2 Mbit/s of PCM audio, so remote devices first get a lighter spectrum, then Opus audio. How remote access turns on without a window is an open question. |
+| 2026-11-12 | Lighter stream for remote devices, as the owner chose: about 15 spectrum frames per second, each the mean power of two, in at most 2048 bins, each the highest of the bins it groups, so that narrow signals stay visible, and deflate (RFC 7692) on remote access's stream; this computer's window keeps every frame and every bin. Measured on the simulated band, a device's spectrum drops from 2 Mbit/s to 0.12 Mbit/s, about 0.3 Mbit/s with the PCM audio. A device's finest zoom becomes 16 of its bins, 18.75 kHz at 2.4 MS/s instead of 4.7 kHz. Set aside for now: a device that sends its view and gets only the visible bins, which keeps the detail but loses the waterfall's history at each zoom. When frames come slower than its lines, the waterfall repeats the latest frame, so that it keeps its speed. A remote stream keeps at most 16 KiB unsent, in its socket and its transport: over a link slower than the stream, the system's send queue otherwise grew without end and the delay with it (15.6 s after 60 s at 250 kbit/s), whereas the engine now drops old frames and the delay stays near 5 s at that rate, held by the TLS layer's buffers; Opus audio should leave them empty on such links. |
 
 ## Scope
 
@@ -620,8 +621,36 @@ These costs wait for v4:
   The audio asks Safari for its "playback" session, which iOS plays with
   the ringer switch on silent; with it, the iPhone kept playing with its
   screen locked on 2026-11-12 (spike 2).
+- Remote access, lighter stream, 2026-11-12: remote devices get half the
+  spectrum frames, in at most 2048 bins (`engine.py`, `fewer_bins` in
+  `spectrum.py`), over a deflated stream that keeps at most 16 KiB unsent
+  (`server.py`); the waterfall repeats the latest frame to keep its speed
+  (`main.js`). The tests check the remote frames' count, bins and mean
+  power, the deflate negotiation and the inflated size limit, the send
+  limits, and in the browsers the device's frame rate. A proxy that slows
+  the link to 250 kbit/s, in a measurement outside the tests, showed the
+  delay growing without end before (15.6 s after 60 s) and staying near
+  5 s after. In headless browsers, software WebGL draws too few frames a
+  second to measure the waterfall's speed; WebKit showed 22 to 24 lines a
+  second from 12 to 13 frames a second.
+- Held audio, 2026-11-12: through the VPN, the owner's iPhone stayed silent
+  after each page load until a tap on the Demod button. Safari holds the
+  audio until a gesture, and only the Demod panel said so, while phones
+  hide the status line. As the owner asked, touch screens now show a
+  speaker at the top right (under the menu buttons in landscape), crossed
+  out while the page plays no sound (audio held, or volume 0) and with
+  waves while it plays (`index.html`, `style.css`, `main.js`). A tap starts
+  held audio, mutes by setting the volume to 0, as the Demod panel's slider
+  would, so that the engine stops sending audio, or brings the volume back.
+  It shows for touch input (`pointer: coarse`) rather than for iOS alone:
+  other phone browsers may hold the audio too, and a mute within reach
+  helps on any phone. Browser tests check it held and tapped, then muted
+  (no more audio frames) and unmuted, with touch input in the three
+  browsers, and that a page used with a mouse does not show it. Checked on
+  the owner's iPhone on 2026-11-12.
 - Next steps: v1 continues with remote use from outside the home (see
-  Decisions, 2026-11-12), then interface settings per device; the owner's
+  Decisions, 2026-11-12): Opus audio and remote access without a window
+  (open question 3), then interface settings per device; the owner's
   choice about the button that installs an update is still open.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

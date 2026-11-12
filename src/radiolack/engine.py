@@ -33,7 +33,9 @@ what the check found.
 With remote access (remote.py), the engine tells this computer's interfaces
 its state, and saves what it keeps. Remote clients, the devices that remote
 access serves, receive neither that state nor the storage and update states,
-and may not change the rtl_tcp server's address.
+and may not change the rtl_tcp server's address. Their links may be slower
+than this computer's own: they get one display frame for every two blocks,
+the mean power of both, in fewer bins.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
@@ -61,11 +63,13 @@ from . import __version__
 from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
 from .remote import REMOTE_FILE, RemoteAccess
-from .spectrum import SpectrumAnalyzer, encode_frame
+from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
 
 FRAME_RATE = 30.0       # display frames per second
+REMOTE_BLOCKS = 2       # a remote client's display frame: the mean power of this many blocks
+REMOTE_BINS = 2048      # at most this many bins in a remote client's display frames
 CLIENT_QUEUE = 4        # frames kept for a client that falls behind
 CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
@@ -287,6 +291,9 @@ class Engine:
         self._wanted = asyncio.Event()     # set while a client listens, or to stop
         self._closed = False
         self._sequence = 0
+        self._remote_sequence = 0           # remote clients' frames have their own sequence
+        self._remote_blocks: list[np.ndarray] = []  # bin powers of the blocks of their next frame
+        self._remote_capture: tuple[float, float] | None = None    # centre and rate of those blocks
         self._demodulator = Demodulator()   # used by one block at a time
         self._capture: tuple[float, float] | None = None    # centre and rate of the last block
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
@@ -562,10 +569,10 @@ class Engine:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
                 audio = any(subscription.audio for subscription in self._clients)
-                codes, meter, pcm = await asyncio.to_thread(
+                power, codes, meter, pcm = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, samples, *capture,
                     self._dc_removal, self._demod, audio)
-                self._publish(capture, codes, meter, pcm)
+                self._publish(capture, power, codes, meter, pcm)
         except Exception:
             log.exception("the engine stopped")
             self.close()
@@ -737,18 +744,43 @@ class Engine:
             self._demod = dataclasses.replace(self._demod, frequency_hz=float(frequency))
             self._demod_changed()
 
-    def _publish(self, capture: tuple[float, float], codes: np.ndarray, meter: Meter,
+    def _publish(self, capture: tuple[float, float], power: np.ndarray, codes: np.ndarray, meter: Meter,
                  pcm: np.ndarray | None) -> None:
         if not self._clients:
             return
         frame = encode_frame(self._sequence, *capture, self.analyzer.db_min, self.analyzer.db_step, codes,
                              meter.level_db, meter.squelch_db, meter.open)
         self._sequence = (self._sequence + 1) & 0xFFFFFFFF
+        remote_frame = self._remote_frame(capture, power, meter)
         audio = self._demodulator.encode_audio(pcm) if pcm is not None and len(pcm) else None
         for subscription in self._clients:
-            subscription.put_frame(frame)
+            if not subscription.remote:
+                subscription.put_frame(frame)
+            elif remote_frame is not None:
+                subscription.put_frame(remote_frame)
             if audio is not None:
                 subscription.put_audio(audio)
+
+    def _remote_frame(self, capture: tuple[float, float], power: np.ndarray, meter: Meter) -> bytes | None:
+        """The remote clients' frame, once every ``REMOTE_BLOCKS`` blocks of
+        the same span: their mean power, in at most ``REMOTE_BINS`` bins, with
+        the latest block's meter. None in between, and while no remote client
+        listens."""
+        if not any(subscription.remote for subscription in self._clients):
+            self._remote_blocks.clear()
+            return None
+        if capture != self._remote_capture:     # blocks of another span do not add up
+            self._remote_capture = capture
+            self._remote_blocks.clear()
+        self._remote_blocks.append(power)
+        if len(self._remote_blocks) < REMOTE_BLOCKS:
+            return None
+        codes = fewer_bins(self.analyzer.codes(np.mean(self._remote_blocks, axis=0)), REMOTE_BINS)
+        self._remote_blocks.clear()
+        frame = encode_frame(self._remote_sequence, *capture, self.analyzer.db_min, self.analyzer.db_step,
+                             codes, meter.level_db, meter.squelch_db, meter.open)
+        self._remote_sequence = (self._remote_sequence + 1) & 0xFFFFFFFF
+        return frame
 
 
 def _open_saved(sources: SourceOpener, saved: object) -> Source:
@@ -804,13 +836,14 @@ def _saved_check_at_start(saved: object) -> bool:
 
 def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, samples: np.ndarray,
                    centre_hz: float, rate_hz: float, dc_removal: bool, settings: DemodSettings,
-                   audio: bool) -> tuple[np.ndarray, Meter, np.ndarray | None]:
-    """The display codes, the channel meter and, with ``audio``, the audio of
-    a block of samples, worked out in a worker thread."""
+                   audio: bool) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None]:
+    """The bin powers, the display codes, the channel meter and, with
+    ``audio``, the audio of a block of samples, worked out in a worker
+    thread."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
     power = analyzer.power(samples)
     noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz)
     meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio)
-    return analyzer.codes(power), meter, pcm
+    return power, analyzer.codes(power), meter, pcm

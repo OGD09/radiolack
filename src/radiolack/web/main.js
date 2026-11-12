@@ -119,6 +119,7 @@ function passband() {
 // ------------------------------------------------------------------ buffers
 let frameLin, avgLin, avgDb, peakDb, wfAcc, hist, histTime;
 let wfCount = 0, histHead = -1, histFilled = 0, avgPrimed = false, levelsPrimed = false, frameCounter = 0;
+let lastFrameMs = -Infinity;        // performance.now() at the latest frame of this capture
 let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
 let meterSqlDb = null;              // the squelch threshold in use, from the frames; null while unknown
 const autoWf = { min: -101, max: -57 };
@@ -144,6 +145,7 @@ function resetBuffers() {
   hist = new Uint8Array(nb * HIST_ROWS);
   histTime = new Float64Array(HIST_ROWS);
   wfCount = 0; histHead = -1; histFilled = 0; avgPrimed = false; levelsPrimed = false;
+  lastFrameMs = -Infinity;
   if (waterfallView) waterfallView.setBins(nb);
   clearStamps();
   const lo = fStart(), hi = fEnd();
@@ -184,6 +186,7 @@ function onFrame(frame) {
   }
   for (let i = 0; i < nb; i += 1) frameLin[i] = codeToLin[codes[i]];
   integrateFrame();
+  lastFrameMs = performance.now();
   updateMeter(frame);
   frameCounter += 1;
   if (frameCounter % 3 === 0) estimateFloor();
@@ -312,7 +315,40 @@ function syncAudio() {
     syncStream();
   }
   syncAudioNote();
+  syncSound();
 }
+
+// The speaker, for touch input: crossed out while this interface plays no sound, because the
+// browser holds the audio until a tap (Safari, at each page load; a tap on the speaker is one,
+// audio.js) or the volume is 0. A tap mutes by setting the volume to 0, as the Demod panel's
+// slider would, so that the engine stops sending audio, and unmutes by bringing it back.
+const soundEl = $('#sound');
+const DEFAULT_VOLUME = S.volume;    // brought back when the speaker did not mute
+let volumeBeforeMute = 0;
+let soundAtPress = null;            // whether sound played as the latest press on the speaker began
+function syncSound() {
+  soundEl.setAttribute('aria-pressed', String(audioWanted));
+  soundEl.hidden = audioState === 'failed';
+}
+function setVolume(volume) {
+  const input = rangeInputs.get('volume');
+  input.value = String(volume);
+  input.dispatchEvent(new Event('input'));    // as the slider would: the setting, its label, the audio
+}
+// The press itself may start the audio, before the click: the click acts on what played before.
+soundEl.addEventListener('pointerdown', () => { soundAtPress = audioWanted; });
+soundEl.addEventListener('pointercancel', () => { soundAtPress = null; });    // a scroll: no click follows
+soundEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') soundAtPress = audioWanted; });
+soundEl.addEventListener('click', () => {
+  const sounding = soundAtPress ?? audioWanted;
+  soundAtPress = null;
+  if (sounding) {
+    volumeBeforeMute = S.volume;
+    setVolume(0);
+  } else if (S.volume === 0) {
+    setVolume(volumeBeforeMute || DEFAULT_VOLUME);
+  }   // otherwise the browser held the audio, and the press asked it to start
+});
 
 function integrateFrame() {
   const nb = S.nb, a = avgPrimed ? S.avg : 0;
@@ -440,14 +476,23 @@ function rebuildStamps() {
 }
 
 // One waterfall line: the average power of the frames since the previous line.
+// Frames may come slower than lines, as to remote devices: a line then
+// repeats the latest frame, while frames still come, so that the waterfall
+// keeps its speed.
+const LINE_REPEAT_MS = 250;
 function commitWfLine(now) {
-  if (!wfCount) return;
+  let levels = wfAcc, inv = 1 / wfCount;
+  if (!wfCount) {
+    if (performance.now() - lastFrameMs > LINE_REPEAT_MS) return;
+    levels = frameLin;
+    inv = 1;
+  }
   const nb = S.nb;
   histHead = (histHead + 1) % HIST_ROWS;
   histFilled = Math.min(HIST_ROWS, histFilled + 1);
-  const base = histHead * nb, inv = 1 / wfCount;
+  const base = histHead * nb;
   for (let i = 0; i < nb; i += 1) {
-    const q = (10 * Math.log10(wfAcc[i] * inv + 1e-30) - HIST_DB_MIN) / HIST_DB_STEP;
+    const q = (10 * Math.log10(levels[i] * inv + 1e-30) - HIST_DB_MIN) / HIST_DB_STEP;
     hist[base + i] = q <= 0 ? 0 : q >= 255 ? 255 : q + 0.5;
     wfAcc[i] = 0;
   }

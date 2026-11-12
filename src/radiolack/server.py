@@ -51,6 +51,7 @@ _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript count
 _COMMANDS = ("source", "demod", "audio", "bookmark", "preferences", "update", "remote")
 _LOCAL_COMMANDS = ("preferences", "update", "remote")     # refused to remote devices
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
+_UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
 _REMOTE_KEEPALIVE_S = 15.0      # an idle HTTPS connection closes after this long
 _REMOTE_BODY_LIMIT = 4 * 1024   # a pairing request's body
 _WRONG_CODE_DELAY_S = 1.0       # a wrong code is answered this late, and codes are checked one at a time
@@ -518,9 +519,15 @@ class RemoteListener:
     async def _stream(self, request: web.Request) -> web.StreamResponse:
         if not _same_origin(request):
             raise web.HTTPForbidden(text="Unexpected Origin header.\n")
-        ws = web.WebSocketResponse(timeout=_CLOSE_TIMEOUT_S, compress=False, max_msg_size=_CLIENT_MESSAGE_LIMIT,
+        # Deflate (RFC 7692), which the browsers offer, halves the spectrum
+        # frames for the device's link; the stream carries no secret that
+        # compression could reveal. A device's messages stay limited once
+        # inflated.
+        ws = web.WebSocketResponse(timeout=_CLOSE_TIMEOUT_S, compress=True, max_msg_size=_CLIENT_MESSAGE_LIMIT,
                                    heartbeat=_REMOTE_HEARTBEAT_S)
+        transport = request.transport   # which the request no longer gives once prepared
         await ws.prepare(request)
+        _limit_unsent(transport)
         # Checked once the handshake is over, so that the page learns why from
         # the close code; then noted at once, so that turning off or
         # forgetting the device closes the stream.
@@ -537,6 +544,24 @@ class RemoteListener:
             del self._streams[ws]
             self._access.disconnected(device)
         return ws
+
+
+def _limit_unsent(transport: asyncio.BaseTransport | None) -> None:
+    """Keep few bytes unsent for a device whose link may be slower than its
+    stream: otherwise the system keeps more and more of it, and the device
+    hears the radio later and later. Its socket (with TCP_NOTSENT_LOWAT, on
+    Linux and macOS) and its transport then hold little, and the engine
+    drops the device's oldest frames instead."""
+    if not isinstance(transport, asyncio.WriteTransport):
+        return
+    transport.set_write_buffer_limits(high=_UNSENT_LIMIT)
+    sock = transport.get_extra_info("socket")
+    option = getattr(socket, "TCP_NOTSENT_LOWAT", None)
+    if sock is not None and option is not None:
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, option, _UNSENT_LIMIT)
+        except OSError as error:
+            log.warning("a remote stream may fall behind on a slow link: %s", error)
 
 
 def _same_origin(request: web.Request) -> bool:

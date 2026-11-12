@@ -189,9 +189,10 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         await read_start(self, ws)
 
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
-        async with self.connect(self.origin) as ws:
+        async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "hello", "protocol": 6, "remote": False})
             self.assertEqual(PROTOCOL_VERSION, 6)
+            self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             settings = await ws.receive_json(timeout=5)
