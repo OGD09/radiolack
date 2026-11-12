@@ -9,12 +9,13 @@ WebSocket (``/stream``; see docs/design/protocol.md), which also carries the
 interfaces' changes, their preferences, their requests for audio and for an
 update check.
 
-Remote access (remote.py), once this computer's interface turns it on, adds
-a second web application to the same loop, with a runner of its own: it
-serves the interface and the stream over HTTPS on this computer's private
-addresses to devices that entered the access code, and turning it off stops
-it without stopping the first. Remote devices may not change remote access,
-the update check, the preferences or the rtl_tcp server's address.
+Remote access (remote.py), once this computer's interface or the command
+line turns it on, adds a second web application to the same loop, with a
+runner of its own: it serves the interface and the stream over HTTPS on
+this computer's private addresses to devices that entered the access code,
+and turning it off stops it without stopping the first. Remote devices may
+not change remote access, the update check, the preferences or the rtl_tcp
+server's address.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import socket
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
@@ -45,6 +47,7 @@ CLOSE_REMOTE_OFF = 4002     # closes the remote streams when remote access turns
 
 _START_TIMEOUT_S = 10.0
 _STOP_TIMEOUT_S = 10.0
+_REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authority
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
@@ -590,10 +593,11 @@ class LocalServer:
     starts from the saved settings and saves their changes; with ``updates``,
     it checks for a newer Radiolack.
 
-    Remote access, which stays off until an interface turns it on, listens
-    on the addresses that ``remote_addresses`` gives at each turn-on, such as
-    remote.private_addresses: without it, it finds none and cannot turn on.
-    ``host`` is this computer's mDNS name, by default its host name.
+    Remote access, which stays off until an interface or ``turn_on_remote``
+    turns it on, listens on the addresses that ``remote_addresses`` gives at
+    each turn-on, such as remote.private_addresses: without it, it finds none
+    and cannot turn on. ``host`` is this computer's mDNS name, by default its
+    host name.
     """
 
     def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
@@ -613,6 +617,9 @@ class LocalServer:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_requested: asyncio.Event | None = None
         self._error: BaseException | None = None
+        # Made in the server's loop before it is ready, and used only there.
+        self._access: RemoteAccess | None = None
+        self._remote: RemoteListener | None = None
 
     def __enter__(self) -> LocalServer:
         self.start()
@@ -644,6 +651,31 @@ class LocalServer:
             self._thread.join(_STOP_TIMEOUT_S)
         self._sock.close()
 
+    def turn_on_remote(self, port: int | None = None) -> dict[str, Any]:
+        """Turn remote access on, as this computer's interface does in
+        Settings, on ``port`` if given, which it keeps for the next turn-ons
+        as Settings would, and wait until it listens or cannot. Returns the
+        remote access state that this computer's interfaces get
+        (RemoteAccess.describe): ``on`` says which, and ``problem`` why not.
+        Raises ValueError for a port that remote access refuses, and
+        TimeoutError when turning on takes too long."""
+        loop, access, remote = self._loop, self._access, self._remote
+        if loop is None or access is None or remote is None:
+            raise RuntimeError("the server is not running")
+
+        async def turn_on() -> dict[str, Any]:
+            if port is not None:
+                access.set_port(port)
+            await remote.turn_on()
+            return access.describe()
+
+        future = asyncio.run_coroutine_threadsafe(turn_on(), loop)
+        try:
+            return future.result(_REMOTE_START_TIMEOUT_S)
+        except TimeoutError:
+            future.cancel()
+            raise
+
     def _run(self) -> None:
         try:
             asyncio.run(self._serve())
@@ -657,6 +689,7 @@ class LocalServer:
         access = RemoteAccess()
         engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access)
         remote = RemoteListener(engine, access, self._remote_addresses, self._host)
+        self._access, self._remote = access, remote
         runner = web.AppRunner(create_app(self.port, engine, remote), handle_signals=False)
         await runner.setup()
         try:

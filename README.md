@@ -21,9 +21,10 @@ demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
 Demod panel's CTCSS and processing settings do nothing yet. Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
-package on Debian and Ubuntu. Remote access, off at each start, lets a phone
-or a tablet on the local network control Radiolack and hear it, over HTTPS
-with an access code ([Remote access](#remote-access)). The plan, the
+package on Debian and Ubuntu. Remote access, off at each start unless
+`--remote` turns it on, lets a phone or a tablet on the local network
+control Radiolack and hear it, over HTTPS with an access code
+([Remote access](#remote-access)). The plan, the
 milestones and the decisions are in
 [docs/design/scoping.md](docs/design/scoping.md).
 
@@ -134,14 +135,15 @@ stops Radiolack.
 | `--ui browser` | Opens the interface in the default web browser. |
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
+| `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Source panel can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
 
-Radiolack listens on 127.0.0.1 only, unless its settings turn remote access
-on ([Remote access](#remote-access)). It answers only requests addressed to
+Radiolack listens on 127.0.0.1 only, unless Settings or `--remote` turns
+remote access on ([Remote access](#remote-access)). It answers only requests addressed to
 127.0.0.1 or localhost, which keeps web pages from reaching it through DNS
 rebinding. The desktop window stays on the interface: it opens no other page
 and no new window.
@@ -157,8 +159,8 @@ its page is hidden, in a background browser tab for instance, unless it
 plays audio.
 
 Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
-the port cannot be used or when `--rtl-sdr` finds no rtl_tcp installed, 2
-for invalid options.
+the port cannot be used, when `--rtl-sdr` finds no rtl_tcp installed or when
+`--remote` cannot turn remote access on, 2 for invalid options.
 
 ## RTL-SDR receivers
 
@@ -315,7 +317,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 - `bookmarks.json` holds the bookmarks.
 - `remote.json` holds what remote access keeps: its port, its access code,
   the paired devices and its local authority, but never whether it is on:
-  it is off at each start ([Remote access](#remote-access)).
+  it is off at each start, unless `--remote` turns it on
+  ([Remote access](#remote-access)).
 
 The window keeps no browser data on disk: WebKit's cache and storage stay in
 memory.
@@ -344,9 +347,11 @@ from the defaults, delete the folder while Radiolack is stopped.
 
 Remote access lets a phone, a tablet or another computer on the same local
 network control Radiolack and hear it in its web browser. It is off at each
-start, and only this computer's interface turns it on, in Settings > Remote
-access. Radiolack then also listens over HTTPS, on port 8443 or the port
-chosen there while it is off (1024 to 65535), on this computer's addresses
+start, and only this computer turns it on: its interface, in Settings >
+Remote access, or the `--remote` option at start
+([Without a window](#without-a-window)). Radiolack then also listens over
+HTTPS, on port 8443 or the port chosen in Settings while remote access is
+off or given to `--remote` (1024 to 65535), on this computer's addresses
 on its local networks: the private IPv4 ranges (10.0.0.0/8, 172.16.0.0/12,
 192.168.0.0/16), the range that Tailscale uses (100.64.0.0/10) and
 link-local addresses. It answers only devices whose own address is in these
@@ -412,6 +417,39 @@ wrong codes the code no longer works until Settings makes a new one.
 Turning remote access off closes the devices' connections; their interfaces
 wait for it to be on again. Radiolack keeps a hash of each device's session,
 never the session itself, in `remote.json`, which only you can read.
+
+### Without a window
+
+On a computer without a display, such as one next to the receiver,
+`--remote` turns remote access on at start, as Settings does:
+
+```bash
+radiolack --ui none --remote
+```
+
+Radiolack then prints what Settings would show: the addresses to open, the
+SHA-256 fingerprint of its certificate and the access code. The code also
+lands wherever the output goes, a service's journal for instance, which this
+computer's administrators can read. `--remote PORT` listens on PORT, which
+remote access keeps for the next starts. When remote access cannot turn on,
+on a port in use or without an address on a local network yet, Radiolack
+says why and exits with status 1, so that a service manager can start it
+again, as systemd's `Restart=on-failure` does. Away from home, devices reach
+it through a VPN that gives this computer an address in the ranges above,
+such as WireGuard on a private range or Tailscale. Remote access listens on
+the addresses that this computer has when it turns on: start Radiolack once
+the VPN is up, or start it again.
+
+Settings stays on this computer's own interface, on 127.0.0.1: to turn
+remote access off, forget a device or make a new code, reach it through SSH
+with the same port on both ends, for instance after
+`radiolack --ui none --remote --port 8080`:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 COMPUTER
+```
+
+then open `http://127.0.0.1:8080/` on the computer that runs ssh.
 
 ## Updates
 
@@ -544,7 +582,10 @@ python3 packaging/smoke_test.py --check-updates
 With `--remote`, it also turns remote access on for a few seconds, on an
 ephemeral port of this computer's local network addresses, and checks it as
 a phone would: the certificate, the pairing page, a wrong code and the right
-one, the stream, and the port released once off.
+one, the stream, and the port released once off. It then starts Radiolack
+again with `--remote`, and checks that remote access is on at the addresses
+printed, with the certificate whose fingerprint is printed, and that the
+code printed pairs a device.
 
 ### Continuous integration
 

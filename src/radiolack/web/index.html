@@ -250,7 +250,7 @@
         <div class="field"><label for="st-remote-port">Port</label><input id="st-remote-port" type="number" min="1024" max="65535" step="1" inputmode="numeric"></div>
         <div class="field"><span class="label">Paired devices</span><ul class="list" id="st-remote-devices"></ul></div>
         <div class="field" id="st-remote-fp-field" hidden><span class="label">Certificate fingerprint (SHA-256)</span><span class="value fingerprint" id="st-remote-fingerprint"></span></div>
-        <p class="note">Off at each start. Local network only: a firewall on this computer must let devices reach the port. These settings can only be changed on this computer. A device checks the certificate it installs against this fingerprint. A new code makes every paired device enter it again.</p>
+        <p class="note">Off at each start, unless Radiolack starts with --remote. Local network only: a firewall on this computer must let devices reach the port. These settings can only be changed on this computer. A device checks the certificate it installs against this fingerprint. A new code makes every paired device enter it again.</p>
       </div>
       <h3>Touch</h3>
       <dl class="keys">

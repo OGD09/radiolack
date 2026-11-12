@@ -1,10 +1,11 @@
 """Remote access: phones and tablets on the local network control Radiolack.
 
-Remote access is off at each start. Once this computer's interface turns it
-on, the server (server.py) also listens over HTTPS, on a fixed port, on this
-computer's private IPv4 addresses. A device installs the certificate of
-Radiolack's local authority once, then enters the access code once: it then
-holds a session cookie, and with it the interface, the stream and the audio.
+Remote access is off at each start. Once this computer turns it on, by its
+interface or by the --remote option (cli.py), the server (server.py) also
+listens over HTTPS, on a fixed port, on this computer's private IPv4
+addresses. A device installs the certificate of Radiolack's local authority
+once, then enters the access code once: it then holds a session cookie, and
+with it the interface, the stream and the audio.
 
 This module keeps what remote access needs between starts, in remote.json in
 the settings folder (store.py): the port, the access code and the wrong codes
