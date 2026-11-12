@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="radiolack",
         description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it opens the "
                     "receiver used last, the simulated 2 m band the first time; the Source panel "
-                    "switches between them. Settings and bookmarks are saved in "
+                    "switches between them. Settings, bookmarks and history are saved in "
                     "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack). Remote access, "
                     "for phones and tablets on the local network, is off at each start: Settings "
                     "or --remote turns it on.",

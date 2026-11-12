@@ -22,7 +22,7 @@ from radiolack.engine import Engine, Source, Subscription
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
-from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
+from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, FakeSource, FakeUpdates, free_port
 
@@ -1309,3 +1309,170 @@ class MemoryScanTest(unittest.IsolatedAsyncioTestCase):
         reads = source.reads
         await asyncio.sleep(0.1)
         self.assertLessEqual(source.reads, reads + 1)
+
+
+class SimulatedBandSource(FakeSource):
+    """A fake source that passes for the simulated band."""
+
+    kind = "synthetic"
+
+
+def observations_of(subscription: Subscription) -> list[list[dict]]:
+    """The channels of each observations message ready for a client, now."""
+    return [message["channels"] for message in waiting(subscription)
+            if isinstance(message, dict) and message["type"] == "observations"]
+
+
+class ObservationsTest(unittest.IsolatedAsyncioTestCase):
+    """What detection found, kept across restarts: recorded from a receiver
+    but not from the simulated band, sent to the client that asks, cleared,
+    written at most every so often, at once after a clear and at the stop."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "radiolack"
+
+    def engine(self, source: Source | None = None, run: bool = True, **options) -> Engine:
+        engine = Engine(source if source is not None else FakeSource(), store=Store(self.directory), **options)
+        task = asyncio.ensure_future(engine.run()) if run else None
+
+        async def stop():
+            engine.close()
+            if task is not None:
+                await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    def write(self, channels: list[dict]) -> None:
+        self.directory.mkdir(exist_ok=True)
+        (self.directory / OBSERVATIONS_FILE).write_text(json.dumps({"version": 1, "channels": channels}),
+                                                        encoding="utf-8")
+
+    def read(self) -> dict | None:
+        try:
+            return json.loads((self.directory / OBSERVATIONS_FILE).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+
+    async def recorded(self, engine: Engine) -> list[dict]:
+        """The observations, once the engine recorded some."""
+        deadline = time.monotonic() + 5
+        while not (channels := engine.observations_state()["channels"]):
+            self.assertLess(time.monotonic(), deadline, "nothing was recorded")
+            await asyncio.sleep(0.01)
+        return channels
+
+    @staticmethod
+    async def searches(source: FakeSource, count: int) -> None:
+        """Wait for ``count`` more searches of the detector."""
+        reads = source.reads
+        while source.reads < reads + 10 * count:
+            await asyncio.sleep(0.01)
+
+    async def test_the_signals_found_are_recorded_for_the_client_that_asks(self):
+        engine = self.engine(observations_save_s=3600)
+        subscription, other = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        [channel] = await self.recorded(engine)
+        self.assertAlmostEqual(channel["frequency_hz"], FAKE_TONE_HZ, delta=FAKE_RATE_HZ / 8192)
+        self.assertGreaterEqual(channel["transmissions"], 1)    # one, unless the test runs slow
+        self.assertEqual(sum(channel["hours"]), channel["transmissions"])
+        self.assertLessEqual(channel["first_s"], channel["last_s"])
+        self.assertAlmostEqual(channel["last_s"], time.time(), delta=5)
+        self.assertGreater(channel["margin_db"], 12.0)
+        waiting(other)
+        engine.configure_observations({}, subscription)
+        [[sent]] = observations_of(subscription)
+        self.assertEqual(sent["frequency_hz"], channel["frequency_hz"])
+        self.assertEqual(observations_of(other), [])      # only the client that asks
+
+    async def test_neither_the_simulated_band_nor_an_ignored_frequency_is_recorded(self):
+        for source, ignored in ((SimulatedBandSource(), None), (FakeSource(), FAKE_TONE_HZ)):
+            with self.subTest(kind=source.kind):
+                engine = self.engine(source)
+                if ignored is not None:
+                    engine.configure_scanner({"ignore": ignored})
+                subscription = engine.subscribe()
+                await self.searches(source, 3)
+                self.assertEqual(engine.observations_state()["channels"], [])
+                if ignored is None:
+                    self.assertTrue(engine.peaks_state()["peaks"])     # found, all the same
+                engine.unsubscribe(subscription)
+
+    async def test_a_client_clears_a_channel_or_all_and_the_file_follows_at_once(self):
+        recent = time.time() - 60
+        self.write([{"frequency_hz": 145_500_000, "first_s": recent, "last_s": recent, "transmissions": 3,
+                     "active_s": 12.5, "margin_db": 18.0, "hours": [1] * 3 + [0] * 21},
+                    {"frequency_hz": 433_500_000, "first_s": recent, "last_s": recent + 1, "transmissions": 1,
+                     "active_s": 0.0, "margin_db": 15.0, "hours": [0] * 23 + [1]}])
+        engine = self.engine(run=False, save_delay_s=0.01, observations_save_s=3600)
+        subscription = engine.subscribe()
+        self.assertEqual([channel["frequency_hz"] for channel in engine.observations_state()["channels"]],
+                         [433_500_000, 145_500_000])
+        waiting(subscription)
+        engine.configure_observations({"clear": 145_501_000}, subscription)
+        [[remaining]] = observations_of(subscription)
+        self.assertEqual(remaining["frequency_hz"], 433_500_000)
+        deadline = time.monotonic() + 5
+        while (self.read() or {}).get("channels") != [remaining]:
+            self.assertLess(time.monotonic(), deadline, "the clear was not saved")
+            await asyncio.sleep(0.01)
+        engine.configure_observations({"clear": 145_501_000}, subscription)    # none left there: no change
+        self.assertEqual(observations_of(subscription), [[remaining]])
+        engine.configure_observations({"clear_all": True}, subscription)
+        self.assertEqual(observations_of(subscription), [[]])
+        while self.read()["channels"]:
+            self.assertLess(time.monotonic(), deadline, "the clear was not saved")
+            await asyncio.sleep(0.01)
+
+    async def test_refused_messages_change_nothing(self):
+        engine = self.engine(run=False)
+        subscription = engine.subscribe()
+        waiting(subscription)
+        refused = ({"clear": 145e6, "clear_all": True}, {"forget": 145e6}, {"clear": "145 MHz"}, {"clear": 0},
+                   {"clear": True}, {"clear": 10 ** 400}, {"clear": float("nan")}, {"clear_all": False},
+                   {"clear_all": 1})
+        for changes in refused:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_observations(changes, subscription)
+        self.assertEqual(observations_of(subscription), [])
+
+    async def test_written_at_most_every_interval_while_it_runs(self):
+        started = time.monotonic()
+        engine = self.engine(save_delay_s=0.01, observations_save_s=0.5)
+        engine.subscribe()
+        writes = []
+        deadline = started + 10
+        while len(writes) < 2:
+            self.assertLess(time.monotonic(), deadline, f"written {len(writes)} times")
+            content = self.read()
+            if content is not None and (not writes or content != writes[-1][1]):
+                writes.append((time.monotonic(), content))
+            await asyncio.sleep(0.01)
+        self.assertGreaterEqual(writes[0][0] - started, 0.45)
+        self.assertGreaterEqual(writes[1][0] - writes[0][0], 0.45)
+        [channel] = writes[1][1]["channels"]
+        self.assertAlmostEqual(channel["frequency_hz"], FAKE_TONE_HZ, delta=FAKE_RATE_HZ / 8192)
+
+    async def test_written_when_the_engine_stops_and_read_at_the_next_start(self):
+        engine = self.engine(observations_save_s=3600)
+        engine.subscribe()
+        [channel] = await self.recorded(engine)
+        await asyncio.sleep(0.1)
+        self.assertIsNone(self.read())         # not yet
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+        [saved] = self.read()["channels"]
+        self.assertEqual(saved["frequency_hz"], channel["frequency_hz"])
+        self.assertEqual(self.engine(run=False).observations_state()["channels"], [saved])
+
+    async def test_an_unreadable_file_is_set_aside(self):
+        self.directory.mkdir()
+        (self.directory / OBSERVATIONS_FILE).write_text("{not json", encoding="utf-8")
+        with self.assertLogs("radiolack.store", "WARNING"):
+            engine = self.engine(run=False)
+        self.assertEqual(engine.observations_state()["channels"], [])
+        self.assertIn("observations.json could not be read", engine.storage_state()["problem"])
+        self.assertEqual(len(list(self.directory.glob(f"{OBSERVATIONS_FILE}.invalid-*"))), 1)

@@ -7,7 +7,7 @@ streams its frames, its audio, its source state, its demodulation settings,
 its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
-audio and for an update check.
+audio, for an update check and for the observations.
 
 Remote access (remote.py), once this computer's interface or the command
 line turns it on, adds a second web application to the same loop, with a
@@ -53,7 +53,8 @@ _REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authori
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "preferences", "update", "remote")
+_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "update",
+             "remote")
 _LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
@@ -225,6 +226,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.edit_bookmarks(changes)
         elif kind == "scanner":
             engine.configure_scanner(changes)
+        elif kind == "observations":
+            engine.configure_observations(changes, subscription)
         elif kind == "preferences":
             values = changes.pop("values", None)
             if changes:

@@ -350,6 +350,26 @@ it runs is never saved, so none runs at start; the resume time is the same
 for every interface and kept for the next start. The sweep is not available
 yet.
 
+The engine keeps the channels where it found signals for 90 days: for each
+one, when it was first and last heard, how many transmissions, how long it
+was active, how far it rose above the noise at most and how many
+transmissions began in each hour of the day, in the local time of the
+computer that runs Radiolack. A signal found within 1.5 kHz of a channel,
+or within a quarter of its own width, counts for that channel, and a pause
+longer than 1.5 s begins a new transmission. It keeps at most 2000
+channels, the least recently heard leaving first. Neither the simulated
+band nor the ignored frequencies are recorded, and nothing else is kept: no
+audio and no samples.
+
+The History tab lists these channels, the latest heard first, and asks the
+engine for them again every 30 s while it shows. A click on a frequency
+tunes to it; its tooltip gives when it was first and last heard, its
+highest level and its busiest hour. Bookmark adds a bookmark there, with
+the band plan's mode. Clear forgets one channel and Clear all forgets them
+all, for every interface, a paired device's included: each waits for a
+second press within 5 s. The other interfaces show the change when they
+next ask.
+
 ## Settings and bookmarks
 
 Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
@@ -368,6 +388,9 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
   ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
+- `observations.json` holds the channels of the History
+  ([Scanners](#scanners)). It reaches the disk at most every 10 minutes, a
+  few seconds after a Clear, and when Radiolack stops.
 - `remote.json` holds what remote access keeps: its port, its access code,
   the paired devices, each with its own interface settings, and its local
   authority, but never whether it is on: it is off at each start, unless
@@ -393,7 +416,7 @@ the status line adds "changes not saved" while some changes do not reach
 the disk. Each file is written whole, through a temporary file, so that a
 crash or a power cut leaves the previous version. A file that Radiolack
 cannot read as its own, damaged or edited by hand with a mistake, is renamed
-`settings.json.invalid-<date>-<time>` (or `bookmarks.json…`) and Radiolack
+`settings.json.invalid-<date>-<time>` (or `bookmarks.json…`, and so on) and Radiolack
 starts without it. A file that cannot be opened, or that a newer Radiolack
 wrote, is left as it is and not saved until the next start. To start again
 from the defaults, delete the folder while Radiolack is stopped.
@@ -449,8 +472,8 @@ current addresses, each time remote access turns on.
 A paired device gets the interface, the spectrum and the audio, and shares
 the receiver with every other interface: its changes to the VFO, the mode,
 the receiver's settings, the source, the bookmarks and the scanners reach
-everyone. A memory scan started from a phone goes on with the phone locked
-([Scanners](#scanners)). It
+everyone, and it may clear the History. A memory scan started from a phone
+goes on with the phone locked ([Scanners](#scanners)). It
 cannot change what belongs to this computer, remote access itself, the update
 check and the rtl_tcp server's address, and does not see where the settings
 are saved.
@@ -598,8 +621,8 @@ The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
-another, the bookmarks, the signals found, the memory scan and the saved
-interface settings. They
+another, the bookmarks, the signals found, the memory scan, the History and
+the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -821,13 +844,15 @@ src/radiolack/
                 frames, the demodulation settings, the bookmarks, the
                 signals found and the update check's findings with the
                 interfaces, sends audio to those that ask, and saves the
-                settings
+                settings and the observations
   scanners.py   detection: the signals in the receiver's span, their list
                 and the ignored frequencies; the memory scan
+  observations.py
+                the channels where signals were found, for the History
   remote.py     remote access: access code, paired devices and their
                 interface settings, local authority and certificates,
                 addresses to listen on
-  store.py      settings, bookmarks and remote access files
+  store.py      settings, bookmarks, observations and remote access files
   bookmarks.py  bookmarks and their checks
   preferences.py
                 the interfaces' own settings and their checks

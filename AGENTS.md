@@ -27,19 +27,23 @@ the history under the tag `v0.1.0`.
   sources, restores and saves the settings and the source in use; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
-  every client; idle without clients unless a scan runs; remote clients get
-  neither the storage, update nor remote access states, and lighter
-  spectrum frames),
+  every client; keeps the observations, the simulated band's excepted, and
+  sends them to the client that asks; idle without clients unless a scan
+  runs; remote clients get neither the storage, update nor remote access
+  states, and lighter spectrum frames),
   `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
-  Radiolack), `store` (settings, bookmarks and remote access files in
+  Radiolack), `store` (settings, bookmarks, observations and remote access
+  files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
   only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
   `scanners` (detection on the engine's FFTs, averaged over a third of a
   second, against the local noise; the list of the signals found and the
   ignored frequencies; the memory scan's watch of the ticked bookmarks'
-  channels in the same FFTs, and its states),
+  channels in the same FFTs, and its states), `observations` (the channels
+  where signals were found, for the History: how signals join a channel,
+  its counters, the limits and the checks of the saved file),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:

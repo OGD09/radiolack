@@ -241,6 +241,7 @@ const stream = new EngineStream({
     if (pendingTune && state.centreHz !== pendingTune.centre && state.centreHz !== pendingTune.previous) pendingTune = null;
     syncSource();
     updateStatus();
+    if (historyShown()) syncHistorySummary();
   },
   onDemod: applyDemod,
   onBookmarks: (list) => {
@@ -262,6 +263,12 @@ const stream = new EngineStream({
     peaksAt = performance.now();
     peaksVersion += 1;
     if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+  },
+  onObservations: (list) => {
+    observations = list;
+    // A channel that went, cleared by another interface, has nothing left to confirm.
+    if (typeof historyArmed === 'number' && !list.some((c) => c.frequencyHz === historyArmed)) historyArmed = null;
+    if (historyShown()) renderHistory();
   },
   onPreferences: applyPreferences,
   onStorage: (state) => {
@@ -296,6 +303,10 @@ const stream = new EngineStream({
       syncScanner();        // the controls show the engine's settings again
       return;
     }
+    if (command === 'observations') {
+      setHistoryNote(`Refused: ${message}.`);
+      return;
+    }
     if (command === 'preferences') {
       console.error('Radiolack: the engine did not keep the preferences:', message);
       return;
@@ -325,6 +336,7 @@ const stream = new EngineStream({
     syncSource();
     syncScanner();
     updateStatus();
+    if (state === 'open' && historyShown()) askHistory();
   },
 });
 function syncStream() { if (document.hidden && !audioWanted) stream.stop(); else stream.start(); }
@@ -1056,6 +1068,7 @@ function syncScanner() {
   }
   syncScannerNote();
   if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+  if (historyShown()) { syncHistorySummary(); syncHistoryNote(); }
   syncMem();
   updateStatus();       // it names the scan that runs
 }
@@ -1125,6 +1138,114 @@ function renderMemList() {
     + `${fmtMHz(b.f)}</span></label></li>`).join('')
     || '<li class="empty">No bookmarks</li>';
   focusAgain(list, refocus);
+}
+
+// The engine keeps the channels where it found signals (stream.js
+// Observation) and sends them to the interface that asks: this one asks
+// when its History tab shows, then every HISTORY_REFRESH_MS while it does.
+// Clear, for a channel or for all, waits for a second press of the same
+// button, within HISTORY_CONFIRM_MS: it forgets them for every interface.
+const HISTORY_REFRESH_MS = 30000;
+const HISTORY_CONFIRM_MS = 5000;
+let observations = null;    // the engine's, the latest heard first, once received
+let historyNote = '';       // what this interface's last request did, or why it did not happen
+let historyArmed = null;    // the Clear awaiting its second press: a channel's frequency, 'all', or null
+let historyArmTimer = 0;
+let historyHtml = '';       // the table's rows, as last written
+const historyKnown = () => stream.scanners.includes('history');
+const historyShown = () => openName === 'scanners' && scanTab === 'history';
+const pad2 = (n) => String(n).padStart(2, '0');
+// A time.time() as this device's date and time, such as 2026-11-12 18:05.
+function fmtDate(seconds) {
+  const d = new Date(seconds * 1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+// The time since a channel was last heard, in whole minutes, hours or days:
+// the list is at most HISTORY_REFRESH_MS old.
+function fmtHeardAgo(seconds) {
+  if (seconds < 3600) return `${Math.max(1, Math.floor(seconds / 60))} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+  return `${Math.floor(seconds / 86400)} d ago`;
+}
+const fmtActive = (s) => (s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
+// A channel's tooltip. Its busiest hour shows unless every count is 0, as in
+// a file edited by hand: the engine counts every transmission.
+function historyTitle(c) {
+  const most = Math.max(...c.hours);
+  const busiest = most > 0 ? ` · most often from ${pad2(c.hours.indexOf(most))}:00, on the engine's computer` : '';
+  return `Listen · first heard ${fmtDate(c.firstS)}, last ${fmtDate(c.lastS)} · up to ${Math.round(c.marginDb)} dB `
+    + `above the noise${busiest}`;
+}
+function askHistory() {
+  if (!historyKnown()) return;
+  if (!stream.askObservations()) setHistoryNote(notConnected('the history is not up to date'));
+}
+function setHistoryNote(note) {
+  historyNote = note;
+  syncHistoryNote();
+}
+function syncHistoryNote() {
+  let note = historyNote;
+  if (!note && streamState === 'open' && !historyKnown()) {
+    note = 'The engine that runs keeps no history: restart Radiolack after its update.';
+  }
+  const el = $('#hist-note');
+  el.textContent = note;
+  el.hidden = !note;
+}
+// How many channels the list holds, if any (the empty table says so
+// otherwise), and why nothing is recorded now, if so.
+function syncHistorySummary() {
+  const n = observations ? observations.length : 0;
+  let text = n ? `${n} ${n === 1 ? 'channel' : 'channels'}.` : '';
+  if (source && source.kind === 'synthetic') text += ' The simulated band is not recorded.';
+  else if (scanner && !scanner.detection) text += ' Detection is off: nothing is recorded.';
+  text = text.trim();
+  const el = $('#hist-summary');
+  if (el.textContent !== text) el.textContent = text;
+  const all = $('#hist-clear-all');
+  all.hidden = !historyKnown() || n === 0;
+  const label = historyArmed === 'all' ? 'Confirm: clear all' : 'Clear all';
+  if (all.textContent !== label) all.textContent = label;
+}
+function renderHistory() {
+  const body = $('#hist-body'), refocus = focusedIn(body), now = Date.now() / 1000;
+  const list = observations || [];
+  const html = list.length
+    ? list.map((c) => {
+      const f = peakShownHz({ frequencyHz: c.frequencyHz, widthHz: 0 });
+      const armed = historyArmed === c.frequencyHz;
+      return `<tr><td><button type="button" class="freq-link" data-tune="${f}" title="${escapeHtml(historyTitle(c))}">${fmtMHz(f)}</button></td>`
+        + `<td>${c.transmissions}×</td><td>${fmtActive(c.activeS)}</td><td>${fmtHeardAgo(now - c.lastS)}</td>`
+        + `<td class="acts"><button type="button" class="link" data-mark="${f}">Bookmark</button>`
+        + `<button type="button" class="link" data-clear="${c.frequencyHz}"`
+        + `${armed ? ` aria-label="Confirm clearing ${fmtMHz(f)} MHz"` : ''}>${armed ? 'Confirm' : 'Clear'}</button></td></tr>`;
+    }).join('')
+    : `<tr><td colspan="5" class="empty">${observations === null ? 'Not received yet' : 'No channel recorded yet'}</td></tr>`;
+  if (html !== historyHtml) {
+    body.innerHTML = html;
+    historyHtml = html;
+    focusAgain(body, refocus);
+  }
+  syncHistorySummary();
+  syncHistoryNote();
+}
+// A first press arms Clear; a second one, within HISTORY_CONFIRM_MS, sends it.
+function armHistory(what) {
+  clearTimeout(historyArmTimer);
+  historyArmed = what;
+  historyArmTimer = setTimeout(disarmHistory, HISTORY_CONFIRM_MS);
+  renderHistory();
+}
+function disarmHistory() {
+  clearTimeout(historyArmTimer);
+  historyArmed = null;
+  if (historyShown()) renderHistory();
+}
+function clearHistory(what) {
+  disarmHistory();
+  const sent = what === 'all' ? stream.clearObservations() : stream.clearObservation(what);
+  setHistoryNote(sent ? '' : notConnected('nothing was cleared'));
 }
 
 // ------------------------------------------------------------------ panels
@@ -1521,7 +1642,7 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'edit', 'del', 'forget', 'tune', 'ignore'].find((n) => el.dataset[n]);
+  const name = ['id', 'edit', 'del', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -1541,12 +1662,14 @@ function syncBookmarkNote() {
   el.hidden = !bookmarkNote;
 }
 function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); syncMem(); }
-// A new bookmark is named "Bookmark" and the first number no other one uses.
+// A new bookmark is named "Bookmark" and the first number no other one
+// uses: the name, once sent, or null.
 function addBookmark(f, mode) {
   const names = new Set(bookmarks.map((b) => b.name));
   let n = 1;
   while (names.has(`Bookmark ${n}`)) n += 1;
-  sendBookmark(() => stream.addBookmark({ frequencyHz: Math.round(f), name: `Bookmark ${n}`, mode }));
+  const name = `Bookmark ${n}`;
+  return sendBookmark(() => stream.addBookmark({ frequencyHz: Math.round(f), name, mode })) ? name : null;
 }
 $('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
 $('#bm-filter').addEventListener('input', renderBookmarks);
@@ -1577,6 +1700,7 @@ function syncScanTabs() {
   for (const b of $$('#scan-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.tab === scanTab));
   for (const p of $$('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== scanTab;
   if (scanTab === 'peaks') renderPeaks();
+  if (scanTab === 'history') { renderHistory(); askHistory(); }
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
 pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ detection: pkOn.checked })));
@@ -1590,6 +1714,21 @@ $('#pk-body').addEventListener('click', (e) => {
   else if (shownPeaks.has(b.dataset.ignore)) sendScanner(() => stream.ignoreFrequency(shownPeaks.get(b.dataset.ignore)));
 });
 $('#pk-restore').addEventListener('click', () => sendScanner(() => stream.restoreIgnored()));
+$('#hist-body').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
+  else if (b.dataset.mark) {
+    const f = Number(b.dataset.mark), seg = segmentAt(f);
+    const name = addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
+    setHistoryNote(name ? `${fmtMHz(f)} MHz added to the bookmarks as ${name}.` : notConnected('no bookmark was added'));
+  } else if (b.dataset.clear) {
+    const f = Number(b.dataset.clear);
+    if (historyArmed === f) clearHistory(f); else armHistory(f);
+  }
+});
+$('#hist-clear-all').addEventListener('click', () => { if (historyArmed === 'all') clearHistory('all'); else armHistory('all'); });
+setInterval(() => { if (historyShown() && streamState === 'open' && !document.hidden) askHistory(); }, HISTORY_REFRESH_MS);
 $('#mem-list').addEventListener('change', (e) => {
   const b = bookmarks.find((x) => String(x.id) === e.target.dataset.id);
   // Not sent: the box shows the bookmark's setting again.
@@ -1719,12 +1858,12 @@ function syncRemote() {
   $('#st-remote-fingerprint').textContent = r.fingerprint ?? '';
 }
 
-// Where the engine saves the settings and bookmarks, and what went wrong with its files.
+// Where the engine saves the settings, bookmarks and history, and what went wrong with its files.
 function syncStorage() {
   $('#st-storage-section').hidden = !storage;   // this computer's interfaces only
   let text = '';
-  if (storage && storage.directory === null) text = 'Settings and bookmarks are not saved.';
-  else if (storage) text = `Settings and bookmarks are saved in ${storage.directory}.`;
+  if (storage && storage.directory === null) text = 'Settings, bookmarks and history are not saved.';
+  else if (storage) text = `Settings, bookmarks and history are saved in ${storage.directory}.`;
   if (storage && storage.problem) text += ` ${storage.problem}`;
   $('#st-storage').textContent = text;
 }

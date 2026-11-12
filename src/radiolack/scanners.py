@@ -14,7 +14,9 @@ dBFS bin powers: not calibrated, and not comparable with the channel meter.
 ``Signals`` keeps one entry for each signal found while Radiolack runs: a
 signal is listed once found in two averaged spectra in a row, so that a
 stray peak of noise is not, and detections close to an entry update it,
-following a slow drift. Ignored frequencies are never listed.
+following a slow drift. Ignored frequencies are never listed. The listed
+signals found in each search are what the engine records as observations
+(observations.py).
 
 The memory scan watches the ticked bookmarks within the part of the span
 that detection searches (``watched_channels``), all at once, in every block:
@@ -38,7 +40,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, passband_hz
 
-SCANNERS = ("peaks", "memory")      # what the engine runs, as the hello lists it
+SCANNERS = ("peaks", "memory", "history")   # what the engine runs, as the hello lists it
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency
@@ -190,11 +192,13 @@ class Signals:
         """The ignored frequencies, lowest first."""
         return list(self._ignored)
 
-    def update(self, detections: Sequence[Detection], now: float) -> None:
+    def update(self, detections: Sequence[Detection], now: float) -> list[Signal]:
         """Add the detections of one search. A detection close to a listed
         signal updates it; one close to a detection of the previous search
-        lists a new signal; others wait for the next search."""
+        lists a new signal; others wait for the next search. Returns the
+        listed signals found in this search, as they stand now."""
         candidates = []
+        found: list[Signal] = []
         for detection in detections:
             if self.is_ignored(detection.frequency_hz, detection.width_hz):
                 continue
@@ -204,6 +208,8 @@ class Signals:
                 signal.width_hz = detection.width_hz
                 signal.margin_db = detection.margin_db
                 signal.last_s = now
+                if not any(signal is other for other in found):     # two detections may update one signal
+                    found.append(signal)
                 continue
             earlier = self._candidate(detection)
             if earlier is None:
@@ -212,10 +218,12 @@ class Signals:
             self._candidates.remove(earlier)
             self._signals.append(Signal((earlier.frequency_hz + detection.frequency_hz) / 2, detection.width_hz,
                                         detection.margin_db, now))
+            found.append(self._signals[-1])
         self._candidates = candidates
         if len(self._signals) > MAX_SIGNALS:
             self._signals.sort(key=lambda signal: signal.last_s, reverse=True)
             del self._signals[MAX_SIGNALS:]
+        return [dataclasses.replace(signal) for signal in found]
 
     def describe(self, now: float) -> list[dict[str, Any]]:
         """At most LISTED signals, as JSON values: the active ones first,

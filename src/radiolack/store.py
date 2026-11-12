@@ -4,7 +4,8 @@ Radiolack keeps them in a folder of their own: ``$XDG_CONFIG_HOME/radiolack``,
 or ``~/.config/radiolack`` when that variable is unset or not an absolute path
 (XDG Base Directory Specification). Each file there is a JSON object with a
 format version: ``settings.json`` holds each receiver's settings and the
-interfaces' preferences, ``bookmarks.json`` the bookmarks.
+interfaces' preferences, ``bookmarks.json`` the bookmarks and
+``observations.json`` what detection found (observations.py).
 
 A file is written whole to a temporary file beside it, then renamed over it:
 a crash leaves the previous file or the new one, never half of one. A file
@@ -31,6 +32,7 @@ from typing import Any
 FORMAT_VERSION = 1
 SETTINGS_FILE = "settings.json"
 BOOKMARKS_FILE = "bookmarks.json"
+OBSERVATIONS_FILE = "observations.json"
 _MAX_FILE_BYTES = 4 * 1024 * 1024       # far more than Radiolack writes
 
 log = logging.getLogger(__name__)
