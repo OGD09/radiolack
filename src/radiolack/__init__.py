@@ -1,3 +1,3 @@
 """Radiolack: receive-only SDR receiver."""
 
-__version__ = "0.6.1.dev0"
+__version__ = "0.7.0"
