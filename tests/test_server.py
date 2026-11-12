@@ -29,7 +29,8 @@ STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "st
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
                  "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
-                 "stopped_scan": None, "memory": {"watched": [], "state": None, "bookmark_id": None},
+                 "stopped_scan": None,
+                 "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
                  "sweep": {"windows": None, "window": None, "passes": None}}
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -295,11 +296,13 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             for ws in (sender, other):
                 [bookmark] = (await next_text(ws))["bookmarks"]
                 self.assertEqual(await next_text(ws), {
-                    **SCANNER_STATE, "memory": {"watched": [bookmark["id"]], "state": None, "bookmark_id": None}})
+                    **SCANNER_STATE, "memory": {"watched": [bookmark["id"]], "windows": 1, "window": None,
+                                                "state": None, "bookmark_id": None}})
             await sender.send_json({"type": "scanner", "scan": "memory"})
             for ws in (sender, other):
                 state = await next_text(ws)
-                self.assertEqual((state["scan"], state["memory"]["state"]), ("memory", "watching"))
+                self.assertEqual((state["scan"], state["memory"]["state"], state["memory"]["window"]),
+                                 ("memory", "watching", 0))
             await other.send_json({"type": "scanner", "scan": None})
             for ws in (sender, other):
                 state = await next_text(ws)
@@ -398,7 +401,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 "scanner", "the sweep needs a receiver that tunes, such as an RTL-SDR"),
             '{"type": "scanner", "sweep_low_hz": 440e6}': (
                 "scanner", "the sweep's lowest frequency must lie below its highest"),
-            '{"type": "scanner", "scan": "memory"}': ("scanner", "no ticked bookmark lies in the receiver's span"),
+            '{"type": "scanner", "scan": "memory"}': (
+                "scanner", "no ticked bookmark lies within the receiver's reach"),
             '{"type": "scanner", "resume_s": 9}': (
                 "scanner", "the resume time must be a number of seconds from 0 to 8"),
             '{"type": "observations", "forget": 145e6}': ("observations", "unknown observations field: forget"),

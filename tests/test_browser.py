@@ -417,6 +417,37 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#status")).not_to_contain_text("memory scan")
                 expect(first.locator("#mem-note")).to_be_hidden()
 
+    def test_every_interface_follows_the_memory_scan_across_windows_until_one_stops_it(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            # The receiver starts on 145 MHz: a bookmark in its span, one far away, one beyond its reach.
+            Store(directory).save(BOOKMARKS_FILE, {"bookmarks": [
+                {"frequency_hz": 10_000_000, "name": "Low", "mode": "AM", "scan": True},
+                {"frequency_hz": 145_500_000, "name": "Near", "mode": "NFM", "scan": True},
+                {"frequency_hz": 433_500_000, "name": "Far", "mode": "NFM", "scan": True}]})
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP), store=Store(directory))
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                home = first.locator("#src-center").input_value()
+                for page in (first, second):
+                    page.locator(SCANNERS_PANEL).click()
+                    page.locator('#scan-tabs button[data-tab="memory"]').click()
+                    expect(page.locator("#mem-list li")).to_have_text(
+                        [re.compile(r"^Low.*out of reach"), re.compile(r"^Near[^·]*$"), re.compile(r"^Far[^·]*$")])
+                    expect(page.locator("#mem-state")).to_have_text("Stopped")
+                first.locator("#mem-start").click()
+                for page in (first, second):    # Near and Far take a window each
+                    expect(page.locator("#mem-state")).to_have_text("Watching 2 bookmarks, window 2 of 2")
+                    expect(page.locator("#mem-start")).to_have_text("Stop")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} memory scan")
+                second.locator("#mem-start").click()
+                for page in (first, second):
+                    expect(page.locator("#mem-state")).to_have_text("Stopped")
+                    expect(page.locator("#mem-start")).to_have_text("Start")
+                    expect(page.locator("#src-center")).to_have_value(home)     # the receiver came back
+                expect(first.locator("#mem-note")).to_be_hidden()
+
     def test_every_interface_follows_the_sweep_until_one_stops_it(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         for browser in BROWSERS:

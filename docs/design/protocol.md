@@ -112,7 +112,7 @@ preferences apart from this computer's.
    {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0],
     "resume_s": 2.0, "sweep_low_hz": 430000000.0, "sweep_high_hz": 440000000.0, "sweep_window_s": 0.5,
     "scan": "memory", "stopped": null, "stopped_scan": null,
-    "memory": {"watched": [3, 7, 12], "state": "listening", "bookmark_id": 7},
+    "memory": {"watched": [3, 7, 12], "windows": 1, "window": 0, "state": "listening", "bookmark_id": 7},
     "sweep": {"windows": null, "window": null, "passes": null}}
    ```
 
@@ -125,9 +125,11 @@ preferences apart from this computer's.
    | `sweep_low_hz`, `sweep_high_hz` | The range the sweep steps the receiver across, the lowest below the highest, each a whole number of Hz from 1 Hz to 100 GHz: 430 to 440 MHz until an interface changes it. |
    | `sweep_window_s` | How long the sweep reads each window, once the receiver's samples come from there, from 0.25 to 2 s. |
    | `scan` | The scan that runs: `memory`, `sweep`, or null. |
-   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source), `bookmarks` (no ticked bookmark lies in the span any more) or `range` (the receiver refused a window of the sweep's range); null while a scan runs, when an interface stopped it and before any. |
+   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source), `bookmarks` (no ticked bookmark lies within the receiver's reach any more) or `range` (the receiver refused a window of the memory scan or of the sweep's range); null while a scan runs, when an interface stopped it and before any. |
    | `stopped_scan` | The scan that `stopped` is about: `memory` or `sweep`; null when `stopped` is. |
-   | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not: those in the part of the span that detection searches, in frequency order. While the sweep runs, the span is the one it brings the receiver back to. |
+   | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not, in frequency order: those in the part of the span that detection searches, or, with a receiver that tunes when others lie within its reach, those it can bring into that part of its span. While a scan runs, the span is the one it started from. |
+   | `memory.windows` | How many windows of the receiver they take: 1 when they all lie in the span, 0 when there is none. |
+   | `memory.window` | The window the receiver is asked for, from 0, in frequency order; null while the memory scan does not run. |
    | `memory.state` | The memory scan's state: `watching` the bookmarks, `checking` that the squelch opens on the one just tuned to, `listening` while it stays open, `waiting` for `resume_s` since it closed; null while the memory scan does not run. |
    | `memory.bookmark_id` | The bookmark tuned to; null while watching, and while the memory scan does not run. |
    | `sweep.windows` | How many windows the sweep's range takes at the sample rate; null while the sweep does not run, as are the next two. |
@@ -150,6 +152,27 @@ preferences apart from this computer's.
    open, waits `resume_s` once it closes, listens again if it reopens
    meanwhile, and then watches again.
 
+   With a receiver that tunes, one whose source state lists `centre_hz` in
+   `settable`, the memory scan also visits the ticked bookmarks outside the
+   span, when some lie within the receiver's reach (its `range_hz`). They
+   take as few windows as the engine finds, each bookmark at most 0.4 times
+   the sample rate from a window's centre frequency, and more than 3 kHz
+   from it, as detection searches; the bookmarks of the span take windows
+   like the others. The scan visits the windows in turn, in frequency
+   order, the lowest after the highest, from the one nearest the receiver's
+   centre frequency at its start: the engine asks the receiver for a
+   window's centre frequency, which every interface then receives in the
+   source state, and once the samples come from there and the noise is
+   known, it watches that window's bookmarks for 1 s, and again for 1 s
+   after each one it stopped on, before it asks for the next window. It
+   also moves on when, 2 s after asking for a window, the samples still
+   come from another centre frequency, and it watches only while they come
+   from the window asked for. A scan with one window, as when every ticked
+   bookmark within reach lies in the span, never tunes the receiver. The
+   VFO stays inside each window, as it does whenever the span changes. The
+   windows change with the ticked bookmarks and the receiver's range: a
+   running scan then visits the new ones from the one nearest the receiver.
+
    The sweep steps a receiver that tunes, one whose source state lists
    `centre_hz` in `settable`, across its range, window after window: their
    centres lie a quarter of the sample rate apart at most, the first and
@@ -162,17 +185,20 @@ preferences apart from this computer's.
    the last one, a new pass begins with the first. It also moves on when,
    2 s after asking for a window, the samples still come from another
    centre frequency. The VFO stays inside each window, as it does whenever
-   the span changes. While the sweep runs, the receiver's settings that the
-   engine saves are those it comes back to: its centre frequency and the
-   VFO when the sweep started. When an interface stops the sweep, or the
-   receiver refuses a window (`range`), the engine asks the receiver for
-   that centre frequency again and puts the VFO back; tuning by hand
-   (`tuned`) or another kind of source (`source`) leaves them as they are.
+   the span changes.
 
    One scan runs at a time: starting one stops the other. A scan runs on
    without any interface, until an interface stops it, or it stops by
    itself (`stopped`). An interface's change of the centre frequency or
    the sample rate stops it at once, before the samples show the change.
+   When an interface stops a scan, or it stops with `bookmarks` or
+   `range`, the engine asks the receiver for its centre frequency at the
+   scan's start again and puts the VFO back: after a sweep, and after a
+   memory scan that asked the receiver for another centre frequency and
+   stops while watching; on a bookmark, they stay. Tuning by hand
+   (`tuned`) or another kind of source (`source`) leaves them as they are.
+   While a scan runs, the receiver's settings that the engine saves are
+   its centre frequency and the VFO at the scan's start.
 
 6. Then the signals found, a JSON text message, sent again when the list
    changes, at most once a second, and at once when a `scanner` message or
@@ -504,7 +530,7 @@ and `sweep_window_s` may come together; `ignore`, `restore` and `scan`
 come alone in their message. The engine refuses the whole message,
 changing nothing, when it has no setting, an unknown or invalid one, a new
 frequency to ignore while 200 are ignored already, the memory scan to start
-while no ticked bookmark lies in the span (`memory.watched` is empty), the
+while it would watch no bookmark (`memory.watched` is empty), the
 sweep to start with a source that does not tune, or the sweep to start or
 a running sweep's new range when the receiver cannot tune to every window
 of the range (its `range_hz`). Otherwise every interface receives the
@@ -740,7 +766,12 @@ and later.
   `sweep_low_hz`, `sweep_high_hz`, `sweep_window_s` and `scan` value
   `sweep`: an older interface ignores the fields it does not know, shows no
   sweep that runs, and may show why a sweep stopped as if the memory scan
-  had.
+  had. Later again, as the memory scan visits the ticked bookmarks outside
+  the span with a receiver that tunes, `memory.watched` lists them, with
+  the scanner state's `memory.windows` and `memory.window`, and `stopped`
+  may be `range` for the memory scan: an older interface ignores the
+  fields it does not know, shows no window, and marks the ticked bookmarks
+  beyond the receiver's reach as outside the span.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

@@ -2,7 +2,7 @@
 every client, audio for the clients that ask, idle without clients, changes
 passed to the source, switching to another kind of source, DC removal,
 bookmarks and preferences, update checks, saved settings, detection, the
-memory scan and the sweep, clean stop."""
+memory scan and its windows, the sweep, clean stop."""
 
 import asyncio
 import contextlib
@@ -21,7 +21,7 @@ from radiolack import __version__
 from radiolack.engine import Engine, Source, Subscription
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
-from radiolack.scanners import sweep_windows
+from radiolack.scanners import VISIT_S, memory_windows, sweep_windows
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
@@ -39,7 +39,8 @@ def scanner_state(**changes) -> dict:
     bookmark, with ``changes``."""
     return {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
             "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
-            "stopped_scan": None, "memory": {"watched": [], "state": None, "bookmark_id": None},
+            "stopped_scan": None,
+            "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
             "sweep": {"windows": None, "window": None, "passes": None}, **changes}
 
 
@@ -1217,8 +1218,8 @@ class MemoryScanTest(unittest.IsolatedAsyncioTestCase):
         strong, weak, quiet, outside, unticked = self.bookmarks(engine, [
             (40_000, "NFM", True), (-60_000, "AM", True), (70_000, "NFM", True), (110_000, "NFM", True),
             (50_000, "NFM", False)])
-        self.assertEqual(engine.scanner_state()["memory"], {"watched": [weak, strong, quiet], "state": None,
-                                                            "bookmark_id": None})
+        self.assertEqual(engine.scanner_state()["memory"], {"watched": [weak, strong, quiet], "windows": 1,
+                                                            "window": None, "state": None, "bookmark_id": None})
         engine.configure_scanner({"scan": "memory"})
         for subscription in (local, remote):
             state = await next_scanner(subscription, until=in_state("listening"))
@@ -1547,20 +1548,23 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
         state = engine.scanner_state()
         self.assertEqual((state["scan"], state["stopped"], state["memory"]["state"]), ("sweep", None, None))
 
-    async def test_the_bookmarks_watched_are_those_of_the_span_it_comes_back_to(self):
+    async def test_the_memory_scan_takes_its_windows_from_the_span_it_comes_back_to(self):
         source = TuningSource({})
         engine = self.engine(source)
         subscription = engine.subscribe()
-        for name, frequency_hz in (("Home", HOME_HZ + 30_000), ("Window", SWEEP_WINDOWS.centre(2) + 30_000)):
-            engine.edit_bookmarks({"action": "add", "frequency_hz": frequency_hz, "name": name, "mode": "NFM",
-                                   "scan": True})
-        ids = {entry["name"]: entry["id"] for entry in engine.bookmarks_state()["bookmarks"]}
+        bookmark_hz = SWEEP_WINDOWS.centre(2) + 30_000      # outside the span it comes back to
+        engine.edit_bookmarks({"action": "add", "frequency_hz": bookmark_hz, "name": "Window", "mode": "NFM",
+                               "scan": True})
+        [bookmark] = [entry["id"] for entry in engine.bookmarks_state()["bookmarks"]]
+        windows = memory_windows([bookmark_hz], FAKE_RATE_HZ, 24e6, 1766e6)
+        self.assertEqual(engine._windows, windows)
         engine.configure_scanner({"scan": "sweep"})
         for window in (1, 2):
             state = await next_scanner(subscription, until=at_window(window))
-            self.assertEqual(state["memory"]["watched"], [ids["Home"]])
+            self.assertEqual((state["memory"]["watched"], state["memory"]["windows"]), ([bookmark], 1))
+            self.assertEqual(engine._windows, windows)
         engine.configure_demod({"frequency_hz": source.centre_hz + 10_000})     # it stays in the window
-        self.assertEqual(engine.scanner_state()["memory"]["watched"], [ids["Window"]])
+        self.assertEqual(engine._windows, (SWEEP_WINDOWS.centre(2),))
 
 
 class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):
@@ -1597,6 +1601,224 @@ class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):
         await next_scanner(subscription, until=at_window(1))
         engine.configure({"centre_hz": 145_350_000})    # before its samples come
         self.assertEqual((engine.scanner_state()["stopped"], engine.state()["centre_hz"]), ("tuned", 145_350_000))
+
+
+NEAR_HZ = HOME_HZ + 30_000      # a bookmark in the span where the receiver is when a memory scan starts
+FAR_HZ = HOME_HZ + 500_000      # and one outside it
+TOUR_VISIT_S = 0.2              # each window's time, in these tests
+
+
+def at_memory_window(index: int):
+    """Whether a scanner state shows the memory scan at window ``index``."""
+    return lambda message: message["memory"]["window"] == index
+
+
+class MemoryScanWindowsTest(unittest.IsolatedAsyncioTestCase):
+    """The memory scan with a receiver that tunes: the ticked bookmarks
+    outside the span take as few windows as it can, which it visits in
+    turn; once a client stops it, the receiver and the VFO come back,
+    unless it stays on a channel. Those beyond the receiver's reach are left
+    out, and with them all in the span, it never tunes the receiver."""
+
+    WINDOWS = memory_windows([NEAR_HZ, FAR_HZ], FAKE_RATE_HZ, 24e6, 1766e6)
+
+    def engine(self, source: Source | None = None, **options) -> Engine:
+        self.enterContext(mock.patch("radiolack.scanners.VISIT_S", TOUR_VISIT_S))
+        engine = Engine(source, **options)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        engine.configure_demod({"frequency_hz": HOME_VFO_HZ})
+        return engine
+
+    @staticmethod
+    def bookmark(engine: Engine, frequency_hz: float, name: str, scan: bool = True) -> int:
+        """Add a bookmark: its id."""
+        engine.edit_bookmarks({"action": "add", "frequency_hz": frequency_hz, "name": name, "mode": "NFM",
+                               "scan": scan})
+        return next(entry["id"] for entry in engine.bookmarks_state()["bookmarks"] if entry["name"] == name)
+
+    def test_the_two_bookmarks_take_two_windows(self):
+        self.assertEqual(len(self.WINDOWS), 2)
+        self.assertNotIn(HOME_HZ, self.WINDOWS)
+        self.assertGreater(TOUR_VISIT_S, 0)
+        self.assertLess(TOUR_VISIT_S, VISIT_S)
+
+    async def test_visits_the_windows_in_turn_and_brings_the_receiver_back_once_stopped(self):
+        source = TuningSource({})
+        engine = self.engine(source)
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        near, far = self.bookmark(engine, NEAR_HZ, "Near"), self.bookmark(engine, FAR_HZ, "Far")
+        self.assertEqual(engine.scanner_state()["memory"], {"watched": [near, far], "windows": 2, "window": None,
+                                                            "state": None, "bookmark_id": None})
+        engine.configure_scanner({"scan": "memory"})
+        self.assertEqual(engine.scanner_state()["memory"]["window"], 0)     # the nearest
+        for subscription in (local, remote):
+            await next_scanner(subscription, until=at_memory_window(1))
+        await eventually(lambda: len(source.tuned) >= 4)
+        self.assertEqual(source.tuned[:4], [*self.WINDOWS, *self.WINDOWS])
+        # Saved meanwhile, the receiver's settings are those of the scan's start.
+        saved = engine._contents()[SETTINGS_FILE]["receivers"]["test"]
+        self.assertEqual((saved["source"]["centre_hz"], saved["demod"]["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
+        engine.configure_scanner({"scan": None})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["memory"]["window"]), (None, None, None))
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
+
+    async def test_stays_on_a_channel_of_another_window_while_it_listens_and_once_stopped(self):
+        source = TuningSource({FAR_HZ: 0.03})
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        self.bookmark(engine, NEAR_HZ, "Near")
+        far = self.bookmark(engine, FAR_HZ, "Far")
+        engine.configure_scanner({"scan": "memory"})
+        state = await next_scanner(subscription, until=in_state("listening"))
+        self.assertEqual((state["memory"]["bookmark_id"], state["memory"]["window"]), (far, 1))
+        tuned = len(source.tuned)
+        await asyncio.sleep(3 * TOUR_VISIT_S)
+        self.assertEqual(len(source.tuned), tuned)      # it stays while it listens
+        engine.configure_scanner({"scan": None})
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (self.WINDOWS[1], FAR_HZ))
+        saved = engine._contents()[SETTINGS_FILE]["receivers"]["test"]
+        self.assertEqual((saved["source"]["centre_hz"], saved["demod"]["frequency_hz"]), (self.WINDOWS[1], FAR_HZ))
+
+    async def test_never_tunes_the_receiver_while_its_bookmarks_lie_in_the_span(self):
+        source = TuningSource({NEAR_HZ: 0.03})
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        near = self.bookmark(engine, NEAR_HZ, "Near")
+        self.bookmark(engine, FAR_HZ, "Far", scan=False)
+        self.assertEqual(engine.scanner_state()["memory"]["windows"], 1)
+        engine.configure_scanner({"resume_s": 0})
+        engine.configure_scanner({"scan": "memory"})
+        state = await next_scanner(subscription, until=in_state("listening"))
+        self.assertEqual((state["memory"]["bookmark_id"], state["memory"]["window"]), (near, 0))
+        source.carriers = {}
+        await next_scanner(subscription, until=in_state("watching"))
+        await asyncio.sleep(3 * TOUR_VISIT_S)
+        engine.configure_scanner({"scan": None})
+        self.assertEqual(source.tuned, [])
+        self.assertEqual(engine.demod_state()["frequency_hz"], NEAR_HZ)     # where the scan left the VFO
+
+    async def test_leaves_out_the_bookmarks_beyond_the_receivers_reach(self):
+        source = TuningSource({})
+        engine = self.engine(source)
+        self.bookmark(engine, 10e6, "Low")
+        self.bookmark(engine, 2400e6, "High")
+        state = engine.scanner_state()["memory"]
+        self.assertEqual((state["watched"], state["windows"]), ([], 0))
+        with self.assertRaisesRegex(ValueError, "no ticked bookmark lies within the receiver's reach"):
+            engine.configure_scanner({"scan": "memory"})
+        far = self.bookmark(engine, FAR_HZ, "Far")
+        state = engine.scanner_state()["memory"]
+        self.assertEqual((state["watched"], state["windows"]), ([far], 1))
+        engine.configure_scanner({"scan": "memory"})
+        [window] = memory_windows([FAR_HZ], FAKE_RATE_HZ, 24e6, 1766e6)
+        await eventually(lambda: source.tuned == [window])
+
+    async def test_follows_the_bookmarks_ticked_meanwhile_and_stops_once_none_is_left(self):
+        source = TuningSource({})
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        near, far = self.bookmark(engine, NEAR_HZ, "Near"), self.bookmark(engine, FAR_HZ, "Far")
+        engine.configure_scanner({"scan": "memory"})
+        await next_scanner(subscription, until=at_memory_window(1))
+        engine.edit_bookmarks({"action": "change", "id": far, "scan": False})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["memory"]["watched"], state["memory"]["windows"],
+                          state["memory"]["window"]), ("memory", [near], 1, 0))
+        await eventually(lambda: source.centre_hz == HOME_HZ)      # the span it started from holds the one left
+        engine.edit_bookmarks({"action": "change", "id": near, "scan": False})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "bookmarks", "memory"))
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
+
+    async def test_stops_once_the_receiver_refuses_a_window_and_brings_it_back(self):
+        source = TuningSource({})
+        configure = source.configure
+
+        def refuse_the_second_window(changes) -> None:
+            if changes.get("centre_hz") == self.WINDOWS[1]:
+                raise ValueError("the tuner did not lock")
+            configure(changes)
+
+        source.configure = refuse_the_second_window
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        self.bookmark(engine, NEAR_HZ, "Near")
+        self.bookmark(engine, FAR_HZ, "Far")
+        engine.configure_scanner({"scan": "memory"})
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            state = await next_scanner(subscription, until=lambda message: message["scan"] is None)
+        self.assertEqual((state["stopped"], state["stopped_scan"]), ("range", "memory"))
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
+
+    async def test_tuning_by_hand_or_another_source_stops_it_where_it_is(self):
+        source = TuningSource({})
+        engine = self.engine(sources=FakeSources(test=lambda: source))
+        subscription = engine.subscribe()
+        self.bookmark(engine, NEAR_HZ, "Near")
+        self.bookmark(engine, FAR_HZ, "Far")
+
+        async def on_the_second_window() -> None:
+            engine.configure_scanner({"scan": "memory"})
+            await next_scanner(subscription, until=at_memory_window(1))
+            await eventually(lambda: engine._capture == (self.WINDOWS[1], FAKE_RATE_HZ))
+
+        await on_the_second_window()
+        vfo = engine.demod_state()["frequency_hz"] + 1_000
+        engine.configure_demod({"frequency_hz": vfo})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "tuned", "memory"))
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (self.WINDOWS[1], vfo))
+        engine.configure({"centre_hz": HOME_HZ})
+        await on_the_second_window()
+        tuned = len(source.tuned)
+        engine.configure({"kind": "other"})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "source", "memory"))
+        self.assertEqual(len(source.tuned), tuned)      # left where it was
+        self.assertEqual(engine._receivers["test"]["source"]["centre_hz"], HOME_HZ)     # saved as at the start
+
+
+class RtlTcpMemoryScanTest(unittest.IsolatedAsyncioTestCase):
+    """The memory scan with an rtl_tcp receiver: it finds a bookmark of
+    another window on the air, through the receiver's settling."""
+
+    async def test_listens_on_a_bookmark_of_another_window(self):
+        rate = 1_024_000.0
+        near, quiet, on_air = HOME_HZ + 100_000, HOME_HZ + 1_800_000, HOME_HZ + 2_000_000
+        windows = memory_windows([near, quiet, on_air], rate, 24e6, 1766e6)     # two
+        fake = FakeRtlTcp(carriers={on_air: 0.2}, chunk_bytes=16_384, interval_s=0.004)
+        await fake.__aenter__()
+        self.addAsyncCleanup(fake.__aexit__, None, None, None)
+        source = RtlTcpSource(LOOPBACK, fake.port, centre_hz=HOME_HZ, sample_rate_hz=rate, settle_s=0.1)
+        engine = Engine(source)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        subscription = engine.subscribe()
+        for frequency_hz, name in ((near, "Near"), (quiet, "Quiet"), (on_air, "On the air")):
+            engine.edit_bookmarks({"action": "add", "frequency_hz": frequency_hz, "name": name, "mode": "NFM",
+                                   "scan": True})
+        ids = {entry["name"]: entry["id"] for entry in engine.bookmarks_state()["bookmarks"]}
+        await eventually(lambda: engine.state()["status"] == "streaming")
+        self.assertEqual(engine.scanner_state()["memory"]["windows"], len(windows))
+        engine.configure_scanner({"scan": "memory"})
+        state = await asyncio.wait_for(next_scanner(subscription, until=in_state("listening")), 30)
+        self.assertEqual(state["memory"]["bookmark_id"], ids["On the air"])
+        self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["frequency_hz"]), (windows[1], on_air))
+        await eventually(lambda: fake.frequency_hz == windows[1])
 
 
 class SimulatedBandSource(FakeSource):
