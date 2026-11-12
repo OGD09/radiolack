@@ -157,6 +157,33 @@ class RemoteAccessTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.access.forget(None)
 
+    def test_a_device_keeps_its_preferences_until_forgotten(self):
+        first, second = (self.access.session(self.access.pair(label)) for label in ("iPhone · Safari", "Device"))
+        self.assertIsNone(self.access.preferences(first.id))
+        values = {"palette": "gray", "volume": 10}
+        self.access.set_preferences(first.id, values)
+        values["volume"] = 20                                   # the access keeps a copy,
+        self.access.preferences(first.id)["volume"] = 30        # and gives one
+        self.assertEqual(self.access.preferences(first.id), {"palette": "gray", "volume": 10})
+        self.assertIsNone(self.access.preferences(second.id))
+        self.assertEqual(self.changes, 2)       # the pairings: the engine saves the preferences itself
+        self.access.forget(first.id)
+        self.assertIsNone(self.access.preferences(first.id))
+        with self.assertRaisesRegex(ValueError, "no longer paired"):
+            self.access.set_preferences(first.id, {"volume": 1})
+
+    def test_a_new_code_or_ninety_days_unused_forget_the_preferences_too(self):
+        device = self.access.session(self.access.pair("Device"))
+        self.access.set_preferences(device.id, {"volume": 10})
+        self.access.renew_code()
+        self.assertIsNone(self.access.preferences(device.id))
+        token = self.access.pair("Device")
+        device = self.access.session(token)
+        self.access.set_preferences(device.id, {"volume": 10})
+        self.clock.now += DEVICE_EXPIRY_S + 1
+        self.assertIsNone(self.access.session(token))
+        self.assertIsNone(self.access.preferences(device.id))
+
     def test_at_most_twenty_devices(self):
         for _ in range(MAX_DEVICES):
             self.access.pair("Device")
@@ -217,6 +244,29 @@ class RemoteAccessTest(unittest.TestCase):
         self.assertEqual([restored.session(token).label for token in tokens],
                          ["iPhone · Safari", "Android device · Chrome"])
         self.assertTrue(restored.check_code(code))
+
+    def test_a_devices_preferences_are_stored_with_it(self):
+        devices = [self.access.session(self.access.pair(label)) for label in ("iPhone · Safari", "Device")]
+        self.access.set_preferences(devices[0].id, {"palette": "gray", "volume": 10})
+        saved = json.loads(json.dumps(self.access.stored()))
+        self.assertEqual(saved["devices"][0]["preferences"], {"palette": "gray", "volume": 10})
+        self.assertNotIn("preferences", saved["devices"][1])    # it gave none: as in older files
+        restored = RemoteAccess(clock=self.clock)
+        restored.restore(saved)
+        self.assertEqual(restored.stored(), saved)
+        self.assertEqual([restored.preferences(device.id) for device in devices],
+                         [{"palette": "gray", "volume": 10}, None])
+
+    def test_restoring_leaves_out_preferences_that_are_not_valid(self):
+        others = [{**self.saved_device(), "id": f"{index:08x}", "session": f"{index:064x}"} for index in (1, 2, 3)]
+        with self.assertLogs("radiolack.preferences", "WARNING") as logs:
+            self.access.restore({"devices": [
+                {**self.saved_device(), "preferences": {"volume": 10, "palette": ["gray"], "": 1}},
+                {**others[0], "preferences": "gray"}, {**others[1], "preferences": None}, others[2]]})
+        self.assertEqual(len(logs.output), 2)
+        self.assertEqual(self.access.preferences(self.saved_device()["id"]), {"volume": 10})
+        self.assertEqual([self.access.preferences(device["id"]) for device in others], [None, None, None])
+        self.assertEqual(len(self.access.describe()["devices"]), 4)     # every device stays paired
 
     def test_restoring_leaves_out_what_is_not_valid(self):
         self.access.restore({

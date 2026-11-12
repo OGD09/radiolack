@@ -14,8 +14,8 @@ line turns it on, adds a second web application to the same loop, with a
 runner of its own: it serves the interface and the stream over HTTPS on
 this computer's private addresses to devices that entered the access code,
 and turning it off stops it without stopping the first. Remote devices may
-not change remote access, the update check, the preferences or the rtl_tcp
-server's address.
+not change remote access, the update check or the rtl_tcp server's address,
+and the preferences they give are their own.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stre
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "bookmark", "preferences", "update", "remote")
-_LOCAL_COMMANDS = ("preferences", "update", "remote")     # refused to remote devices
+_LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
 _REMOTE_KEEPALIVE_S = 15.0      # an idle HTTPS connection closes after this long
@@ -123,7 +123,7 @@ def create_app(port: int, engine: Engine, remote: RemoteListener) -> web.Applica
         ws = web.WebSocketResponse(timeout=_CLOSE_TIMEOUT_S, compress=False,
                                    max_msg_size=_CLIENT_MESSAGE_LIMIT)
         await ws.prepare(request)
-        await _serve_stream(ws, engine, remote, is_remote=False)
+        await _serve_stream(ws, engine, remote, device=None)
         return ws
 
     async def stop_streams(_app: web.Application) -> None:
@@ -147,14 +147,15 @@ def create_app(port: int, engine: Engine, remote: RemoteListener) -> web.Applica
 
 
 async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: RemoteListener,
-                        is_remote: bool) -> None:
-    """Run an open stream: the hello, then the engine's messages one way and
-    the interface's commands the other, until either side ends it."""
+                        device: str | None) -> None:
+    """Run an open stream, of this computer's interface or of the paired
+    ``device`` named by its id: the hello, then the engine's messages one way
+    and the interface's commands the other, until either side ends it."""
     try:
-        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": is_remote})
+        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": device is not None})
     except ConnectionResetError:
         return
-    subscription = engine.subscribe(remote=is_remote)
+    subscription = engine.subscribe(device=device)
     sender = asyncio.ensure_future(_send(ws, subscription))
     receiver = asyncio.ensure_future(_receive(ws, engine, subscription, remote))
     try:
@@ -224,7 +225,7 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             values = changes.pop("values", None)
             if changes:
                 return kind, f"unknown preferences field: {next(iter(changes))}"
-            engine.set_preferences(values)
+            engine.set_preferences(values, subscription.device)
         elif kind == "update":
             engine.configure_updates(changes)
         elif kind == "remote":
@@ -550,7 +551,7 @@ class RemoteListener:
         self._streams[ws] = device
         self._access.connected(device)
         try:
-            await _serve_stream(ws, self._engine, self, is_remote=True)
+            await _serve_stream(ws, self._engine, self, device=device.id)
         finally:
             del self._streams[ws]
             self._access.disconnected(device)

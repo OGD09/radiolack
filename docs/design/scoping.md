@@ -57,6 +57,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-12 | Remote access without a window, answering open question 3: the owner chose an option at start. `--remote [PORT]` turns remote access on at start, as Settings does, on PORT or the port used last, which it keeps, so that a computer without a window chooses its port too. Radiolack prints the addresses, the authority's fingerprint and the access code, as the owner agreed: a computer without a display has nowhere else to show them, and the code then lands wherever the output goes, a service's journal for instance. When remote access cannot turn on, without an address on a local network yet or on a port in use, Radiolack exits with status 1, so that a service manager starts it again. Only this computer turns remote access on, by its interface or by this option, which replaces "only this computer's interfaces turn it on" (2026-11-11); whether it is on is still never saved, and no setting turns it on. Settings stays on 127.0.0.1, which an SSH tunnel reaches. Set aside: Settings as the only way, through an SSH tunnel after each start, which a computer that restarts alone could not follow. |
 | 2026-11-12 | Updates, no install button: the owner keeps the system's software updates, or apt in a terminal, which install a newer Radiolack well enough, and drops the button of 2026-11-10 that would install it with the administrator's password and restart Radiolack. The alert at start stays as it is, and Radiolack installs nothing itself. |
 | 2026-11-12 | Opus leaves v1, as the owner chose: with the lighter stream, a device needs about 0.3 Mbit/s with the PCM audio, which the home Wi-Fi and a VPN carry, so Opus audio comes only if a mobile link shows dropouts. This replaces "then Opus audio" in the first decision of 2026-11-12. |
+| 2026-11-12 | Interface settings per device, as the owner validated: each paired device keeps every preference that its interface gives (the display, the palette, the volume, the tuning step, the band plan's choice of mode, the scanners' settings), starting from this computer's, which it follows until it changes one. This computer's interfaces, which cannot be told apart, keep their one set, that of the interface that changed one last. A device's set goes with it, forgotten in Settings, unused for 90 days or signed out by a new code: paired again, it starts from this computer's. The sets are kept in `remote.json`, in each device's record, so that a device and its settings come and go together; `settings.json` keeps this computer's, today's single set. A set has the limits of today's (100 values), for at most 20 devices. Neither the files' format version nor the protocol's changes: an older Radiolack reads the devices without their settings, which it drops at its next write, and a new protocol version would stop the interface that a running Radiolack reads from the disk at each request, from the installation of a newer package until Radiolack restarts. Set aside: the browser's storage on each device, which Safari erases after seven days of use without a visit to the site and private browsing never keeps, and one set shared with the devices, whose volume and layout would overwrite the window's. The scanners' settings may become the engine's, shared by every interface, when v2 moves the scanners into the engine. |
 
 ## Scope
 
@@ -159,8 +160,9 @@ flowchart LR
   squelch, gain and scanners. A change from any client reaches the others at
   once, and the last change wins.
 - View settings stay on each device: zoom, palette, panel layout, volume and
-  mute. The engine keeps the latest for the next interface to open (one set
-  in v0, one per device from v1).
+  mute. The engine keeps the latest for the next interface to open: one set
+  for this computer's interfaces, and one for each paired device, which
+  starts from this computer's (decided on 2026-11-12).
 - The engine sends audio only to clients that turned it on, and encodes each
   format once whatever the number of clients.
 - Settings live in the engine. Security settings (remote access, access code)
@@ -660,7 +662,22 @@ These costs wait for v4:
   busy port; `smoke_test.py --remote` starts Radiolack with it and pairs a
   device with what it printed, in CI's containers or a network namespace
   of its own.
-- Next steps: v1 ends with interface settings per device; Opus waits for
-  a mobile link that shows dropouts (see Decisions, 2026-11-12).
+- Interface settings per device, 2026-11-12: a remote device's interface
+  gives the engine its preferences too, which the engine keeps in the
+  device's record in `remote.json` (`remote.py`, with their checks in
+  `preferences.py`) and sends to that device's next interfaces; a device
+  that gave none gets this computer's (`engine.py`, `server.py`,
+  `main.js`). Protocol version 6 and the files' format version 1 stay. The
+  tests check that a device starts from this computer's preferences, then
+  keeps its own apart from this computer's and the other devices', across
+  a restart, and loses them once forgotten, unused for 90 days or signed
+  out by a new code, in the engine and through remote access's server; and
+  in the three browsers, that a device's palette outlives a reload of its
+  page while this computer's stays as it was.
+- Next steps: with interface settings per device, v1's planned work is
+  done, and Opus waits for a mobile link that shows dropouts (see
+  Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
+  Milestones), then v2, the scanners, which starts with a design session
+  of its own.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

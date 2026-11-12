@@ -310,24 +310,25 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start.
-  It also holds the interface's own settings: the display, waterfall and
-  overlay settings, the volume, the tuning step, the band plan's choice of
-  mode and the scanners' settings. Last, it records whether Radiolack checks
-  for updates at start ([Updates](#updates)).
+  It also holds the own settings of this computer's interfaces: the
+  display, waterfall and overlay settings, the volume, the tuning step, the
+  band plan's choice of mode and the scanners' settings. Last, it records
+  whether Radiolack checks for updates at start ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
 - `remote.json` holds what remote access keeps: its port, its access code,
-  the paired devices and its local authority, but never whether it is on:
-  it is off at each start, unless `--remote` turns it on
-  ([Remote access](#remote-access)).
+  the paired devices, each with its own interface settings, and its local
+  authority, but never whether it is on: it is off at each start, unless
+  `--remote` turns it on ([Remote access](#remote-access)).
 
 The window keeps no browser data on disk: WebKit's cache and storage stay in
 memory.
 
 Every interface shows the same bookmarks and receiver settings. An
-interface opens with the own settings of the interface that changed one
-last; changing them in one interface leaves the other open ones as they
-are. A change reaches the disk a few seconds later at most, and when
-Radiolack stops.
+interface on this computer, the window or a browser, opens with the own
+settings of this computer's interface that changed one last, and a paired
+device with its own ([Remote access](#remote-access)); changing them in one
+interface leaves the other open ones as they are. A change reaches the disk
+a few seconds later at most, and when Radiolack stops.
 
 The Bands panel adds a bookmark at the VFO, renames or removes one, and
 tunes to one with its mode; the spectrum's context menu adds one anywhere.
@@ -396,8 +397,15 @@ the receiver with every other interface: its changes to the VFO, the mode,
 the receiver's settings, the source and the bookmarks reach everyone. It
 cannot change what belongs to this computer, remote access itself, the update
 check and the rtl_tcp server's address, and does not see where the settings
-are saved. It starts from the saved interface settings but keeps its own
-changes to itself.
+are saved.
+
+A paired device keeps interface settings of its own, such as the display,
+the palette and the volume: it starts from this computer's, follows them
+until it changes one, then opens with its own each time, even when the
+browser reloads the page, as Safari on an iPhone often does. Its changes
+leave this computer's settings and the other devices' as they are. A device
+that opens Radiolack by two addresses, at home and through a VPN for
+instance, is paired once at each, with settings of its own at each.
 
 A device's link may be slower than this computer's own, so a device gets a
 lighter spectrum: about 15 frames a second instead of 30, in at most 2048
@@ -412,8 +420,10 @@ the spectrum comes less often and the sound arrives late, by about 5 s at
 Settings > Remote access lists the paired devices, says which are connected
 and when each was last used, and forgets one on request; a new code forgets
 them all. A forgotten device must enter the code again, and so must a device
-unused for 90 days. A wrong code is answered after a second, and after 10
-wrong codes the code no longer works until Settings makes a new one.
+unused for 90 days; Radiolack forgets its settings with it, and it starts
+again from this computer's. A wrong code is answered after a second, and
+after 10 wrong codes the code no longer works until Settings makes a new
+one.
 Turning remote access off closes the devices' connections; their interfaces
 wait for it to be on again. Radiolack keeps a hash of each device's session,
 never the session itself, in `remote.json`, which only you can read.
@@ -754,10 +764,13 @@ src/radiolack/
                 frames, the demodulation settings, the bookmarks and the
                 update check's findings with the interfaces, sends audio to
                 those that ask, and saves the settings
-  remote.py     remote access: access code, paired devices, local
-                authority and certificates, addresses to listen on
+  remote.py     remote access: access code, paired devices and their
+                interface settings, local authority and certificates,
+                addresses to listen on
   store.py      settings, bookmarks and remote access files
   bookmarks.py  bookmarks and their checks
+  preferences.py
+                the interfaces' own settings and their checks
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you

@@ -6,7 +6,8 @@
  * its update requests and its remote access settings to it
  * (docs/design/protocol.md). It reconnects by itself after a disconnection.
  * On a device that remote access serves, the engine sends neither the
- * storage, update nor remote access state, and takes none of their changes.
+ * storage, update nor remote access state, and takes none of their changes;
+ * it keeps that device's preferences apart from this computer's.
  */
 
 export const PROTOCOL_VERSION = 6;
@@ -203,7 +204,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(source: SourceState) => void} onSource  sent first, then at every change
  * @property {(demod: DemodState) => void} onDemod     sent next, then at every change this interface has not overtaken
  * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
- * @property {(values: Preferences) => void} onPreferences  sent next, once per connection: the latest saved
+ * @property {(values: Preferences) => void} onPreferences
+ *   sent next, once per connection: the latest saved for this computer's interfaces, or for this device
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
@@ -561,8 +563,9 @@ export class EngineStream {
 
   /**
    * Give the engine this interface's preferences, which the next interfaces
-   * start with; open interfaces keep theirs. Returns false, sending nothing,
-   * when the stream is not open.
+   * of this computer, or of this device through remote access, start with;
+   * open interfaces keep theirs. Returns false, sending nothing, when the
+   * stream is not open.
    * @param {Preferences} values
    * @returns {boolean}
    */

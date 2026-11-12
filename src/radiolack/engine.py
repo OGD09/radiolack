@@ -25,17 +25,20 @@ a source to start with, it opens the one used last, the first kind the first
 time.
 
 The engine also keeps the bookmarks, shared by every client like the
-settings, and the interfaces' preferences, which a new interface starts with.
-With an update check (updates.py), it checks for a newer Radiolack when it
-starts, unless turned off, and when a client asks, and tells every client
-what the check found.
+settings, and the interfaces' preferences (preferences.py), which a new
+interface starts with: one set for this computer's interfaces, and one for
+each paired device once it gave one, until then this computer's. With an
+update check (updates.py), it checks for a newer Radiolack when it starts,
+unless turned off, and when a client asks, and tells every client what the
+check found.
 
 With remote access (remote.py), the engine tells this computer's interfaces
-its state, and saves what it keeps. Remote clients, the devices that remote
-access serves, receive neither that state nor the storage and update states,
-and may not change the rtl_tcp server's address. Their links may be slower
-than this computer's own: they get one display frame for every two blocks,
-the mean power of both, in fewer bins.
+its state, and saves what it keeps, each paired device's preferences
+included. Remote clients, the devices that remote access serves, receive
+neither that state nor the storage and update states, and may not change
+the rtl_tcp server's address. Their links may be slower than this computer's
+own: they get one display frame for every two blocks, the mean power of
+both, in fewer bins.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
@@ -62,6 +65,7 @@ import numpy as np
 from . import __version__
 from .bookmarks import Bookmarks
 from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
+from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
@@ -74,11 +78,8 @@ CLIENT_QUEUE = 4        # frames kept for a client that falls behind
 CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
-MAX_PREFERENCES = 100   # the interfaces' preferences: names and values the engine keeps
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
-_MAX_PREFERENCE_NAME = 40
-_MAX_PREFERENCE_TEXT = 100
 
 log = logging.getLogger(__name__)
 
@@ -187,11 +188,11 @@ class Subscription:
     """What the engine has for one client, in the order it goes out: the
     states that changed (all of them at the start, in the order of
     ``states``), replies to the client's commands, audio frames if the client
-    asked for audio, then the latest display frames. A ``remote`` client is a
-    device that remote access serves."""
+    asked for audio, then the latest display frames. A remote client is a
+    paired ``device`` that remote access serves, named by its id."""
 
     def __init__(self, states: Mapping[str, Callable[[Subscription], dict[str, Any]]], frames: int,
-                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO, remote: bool = False) -> None:
+                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO, device: str | None = None) -> None:
         self._states = dict(states)     # each gives its message for this client
         self._due = set(self._states)
         self._replies: deque[dict[str, Any]] = deque(maxlen=replies)
@@ -199,9 +200,14 @@ class Subscription:
         self._frames: deque[bytes] = deque(maxlen=frames)
         self._ended = False
         self._ready = asyncio.Event()
-        self.remote = remote
+        self.device = device
         self.audio = False          # the client asked for audio
         self.acknowledged = 0       # id of the client's last demodulation change handled
+
+    @property
+    def remote(self) -> bool:
+        """Whether the client is a device that remote access serves."""
+        return self.device is not None
 
     def get_nowait(self) -> bytes | dict[str, Any] | None:
         """The next message: an encoded frame or a JSON object, and ``None``
@@ -303,7 +309,7 @@ class Engine:
             "source": lambda subscription: self.state(subscription.remote),
             "demod": lambda subscription: self.demod_state(subscription.acknowledged),
             "bookmarks": lambda _: self.bookmarks_state(),
-            "preferences": lambda _: self.preferences_state(),
+            "preferences": lambda subscription: self.preferences_state(subscription.device),
             "storage": lambda _: self.storage_state(),
             "update": lambda _: self.update_state(),
         }
@@ -342,7 +348,7 @@ class Engine:
         saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
         self._adopt()
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
-        self._preferences = _saved_preferences(settings.get("interface"))
+        self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
         # Updates: whether to check at start, what the latest check found, and the check running.
         self._updates = updates
         self._check_at_start = _saved_check_at_start(settings.get("updates"))
@@ -359,14 +365,14 @@ class Engine:
                 del self._saved[SETTINGS_FILE]
             self._store = store
 
-    def subscribe(self, remote: bool = False) -> Subscription:
+    def subscribe(self, device: str | None = None) -> Subscription:
         """The messages for a new client, starting with the source state, the
         demodulation settings, the bookmarks and the preferences, then, unless
-        ``remote``, the storage state, the update state and remote access's
-        state."""
+        it is a paired ``device`` that remote access serves, named by its id,
+        the storage state, the update state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
-                  if not remote or kind not in LOCAL_STATES}
-        subscription = Subscription(states, self._queue_size, remote=remote)
+                  if device is None or kind not in LOCAL_STATES}
+        subscription = Subscription(states, self._queue_size, device=device)
         if self._closed:
             subscription.end()
         else:
@@ -445,23 +451,26 @@ class Engine:
             subscription.changed("bookmarks")
         self._settings_changed()
 
-    def preferences_state(self) -> dict[str, Any]:
-        """The preferences message: what a new interface starts with."""
-        return {"type": "preferences", "values": dict(self._preferences)}
+    def preferences_state(self, device: str | None = None) -> dict[str, Any]:
+        """The preferences message: what a new interface of this computer, or
+        of the paired ``device``, starts with. A device that gave none starts
+        with this computer's."""
+        own = self._remote.preferences(device) if device is not None and self._remote is not None else None
+        return {"type": "preferences", "values": dict(self._preferences if own is None else own)}
 
-    def set_preferences(self, values: object) -> None:
-        """Keep an interface's preferences, which the next interfaces start
-        with: names with numbers, true or false, short texts or null. Raises
-        ValueError, changing nothing, when one is not valid."""
-        if not isinstance(values, dict):
-            raise ValueError("the preferences must be a JSON object")
-        if len(values) > MAX_PREFERENCES:
-            raise ValueError(f"there may be at most {MAX_PREFERENCES} preferences")
-        for name, value in values.items():
-            if not _preference_valid(name, value):
-                raise ValueError(f"the preference {str(name)[:_MAX_PREFERENCE_NAME]!r} must be a number, "
-                                 f"true or false, a text of at most {_MAX_PREFERENCE_TEXT} characters or null")
-        self._preferences = dict(values)
+    def set_preferences(self, values: object, device: str | None = None) -> None:
+        """Keep the preferences of an interface of this computer, or of the
+        paired ``device``, which the next interfaces of the same computer or
+        device start with: names with numbers, true or false, short texts or
+        null (preferences.py). Raises ValueError, changing nothing, when one
+        is not valid or the device is no longer paired."""
+        checked = check_preferences(values)
+        if device is None:
+            self._preferences = checked
+        elif self._remote is None:
+            raise ValueError("this device is no longer paired")
+        else:
+            self._remote.set_preferences(device, checked)
         self._settings_changed()
 
     def storage_state(self) -> dict[str, Any]:
@@ -798,28 +807,6 @@ def _given_differ(state: Mapping[str, Any], saved: object, given: frozenset[str]
     """Whether a setting the source was given differs from the saved one."""
     saved_values = saved if isinstance(saved, dict) else {}
     return any(name in state["settable"] and saved_values.get(name) != state[name] for name in given)
-
-
-def _preference_valid(name: object, value: object) -> bool:
-    if not isinstance(name, str) or not 0 < len(name) <= _MAX_PREFERENCE_NAME:
-        return False
-    if value is None or isinstance(value, bool):
-        return True
-    if isinstance(value, int):
-        return abs(value) <= 2 ** 53       # what JavaScript counts exactly
-    if isinstance(value, float):
-        return math.isfinite(value)
-    return isinstance(value, str) and len(value) <= _MAX_PREFERENCE_TEXT
-
-
-def _saved_preferences(saved: object) -> dict[str, Any]:
-    """The saved preferences, leaving out those that are not valid."""
-    if not isinstance(saved, dict):
-        return {}
-    valid = {name: value for name, value in saved.items() if _preference_valid(name, value)}
-    if len(valid) < len(saved) or len(valid) > MAX_PREFERENCES:
-        log.warning("some saved preferences are not used")
-    return dict(list(valid.items())[:MAX_PREFERENCES])
 
 
 def _saved_check_at_start(saved: object) -> bool:

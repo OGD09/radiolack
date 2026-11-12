@@ -9,8 +9,9 @@ with it the interface, the stream and the audio.
 
 This module keeps what remote access needs between starts, in remote.json in
 the settings folder (store.py): the port, the access code and the wrong codes
-entered since it was made, the paired devices and the local authority. It
-also makes the certificates and finds the addresses to listen on.
+entered since it was made, the paired devices, each with the interface
+preferences it gave last (preferences.py), and the local authority. It also
+makes the certificates and finds the addresses to listen on.
 
 The local authority is a root certificate whose private key is discarded as
 soon as it has signed one intermediate certificate. Name constraints limit
@@ -22,8 +23,8 @@ server certificate, for the addresses in use, at each turn-on.
 
 A session is a random token in an HttpOnly cookie, of which this computer
 keeps only the SHA-256 hash. A device stays paired until the user forgets
-it, makes a new code, or leaves it unused for 90 days. Ten wrong codes block
-the code until the user makes a new one.
+it, makes a new code, or leaves it unused for 90 days; its preferences go
+with it. Ten wrong codes block the code until the user makes a new one.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from .preferences import saved_preferences
 
 REMOTE_FILE = "remote.json"
 DEFAULT_PORT = 8443
@@ -110,13 +113,16 @@ class Authority:
 @dataclasses.dataclass
 class Device:
     """A paired device. ``session`` is the SHA-256 hash of its session token;
-    ``paired`` and ``seen``, when it was paired and last used, in Unix time."""
+    ``paired`` and ``seen``, when it was paired and last used, in Unix time;
+    ``preferences``, the interface preferences it gave last, or None while
+    it gave none."""
 
     id: str
     label: str
     session: str
     paired: int
     seen: int
+    preferences: dict[str, Any] | None = None
 
 
 class RemoteAccess:
@@ -125,8 +131,10 @@ class RemoteAccess:
     ``restore`` reads what remote.json held, and ``stored`` gives what it
     should hold. The server's remote listener notes when it starts and stops
     listening, and which devices are connected. ``on_change`` is called at
-    every change, for the interfaces and for saving. Everything runs in the
-    server's event loop."""
+    every change, for the interfaces and for saving, apart from a device's
+    preferences, which are no part of the state that the interfaces show:
+    the engine, which sets them, saves them. Everything runs in the server's
+    event loop."""
 
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
@@ -170,7 +178,7 @@ class RemoteAccess:
             "port": self.port,
             "code": self._code,
             "wrong_codes": self._wrong,
-            "devices": [dataclasses.asdict(device) for device in self._devices.values()],
+            "devices": [_stored_device(device) for device in self._devices.values()],
             "authority": dataclasses.asdict(authority) if authority is not None else None,
         }
 
@@ -249,6 +257,22 @@ class RemoteAccess:
             raise ValueError("no such device: it may have been forgotten already")
         del self._devices[device_id]
         self._changed()
+
+    def preferences(self, device_id: str) -> dict[str, Any] | None:
+        """The interface preferences that the paired device ``device_id`` gave
+        last, or None while it gave none or once it is forgotten."""
+        device = self._devices.get(device_id)
+        return None if device is None or device.preferences is None else dict(device.preferences)
+
+    def set_preferences(self, device_id: str, values: Mapping[str, Any]) -> None:
+        """Keep the interface preferences that the paired device ``device_id``
+        gives, checked already (preferences.py), until it is forgotten.
+        Raises ValueError for a device forgotten meanwhile. Whoever calls this
+        saves: ``on_change`` is not called."""
+        device = self._devices.get(device_id)
+        if device is None:
+            raise ValueError("this device is no longer paired")
+        device.preferences = dict(values)
 
     def check_code(self, text: object) -> bool:
         """Whether ``text`` is the access code, ignoring case, spaces and dashes.
@@ -584,15 +608,26 @@ def _whole(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _stored_device(device: Device) -> dict[str, Any]:
+    """A device as remote.json keeps it: without preferences while it gave none."""
+    stored = dataclasses.asdict(device)
+    if device.preferences is None:
+        del stored["preferences"]
+    return stored
+
+
 def _saved_device(entry: object) -> Device | None:
+    """A saved device, or None when it is not valid. Preferences that are not
+    valid are left out, the device being kept: it may give them again."""
     if not isinstance(entry, dict):
         return None
     with contextlib.suppress(KeyError, TypeError, ValueError):
-        device = Device(**{field.name: entry[field.name] for field in dataclasses.fields(Device)})
+        device = Device(**{name: entry[name] for name in ("id", "label", "session", "paired", "seen")})
         if (isinstance(device.id, str) and _DEVICE_ID.fullmatch(device.id)
                 and isinstance(device.label, str) and 0 < len(device.label) <= _MAX_LABEL
                 and isinstance(device.session, str) and _DIGEST.fullmatch(device.session)
                 and _whole(device.paired) and _whole(device.seen)):
+            device.preferences = saved_preferences(entry.get("preferences"))   # absent from older files
             return device
     return None
 

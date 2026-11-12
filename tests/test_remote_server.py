@@ -293,8 +293,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             continue
         self.assertEqual(state["frequency_hz"], 145_010_000)
         for command in ({"type": "remote", "on": False}, {"type": "remote", "new_code": True},
-                        {"type": "update", "check": True}, {"type": "preferences", "values": {"volume": 1}},
-                        {"type": "source", "address": "192.168.1.2:1234"}):
+                        {"type": "update", "check": True}, {"type": "source", "address": "192.168.1.2:1234"}):
             with self.subTest(command=command):
                 await ws.send_json(command)
                 self.assertEqual(await self.next_error(ws),
@@ -306,6 +305,38 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         while (message := await next_text(ws))["type"] != "demod":
             self.assertNotIn(message["type"], ("storage", "update", "remote"))
         self.assertEqual(message["frequency_hz"], 145_020_000)
+
+    async def test_a_device_keeps_its_own_preferences_until_forgotten(self):
+        await self.local.send_json({"type": "preferences", "values": {"palette": "ice"}})
+        await self.turn_on()
+        first, second = self.device(), self.device()
+        await self.pair(first)
+        [first_id] = [device["id"] for device in (await self.next_remote(lambda state: state["devices"]))["devices"]]
+        await self.pair(second)
+        ws = await self.remote_stream(first)
+        self.assertEqual(await self.start_preferences(ws), {"palette": "ice"})     # this computer's, at first
+        await ws.send_json({"type": "preferences", "values": {"palette": "gray", "volume": 10}})
+        await ws.send_json({"type": "demod", "id": 1})     # acknowledged once the preferences are kept
+        while (message := await next_text(ws))["type"] != "demod" or message["acknowledged"] != 1:
+            self.assertNotEqual(message["type"], "error", message)
+        await ws.close()
+        self.assertEqual(await self.start_preferences(await self.remote_stream(first)),
+                         {"palette": "gray", "volume": 10})
+        self.assertEqual(await self.start_preferences(await self.remote_stream(second)), {"palette": "ice"})
+        local = await self.session.ws_connect(f"{self.server.url}stream", origin=f"http://{LOOPBACK}:{self.server.port}")
+        self.addAsyncCleanup(local.close)
+        self.assertEqual((await read_start(self, local))["preferences"]["values"], {"palette": "ice"})
+        # Forgotten, the device starts again from this computer's preferences.
+        await self.local.send_json({"type": "remote", "forget": first_id})
+        await self.next_remote(lambda state: len(state["devices"]) == 1)
+        self.assertEqual(await self.pair(first), (200, {"paired": True}))
+        self.assertEqual(await self.start_preferences(await self.remote_stream(first)), {"palette": "ice"})
+
+    async def start_preferences(self, ws) -> dict:
+        """The preferences that a stream starts with."""
+        while (message := await next_text(ws))["type"] != "preferences":
+            continue
+        return message["values"]
 
     async def test_a_remote_device_gets_lighter_frames_deflated(self):
         await self.turn_on()
