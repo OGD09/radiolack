@@ -1696,11 +1696,11 @@ function syncStorage() {
 // ------------------------------------------------------------------ preferences
 // This interface's own settings. The engine keeps them for the next start,
 // as the page's address, and with it the browser's storage, changes with
-// the port. They leave out the engine's settings (VFO, mode, filter,
+// the port: one set for this computer's interfaces, and one for each device
+// that remote access serves, which starts from this computer's until it
+// gives its own. They leave out the engine's settings (VFO, mode, filter,
 // squelch, receiver, remote access) and the settings that have no effect
 // yet (CTCSS, AGC, noise reduction, notch, blanker, keeping the screen on).
-// A device that remote access serves starts from them but keeps its own
-// changes to itself: the engine keeps only this computer's.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
   'peakOn', 'peakThr', 'peakMarks', 'memDwell', 'memResume', 'autoHide'];
@@ -1748,7 +1748,7 @@ function applyPreferences(values) {
 }
 // Changed preferences go to the engine, which writes them to the disk soon after.
 function savePreferences() {
-  if (!preferencesLoaded || stream.remote) return;
+  if (!preferencesLoaded) return;
   const values = preferencesNow(), json = JSON.stringify(values);
   if (json !== savedPreferences && stream.savePreferences(values)) savedPreferences = json;
 }

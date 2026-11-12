@@ -18,7 +18,7 @@ import numpy as np
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack import __version__
 from radiolack.engine import Engine, Source, Subscription
-from radiolack.remote import RemoteAccess
+from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
@@ -108,6 +108,13 @@ def waiting(subscription: Subscription) -> list:
             messages.append(subscription.get_nowait())
         except asyncio.QueueEmpty:
             return messages
+
+
+def preferences_of(subscription: Subscription) -> dict:
+    """The values of the preferences message ready for a client, now."""
+    [message] = [message for message in waiting(subscription)
+                 if isinstance(message, dict) and message["type"] == "preferences"]
+    return message["values"]
 
 
 class EngineTest(unittest.IsolatedAsyncioTestCase):
@@ -522,7 +529,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             "source": {"dc_removal": "no", "centre_hz": 433e6},    # the test source has no centre to set
             "demod": {"frequency_hz": 145_010_000, "mode": "WFM", "squelch_db": None}}},
             "interface": {"volume": 40, "nested": {"a": 1}, "": 1, "text": "x" * 101}})
-        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+        with self.assertLogs("radiolack", "WARNING") as logs:
             engine = self.engine()
         self.assertEqual(len(logs.output), 4)   # DC removal, mode, squelch and some preferences
         self.assertTrue(engine.state()["dc_removal"])
@@ -549,6 +556,24 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bookmarks, {"version": 1, "bookmarks": [CALLING]})
         engine.edit_bookmarks({"action": "change", "id": 1, "name": "Calling"})
         await self.saved(BOOKMARKS_FILE, lambda content: content["bookmarks"][0]["name"] == "Calling")
+
+    async def test_a_devices_preferences_are_saved_with_it(self):
+        access = RemoteAccess()
+        device = access.session(access.pair("iPhone · Safari")).id
+        engine = Engine(FakeSource(), store=Store(self.directory), remote=access, save_delay_s=0.05)
+        self.addAsyncCleanup(self.stop, engine)
+        engine.set_preferences({"palette": "ice"})
+        engine.set_preferences({"palette": "gray", "volume": 10}, device=device)
+        saved = await self.saved(REMOTE_FILE, lambda content: content["devices"][0].get("preferences"))
+        self.assertEqual(saved["devices"][0]["preferences"], {"palette": "gray", "volume": 10})
+        settings = await self.saved(SETTINGS_FILE, lambda content: content.get("interface"))
+        self.assertEqual(settings["interface"], {"palette": "ice"})
+        await self.stop(engine)
+        # The next start: the same device starts with them, this computer's interfaces with their own.
+        restarted = Engine(FakeSource(), store=Store(self.directory), remote=RemoteAccess())
+        self.addAsyncCleanup(self.stop, restarted)
+        self.assertEqual(restarted.preferences_state(device)["values"], {"palette": "gray", "volume": 10})
+        self.assertEqual(restarted.preferences_state()["values"], {"palette": "ice"})
 
     async def test_saves_the_last_changes_when_it_stops(self):
         engine = Engine(FakeSource(), store=Store(self.directory), save_delay_s=60)
@@ -842,7 +867,7 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
         access = RemoteAccess()
         engine = Engine(FakeSource(), remote=access)
         self.addCleanup(engine.close)
-        local, remote = engine.subscribe(), engine.subscribe(remote=True)
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
         self.assertEqual([message["type"] for message in ready_messages(local)], [*STATES, "remote"])
         self.assertEqual([message["type"] for message in ready_messages(remote)],
                          ["source", "demod", "bookmarks", "preferences"])
@@ -858,7 +883,7 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
         engine = Engine(source, queue_size=64)
         task = asyncio.ensure_future(engine.run())
         self.addAsyncCleanup(stop, engine, task)
-        local, remote = engine.subscribe(), engine.subscribe(remote=True)
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
         while source.reads < 9:
             await asyncio.sleep(0.01)
         # Both clients' frames at once: each block reached the local client.
@@ -876,6 +901,45 @@ class RemoteClientTest(unittest.IsolatedAsyncioTestCase):
             # The mean power of -20 and -30 dBFS: neither the louder block nor a mean in dB.
             self.assertAlmostEqual(level_db(frame, FAKE_TONE_BIN // 4), 10 * math.log10((1e-2 + 1e-3) / 2),
                                    delta=0.4)
+
+    async def test_a_device_starts_from_this_computers_preferences_until_it_gives_its_own(self):
+        access = RemoteAccess()
+        first, second = (access.session(access.pair("Device")).id for _ in range(2))
+        engine = Engine(FakeSource(), remote=access)
+        self.addCleanup(engine.close)
+        engine.set_preferences({"palette": "ice", "volume": 70})
+        opened = engine.subscribe(device=first)
+        self.assertEqual(preferences_of(opened), {"palette": "ice", "volume": 70})
+        engine.set_preferences({"palette": "gray", "volume": 10}, device=first)
+        self.assertEqual(waiting(opened), [])      # open interfaces keep their own
+        for device, values in ((first, {"palette": "gray", "volume": 10}), (second, {"palette": "ice", "volume": 70}),
+                               (None, {"palette": "ice", "volume": 70})):
+            with self.subTest(device=device):
+                self.assertEqual(preferences_of(engine.subscribe(device=device)), values)
+        # A change on this computer reaches the devices that gave none.
+        engine.set_preferences({"palette": "classic"})
+        self.assertEqual(preferences_of(engine.subscribe(device=second)), {"palette": "classic"})
+        self.assertEqual(preferences_of(engine.subscribe(device=first)), {"palette": "gray", "volume": 10})
+        for values in ([1], {"volume": [30]}, {f"name {n}": n for n in range(101)}):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "preference"):
+                engine.set_preferences(values, device=first)
+        self.assertEqual(engine.preferences_state(first)["values"], {"palette": "gray", "volume": 10})
+
+    async def test_a_forgotten_device_keeps_no_preferences(self):
+        access = RemoteAccess()
+        device = access.session(access.pair("Device")).id
+        engine = Engine(FakeSource(), remote=access)
+        self.addCleanup(engine.close)
+        engine.set_preferences({"volume": 10}, device=device)
+        access.forget(device)
+        self.assertEqual(engine.preferences_state(device)["values"], {})
+        with self.assertRaisesRegex(ValueError, "no longer paired"):
+            engine.set_preferences({"volume": 20}, device=device)
+        without_remote_access = Engine(FakeSource())
+        self.addCleanup(without_remote_access.close)
+        with self.assertRaisesRegex(ValueError, "no longer paired"):
+            without_remote_access.set_preferences({"volume": 20}, device=device)
+        self.assertEqual(without_remote_access.preferences_state(device)["values"], {})
 
     async def test_a_remote_client_may_not_change_the_rtl_tcp_address(self):
         engine = Engine(RtlTcpSource(LOOPBACK, free_port()), remote=RemoteAccess())   # never connects

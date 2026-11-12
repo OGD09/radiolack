@@ -17,20 +17,24 @@ the history under the tag `v0.1.0`.
   in a background thread; interface files and the `/stream` WebSocket; remote
   access's HTTPS listener, a second application with a runner of its own,
   in the same loop), `remote` (remote access: the local certificate
-  authority, with `cryptography`, the access code, paired devices and their
-  sessions, the private addresses to listen on), `engine`
+  authority, with `cryptography`, the access code, paired devices with
+  their sessions and interface preferences, the private addresses to listen
+  on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks and the update check's
   findings with clients, sends audio to those that ask, passes their changes
   on, switches between kinds of sources, restores and saves the settings and
-  the source in use; idle without clients; remote clients get neither the
-  storage, update nor remote access states, and lighter spectrum frames),
+  the source in use; keeps the interfaces' preferences, this computer's
+  and each paired device's; idle without clients; remote clients get
+  neither the storage, update nor remote access states, and lighter
+  spectrum frames),
   `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
   Radiolack), `store` (settings, bookmarks and remote access files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
-  only, unreadable files set aside), `bookmarks` (bookmarks and their checks), `spectrum`
+  only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
+  `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
   and overlap-save FFT filters that shift and resample), `demod` (one VFO:
   channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an

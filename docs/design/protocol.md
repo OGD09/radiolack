@@ -13,7 +13,8 @@ A device that remote access serves, a remote client, opens its stream on
 remote access's HTTPS server instead, with its session cookie
 ([Remote access](#remote-access)). It receives the same messages, apart
 from this computer's own states, with lighter spectrum frames, and may not
-change this computer's own settings.
+change this computer's own settings: the engine keeps its device's
+preferences apart from this computer's.
 
 ## From the engine
 
@@ -97,9 +98,11 @@ change this computer's own settings.
    They come in frequency order, then by name, ignoring case: at most 2000.
 
 5. Then the preferences, a JSON text message sent once: the latest that an
-   interface gave the engine (`preferences` message), kept for the next
-   start. They are the interface's own settings, which the engine stores
-   without knowing their meaning: up to 100 values, named by 1 to 40
+   interface of this computer gave the engine (`preferences` message), or
+   to a remote client, the latest that an interface of its device gave,
+   and this computer's while its device has given none; they are kept for
+   the next start. They are the interface's own settings, which the engine
+   stores without knowing their meaning: up to 100 values, named by 1 to 40
    characters, each a number, true or false, a text of at most 100
    characters or null.
 
@@ -321,15 +324,17 @@ removed the bookmark) or when there are already 2000 bookmarks. Otherwise
 every interface receives the bookmarks.
 
 A `preferences` message gives the engine this interface's preferences,
-which replace the ones it kept:
+which replace the ones it kept for this computer's interfaces, or for the
+remote client's device:
 
 ```json
 {"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
 ```
 
-The engine saves them and sends them to the interfaces that connect later;
-open interfaces receive nothing, so each keeps its own. It refuses values
-that do not fit the preferences message.
+The engine saves them and sends them to the interfaces of the same
+computer or device that connect later; open interfaces receive nothing, so
+each keeps its own. It refuses values that do not fit the preferences
+message, and those of a device forgotten meanwhile.
 
 An `update` message asks the engine to check for a newer Radiolack now, or
 turns its check at start on or off, for the next starts:
@@ -365,12 +370,12 @@ unknown or invalid setting, or a device it does not know, and answers the
 sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
-A remote client may send `source`, `demod`, `bookmark` and `audio`
-messages, but neither `preferences`, `update` nor `remote` messages, nor a
+A remote client may send `source`, `demod`, `bookmark`, `preferences` and
+`audio` messages, but neither `update` nor `remote` messages, nor a
 `source` message that names `address`: the engine refuses them with the
-error "only Radiolack's interface on the computer may change this". A remote
-interface starts from the preferences the engine sends, and keeps its
-changes to itself.
+error "only Radiolack's interface on the computer may change this". Its
+`preferences` are its device's own: they change neither this computer's
+nor another device's.
 
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
@@ -409,7 +414,10 @@ off, it answers every request with 503. Its answers carry
 
 A device is paired while it sends the `__Host-radiolack` cookie that the
 right code gave it. The engine keeps only the cookie's SHA-256, forgets a
-device unused for 90 days and pairs up to 20 devices.
+device unused for 90 days and pairs up to 20 devices; a forgotten device's
+preferences go with it. A device that opens remote access by two of its
+`urls` gets a cookie for each, and is paired, with preferences of its own,
+by each.
 
 `/pair` takes a JSON body of up to 4 KiB, such as `{"code": "k7pm 3xqh"}`,
 from a page of the same origin: its `Origin` header must be `https://`
@@ -487,7 +495,15 @@ and later.
 - 6 (2026-11-11): remote access: the hello's `remote`, remote access's
   state, the `remote` message, the HTTPS server, remote clients and their
   close codes 4001 and 4002. The storage and update states go to this
-  computer's interfaces only.
+  computer's interfaces only. On 2026-11-12, a remote client's
+  `preferences` message, which the engine keeps for its device, and the
+  preferences that it sends a remote client, its device's, without a new
+  version: the messages are the same, an interface that does not send its
+  preferences as a remote client keeps its changes to itself as before,
+  and one that sends them to an engine that refuses them receives an
+  error, the rest working. A new version would stop the interface that a
+  running Radiolack serves, which it reads from the disk at each request,
+  from the installation of a newer package until Radiolack restarts.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

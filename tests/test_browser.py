@@ -400,6 +400,12 @@ class BrowserTest(unittest.TestCase):
                     for section in ("#st-storage-section", "#st-update-section", "#st-remote-section"):
                         expect(device.locator(section)).to_be_hidden()
                     expect(device.locator("#status")).not_to_contain_text("remote access")
+                    # The device keeps its own settings when its page reloads, as Safari's often do.
+                    device.locator(DISPLAY_PANEL).click()
+                    device.locator("#wf-pal").select_option("gray")
+                    device.wait_for_timeout(2 * PREFERENCES_SAVE_MS)
+                    device.reload()
+                    expect(device.locator("#wf-pal")).to_have_value("gray")
                     expect(computer.locator("#st-remote-devices li.device")).to_contain_text("connected")
                     computer.locator("#st-remote-devices button[data-forget]").click()
                     expect(device.locator("#pair-form")).to_be_visible()    # reloaded: the pairing page again
@@ -407,6 +413,9 @@ class BrowserTest(unittest.TestCase):
                 computer.locator("#st-remote").click()
                 expect(computer.locator("#st-remote-info")).to_be_hidden()
                 expect(computer.locator("#st-remote-port")).to_be_enabled()
+                computer.reload()       # this computer's interfaces keep their own settings
+                expect(computer.locator("#status")).to_contain_text("fps")     # frames, which follow the preferences
+                expect(computer.locator("#wf-pal")).to_have_value("classic")
 
     def test_a_stream_refused_before_it_opened_asks_for_a_reload_instead_of_reloading(self):
         # As if the browser sent the session cookie with the page but not with
