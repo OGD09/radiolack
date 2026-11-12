@@ -711,10 +711,29 @@ These costs wait for v4:
   spectra, the list's rules, the engine's list for every client, remote
   ones included, the settings' checks, their saving and the rate of the
   list; checked by hand in a browser on the simulated band.
+- Memory scan in the engine, 2026-11-12, v2's second pull request:
+  `scanners.py` watches the ticked bookmarks of the span in the engine's
+  spectra, each one's power in its mode's passband against the local noise
+  there, and follows the scan's states; the engine tunes the VFO, with the
+  bookmark's mode and that mode's filter width, for every client, keeps
+  reading without any client while the scan runs, and stops it when an
+  interface tunes by hand, changes the span or the source, or when no
+  ticked bookmark is left in the span (`engine.py`). The scanner state
+  carries the resume time, saved with the settings, the scan that runs, why
+  the latest stopped and the memory scan's state, and the `scanner` message
+  starts and stops it (`stream.js`). The Bookmarks tab drives the engine's
+  scan and marks the ticked bookmarks outside the span, and the status
+  line names the scan (`main.js`); the interface's own scan is gone, with
+  its dwell and its saved resume time. Protocol version 6 stays, the hello
+  listing `memory`. The tests check the channels' levels against the
+  spectrum's calibration, the scan's states, the engine's scan for every
+  client, its stops and its run without any client, and in the three
+  browsers, two interfaces following a scan until one tunes by hand;
+  checked by hand in a browser on the simulated band.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). Left: the owner's acceptance of v1 (see
-  Milestones). v2's pull requests follow, one at a time: next, the memory
-  scan in the engine.
+  Milestones). v2's pull requests follow, one at a time: next, the
+  observations and the History tab.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

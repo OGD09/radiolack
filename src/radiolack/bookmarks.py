@@ -84,6 +84,11 @@ class Bookmarks:
         """The bookmarks with their ids, for the interfaces."""
         return [{"id": bookmark_id, **bookmark.describe()} for bookmark_id, bookmark in self._sorted()]
 
+    def ticked(self) -> list[tuple[int, Bookmark]]:
+        """The bookmarks that the memory scan goes through, with their ids, in
+        frequency order."""
+        return [(bookmark_id, bookmark) for bookmark_id, bookmark in self._sorted() if bookmark.scan]
+
     def stored(self) -> list[dict[str, Any]]:
         """The bookmarks as the bookmarks file keeps them, without ids."""
         return [bookmark.describe() for _, bookmark in self._sorted()]

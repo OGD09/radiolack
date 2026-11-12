@@ -21,13 +21,14 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks"]}
+   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory"]}
    ```
 
    `remote` is true for a remote client. `scanners` lists the scanners that
    the engine runs: `peaks`, which finds the signals in the span (the
-   scanner state and the signals found, below). An engine older than the
-   scanners sends no `scanners`: it runs none.
+   scanner state and the signals found, below), and `memory`, the memory
+   scan (the scanner state's `scan` and `memory`, below). An engine older
+   than the scanners sends no `scanners`: it runs none.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -48,7 +49,7 @@ preferences apart from this computer's.
    | Field | Meaning |
    | --- | --- |
    | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs. |
-   | `status` | `streaming` while samples arrive. Otherwise `connecting`, `waiting` (to try again; see `detail`) or `idle` (no interface listened, so the source hung up). |
+   | `status` | `streaming` while samples arrive. Otherwise `connecting`, `waiting` (to try again; see `detail`) or `idle` (no interface listened and no scan ran, so the source hung up). |
    | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`; empty otherwise. |
    | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets), which an interface may change; null for the other sources. |
    | `tuner` | Name of the receiver's tuner once known, or null. |
@@ -101,11 +102,13 @@ preferences apart from this computer's.
    They come in frequency order, then by name, ignoring case: at most 2000.
 
 5. Then the scanner state, a JSON text message, sent again whenever it
-   changes, whichever interface changed it. The engine saves it with the
-   other settings:
+   changes, whichever interface or scan changed it. The engine saves its
+   settings with the other settings, but never whether a scan runs:
 
    ```json
-   {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0]}
+   {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0],
+    "resume_s": 2.0, "scan": "memory", "stopped": null,
+    "memory": {"watched": [3, 7, 12], "state": "listening", "bookmark_id": 7}}
    ```
 
    | Field | Meaning |
@@ -113,6 +116,29 @@ preferences apart from this computer's.
    | `detection` | Whether the engine looks for signals in its spectra. |
    | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 30 dB. |
    | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
+   | `resume_s` | How long the memory scan waits, once the squelch closed, before it watches every bookmark again, from 0 to 8 s. |
+   | `scan` | The scan that runs: `memory`, or null. |
+   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source) or `bookmarks` (no ticked bookmark lies in the span any more); null while a scan runs, when an interface stopped it and before any. |
+   | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not: those in the part of the span that detection searches, in frequency order. |
+   | `memory.state` | The memory scan's state: `watching` the bookmarks, `checking` that the squelch opens on the one just tuned to, `listening` while it stays open, `waiting` for `resume_s` since it closed; null while the memory scan does not run. |
+   | `memory.bookmark_id` | The bookmark tuned to; null while watching, and while the memory scan does not run. |
+
+   The memory scan watches every ticked bookmark of the span at once, in
+   every block of samples: the power in the passband of its mode's filter,
+   once tuned (NFM 10 kHz, AM 8 kHz, USB and LSB 2.7 kHz, CW 500 Hz; USB
+   above the frequency, LSB below it, the others around it), against the
+   local noise there, as detection finds it, which the engine knows 10
+   blocks after the scan starts or the span changes. A bookmark is active
+   when its power would open the
+   squelch, with its settings: 8 dB above that noise with the automatic
+   squelch, `squelch_db` otherwise. While watching, the engine tunes the
+   VFO to the active bookmark furthest above its noise, with that
+   bookmark's mode and the mode's filter width, for every interface. It
+   then checks that the squelch opens there within 0.25 s, or it watches
+   again without that bookmark for 1 s; it listens while the squelch stays
+   open, waits `resume_s` once it closes, listens again if it reopens
+   meanwhile, and then watches again. A scan runs on without any interface,
+   until an interface stops it, or it stops by itself (`stopped`).
 
 6. Then the signals found, a JSON text message, sent again when the list
    changes, at most once a second, and at once when a `scanner` message or
@@ -378,29 +404,35 @@ unknown or invalid, when the `id` is unknown (another interface may have
 removed the bookmark) or when there are already 2000 bookmarks. Otherwise
 every interface receives the bookmarks.
 
-A `scanner` message changes the signal detection, the same for every
-interface:
+A `scanner` message changes the signal detection or the memory scan, the
+same for every interface:
 
 ```json
 {"type": "scanner", "detection": false}
 {"type": "scanner", "threshold_db": 18}
+{"type": "scanner", "resume_s": 4}
 {"type": "scanner", "ignore": 144800000}
 {"type": "scanner", "restore": true}
+{"type": "scanner", "scan": "memory"}
+{"type": "scanner", "scan": null}
 ```
 
 | Field | Value |
 | --- | --- |
 | `detection` | `true` or `false`. Turning detection off empties the list of the signals found. |
 | `threshold_db` | A number from 6 to 30. |
+| `resume_s` | A number from 0 to 8. |
 | `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
 | `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
+| `scan` | `memory` starts the memory scan, unless it runs; null stops the scan that runs, if any. |
 
-`detection` and `threshold_db` may come together; `ignore` and `restore`
-come alone in their message. The engine refuses the whole message, changing
-nothing, when it has no setting, an unknown or invalid one, or a new
-frequency to ignore while 200 are ignored already. Otherwise every
-interface receives the scanner state, and the signals found at once if they
-changed.
+`detection`, `threshold_db` and `resume_s` may come together; `ignore`,
+`restore` and `scan` come alone in their message. The engine refuses the
+whole message, changing nothing, when it has no setting, an unknown or
+invalid one, a new frequency to ignore while 200 are ignored already, or
+the memory scan to start while no ticked bookmark lies in the span
+(`memory.watched` is empty). Otherwise every interface receives the scanner
+state, and the signals found at once if they changed.
 
 A `preferences` message gives the engine this interface's preferences,
 which replace the ones it kept for this computer's interfaces, or for the
@@ -533,10 +565,10 @@ and later.
 
 ## Connection life
 
-- The engine computes frames only while at least one client listens. The
-  `rtl_sdr` and `rtl_tcp` sources connect at the first read and hang up 2 s
-  after the last one; the `rtl_sdr` source starts rtl_tcp before connecting
-  and stops it on hanging up.
+- The engine computes frames only while at least one client listens or a
+  scan runs. The `rtl_sdr` and `rtl_tcp` sources connect at the first read
+  and hang up 2 s after the last one; the `rtl_sdr` source starts rtl_tcp
+  before connecting and stops it on hanging up.
 - A source that waits sends no frames, but the stream stays open: the source
   state says why (`status` and `detail`). This differs from the stream itself
   dropping, which the interface shows as waiting for the engine.
@@ -552,7 +584,8 @@ and later.
   numbers, true or false, texts or null.
 - An interface whose hello does not list `peaks` among its `scanners`, as
   an older engine's, shows that signal detection needs Radiolack to
-  restart, and offers none of its settings.
+  restart, and offers none of its settings; one whose hello does not list
+  `memory` does the same for the memory scan.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -592,7 +625,11 @@ and later.
   `scanner` message, as detection moved from the interface to the engine.
   An older interface ignores messages of unknown types and finds signals
   itself, as before; a newer one learns from the hello whether the engine
-  finds them.
+  finds them. Later that day, as the memory scan moved to the engine too:
+  the hello's `memory` scanner, the scanner state's `resume_s`, `scan`,
+  `stopped` and `memory`, and the `scanner` message's `resume_s` and
+  `scan`. An older interface ignores the fields it does not know and scans
+  the bookmarks itself, as before.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

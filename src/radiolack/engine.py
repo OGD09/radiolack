@@ -2,7 +2,7 @@
 clients.
 
 The engine runs in the server's event loop. It reads blocks of I/Q samples
-from its source only while at least one client listens, and in a worker
+from its source only while at least one client listens or a scan runs, and in a worker
 thread turns each block into a display frame, which carries the VFO's
 channel level and squelch, and into audio (demod.py), which goes only to the
 clients that asked for it. A client that falls behind loses its oldest
@@ -28,6 +28,10 @@ The engine finds the signals in its spectra (scanners.py) while it reads,
 unless detection is turned off: every client receives the list of the
 signals found, at most once a second, and the scanner settings, which are
 shared like the source's and saved with them, ignored frequencies included.
+Any client may start the memory scan, which tunes the VFO to the ticked
+bookmarks of the span as they become active, and keeps the engine reading
+without any client, until a client stops it, tunes by hand or chooses
+another source; whether it runs is never saved.
 
 The engine also keeps the bookmarks, shared by every client like the
 settings, and the interfaces' preferences (preferences.py), which a new
@@ -70,11 +74,12 @@ import numpy as np
 
 from . import __version__
 from .bookmarks import Bookmarks
-from .demod import AUDIO_MODES, MODES, DemodSettings, Demodulator, Meter
+from .demod import AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
-from .scanners import (DEFAULT_THRESHOLD_DB, MAX_IGNORED, Detection, Detector, Signals, checked_frequency,
-                       checked_threshold)
+from .scanners import (DEFAULT_RESUME_S, DEFAULT_THRESHOLD_DB, MAX_IGNORED, Channel, ChannelWatch, Detection,
+                       Detector, MemoryScan, Signals, checked_frequency, checked_resume, checked_threshold,
+                       watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
@@ -87,7 +92,7 @@ CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
 PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
-SCANNER_SETTINGS = ("detection", "threshold_db", "ignore", "restore")
+SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "ignore", "restore", "scan")
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
 
@@ -358,16 +363,25 @@ class Engine:
             raise ValueError("an engine needs a source, or sources to open one")
         self._reopen[self.source.kind] = self.source.reopen
         saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
-        self._adopt()
         self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
-        # Scanners: detection's settings, the signals found and the ignored frequencies.
+        # Scanners: detection's settings, the signals found and the ignored
+        # frequencies; the memory scan's resume time, the channels it watches
+        # and the scan, while one runs.
         self._detector = Detector()         # used by one block at a time, like the demodulator
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
         self._signals = Signals()
+        self._resume_s = DEFAULT_RESUME_S
+        self._watch = ChannelWatch()        # used by one block at a time, like the demodulator
+        self._watched: tuple[Channel, ...] = ()     # the ticked bookmarks of the span
+        self._bands = np.empty((0, 2))      # their passbands, one row each
+        self._memory: MemoryScan | None = None
+        self._stopped: str | None = None    # why the latest scan stopped, unless a client stopped it
         self._restore_scanner(settings.get("scanner"))
         self._peaks_sent_s = -math.inf      # when the clients were last told of the signals
         self._peaks_timer: asyncio.TimerHandle | None = None
+        self._adopt()
+        self._watch_bookmarks()
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
         # Updates: whether to check at start, what the latest check found, and the check running.
         self._updates = updates
@@ -403,7 +417,7 @@ class Engine:
 
     def unsubscribe(self, subscription: Subscription) -> None:
         self._clients.discard(subscription)
-        if not self._clients and not self._closed:
+        if not self._clients and self._memory is None and not self._closed:
             self._wanted.clear()
 
     def state(self, remote: bool = False) -> dict[str, Any]:
@@ -421,7 +435,8 @@ class Engine:
         """Change settings: ``kind`` switches to another kind of source, and
         comes alone; ``dc_removal`` is the engine's own; the others go to the
         source. Raises ValueError, changing nothing, when one is refused.
-        Every client then receives the new state."""
+        Every client then receives the new state. A new centre frequency or
+        sample rate stops a scan."""
         if "kind" in changes:
             if len(changes) > 1:
                 raise ValueError("the kind of source changes on its own, without other settings")
@@ -432,7 +447,10 @@ class Engine:
             raise ValueError("DC removal must be true or false")
         source_changes = {name: value for name, value in changes.items() if name != "dc_removal"}
         if source_changes:
+            span = self._span()
             self.source.configure(source_changes)
+            if self._span() != span:
+                self._stop_scan("tuned")
         self._dc_removal = dc_removal
         self._source_changed()
 
@@ -448,11 +466,14 @@ class Engine:
         when one is refused; otherwise every client receives the new
         settings. ``change_id`` acknowledges the change to ``subscription``,
         the client that asked for it, which receives the settings in either
-        case."""
+        case. Tuning the VFO stops a scan."""
         if subscription is not None and change_id is not None:
             subscription.acknowledged = change_id
             subscription.changed("demod")
-        self._demod = self._demod.changed(changes)
+        demod = self._demod.changed(changes)
+        if demod.frequency_hz != self._demod.frequency_hz:
+            self._stop_scan("tuned")
+        self._demod = demod
         self._demod_changed()
 
     def set_audio(self, subscription: Subscription, on: bool) -> None:
@@ -471,11 +492,17 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("bookmarks")
         self._settings_changed()
+        self._watch_bookmarks()
 
     def scanner_state(self) -> dict[str, Any]:
         """The scanner state message (docs/design/protocol.md)."""
+        memory = self._memory
         return {"type": "scanner", "detection": self._detection, "threshold_db": self._threshold_db,
-                "ignored_hz": self._signals.ignored}
+                "ignored_hz": self._signals.ignored, "resume_s": self._resume_s,
+                "scan": None if memory is None else "memory", "stopped": self._stopped,
+                "memory": {"watched": [channel.bookmark_id for channel in self._watched],
+                           "state": None if memory is None else memory.state,
+                           "bookmark_id": None if memory is None else memory.bookmark_id}}
 
     def peaks_state(self) -> dict[str, Any]:
         """The peaks message: the signals found, as they stand now."""
@@ -483,34 +510,38 @@ class Engine:
 
     def configure_scanner(self, changes: Mapping[str, object]) -> None:
         """Change detection's settings, ``detection`` (true or false) and
-        ``threshold_db``, or, each alone in its message, ``ignore`` a
-        frequency or ``restore`` (true) every ignored one. Raises ValueError,
-        changing nothing, when one is refused; otherwise every client receives
-        the scanner state, and the signals found once they changed."""
+        ``threshold_db``, and the memory scan's ``resume_s``; or, each alone
+        in its message, ``ignore`` a frequency, ``restore`` (true) every
+        ignored one, or start (``scan``: "memory") or stop (``scan``: None)
+        the memory scan. Raises ValueError, changing nothing, when one is
+        refused; otherwise every client receives the scanner state, and the
+        signals found once they changed."""
         if not changes:
             raise ValueError("a scanner message needs a setting")
         for name in changes:
             if name not in SCANNER_SETTINGS:
                 raise ValueError(f"unknown scanner setting: {str(name)[:40]}")
-        if ("ignore" in changes or "restore" in changes) and len(changes) > 1:
-            raise ValueError("ignore and restore come alone in their message")
+        if any(name in changes for name in ("ignore", "restore", "scan")) and len(changes) > 1:
+            raise ValueError("ignore, restore and scan come alone in their message")
         if "ignore" in changes:
             self._signals.ignore(checked_frequency(changes["ignore"], "an ignored frequency"))
         elif "restore" in changes:
             if changes["restore"] is not True:
                 raise ValueError("restore takes true")
             self._signals.restore()
+        elif "scan" in changes:
+            self._start_scan(changes["scan"])
         else:
             detection = changes.get("detection", self._detection)
             if not isinstance(detection, bool):
                 raise ValueError("detection must be turned on or off: true or false")
             threshold_db = (checked_threshold(changes["threshold_db"]) if "threshold_db" in changes
                             else self._threshold_db)
-            self._detection, self._threshold_db = detection, threshold_db
+            resume_s = checked_resume(changes["resume_s"]) if "resume_s" in changes else self._resume_s
+            self._detection, self._threshold_db, self._resume_s = detection, threshold_db, resume_s
             if not detection:
                 self._signals.clear()
-        for subscription in self._clients:
-            subscription.changed("scanner")
+        self._scanner_changed()
         self._settings_changed()
         if self._signals.changed(time.monotonic()):
             self._peaks_changed(at_once=True)
@@ -647,16 +678,21 @@ class Engine:
                 if capture != self._capture:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
+                    self._watch_bookmarks()     # the span's bookmarks, now that its samples come
                 audio = any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
-                power, codes, meter, pcm, detections = await asyncio.to_thread(
-                    _process_block, self.analyzer, self._demodulator, self._detector, samples, *capture,
-                    self._dc_removal, self._demod, audio, threshold_db)
+                channels = self._watched if self._memory is not None else None
+                power, codes, meter, pcm, detections, levels = await asyncio.to_thread(
+                    _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
+                    *capture, self._dc_removal, self._demod, audio, threshold_db,
+                    None if channels is None else self._bands)
                 self._publish(capture, power, codes, meter, pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
                 if detections is not None and self._detection and source is self.source:
                     self._signals.update(detections, time.monotonic())
                     self._check_peaks()
+                if channels is not None and source is self.source:
+                    self._step_scan(channels, levels, meter.open)
         except Exception:
             log.exception("the engine stopped")
             self.close()
@@ -665,6 +701,7 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("source")
         self._settings_changed()
+        self._watch_bookmarks()
 
     def _demod_changed(self) -> None:
         for subscription in self._clients:
@@ -710,6 +747,84 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("peaks")
 
+    def _scanner_changed(self) -> None:
+        for subscription in self._clients:
+            subscription.changed("scanner")
+
+    def _start_scan(self, scan: object) -> None:
+        """Start the memory scan ("memory"), unless it runs, or stop the scan
+        that runs (None). Raises ValueError, changing nothing, for another
+        scan, or when no ticked bookmark lies in the span."""
+        if scan is None:
+            self._stop_scan(None)
+        elif scan != "memory":
+            raise ValueError('a scan is "memory", or null to stop it')
+        elif self._memory is None:
+            if not self._watched:
+                raise ValueError("no ticked bookmark lies in the receiver's span")
+            self._memory = MemoryScan()
+            self._stopped = None
+            self._wanted.set()      # the scan goes on without any client
+
+    def _stop_scan(self, reason: str | None) -> None:
+        """Stop the scan that runs, if one does, for ``reason``: "tuned",
+        "source" or "bookmarks", or None when a client asked. Without any
+        client, the engine stops reading."""
+        if self._memory is None:
+            return
+        self._memory = None
+        self._stopped = reason
+        self._scanner_changed()
+        if not self._clients and not self._closed:
+            self._wanted.clear()
+
+    def _span(self) -> tuple[float, float]:
+        """The source's centre frequency and sample rate, in Hz."""
+        return self.source.centre_hz, self.source.sample_rate_hz
+
+    def _watch_bookmarks(self) -> None:
+        """Find the ticked bookmarks of the span: the clients learn when they
+        change, and a memory scan left without any stops."""
+        watched = watched_channels(self._bookmarks.ticked(), *self._span())
+        if watched == self._watched:
+            return
+        self._watched = watched
+        self._bands = np.array([(channel.low_hz, channel.high_hz) for channel in watched]).reshape(-1, 2)
+        if self._memory is not None:
+            if watched:
+                self._memory.keep(channel.bookmark_id for channel in watched)
+            else:
+                self._stop_scan("bookmarks")
+        self._scanner_changed()
+
+    def _step_scan(self, channels: tuple[Channel, ...], levels: tuple[np.ndarray, np.ndarray] | None,
+                   squelch_open: bool) -> None:
+        """Move the memory scan on with a block: ``levels``, the power and
+        the noise of ``channels`` in it, tell which channels would open the
+        squelch, with its settings; ``squelch_open``, whether it was open at
+        the block's end. Tuned to a channel, the VFO takes its bookmark's
+        mode and that mode's filter width."""
+        scan = self._memory
+        if scan is None or channels is not self._watched:
+            return      # stopped, or other channels meanwhile: the next block tells
+        active = None
+        if levels is not None:
+            power_db, noise_db = levels
+            margins = power_db - noise_db
+            demod = self._demod
+            opens = margins >= SQUELCH_MARGIN_DB if demod.squelch_auto else power_db >= demod.squelch_db
+            active = [(channel.bookmark_id, float(margin))
+                      for channel, margin, on in zip(channels, margins, opens) if on]
+        before = (scan.state, scan.bookmark_id)
+        target = scan.step(time.monotonic(), active, squelch_open, self._resume_s)
+        if target is not None:
+            channel = next(channel for channel in channels if channel.bookmark_id == target)
+            self._demod = self._demod.changed({"frequency_hz": channel.frequency_hz, "mode": channel.mode,
+                                               "bandwidth_hz": MODE_BANDWIDTHS_HZ[channel.mode]})
+            self._demod_changed()
+        if (scan.state, scan.bookmark_id) != before:
+            self._scanner_changed()
+
     async def _check_updates(self, updates: UpdateChecker) -> None:
         try:
             found = await updates.check()
@@ -736,6 +851,7 @@ class Engine:
             except ValueError as error:
                 log.warning("the saved %s receiver is not used: %s", kind, error)
                 new = sources.open({"kind": kind})
+            self._stop_scan("source")
             old = self.source
             self._receivers[old.settings_key] = self._receiver_settings()
             old.on_change = None
@@ -822,6 +938,11 @@ class Engine:
                 self._threshold_db = checked_threshold(saved["threshold_db"])
             except ValueError as error:
                 log.warning("the saved setting threshold_db is not used: %s", error)
+        if "resume_s" in saved:
+            try:
+                self._resume_s = checked_resume(saved["resume_s"])
+            except ValueError as error:
+                log.warning("the saved setting resume_s is not used: %s", error)
         ignored = saved.get("ignored_hz", [])
         if not isinstance(ignored, list):
             log.warning("the saved ignored frequencies are not used")
@@ -841,7 +962,7 @@ class Engine:
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
         settings["scanner"] = {"detection": self._detection, "threshold_db": self._threshold_db,
-                               "ignored_hz": self._signals.ignored}
+                               "resume_s": self._resume_s, "ignored_hz": self._signals.ignored}
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
         contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
@@ -961,13 +1082,17 @@ def _saved_check_at_start(saved: object) -> bool:
 
 
 def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detector: Detector,
-                   samples: np.ndarray, centre_hz: float, rate_hz: float, dc_removal: bool,
-                   settings: DemodSettings, audio: bool, threshold_db: float | None,
-                   ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None]:
+                   watch: ChannelWatch, samples: np.ndarray, centre_hz: float, rate_hz: float,
+                   dc_removal: bool, settings: DemodSettings, audio: bool, threshold_db: float | None,
+                   bands: np.ndarray | None,
+                   ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
+                              tuple[np.ndarray, np.ndarray] | None]:
     """The bin powers, the display codes, the channel meter, with ``audio``
-    the audio, and once ``detector`` has averaged enough blocks, the signals
-    found, of a block of samples, worked out in a worker thread. Detection
-    is off without ``threshold_db``."""
+    the audio, once ``detector`` has averaged enough blocks the signals
+    found, and once ``watch`` knows the noise the power and the noise of the
+    memory scan's channels, of a block of samples, worked out in a worker
+    thread. Detection is off without ``threshold_db``, and the memory scan's
+    channels are not watched without ``bands``, their passbands."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
@@ -979,4 +1104,9 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
         detections = None
     else:
         detections = detector.add(power, centre_hz, rate_hz, threshold_db)
-    return power, analyzer.codes(power), meter, pcm, detections
+    if bands is None:
+        watch.reset()
+        levels = None
+    else:
+        levels = watch.levels(power, centre_hz, rate_hz, bands, analyzer.enbw)
+    return power, analyzer.codes(power), meter, pcm, detections, levels

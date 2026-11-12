@@ -26,6 +26,9 @@ from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
 STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update", "remote")
+# The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
+SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
+                 "scan": None, "stopped": None, "memory": {"watched": [], "state": None, "bookmark_id": None}}
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -191,7 +194,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks"]})
+                             {"type": "hello", "protocol": 6, "remote": False, "scanners": ["peaks", "memory"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -200,7 +203,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": []})
             self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": []})
+                             SCANNER_STATE)
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "preferences", "values": {}})
             # Without a settings folder, nothing is saved.
@@ -274,12 +277,30 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 await self.start(ws)
             await sender.send_json({"type": "scanner", "ignore": 145_500_000})
             for ws in (sender, other):
-                self.assertEqual(await next_text(ws), {"type": "scanner", "detection": True, "threshold_db": 12.0,
-                                                       "ignored_hz": [145_500_000.0]})
+                self.assertEqual(await next_text(ws), {**SCANNER_STATE, "ignored_hz": [145_500_000.0]})
             await sender.send_json({"type": "scanner", "detection": "off"})
             self.assertEqual(await next_text(sender), {
                 "type": "error", "command": "scanner", "message": "detection must be turned on or off: true or false"})
             await self.assert_no_text(other)
+
+    async def test_any_client_starts_and_stops_the_memory_scan(self):
+        async with self.connect(self.origin) as sender, self.connect(self.origin) as other:
+            for ws in (sender, other):
+                await self.start(ws)
+            await sender.send_json({"type": "bookmark", "action": "add", "frequency_hz": FAKE_CENTRE_HZ + 50_000,
+                                    "name": "Quiet", "mode": "NFM", "scan": True})
+            for ws in (sender, other):
+                [bookmark] = (await next_text(ws))["bookmarks"]
+                self.assertEqual(await next_text(ws), {
+                    **SCANNER_STATE, "memory": {"watched": [bookmark["id"]], "state": None, "bookmark_id": None}})
+            await sender.send_json({"type": "scanner", "scan": "memory"})
+            for ws in (sender, other):
+                state = await next_text(ws)
+                self.assertEqual((state["scan"], state["memory"]["state"]), ("memory", "watching"))
+            await other.send_json({"type": "scanner", "scan": None})
+            for ws in (sender, other):
+                state = await next_text(ws)
+                self.assertEqual((state["scan"], state["stopped"], state["memory"]["state"]), (None, None, None))
 
     async def test_preferences_are_kept_for_the_next_interfaces(self):
         values = {"palette": "gray", "volume": 0.5, "showPlan": False, "top": None}
@@ -349,7 +370,11 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "scanner", "threshold_db": 40}': (
                 "scanner", "the threshold must be a number of dB from 6 to 30"),
             '{"type": "scanner", "ignore": 145e6, "restore": true}': (
-                "scanner", "ignore and restore come alone in their message"),
+                "scanner", "ignore, restore and scan come alone in their message"),
+            '{"type": "scanner", "scan": "sweep"}': ("scanner", 'a scan is "memory", or null to stop it'),
+            '{"type": "scanner", "scan": "memory"}': ("scanner", "no ticked bookmark lies in the receiver's span"),
+            '{"type": "scanner", "resume_s": 9}': (
+                "scanner", "the resume time must be a number of seconds from 0 to 8"),
             '{"type": "update", "install": true}': ("update", "unknown update setting: install"),
             '{"type": "update", "check": 1}': ("update", "check and check_at_start must be true or false"),
             '{"type": "update", "check_at_start": "no"}': (

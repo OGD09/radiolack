@@ -156,7 +156,8 @@ and sends its changes, over a
 WebSocket on the same address
 ([docs/design/protocol.md](docs/design/protocol.md)), which the server
 accepts only from the interface's own origin. The engine computes nothing
-while no interface is connected, and the interface closes its stream while
+while no interface is connected and no scan runs, and the interface closes
+its stream while
 its page is hidden, in a background browser tab for instance, unless it
 plays audio.
 
@@ -183,7 +184,8 @@ radiolack --rtl-sdr
 ```
 
 - Radiolack starts rtl_tcp, on 127.0.0.1 and a free port, when an interface
-  opens, and stops it once no interface is open, or when Radiolack stops:
+  opens, and stops it once no interface is open and no scan runs, or when
+  Radiolack stops:
   the receiver then stays free for other programs, such as Gqrx. On Linux,
   should Radiolack end without stopping rtl_tcp, killed for instance, the
   system stops it (through setpriv, from util-linux).
@@ -259,8 +261,9 @@ With either option:
   settings: after half a second at first, then waiting longer each time, up
   to 5 s between attempts. rtl_tcp serves one program at a time: while
   another one uses it, Radiolack waits.
-- While no interface is open, Radiolack hangs up, which leaves rtl_tcp free
-  for another program, and connects again when an interface opens. The
+- While no interface is open and no scan runs, Radiolack hangs up, which
+  leaves rtl_tcp free for another program, and connects again when an
+  interface opens. The
   first samples then take a moment, a little longer with `--rtl-sdr`, which
   starts rtl_tcp again.
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
@@ -325,9 +328,27 @@ for every interface, a paired device's included, and kept for the next
 start. "Mark on the spectrum" is each interface's own: it marks the signals
 found within the last 1.5 s on the spectrum.
 
-The Bookmarks tab's memory scan runs in the interface that starts it, and
-tunes the VFO from one ticked bookmark to the next. The sweep is not
-available yet.
+The Bookmarks tab's memory scan runs in the engine, the same for every
+interface. It watches every ticked bookmark of the receiver's span at once,
+in the part that detection searches; the list marks the ticked bookmarks
+outside the span, which it leaves out. A bookmark is active when the power
+in its mode's filter would open the squelch, with the squelch's settings:
+8 dB above the noise around it with the automatic squelch. The scan tunes
+the VFO to the active bookmark furthest above its noise, with the
+bookmark's mode and that mode's usual filter width, and stays while the
+squelch opens within a quarter of a second and stays open. Once the squelch
+closes, it waits the resume time (2 s by default, from 0 to 8 s), then
+watches every bookmark again.
+
+Any interface starts and stops the memory scan, a paired device's included,
+and every interface shows where it stands; their status lines add "memory
+scan" while it runs. It goes on with no interface open, keeping the
+receiver open, until an interface stops it. Tuning by hand from any
+interface (the VFO, the centre frequency or the sample rate), choosing
+another receiver, or no ticked bookmark left in the span stops it. Whether
+it runs is never saved, so none runs at start; the resume time is the same
+for every interface and kept for the next start. The sweep is not available
+yet.
 
 ## Settings and bookmarks
 
@@ -339,12 +360,12 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start,
-  and the scanners' settings: whether detection is on, its threshold and the
-  ignored frequencies ([Scanners](#scanners)). It also holds the own
+  and the scanners' settings: whether detection is on, its threshold, the
+  ignored frequencies and the memory scan's resume time
+  ([Scanners](#scanners)). It also holds the own
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
-  mode, whether the spectrum marks the signals found and the memory scan's
-  timing. Last, it records whether Radiolack checks for updates at start
+  mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
   ([Updates](#updates)).
 - `bookmarks.json` holds the bookmarks.
 - `remote.json` holds what remote access keeps: its port, its access code,
@@ -365,7 +386,7 @@ a few seconds later at most, and when Radiolack stops.
 
 The Bands panel adds a bookmark at the VFO, renames or removes one, and
 tunes to one with its mode; the spectrum's context menu adds one anywhere.
-The memory scan of the Scanners panel stops on the bookmarks ticked there.
+The memory scan of the Scanners panel watches the bookmarks ticked there.
 
 Settings > Storage says where the files are and what went wrong with them;
 the status line adds "changes not saved" while some changes do not reach
@@ -427,7 +448,9 @@ current addresses, each time remote access turns on.
 
 A paired device gets the interface, the spectrum and the audio, and shares
 the receiver with every other interface: its changes to the VFO, the mode,
-the receiver's settings, the source and the bookmarks reach everyone. It
+the receiver's settings, the source, the bookmarks and the scanners reach
+everyone. A memory scan started from a phone goes on with the phone locked
+([Scanners](#scanners)). It
 cannot change what belongs to this computer, remote access itself, the update
 check and the rtl_tcp server's address, and does not see where the settings
 are saved.
@@ -575,7 +598,8 @@ The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
-another, the bookmarks and the saved interface settings. They
+another, the bookmarks, the signals found, the memory scan and the saved
+interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -799,7 +823,7 @@ src/radiolack/
                 interfaces, sends audio to those that ask, and saves the
                 settings
   scanners.py   detection: the signals in the receiver's span, their list
-                and the ignored frequencies
+                and the ignored frequencies; the memory scan
   remote.py     remote access: access code, paired devices and their
                 interface settings, local authority and certificates,
                 addresses to listen on
