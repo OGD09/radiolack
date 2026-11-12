@@ -52,6 +52,11 @@ export class AudioOutput {
     if (this.#state !== 'off') return;
     this.#set('starting');
     try {
+      // Safari's "playback" audio session, which iOS plays with the ringer
+      // switch on silent; an iPhone also kept playing with its screen locked.
+      // TypeScript's DOM types lack this API.
+      const session = /** @type {Navigator & { audioSession?: { type: string } }} */ (navigator).audioSession;
+      if (session) session.type = 'playback';
       const context = new AudioContext();
       this.#context = context;
       await context.audioWorklet.addModule(WORKLET_URL);

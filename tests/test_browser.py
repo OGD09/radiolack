@@ -239,6 +239,27 @@ class BrowserTest(unittest.TestCase):
                     self.assertGreater(page.evaluate("() => window.resumes"), before, event)
                 self.assertEqual(errors, [])
 
+    def test_the_audio_asks_safari_for_its_playback_session(self):
+        # Safari plays the "playback" session with the ringer switch on
+        # silent. The other browsers lack the API, which the test stands in
+        # for, and the audio stays suspended, held until a gesture.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser):
+                context = self.browsers[browser].new_context()
+                self.addCleanup(context.close)
+                context.add_init_script(   # before the interface's scripts
+                    "Object.defineProperty(Navigator.prototype, 'audioSession',"
+                    " { value: { type: 'auto' }, configurable: true });"
+                    " AudioContext.prototype.resume = () => Promise.resolve();")
+                errors: list[str] = []
+                page = self.watched_page(context, browser, errors)
+                page.goto(url)
+                expect(page.locator("#dm-audio-note")).to_have_text(
+                    "Audio starts with a click, a tap or a key press on the page.")
+                self.assertEqual(page.evaluate("() => navigator.audioSession.type"), "playback")
+                self.assertEqual(errors, [])
+
     def test_bookmarks_are_shared(self):
         for browser in BROWSERS:
             url = self.serve()      # no bookmark yet

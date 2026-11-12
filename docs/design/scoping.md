@@ -52,6 +52,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-10 | APT repository: the owner signs it on their computer, with the signing subkey of an Ed25519 key whose primary key stays offline, in the owner's password manager, with its revocation certificate; another computer of the owner's may get a signing subkey of its own later. One suite, `stable`, and one component, `main`, with architecture-independent packages; the indexes also stay under their checksum (Acquire-By-Hash), so that a web cache never pairs an old index with a new Release file. `packaging/apt_repository.py` signs only what the key signed before and the packages it is given, once gpgv has checked the repository's signature: a published version never changes. No `Valid-Until`: apt would refuse the repository whenever the owner did not sign it again in time. Without it, someone who could change the published site could serve an old index, which apt would accept; HTTPS keeps others on the network from doing it. apt refuses a signature by an expired key: the signing subkey's expiry is extended, and a release carries the new public key, well before it expires (the tests fail a year before). The package adds the repository's source and key as configuration files in /etc/apt, the key in /etc/apt/keyrings rather than /usr/share/keyrings: a removed but not purged package keeps its source, and apt update would fail without the key. GitHub Pages serves the `gh-pages` branch, which `packaging/publish_apt.py` updates only with a release that its tag rebuilds, byte for byte, on the owner's computer, and pushes only once the owner agrees. |
 | 2026-11-10 | Updates, first part: the owner chose the alert before the button. Radiolack says when a newer version is out and sends the user to the system's software updates, which install it from the APT repository; the button that installs it, with the administrator's password, comes later if still wanted. The check needs no privilege: it runs apt as the user, with Radiolack's APT source alone and none of the system's apt configuration (other repositories, proxies, hooks), in a temporary folder, so that it never touches the system's package lists, and compares the repository's latest version with the installed package's. Only a Radiolack that runs from the Debian package checks. A check that fails stays in Settings: the notice shows only a newer version, or one installed since the start, which runs once Radiolack restarts. |
 | 2026-11-11 | Remote access, answering spike 3: Radiolack makes its own local certificate authority, which each device installs once, after checking its fingerprint against Settings. Safari's WebSocket refuses a certificate that the device does not trust, even after the user accepts the warning, so plain self-signed certificates would not do. The root's key signs one intermediate, which name constraints limit to private IPv4 addresses and to names ending in `.local`, `.home.arpa` and `.internal`, then is destroyed: even stolen, the authority can vouch for no Internet site. The intermediate signs a new server certificate at each turn-on. Set aside: Tailscale certificates (a third-party account, an app on each device, names published in Certificate Transparency logs, the VPN even at home) and a domain with Let's Encrypt (a yearly cost, DNS credentials on the computer, routers that block private DNS answers); the user's own certificate may come later. Remote access is off at each start, and only this computer's interfaces turn it on; it listens on port 8443 by default, on this computer's private IPv4 addresses only, for peers on those networks, and never asks for a port forward or touches the firewall. A device pairs with an 8-character code (40 bits), answered after a second when wrong; 10 wrong codes block it until a new code is made, which signs every device out. A paired device keeps a `__Host-` session cookie, of which the computer keeps only a hash, until it is forgotten in Settings or unused for 90 days. Paired devices control the radio, sources and bookmarks included, but not remote access, the update check, the rtl_tcp server's address or where the settings are saved. `remote.json` keeps the port, the code, the paired devices and the authority, which replaces "Remote access is never saved" (2026-11-09): whether it is on is never saved. A key for the other accounts of a shared computer, which reach 127.0.0.1 as it is, waits for v4. Order: remote access, then listening on the iPhone (touch gesture, audio session, wake lock), then interface settings per device. |
+| 2026-11-12 | v1 goes on with remote use from outside the home, then interface settings per device; this replaces the order of 2026-11-11. Listening on the iPhone ends without a wake lock: with Safari's playback audio session, the iPhone keeps playing with its screen locked (spike 2). Away from home, Radiolack runs on a computer next to the receiver, without a window, and devices reach it through the user's VPN: rtl_tcp's samples (16 Mbit/s at 1.024 MS/s) are too much for most links. A device's stream carries 2.2 Mbit/s: 2 Mbit/s of spectrum (30 frames per second) and 0.2 Mbit/s of PCM audio, so remote devices first get a lighter spectrum, then Opus audio. How remote access turns on without a window is an open question. |
 
 ## Scope
 
@@ -186,11 +187,13 @@ flowchart LR
 - v1: PCM on the local network (192 kbit/s for 12 kHz mono), Opus at about
   32 kbit/s for slower links, decoded by WebCodecs or by a WebAssembly decoder
   where WebCodecs lacks Opus.
-- iPhone with the screen locked: Safari interrupts Web Audio when the screen
-  locks or the page goes to the background. Spike 2 compares Safari's audio
-  session API (`navigator.audioSession`) with a plain audio stream played by an
+- iPhone with the screen locked: Safari may interrupt Web Audio when the
+  screen locks or the page goes to the background. With Safari's "playback"
+  audio session (`navigator.audioSession`), which iOS also plays with the
+  ringer switch on silent, the owner's iPhone kept playing with the screen
+  locked (spike 2, 2026-11-12), so a plain audio stream played by an
   `<audio>` element, which iOS keeps playing at the cost of a few seconds of
-  delay.
+  delay, is not needed.
 
 ### Privacy
 
@@ -245,8 +248,11 @@ there gets a fix release.
 - Remote clients: the same UI, touch input, shared receiver, a volume per
   device; PCM audio on the local network, Opus for slower links. The engine
   keeps each device's interface settings apart (v0 keeps one set).
-- iPhone: listening with the screen on; listening with the screen locked
-  according to spike 2.
+- iPhone: listening with the screen on and with the screen locked (spike 2:
+  Safari's playback audio session).
+- Use from outside the home (decided on 2026-11-12): Radiolack runs next to
+  the receiver without a window, devices reach it through the user's VPN,
+  and remote devices get a lighter spectrum.
 
 Done when, from the owner's iPhone on the home Wi-Fi, the owner can tune and
 listen with less than half a second of delay, and no device connects without
@@ -267,7 +273,7 @@ the code.
 | # | Question | Why it matters | When |
 | --- | --- | --- | --- |
 | 1 | Does the native window (WebKitGTK) draw a full-screen WebGL2 waterfall smoothly and play AudioWorklet audio at a low CPU cost on the owner's laptop? | It chooses the desktop shell. | Done: yes, within the limits below. |
-| 2 | How does an iPhone keep listening with the screen locked? | The owner's phone; Safari interrupts Web Audio in the background. | Start of v1 |
+| 2 | How does an iPhone keep listening with the screen locked? | The owner's phone; Safari interrupts Web Audio in the background. | Answered on 2026-11-12: with Safari's playback audio session, the owner's iPhone keeps playing with the screen locked. |
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Decided on 2026-11-11: a local authority limited by name constraints (see Decisions); to check on the owner's iPhone. |
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | v2 |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
@@ -340,6 +346,9 @@ These costs wait for v4:
 2. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
    WFM demodulator, but the scope lists NFM, AM, USB, LSB and CW only. Add WFM
    to v0, or later?
+3. Remote access without a window: only this computer's interfaces turn it
+   on (2026-11-11), but away from home Radiolack runs next to the receiver
+   without a window (2026-11-12). How does it turn on there?
 
 ## Repository plan
 
@@ -608,8 +617,11 @@ These costs wait for v4:
   and audio work by the computer's address. By its `.local` name, which
   Avahi also gives the computer's IPv6 address, where remote access does
   not listen, Safari opened nothing, so Settings gives the addresses first.
-- Next steps: v1 continues with listening on the iPhone, then interface
-  settings per device; the owner's choice about the button that installs an
-  update is still open.
+  The audio asks Safari for its "playback" session, which iOS plays with
+  the ringer switch on silent; with it, the iPhone kept playing with its
+  screen locked on 2026-11-12 (spike 2).
+- Next steps: v1 continues with remote use from outside the home (see
+  Decisions, 2026-11-12), then interface settings per device; the owner's
+  choice about the button that installs an update is still open.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
