@@ -12,9 +12,9 @@ the history under the tag `v0.1.0`.
 
 ## Layout
 
-- `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--rtl-sdr`,
-  `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop in a
-  background thread; interface files and the `/stream` WebSocket; remote
+- `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
+  `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop
+  in a background thread; interface files and the `/stream` WebSocket; remote
   access's HTTPS listener, a second application with a runner of its own,
   in the same loop), `remote` (remote access: the local certificate
   authority, with `cryptography`, the access code, paired devices and their
@@ -60,8 +60,9 @@ the history under the tag `v0.1.0`.
   checks that the window's toolkit loads, `--check-updates` that the update
   check reaches the APT repository, `--remote` that remote access turns on
   on the computer's private addresses, refuses plain HTTP, other hosts and
-  unpaired devices, pairs one and turns off; run it only where its network
-  is the check's own),
+  unpaired devices, pairs one and turns off, then that Radiolack started
+  with `--remote` prints addresses, a fingerprint and a code that work;
+  run it only where its network is the check's own),
   `release.py` (tags a release on `main` and starts the next development
   version), `apt_repository.py` (builds and signs the APT repository: it
   checks the repository's signature with gpgv, then signs only what the key
@@ -183,9 +184,11 @@ the history under the tag `v0.1.0`.
   set, as in CI.
 - The server listens on 127.0.0.1 only. Only remote access listens on other
   interfaces: off at each start, HTTPS and access code, and turned on only by
-  this computer's interface, in Settings. Never turn it on implicitly, and
-  never on the owner's network for a check: the tests make it listen on
-  127.0.0.1 (`remote_addresses`), and `smoke_test.py --remote` runs in CI's
+  this computer: its interface, in Settings, or the `--remote` option given
+  at start. Never turn it on implicitly (no other option, setting or saved
+  state turns it on), and never on the owner's network for a check,
+  `radiolack --remote` included: the tests make it listen on 127.0.0.1
+  (`remote_addresses`), and `smoke_test.py --remote` runs in CI's
   containers or in a network namespace of its own (`unshare -rn` with a
   dummy interface).
 - `data/` holds the airband explorer's personal data: apart from its README,

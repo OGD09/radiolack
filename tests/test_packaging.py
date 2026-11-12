@@ -113,7 +113,7 @@ class DocumentationTest(unittest.TestCase):
         self.assertNotIn("@", page)
         self.assertTrue(page.isascii())
         options = {option for action in cli.build_parser()._actions for option in action.option_strings}
-        self.assertTrue({"--help", "--version", "--ui", "--port", "--rtl-sdr", "--rtl-tcp"} <= options)
+        self.assertTrue({"--help", "--version", "--ui", "--port", "--remote", "--rtl-sdr", "--rtl-tcp"} <= options)
         documented = {name.replace("\\-", "-") for name in re.findall(r"\\fB((?:\\-)+[a-z](?:[a-z]|\\-)*)\\fR", page)}
         self.assertEqual(documented, options)
 

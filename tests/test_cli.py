@@ -59,6 +59,13 @@ def own_settings():
         yield Path(config) / "radiolack" / "settings.json"
 
 
+def ephemeral_port() -> int:
+    """A free port of 127.0.0.1, never a fixed one such as remote access's default."""
+    with socket.socket() as probe:
+        probe.bind((LOOPBACK_HOST, 0))
+        return probe.getsockname()[1]
+
+
 @contextlib.contextmanager
 def silent_rtl_tcp():
     """A listening socket that never accepts, in place of rtl_tcp: yields it
@@ -80,7 +87,23 @@ class ParserTest(unittest.TestCase):
 
     def test_defaults(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual((args.ui, args.port, args.rtl_sdr, args.rtl_tcp), ("window", 0, None, None))
+        self.assertEqual((args.ui, args.port, args.remote, args.rtl_sdr, args.rtl_tcp),
+                         ("window", 0, None, None, None))
+
+    def test_remote_ports(self):
+        for argv, port in ((["--remote"], 0), (["--remote", "--ui", "none"], 0),     # 0: the port used last
+                           (["--remote", "1024"], 1024), (["--remote", "9443"], 9443),
+                           (["--remote", "65535"], 65535)):
+            with self.subTest(argv=argv):
+                self.assertEqual(cli.build_parser().parse_args(argv).remote, port)
+
+    def test_rejects_invalid_remote_ports(self):
+        # Lower ports need administrator rights.
+        for value in ("0", "80", "1023", "65536", "https"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(["--remote", value])
+                self.assertEqual(raised.exception.code, 2)
 
     def test_rtl_sdr_devices(self):
         for argv, device in ((["--rtl-sdr"], "0"), (["--rtl-sdr", "1"], "1"),
@@ -124,6 +147,61 @@ class ParserTest(unittest.TestCase):
             cli.main(["--version"])
         self.assertEqual(raised.exception.code, 0)
         self.assertIn(radiolack.__version__, out.getvalue())
+
+
+class RemoteOptionTest(unittest.TestCase):
+    """--remote, with 127.0.0.1 in place of this computer's local network
+    addresses: no test listens on the owner's network."""
+
+    def setUp(self):
+        addresses = mock.patch.object(cli, "private_addresses", lambda: [LOOPBACK_HOST])
+        addresses.start()
+        self.addCleanup(addresses.stop)
+
+    def test_turns_remote_access_on_and_prints_what_a_device_needs(self):
+        port = ephemeral_port()
+        with own_settings():
+            runs = [run_main("--ui", "none", "--remote", str(port)),
+                    run_main("--ui", "none", "--remote")]      # the port used last
+        kept = []
+        for code, out, err in runs:
+            self.assertEqual((code, err), (0, ""))
+            lines = out.splitlines()
+            self.assertTrue(lines[0].startswith("Remote access is on: open one of these addresses"), lines[0])
+            self.assertIn(f"  https://{LOOPBACK_HOST}:{port}/", lines)
+            self.assertRegex(out, r"(?m)^Certificate fingerprint \(SHA-256\): [0-9A-F]{2}( [0-9A-F]{2}){31}$")
+            self.assertRegex(out, r"(?m)^Access code: [2-9A-Z]{4}-[2-9A-Z]{4}$")
+            self.assertRegex(lines[-1], URL_LINE)
+            kept.append([line for line in lines if line.startswith(("Certificate fingerprint", "Access code"))])
+        # The same authority and code at the next start: paired devices stay paired.
+        self.assertEqual(kept[0], kept[1])
+
+    def test_exits_with_an_error_without_a_local_network_address(self):
+        with own_settings(), mock.patch.object(cli, "private_addresses", list):
+            code, out, err = run_main("--ui", "none", "--remote", str(ephemeral_port()))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("radiolack: remote access cannot turn on: This computer has no address on a local network",
+                      err)
+
+    def test_exits_with_an_error_on_a_busy_port(self):
+        with socket.socket() as busy, own_settings():
+            busy.bind((LOOPBACK_HOST, 0))
+            busy.listen()
+            port = busy.getsockname()[1]
+            code, out, err = run_main("--ui", "none", "--remote", str(port))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"radiolack: remote access cannot turn on: Port {port} is in use by another program", err)
+
+    def test_exits_with_an_error_when_turning_on_fails(self):
+        # What LocalServer.turn_on_remote raises: a refused port, or no answer in time.
+        for failure, message in ((ValueError("the port changes only while remote access is off"),
+                                  "radiolack: remote access cannot turn on: the port changes only while remote "
+                                  "access is off\n"),
+                                 (TimeoutError(), "radiolack: remote access did not turn on in time\n")):
+            with self.subTest(failure=failure), own_settings(), \
+                    mock.patch.object(cli.LocalServer, "turn_on_remote", side_effect=failure):
+                code, out, err = run_main("--ui", "none", "--remote")
+            self.assertEqual((code, out, err), (1, "", message))
 
 
 class MainTest(unittest.TestCase):

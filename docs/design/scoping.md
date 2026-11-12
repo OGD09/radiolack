@@ -54,6 +54,7 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-11 | Remote access, answering spike 3: Radiolack makes its own local certificate authority, which each device installs once, after checking its fingerprint against Settings. Safari's WebSocket refuses a certificate that the device does not trust, even after the user accepts the warning, so plain self-signed certificates would not do. The root's key signs one intermediate, which name constraints limit to private IPv4 addresses and to names ending in `.local`, `.home.arpa` and `.internal`, then is destroyed: even stolen, the authority can vouch for no Internet site. The intermediate signs a new server certificate at each turn-on. Set aside: Tailscale certificates (a third-party account, an app on each device, names published in Certificate Transparency logs, the VPN even at home) and a domain with Let's Encrypt (a yearly cost, DNS credentials on the computer, routers that block private DNS answers); the user's own certificate may come later. Remote access is off at each start, and only this computer's interfaces turn it on; it listens on port 8443 by default, on this computer's private IPv4 addresses only, for peers on those networks, and never asks for a port forward or touches the firewall. A device pairs with an 8-character code (40 bits), answered after a second when wrong; 10 wrong codes block it until a new code is made, which signs every device out. A paired device keeps a `__Host-` session cookie, of which the computer keeps only a hash, until it is forgotten in Settings or unused for 90 days. Paired devices control the radio, sources and bookmarks included, but not remote access, the update check, the rtl_tcp server's address or where the settings are saved. `remote.json` keeps the port, the code, the paired devices and the authority, which replaces "Remote access is never saved" (2026-11-09): whether it is on is never saved. A key for the other accounts of a shared computer, which reach 127.0.0.1 as it is, waits for v4. Order: remote access, then listening on the iPhone (touch gesture, audio session, wake lock), then interface settings per device. |
 | 2026-11-12 | v1 goes on with remote use from outside the home, then interface settings per device; this replaces the order of 2026-11-11. Listening on the iPhone ends without a wake lock: with Safari's playback audio session, the iPhone keeps playing with its screen locked (spike 2). Away from home, Radiolack runs on a computer next to the receiver, without a window, and devices reach it through the user's VPN: rtl_tcp's samples (16 Mbit/s at 1.024 MS/s) are too much for most links. A device's stream carries 2.2 Mbit/s: 2 Mbit/s of spectrum (30 frames per second) and 0.2 Mbit/s of PCM audio, so remote devices first get a lighter spectrum, then Opus audio. How remote access turns on without a window is an open question. |
 | 2026-11-12 | Lighter stream for remote devices, as the owner chose: about 15 spectrum frames per second, each the mean power of two, in at most 2048 bins, each the highest of the bins it groups, so that narrow signals stay visible, and deflate (RFC 7692) on remote access's stream; this computer's window keeps every frame and every bin. Measured on the simulated band, a device's spectrum drops from 2 Mbit/s to 0.12 Mbit/s, about 0.3 Mbit/s with the PCM audio. A device's finest zoom becomes 16 of its bins, 18.75 kHz at 2.4 MS/s instead of 4.7 kHz. Set aside for now: a device that sends its view and gets only the visible bins, which keeps the detail but loses the waterfall's history at each zoom. When frames come slower than its lines, the waterfall repeats the latest frame, so that it keeps its speed. A remote stream keeps at most 16 KiB unsent, in its socket and its transport: over a link slower than the stream, the system's send queue otherwise grew without end and the delay with it (15.6 s after 60 s at 250 kbit/s), whereas the engine now drops old frames and the delay stays near 5 s at that rate, held by the TLS layer's buffers; Opus audio should leave them empty on such links. |
+| 2026-11-12 | Remote access without a window, answering open question 3: the owner chose an option at start. `--remote [PORT]` turns remote access on at start, as Settings does, on PORT or the port used last, which it keeps, so that a computer without a window chooses its port too. Radiolack prints the addresses, the authority's fingerprint and the access code, as the owner agreed: a computer without a display has nowhere else to show them, and the code then lands wherever the output goes, a service's journal for instance. When remote access cannot turn on, without an address on a local network yet or on a port in use, Radiolack exits with status 1, so that a service manager starts it again. Only this computer turns remote access on, by its interface or by this option, which replaces "only this computer's interfaces turn it on" (2026-11-11); whether it is on is still never saved, and no setting turns it on. Settings stays on 127.0.0.1, which an SSH tunnel reaches. Set aside: Settings as the only way, through an SSH tunnel after each start, which a computer that restarts alone could not follow. |
 
 ## Scope
 
@@ -252,8 +253,9 @@ there gets a fix release.
 - iPhone: listening with the screen on and with the screen locked (spike 2:
   Safari's playback audio session).
 - Use from outside the home (decided on 2026-11-12): Radiolack runs next to
-  the receiver without a window, devices reach it through the user's VPN,
-  and remote devices get a lighter spectrum.
+  the receiver without a window, `--remote` turns remote access on there,
+  devices reach it through the user's VPN, and remote devices get a lighter
+  spectrum.
 
 Done when, from the owner's iPhone on the home Wi-Fi, the owner can tune and
 listen with less than half a second of delay, and no device connects without
@@ -347,9 +349,6 @@ These costs wait for v4:
 2. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
    WFM demodulator, but the scope lists NFM, AM, USB, LSB and CW only. Add WFM
    to v0, or later?
-3. Remote access without a window: only this computer's interfaces turn it
-   on (2026-11-11), but away from home Radiolack runs next to the receiver
-   without a window (2026-11-12). How does it turn on there?
 
 ## Repository plan
 
@@ -648,9 +647,17 @@ These costs wait for v4:
   (no more audio frames) and unmuted, with touch input in the three
   browsers, and that a page used with a mouse does not show it. Checked on
   the owner's iPhone on 2026-11-12.
+- Remote access without a window, 2026-11-12: `radiolack --remote [PORT]`
+  turns remote access on at start (`cli.py`, `LocalServer.turn_on_remote`
+  in `server.py`), prints the addresses, the fingerprint and the code, and
+  exits with status 1 when remote access cannot turn on. The tests run it
+  on 127.0.0.1, with and without a port, and without an address or on a
+  busy port; `smoke_test.py --remote` starts Radiolack with it and pairs a
+  device with what it printed, in CI's containers or a network namespace
+  of its own.
 - Next steps: v1 continues with remote use from outside the home (see
-  Decisions, 2026-11-12): Opus audio and remote access without a window
-  (open question 3), then interface settings per device; the owner's
-  choice about the button that installs an update is still open.
+  Decisions, 2026-11-12): Opus audio, then interface settings per device;
+  the owner's choice about the button that installs an update is still
+  open.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

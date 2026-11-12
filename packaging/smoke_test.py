@@ -29,7 +29,11 @@ interface's settings do, and checks it as a phone would by one of these
 addresses: the certificate that Radiolack gives verifies its HTTPS server;
 an unpaired device gets the pairing page only; a wrong code is refused and
 the right one pairs the device, which then gets the stream; turning remote
-access off releases the port. This needs an address on a local network.
+access off releases the port. It then starts COMMAND again with --remote,
+on another ephemeral port: remote access must be on at start, at the
+addresses that Radiolack prints, with a certificate whose fingerprint is
+the one printed, and pair a device with the code printed. This needs an
+address on a local network.
 
 With --window, it also checks that the desktop window's toolkit, GTK 3 and
 WebKitGTK through PyGObject, loads for the radiolack that this Python
@@ -46,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
@@ -120,12 +125,31 @@ async def check_window() -> None:
     passed(f"the desktop window's toolkit loads, for {lines[0]}")
 
 
-async def address(process: asyncio.subprocess.Process) -> str:
+async def started(process: asyncio.subprocess.Process) -> tuple[str, list[str]]:
+    """The interface's address that Radiolack prints once started, and the
+    lines it printed before."""
+    before = []
     while line := await process.stdout.readline():
-        match = ADDRESS_LINE.search(line.decode("utf-8", "replace"))
+        text = line.decode("utf-8", "replace").rstrip("\n")
+        match = ADDRESS_LINE.search(text)
         if match:
-            return match.group(1)
+            return match.group(1), before
+        before.append(text)
     raise CheckFailed(f"Radiolack exited with status {await process.wait()} before printing its address")
+
+
+async def terminate(process: asyncio.subprocess.Process) -> str:
+    """Stop Radiolack with SIGTERM, or kill it after STOP_TIMEOUT_S: how it ended."""
+    if process.returncode is not None:
+        return "exited by itself"
+    process.send_signal(signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), STOP_TIMEOUT_S)
+        return "stopped on SIGTERM"
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        return f"did not stop within {STOP_TIMEOUT_S} s of SIGTERM"
 
 
 async def check_listening(url: str) -> None:
@@ -312,6 +336,51 @@ async def check_device(session: aiohttp.ClientSession, url: str, code: object) -
     passed("a device pairs with the code, and only with it, then gets the stream")
 
 
+async def check_remote_option(command: list[str]) -> None:
+    """Start ``command`` with --remote and check remote access as it says."""
+    port = ephemeral_port()
+    with tempfile.TemporaryDirectory(prefix="radiolack-smoke-") as settings:
+        process = await asyncio.create_subprocess_exec(
+            *command, "--ui", "none", "--remote", str(port), stdin=DEVNULL, stdout=PIPE, stderr=PIPE,
+            env={**os.environ, "XDG_CONFIG_HOME": settings})
+        errors = asyncio.ensure_future(process.stderr.read())
+        try:
+            _, lines = await within(START_TIMEOUT_S, started(process), "Radiolack printed no address with --remote")
+            rest = asyncio.ensure_future(process.stdout.read())   # so that the pipe never fills
+            urls = [line.strip() for line in lines if line.startswith("  https://")]
+            remote = next((url for url in urls if _is_address(url) and urlsplit(url).port == port), None)
+            check(remote, f"--remote printed no address with port {port}: {lines}")
+            fingerprint = _printed(lines, "Certificate fingerprint (SHA-256): ")
+            code = _printed(lines, "Access code: ")
+            passed(f"--remote turns remote access on at start, at {', '.join(urls)}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(remote + "certificate", ssl=False) as response:
+                    check(response.status == 200, f"GET /certificate answered {response.status}")
+                    digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(await response.text())).hexdigest().upper()
+                check(fingerprint == " ".join(digest[i:i + 2] for i in range(0, len(digest), 2)),
+                      f"--remote printed the fingerprint {fingerprint}, not the certificate's")
+                passed("--remote prints the fingerprint of the certificate that devices install")
+                await check_device(session, remote, code)
+        finally:
+            outcome = await terminate(process)
+            error_output = (await errors).decode("utf-8", "replace")
+            if error_output.strip():
+                print(f"Radiolack's error output with --remote:\n{error_output.rstrip()}", file=sys.stderr,
+                      flush=True)
+        await rest
+    check(outcome == "stopped on SIGTERM" and process.returncode == 0,
+          f"Radiolack with --remote {outcome}, with status {process.returncode}")
+    check("Traceback" not in error_output, "Radiolack printed a traceback with --remote")
+    passed("stops on SIGTERM with --remote too, with status 0")
+
+
+def _printed(lines: list[str], label: str) -> str:
+    """What Radiolack printed after ``label`` at start."""
+    value = next((line[len(label):] for line in lines if line.startswith(label)), "")
+    check(value, f"--remote printed no {label.rstrip(': ')}: {lines}")
+    return value
+
+
 def _is_address(url: str) -> bool:
     try:
         ipaddress.ip_address(urlsplit(url).hostname or "")
@@ -332,9 +401,8 @@ async def run(command: list[str], window: bool, reach: bool, remote: bool) -> No
             *command, "--ui", "none", stdin=DEVNULL, stdout=PIPE, stderr=PIPE,
             env={**os.environ, "XDG_CONFIG_HOME": settings})
         errors = asyncio.ensure_future(process.stderr.read())
-        outcome = "exited by itself"
         try:
-            url = await within(START_TIMEOUT_S, address(process), "Radiolack printed no address")
+            url, _ = await within(START_TIMEOUT_S, started(process), "Radiolack printed no address")
             rest = asyncio.ensure_future(process.stdout.read())   # so that the pipe never fills
             passed(f"runs at {url}")
             await check_listening(url)
@@ -346,15 +414,7 @@ async def run(command: list[str], window: bool, reach: bool, remote: bool) -> No
                 if remote:
                     await check_remote(session, url)
         finally:
-            if process.returncode is None:
-                process.send_signal(signal.SIGTERM)
-                try:
-                    await asyncio.wait_for(process.wait(), STOP_TIMEOUT_S)
-                    outcome = "stopped on SIGTERM"
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    outcome = f"did not stop within {STOP_TIMEOUT_S} s of SIGTERM"
+            outcome = await terminate(process)
             error_output = (await errors).decode("utf-8", "replace")
             if error_output.strip():
                 print(f"Radiolack's error output:\n{error_output.rstrip()}", file=sys.stderr, flush=True)
@@ -363,6 +423,8 @@ async def run(command: list[str], window: bool, reach: bool, remote: bool) -> No
           f"Radiolack {outcome}, with status {process.returncode}")
     check("Traceback" not in error_output, "Radiolack printed a traceback")
     passed("stops on SIGTERM, with status 0")
+    if remote:
+        await check_remote_option(command)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -373,8 +435,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="also check that the update check reaches Radiolack's APT repository, as the "
                              "installed Debian package's does (needs the network)")
     parser.add_argument("--remote", action="store_true",
-                        help="also turn remote access on for a few seconds, on an ephemeral port of this "
-                             "computer's local network addresses, and check it as a phone would")
+                        help="also turn remote access on for a few seconds, on ephemeral ports of this "
+                             "computer's local network addresses, from the interface's settings then "
+                             "with --remote, and check it as a phone would")
     parser.add_argument("command", nargs="*",
                         help="the command that starts Radiolack, after -- (default: radiolack)")
     args = parser.parse_args(argv)
