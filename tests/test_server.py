@@ -325,6 +325,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "tune"}': (None, "unknown command"),
             '{"type": "source", "volume": 3}': ("source", "the test source cannot change its settings"),
             '{"type": "demod", "volume": 3}': ("demod", "unknown demodulator setting: volume"),
+            '{"type": "demod", "bandwidth_hz": 1' + "0" * 400 + "}": (     # too large for a float
+                "demod", "the filter width must be between 100 and 25000"),
             '{"type": "demod", "id": 0, "mode": "AM"}': ("demod", "a change id must be a whole number from 1"),
             '{"type": "demod", "id": 1.5}': ("demod", "a change id must be a whole number from 1"),
             '{"type": "demod", "id": true}': ("demod", "a change id must be a whole number from 1"),

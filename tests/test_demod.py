@@ -295,10 +295,13 @@ class SettingsTest(unittest.TestCase):
         refused = (
             ({"frequency_hz": "145e6"}, "the VFO frequency must be a number"),
             ({"frequency_hz": 0}, "the VFO frequency must be between"),
+            ({"frequency_hz": 10 ** 400}, "the VFO frequency must be between"),    # too large for a float
             ({"mode": "WFM"}, "the mode must be one of NFM, AM, USB, LSB, CW"),
             ({"bandwidth_hz": 50}, "the filter width must be between 100 and 25000"),
+            ({"bandwidth_hz": -10 ** 400}, "the filter width must be between 100 and 25000"),
             ({"bandwidth_hz": True}, "the filter width must be a number"),
             ({"squelch_db": math.nan}, "the squelch threshold must be a number"),
+            ({"squelch_db": -math.inf}, "the squelch threshold must be a number"),
             ({"squelch_auto": 1}, "the automatic squelch must be true or false"),
             ({"volume": 3}, "unknown demodulator setting: volume"),
         )

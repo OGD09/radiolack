@@ -531,14 +531,16 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
         self.write(SETTINGS_FILE, {"receivers": {"test": {
             "source": {"dc_removal": "no", "centre_hz": 433e6},    # the test source has no centre to set
-            "demod": {"frequency_hz": 145_010_000, "mode": "WFM", "squelch_db": None}}},
+            "demod": {"frequency_hz": 145_010_000, "mode": "WFM", "squelch_db": None,
+                      "bandwidth_hz": 10 ** 400}}},     # a whole number too large for a float
             "interface": {"volume": 40, "nested": {"a": 1}, "": 1, "text": "x" * 101}})
         with self.assertLogs("radiolack", "WARNING") as logs:
             engine = self.engine()
-        self.assertEqual(len(logs.output), 4)   # DC removal, mode, squelch and some preferences
+        self.assertEqual(len(logs.output), 5)   # DC removal, mode, squelch, filter width and some preferences
         self.assertTrue(engine.state()["dc_removal"])
         state = engine.demod_state()
-        self.assertEqual((state["frequency_hz"], state["mode"], state["squelch_db"]), (145_010_000.0, "NFM", -80.0))
+        self.assertEqual((state["frequency_hz"], state["mode"], state["bandwidth_hz"], state["squelch_db"]),
+                         (145_010_000.0, "NFM", 10_000.0, -80.0))
         self.assertEqual(engine.preferences_state()["values"], {"volume": 40})
 
     async def test_saves_changes_a_moment_later_and_keeps_the_other_receivers(self):

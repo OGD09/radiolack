@@ -105,7 +105,10 @@ class DemodSettings:
 
 
 def _number(value: object, what: str, low: float, high: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    # Only a float can be NaN or infinite; a whole number too large for a float
+    # fails the range check, which compares it as it is, before any conversion.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or (
+            isinstance(value, float) and not math.isfinite(value)):
         raise ValueError(f"{what} must be a number")
     if not low <= value <= high:
         raise ValueError(f"{what} must be between {low:g} and {high:g}")
