@@ -251,10 +251,15 @@ With either option:
   it, the offset shows as a spike at the centre frequency. A signal exactly
   on the centre frequency goes with it. Every open interface shares this
   setting, which the engine applies to any source.
-- Typing a frequency outside the received span, or choosing a bookmark there,
-  moves the span so that the frequency sits a quarter of the span above its
-  centre, clear of the receiver's DC spike. Other ways of tuning stay within
-  the span.
+- Tuning outside the received span, with a click on the spectrum zoomed out
+  past it ([Spectrum view](#spectrum-view)), a typed frequency, a bookmark,
+  the Peaks list, the History or the context menu, moves the span so that
+  the frequency sits a 32nd of the span above its centre, 75 kHz at
+  2.4 MS/s, with the channel at least 5 kHz from the centre: clear of the
+  receiver's DC spike. The frequency shows at once, and the VFO goes there
+  once frames come from the new span. A click beyond the receiver's reach
+  tunes to the nearest frequency it reaches. Stepping (the wheel, the arrow
+  keys, the − and + buttons) and dragging the filter stay within the span.
 - After a change of frequency, sample rate or frequency correction, the
   display waits 0.4 s for the receiver to settle.
 - When rtl_tcp cannot be reached, stops sending or drops the connection, the
@@ -305,6 +310,34 @@ tap on it starts held audio, mutes playing audio by setting the volume to
 0, or brings the volume back. On an iPhone, Safari keeps playing the audio
 with the screen locked and with the ringer switch on silent. Nothing is
 recorded.
+
+## Spectrum view
+
+The spectrum and the waterfall show the received span, or a part of it:
+Ctrl + wheel, a pinch or the + and − keys zoom, and dragging the background
+scrolls. While the view does not show the whole span, a small button at the
+bottom right of the spectrum, two bars with an arrow between them, shows it
+again, as the 0 key does. Settings lists every gesture and shortcut. The
+readout at the window's bottom right gives the frequency and the level under
+the pointer.
+
+With a receiver that tunes, the view also goes past the span, out to ten
+times its width; zooming out holds at the span's width before it goes on.
+Nothing is measured outside the span, and the view shows no level there:
+the span stands out like a lit window whose light fades away from it, the
+grid goes on, blurred, and the band plan's colours tint the background.
+Beyond the receiver's reach the background is hatched. The readout says
+"outside the span" or "out of reach" there. The simulated band, which does
+not tune, keeps the view within its span.
+
+Clicking outside the span tunes there ([RTL-SDR receivers](#rtl-sdr-receivers)).
+With a mouse, an outline first shows where the span would go, and a tip says
+what the click does and whether it stops a scan. Until frames come from
+there, a dashed outline marks the new span and the old span's spectrum
+dims. Then a view that showed the whole span shows the new one; another view
+stays where it is if it shows the VFO, and otherwise follows it at the same
+zoom. When the VFO lies outside the view, a label at that edge gives its
+frequency: clicking it brings the view back to the VFO, at the same zoom.
 
 ## Scanners
 
@@ -634,7 +667,10 @@ The strip under the spectrum shows what each range is used for, from 9 kHz to
 6.425 GHz: broadcasting, aviation, shipping, mobile networks, satellites,
 short-range devices, amateur bands and more. Inside the amateur bands it
 follows the IARU Region 1 band plans, simplified. Hovering the strip names a
-range and its edges, and clicking it zooms to the range. With Demod > "Mode
+range and its edges, and clicking it zooms to the range. Zoomed out, where a
+band's ranges would be too narrow to read, the band shows as one block of
+its colour, named in full, by a short name or not at all as room allows,
+and clicking it zooms to the band. With Demod > "Mode
 and step from the band plan", tuning into a range selects its usual mode, and
 the Automatic tuning step follows the plan. The Bands panel lists the ranges
 of the received span. Display > "Band plan" hides the strip.
@@ -682,7 +718,8 @@ WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
 another, the bookmarks, the signals found, the memory scan, in the span and
-across windows, the sweep, the History and the saved interface settings. They
+across windows, the sweep, the History, the view past the span and tuning
+outside it, and the saved interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of

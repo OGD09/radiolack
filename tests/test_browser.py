@@ -686,6 +686,141 @@ class BrowserTest(unittest.TestCase):
                 expect(field).to_be_focused()
                 expect(second.locator("#status")).to_contain_text(address)
 
+    @staticmethod
+    def readout_at(page: Page, fraction: float) -> tuple[float, str]:
+        """The readout under the pointer, moved over the spectrum at ``fraction``
+        of the way from its first pixel to its last: its frequency in MHz, and
+        its text."""
+        box = page.locator("#specwrap").bounding_box()
+        page.mouse.move(box["x"] + 1 + (box["width"] - 2) * fraction, box["y"] + box["height"] * 0.3)
+        text = page.locator("#hoverinfo").inner_text()
+        return float(text.split(" ", 1)[0]), text
+
+    def view_edges(self, page: Page) -> tuple[float, float]:
+        """The frequencies, in MHz, at the spectrum's first and last pixels."""
+        return self.readout_at(page, 0)[0], self.readout_at(page, 1)[0]
+
+    @staticmethod
+    def band_title_at(page: Page, fraction: float) -> str:
+        """The band strip's title with the pointer over it at ``fraction`` of
+        the way from its first pixel to its last."""
+        box = page.locator("#band").bounding_box()
+        page.mouse.move(box["x"] + 1 + (box["width"] - 2) * fraction, box["y"] + box["height"] / 2)
+        return page.locator("#band").get_attribute("title")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_view_goes_past_the_span_of_a_receiver_that_tunes(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # 2.4 MHz around 145 MHz, the VFO on 145.6
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                page.keyboard.press("Escape")       # the Source panel lies over the spectrum
+                (low, low_text), (high, high_text) = self.readout_at(page, 0), self.readout_at(page, 1)
+                self.assertAlmostEqual(low, 143.8, delta=0.01)
+                self.assertAlmostEqual(high, 146.2, delta=0.01)
+                self.assertRegex(low_text, rf" MHz {DOT} -?\d+ dB")      # levels: in the span
+                self.assertTrue(self.band_title_at(page, 0.75).startswith(
+                    f"2 m amateur {DOT} Repeater outputs {DOT} 145.575\N{EN DASH}145.794 MHz"))
+                page.keyboard.press("-")    # one step out passes the detent at the span's width
+                (low, low_text), (high, high_text) = self.readout_at(page, 0), self.readout_at(page, 1)
+                self.assertAlmostEqual(high - low, 2.4 * 1.5 / 1.15, delta=0.01)
+                for text in (low_text, high_text):
+                    self.assertIn(f" MHz {DOT} outside the span", text)
+                page.keyboard.press("+")    # one step in stops at the span, which it frames
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(low, 143.8, delta=0.01)
+                self.assertAlmostEqual(high, 146.2, delta=0.01)
+                for _ in range(9):
+                    page.keyboard.press("-")
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(high - low, 24, delta=0.05)     # ten spans at most
+                expect(page.locator("#span-fit")).to_be_visible()
+                # Zoomed out, a band whose ranges would be too narrow shows as one block.
+                where = (145 - low) / (high - low)
+                self.assertEqual(self.band_title_at(page, where),
+                                 f"2 m amateur {DOT} 144.000\N{EN DASH}146.000 MHz {DOT} drag: spectrum height")
+                page.mouse.down()
+                page.mouse.up()             # a click frames the band
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(low, 143.84, delta=0.01)
+                self.assertAlmostEqual(high, 146.16, delta=0.01)
+                page.keyboard.press("0")    # frames the span
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(low, 143.8, delta=0.01)
+                self.assertAlmostEqual(high, 146.2, delta=0.01)
+                expect(page.locator("#span-fit")).to_be_hidden()
+                expect(page.locator("#src-center")).to_have_value("145.0000")    # the view alone moved
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_click_outside_the_span_moves_it_for_every_interface(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # each browser starts on 145 MHz
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                for page in (first, second):
+                    page.keyboard.press("Escape")   # the Source panel lies over the spectrum
+                for _ in range(9):
+                    first.keyboard.press("-")       # ten spans, from 127.6 to 151.6 MHz
+                view = self.view_edges(first)
+                _, text = self.readout_at(first, 0.08)
+                self.assertRegex(text, rf"^\d+\.\d+ MHz {DOT} outside the span {DOT} Airband$")
+                expect(first.locator("#tune-tip")).to_have_text("Click: tune here")
+                expect(first.locator("#span-preview")).to_be_visible()
+                first.mouse.down()
+                first.mouse.up()
+                expect(first.locator("#tune-tip")).to_be_hidden()      # at once, with the preview
+                expect(first.locator("#span-preview")).to_be_hidden()
+                for page in (first, second):        # once frames come from there, the airband's mode
+                    expect(page.locator("#m-mode")).to_have_text("AM")
+                vfo = int(first.locator("#freq").get_attribute("aria-valuenow"))
+                centre = (vfo - 75_000) / 1e6       # a 32nd of the span below the VFO
+                for page in (first, second):
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", str(vfo))
+                    expect(page.locator("#src-center")).to_have_value(f"{centre:.4f}")
+                expect(first.locator("#span-next")).to_be_hidden()
+                low, high = self.view_edges(first)  # a view looking elsewhere stays
+                self.assertAlmostEqual(low, view[0], delta=0.001)
+                self.assertAlmostEqual(high, view[1], delta=0.001)
+                low, high = self.view_edges(second)     # one that framed the span frames the new one
+                self.assertAlmostEqual(low, centre - 1.2, delta=0.01)
+                self.assertAlmostEqual(high, centre + 1.2, delta=0.01)
+
+    def test_the_view_stays_in_the_simulated_span_and_comes_back_to_the_vfo_or_the_span(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Source panel lies over the spectrum
+                fit = page.get_by_role("button", name="Show the whole span")
+                expect(fit).to_be_hidden()          # the view frames the span
+                span = self.view_edges(page)
+                for _ in range(3):
+                    page.keyboard.press("-")        # a source that does not tune shows its span at most
+                self.assertEqual(self.view_edges(page), span)
+                for _ in range(3):
+                    page.keyboard.press("+")
+                box = page.locator("#specwrap").bounding_box()
+                y = box["y"] + box["height"] * 0.3
+                page.mouse.move(box["x"] + box["width"] * 0.1, y)
+                page.mouse.down()
+                page.mouse.move(box["x"] + box["width"] * 0.9, y, steps=10)     # the view goes down, the VFO stays
+                page.mouse.up()
+                vfo = int(page.locator("#freq").get_attribute("aria-valuenow"))
+                back = page.locator("#vfo-return")
+                expect(back).to_have_text(f"{vfo / 1e6:.4f} MHz \N{RIGHTWARDS ARROW}")
+                expect(back).to_have_attribute("aria-label", f"Show the VFO, at {vfo / 1e6:.4f} MHz")
+                back.click()
+                expect(back).to_be_hidden()
+                low, high = self.view_edges(page)   # around the VFO, at the same zoom
+                self.assertAlmostEqual((low + high) / 2, vfo / 1e6, delta=0.001)
+                self.assertAlmostEqual(high - low, (span[1] - span[0]) / 1.5 ** 3, delta=0.01)
+                fit.click()
+                expect(fit).to_be_hidden()
+                self.assertEqual(self.view_edges(page), span)
+
 
 if __name__ == "__main__":
     unittest.main()

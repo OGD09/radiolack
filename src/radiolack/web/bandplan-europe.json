@@ -25,15 +25,15 @@
     {"from": 9000, "to": 77000, "name": "Fixed, maritime and navigation", "type": "fixed"},
     {"from": 77000, "to": 78000, "name": "Time signal (DCF77)", "type": "science"},
     {"from": 78000, "to": 135700, "name": "Fixed, maritime and navigation", "type": "fixed"},
-    {"from": 135700, "to": 137800, "name": "2200 m amateur", "type": "amateur", "mode": "CW", "step": 10},
+    {"from": 135700, "to": 137800, "name": "2200 m amateur", "short": "2200 m", "type": "amateur", "mode": "CW", "step": 10},
     {"from": 137800, "to": 148500, "name": "Fixed and maritime", "type": "fixed"},
-    {"from": 148500, "to": 283500, "name": "Long wave broadcast", "type": "broadcast", "mode": "AM", "step": 9000},
+    {"from": 148500, "to": 283500, "name": "Long wave broadcast", "short": "Long wave", "type": "broadcast", "mode": "AM", "step": 9000},
     {"from": 283500, "to": 472000, "name": "Navigation beacons", "type": "navigation", "mode": "AM", "step": 500},
-    {"from": 472000, "to": 479000, "name": "630 m amateur", "type": "amateur", "mode": "CW", "step": 10},
+    {"from": 472000, "to": 479000, "name": "630 m amateur", "short": "630 m", "type": "amateur", "mode": "CW", "step": 10},
     {"from": 479000, "to": 526500, "name": "Maritime (NAVTEX)", "type": "maritime"},
-    {"from": 526500, "to": 1606500, "name": "Medium wave broadcast", "type": "broadcast", "mode": "AM", "step": 9000},
+    {"from": 526500, "to": 1606500, "name": "Medium wave broadcast", "short": "Medium wave", "type": "broadcast", "mode": "AM", "step": 9000},
     {"from": 1606500, "to": 1810000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 1810000, "to": 2000000, "name": "160 m amateur", "type": "amateur", "segments": [
+    {"from": 1810000, "to": 2000000, "name": "160 m amateur", "short": "160 m", "type": "amateur", "segments": [
       {"from": 1810000, "to": 1838000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 1838000, "to": 1843000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 1843000, "to": 2000000, "name": "All modes", "type": "amateur", "mode": "LSB", "step": 100}
@@ -47,7 +47,7 @@
     {"from": 3025000, "to": 3155000, "name": "Military aviation HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 3155000, "to": 3400000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 3400000, "to": 3500000, "name": "Aeronautical HF", "type": "aeronautical", "mode": "USB", "step": 1000},
-    {"from": 3500000, "to": 3800000, "name": "80 m amateur", "type": "amateur", "segments": [
+    {"from": 3500000, "to": 3800000, "name": "80 m amateur", "short": "80 m", "type": "amateur", "segments": [
       {"from": 3500000, "to": 3570000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 3570000, "to": 3600000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 3600000, "to": 3800000, "name": "All modes", "type": "amateur", "mode": "LSB", "step": 100}
@@ -63,7 +63,7 @@
     {"from": 4750000, "to": 4995000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 4995000, "to": 5005000, "name": "Time signals (5 MHz)", "type": "science", "mode": "AM", "step": 1000},
     {"from": 5005000, "to": 5351500, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 5351500, "to": 5366500, "name": "60 m amateur", "type": "amateur", "segments": [
+    {"from": 5351500, "to": 5366500, "name": "60 m amateur", "short": "60 m", "type": "amateur", "segments": [
       {"from": 5351500, "to": 5354000, "name": "CW and narrow band", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 5354000, "to": 5366000, "name": "All modes", "type": "amateur", "mode": "USB", "step": 100},
       {"from": 5366000, "to": 5366500, "name": "Narrow band", "type": "amateur-digital", "mode": "USB", "step": 100}
@@ -77,7 +77,7 @@
     {"from": 6525000, "to": 6685000, "name": "Aeronautical HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 6685000, "to": 6765000, "name": "Military aviation HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 6765000, "to": 7000000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 7000000, "to": 7200000, "name": "40 m amateur", "type": "amateur", "segments": [
+    {"from": 7000000, "to": 7200000, "name": "40 m amateur", "short": "40 m", "type": "amateur", "segments": [
       {"from": 7000000, "to": 7040000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 7040000, "to": 7060000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 7060000, "to": 7200000, "name": "All modes", "type": "amateur", "mode": "LSB", "step": 100}
@@ -92,7 +92,7 @@
     {"from": 9900000, "to": 9995000, "name": "Fixed", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 9995000, "to": 10005000, "name": "Time signals (10 MHz)", "type": "science", "mode": "AM", "step": 1000},
     {"from": 10005000, "to": 10100000, "name": "Aeronautical HF", "type": "aeronautical", "mode": "USB", "step": 1000},
-    {"from": 10100000, "to": 10150000, "name": "30 m amateur", "type": "amateur", "segments": [
+    {"from": 10100000, "to": 10150000, "name": "30 m amateur", "short": "30 m", "type": "amateur", "segments": [
       {"from": 10100000, "to": 10130000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 10130000, "to": 10150000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100}
     ]},
@@ -108,7 +108,7 @@
     {"from": 13360000, "to": 13570000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 13570000, "to": 13870000, "name": "22 m broadcast", "type": "broadcast", "mode": "AM", "step": 5000},
     {"from": 13870000, "to": 14000000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 14000000, "to": 14350000, "name": "20 m amateur", "type": "amateur", "segments": [
+    {"from": 14000000, "to": 14350000, "name": "20 m amateur", "short": "20 m", "type": "amateur", "segments": [
       {"from": 14000000, "to": 14070000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 14070000, "to": 14099000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 14099000, "to": 14101000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -125,7 +125,7 @@
     {"from": 17900000, "to": 17970000, "name": "Aeronautical HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 17970000, "to": 18030000, "name": "Military aviation HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 18030000, "to": 18068000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 18068000, "to": 18168000, "name": "17 m amateur", "type": "amateur", "segments": [
+    {"from": 18068000, "to": 18168000, "name": "17 m amateur", "short": "17 m", "type": "amateur", "segments": [
       {"from": 18068000, "to": 18095000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 18095000, "to": 18109000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 18109000, "to": 18111000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -139,7 +139,7 @@
     {"from": 19800000, "to": 19990000, "name": "Fixed", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 19990000, "to": 20010000, "name": "Time signals (20 MHz)", "type": "science", "mode": "AM", "step": 1000},
     {"from": 20010000, "to": 21000000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 21000000, "to": 21450000, "name": "15 m amateur", "type": "amateur", "segments": [
+    {"from": 21000000, "to": 21450000, "name": "15 m amateur", "short": "15 m", "type": "amateur", "segments": [
       {"from": 21000000, "to": 21070000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 21070000, "to": 21149000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 21149000, "to": 21151000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -150,7 +150,7 @@
     {"from": 21924000, "to": 22000000, "name": "Aeronautical HF", "type": "aeronautical", "mode": "USB", "step": 1000},
     {"from": 22000000, "to": 22855000, "name": "Maritime HF", "type": "maritime", "mode": "USB", "step": 1000},
     {"from": 22855000, "to": 24890000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 24890000, "to": 24990000, "name": "12 m amateur", "type": "amateur", "segments": [
+    {"from": 24890000, "to": 24990000, "name": "12 m amateur", "short": "12 m", "type": "amateur", "segments": [
       {"from": 24890000, "to": 24915000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 24915000, "to": 24929000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 24929000, "to": 24931000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -166,7 +166,7 @@
     {"from": 26175000, "to": 26960000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
     {"from": 26960000, "to": 27410000, "name": "CB radio", "type": "licence-free", "step": 5000},
     {"from": 27410000, "to": 28000000, "name": "Fixed and mobile", "type": "fixed", "mode": "USB", "step": 1000},
-    {"from": 28000000, "to": 29700000, "name": "10 m amateur", "type": "amateur", "segments": [
+    {"from": 28000000, "to": 29700000, "name": "10 m amateur", "short": "10 m", "type": "amateur", "segments": [
       {"from": 28000000, "to": 28070000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 28070000, "to": 28190000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
       {"from": 28190000, "to": 28225000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -178,7 +178,7 @@
     ]},
     {"from": 29700000, "to": 47000000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
     {"from": 47000000, "to": 50000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
-    {"from": 50000000, "to": 52000000, "name": "6 m amateur", "type": "amateur", "segments": [
+    {"from": 50000000, "to": 52000000, "name": "6 m amateur", "short": "6 m", "type": "amateur", "segments": [
       {"from": 50000000, "to": 50100000, "name": "CW", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 50100000, "to": 50300000, "name": "SSB / CW", "type": "amateur-ssb", "mode": "USB", "step": 100},
       {"from": 50300000, "to": 50400000, "name": "Narrow band and digital", "type": "amateur-digital", "mode": "USB", "step": 100},
@@ -187,16 +187,16 @@
     ]},
     {"from": 52000000, "to": 68000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
     {"from": 68000000, "to": 70000000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
-    {"from": 70000000, "to": 70500000, "name": "4 m amateur (some countries)", "type": "amateur"},
+    {"from": 70000000, "to": 70500000, "name": "4 m amateur (some countries)", "short": "4 m", "type": "amateur"},
     {"from": 70500000, "to": 74800000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
     {"from": 74800000, "to": 75200000, "name": "Marker beacons", "type": "navigation", "mode": "AM"},
     {"from": 75200000, "to": 87500000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
-    {"from": 87500000, "to": 108000000, "name": "FM broadcast", "type": "broadcast", "step": 50000},
-    {"from": 108000000, "to": 117975000, "name": "Aeronautical navigation (VOR, ILS)", "type": "navigation", "mode": "AM", "step": 50000},
+    {"from": 87500000, "to": 108000000, "name": "FM broadcast", "short": "FM", "type": "broadcast", "step": 50000},
+    {"from": 108000000, "to": 117975000, "name": "Aeronautical navigation (VOR, ILS)", "short": "VOR, ILS", "type": "navigation", "mode": "AM", "step": 50000},
     {"from": 117975000, "to": 137000000, "name": "Airband", "type": "aeronautical", "mode": "AM", "step": 8333.333333333334},
-    {"from": 137000000, "to": 138000000, "name": "Weather and other satellites", "type": "satellite"},
+    {"from": 137000000, "to": 138000000, "name": "Weather and other satellites", "short": "Satellites", "type": "satellite"},
     {"from": 138000000, "to": 144000000, "name": "Defence", "type": "fixed"},
-    {"from": 144000000, "to": 146000000, "name": "2 m amateur", "type": "amateur", "segments": [
+    {"from": 144000000, "to": 146000000, "name": "2 m amateur", "short": "2 m", "type": "amateur", "segments": [
       {"from": 144000000, "to": 144150000, "name": "CW / MGM", "type": "amateur-cw", "mode": "CW", "step": 100},
       {"from": 144150000, "to": 144400000, "name": "SSB / CW / MGM", "type": "amateur-ssb", "mode": "USB", "step": 100},
       {"from": 144400000, "to": 144490000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -212,20 +212,20 @@
     {"from": 146000000, "to": 156000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
     {"from": 156000000, "to": 157450000, "name": "Marine VHF", "type": "maritime", "mode": "NFM", "step": 25000},
     {"from": 157450000, "to": 160600000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
-    {"from": 160600000, "to": 161962500, "name": "Marine VHF (coast stations)", "type": "maritime", "mode": "NFM", "step": 25000},
+    {"from": 160600000, "to": 161962500, "name": "Marine VHF (coast stations)", "short": "Marine VHF", "type": "maritime", "mode": "NFM", "step": 25000},
     {"from": 161962500, "to": 162037500, "name": "AIS (ship tracking)", "type": "maritime"},
     {"from": 162037500, "to": 169400000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
     {"from": 169400000, "to": 169812500, "name": "Short-range devices (169 MHz)", "type": "licence-free"},
     {"from": 169812500, "to": 174000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
-    {"from": 174000000, "to": 230000000, "name": "DAB+ broadcast (Band III)", "type": "broadcast"},
-    {"from": 230000000, "to": 328600000, "name": "Military air band (UHF)", "type": "aeronautical", "mode": "AM", "step": 25000},
+    {"from": 174000000, "to": 230000000, "name": "DAB+ broadcast (Band III)", "short": "DAB+", "type": "broadcast"},
+    {"from": 230000000, "to": 328600000, "name": "Military air band (UHF)", "short": "Military air", "type": "aeronautical", "mode": "AM", "step": 25000},
     {"from": 328600000, "to": 335400000, "name": "ILS glide path", "type": "navigation"},
-    {"from": 335400000, "to": 380000000, "name": "Military air band (UHF)", "type": "aeronautical", "mode": "AM", "step": 25000},
-    {"from": 380000000, "to": 400000000, "name": "Emergency services (digital)", "type": "land-mobile"},
-    {"from": 400000000, "to": 406000000, "name": "Weather balloons (radiosondes)", "type": "science", "mode": "NFM"},
+    {"from": 335400000, "to": 380000000, "name": "Military air band (UHF)", "short": "Military air", "type": "aeronautical", "mode": "AM", "step": 25000},
+    {"from": 380000000, "to": 400000000, "name": "Emergency services (digital)", "short": "Emergency", "type": "land-mobile"},
+    {"from": 400000000, "to": 406000000, "name": "Weather balloons (radiosondes)", "short": "Radiosondes", "type": "science", "mode": "NFM"},
     {"from": 406000000, "to": 406100000, "name": "Distress beacons (406 MHz)", "type": "satellite"},
     {"from": 406100000, "to": 430000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
-    {"from": 430000000, "to": 440000000, "name": "70 cm amateur", "type": "amateur", "segments": [
+    {"from": 430000000, "to": 440000000, "name": "70 cm amateur", "short": "70 cm", "type": "amateur", "segments": [
       {"from": 430000000, "to": 432000000, "name": "All modes", "type": "amateur", "mode": "NFM", "step": 12500},
       {"from": 432000000, "to": 432400000, "name": "SSB / CW / MGM", "type": "amateur-ssb", "mode": "USB", "step": 100},
       {"from": 432400000, "to": 432490000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
@@ -240,7 +240,7 @@
     {"from": 440000000, "to": 446000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
     {"from": 446000000, "to": 446200000, "name": "PMR446", "type": "licence-free", "mode": "NFM", "step": 6250},
     {"from": 446200000, "to": 470000000, "name": "Land mobile", "type": "land-mobile", "mode": "NFM", "step": 12500},
-    {"from": 470000000, "to": 694000000, "name": "TV broadcast (DVB-T)", "type": "broadcast"},
+    {"from": 470000000, "to": 694000000, "name": "TV broadcast (DVB-T)", "short": "DVB-T", "type": "broadcast"},
     {"from": 694000000, "to": 790000000, "name": "Mobile networks (700 MHz)", "type": "cellular"},
     {"from": 790000000, "to": 863000000, "name": "Mobile networks (800 MHz)", "type": "cellular"},
     {"from": 863000000, "to": 870000000, "name": "Short-range devices (868 MHz)", "type": "licence-free"},
@@ -256,7 +256,7 @@
     ]},
     {"from": 1164000000, "to": 1215000000, "name": "GNSS (GPS L5, Galileo E5), DME", "type": "navigation"},
     {"from": 1215000000, "to": 1240000000, "name": "GNSS (GPS L2), radar", "type": "navigation"},
-    {"from": 1240000000, "to": 1300000000, "name": "23 cm amateur", "type": "amateur", "segments": [
+    {"from": 1240000000, "to": 1300000000, "name": "23 cm amateur", "short": "23 cm", "type": "amateur", "segments": [
       {"from": 1240000000, "to": 1243250000, "name": "All modes", "type": "amateur"},
       {"from": 1243250000, "to": 1260000000, "name": "Amateur TV", "type": "amateur"},
       {"from": 1260000000, "to": 1270000000, "name": "Satellite uplinks", "type": "satellite", "mode": "USB", "step": 100},
@@ -279,7 +279,7 @@
     {"from": 1610000000, "to": 1626500000, "name": "Satellite phones (Iridium, Globalstar)", "type": "satellite"},
     {"from": 1626500000, "to": 1660500000, "name": "Satellite uplinks (Inmarsat)", "type": "satellite"},
     {"from": 1660500000, "to": 1668400000, "name": "Radio astronomy", "type": "science"},
-    {"from": 1668400000, "to": 1690000000, "name": "Weather balloons (radiosondes)", "type": "science"},
+    {"from": 1668400000, "to": 1690000000, "name": "Weather balloons (radiosondes)", "short": "Radiosondes", "type": "science"},
     {"from": 1690000000, "to": 1710000000, "name": "Weather satellites (HRPT)", "type": "satellite"},
     {"from": 1710000000, "to": 1785000000, "name": "Mobile networks (1800 MHz uplink)", "type": "cellular"},
     {"from": 1785000000, "to": 1805000000, "name": "Wireless microphones (PMSE)", "type": "land-mobile"},
@@ -293,7 +293,7 @@
     {"from": 2110000000, "to": 2170000000, "name": "Mobile networks (2.1 GHz downlink)", "type": "cellular"},
     {"from": 2170000000, "to": 2200000000, "name": "Mobile satellite (2 GHz)", "type": "satellite"},
     {"from": 2200000000, "to": 2300000000, "name": "Space operations, fixed links", "type": "satellite"},
-    {"from": 2300000000, "to": 2400000000, "name": "13 cm amateur", "type": "amateur", "segments": [
+    {"from": 2300000000, "to": 2400000000, "name": "13 cm amateur", "short": "13 cm", "type": "amateur", "segments": [
       {"from": 2320000000, "to": 2320800000, "name": "SSB / CW / MGM", "type": "amateur-ssb", "mode": "USB", "step": 100},
       {"from": 2320800000, "to": 2321000000, "name": "Beacons", "type": "amateur-beacon", "mode": "CW", "step": 100},
       {"from": 2321000000, "to": 2322000000, "name": "FM repeaters and simplex", "type": "amateur-fm", "mode": "NFM", "step": 25000}
