@@ -12,6 +12,7 @@ context, like a separate device, and any error in its page fails the test.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import tempfile
@@ -60,6 +61,33 @@ WRONG_CODE_REFUSAL = "Failed to load resource: the server responded with a statu
 # renderer: this preference lifts that refusal. Firefox then also needs a
 # display, which xvfb-run gives where there is none.
 FIREFOX_PREFS = {"webgl.force-enabled": True}
+# Draws lines in a waterfall view of its own, 8 bins wide and 2 lines high,
+# whose colour table gives each level code as its red: the red of each pixel,
+# newest line first, after each move of the span.
+WATERFALL_PROBE = """async () => {
+  const { WaterfallView } = await import(new URL('waterfall-gl.js', document.baseURI).href);
+  const canvas = document.createElement('canvas');
+  const view = new WaterfallView(canvas, 4, () => {});
+  view.resize(8, 2);
+  view.setBins(8);
+  const colours = new Uint8Array(256 * 4);
+  for (let code = 0; code < 256; code += 1) colours.set([code, code, code, 255], code * 4);
+  view.setColours(colours);
+  const gl = canvas.getContext('webgl2'), pixels = new Uint8Array(8 * 2 * 4);
+  const drawn = () => {
+    view.draw({ head: 1, lines: 2, firstBin: 0, binsPerPixel: 1 });
+    gl.readPixels(0, 0, 8, 2, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    return [1, 0].map((y) => Array.from({ length: 8 }, (_, x) => pixels[(y * 8 + x) * 4]));
+  };
+  view.uploadRow(0, Uint8Array.of(10, 20, 30, 40, 50, 60, 70, 80));
+  view.setOffsets(Float32Array.of(-3, 0, 0, 0));      // the span moved 3 bins up
+  view.uploadRow(1, Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8));
+  const up = drawn();
+  view.setOffsets(Float32Array.of(-1, 2, 0, 0));      // then 2 bins down
+  const down = drawn();
+  view.setOffsets(Float32Array.of(-2.5, 0, 0, 0));    // and by half a bin
+  return [up, down, drawn()];
+}"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
@@ -104,10 +132,12 @@ class BrowserTest(unittest.TestCase):
     def interfaces(self, browser: str, url: str, count: int, **options) -> Iterator[list[Page]]:
         """``count`` interfaces at ``url``, each with the Source panel open:
         a click, which lets the audio start. ``self.audio[page]`` counts the
-        audio frames each one receives. ``options`` go to each browser
+        audio frames each one receives, and ``self.sent[page]`` lists the
+        messages each one sends, as text. ``options`` go to each browser
         context, such as a phone's viewport and touch input."""
         errors: list[str] = []
         self.audio: dict[Page, list[int]] = {}
+        self.sent: dict[Page, list[str]] = {}
         with contextlib.ExitStack() as stack:
             pages = []
             for _ in range(count):
@@ -115,10 +145,14 @@ class BrowserTest(unittest.TestCase):
                 stack.callback(context.close)
                 page = self.watched_page(context, browser, errors)
                 self.audio[page] = received = []
-                page.on("websocket", lambda socket, received=received: socket.on(
-                    "framereceived",
-                    lambda payload: received.append(1) if isinstance(payload, bytes) and payload[:1] == bytes(
-                        [AUDIO_FRAME]) else None))
+                self.sent[page] = sent = []
+
+                def watch(socket, received=received, sent=sent) -> None:
+                    socket.on("framereceived", lambda payload: received.append(1) if isinstance(
+                        payload, bytes) and payload[:1] == bytes([AUDIO_FRAME]) else None)
+                    socket.on("framesent", lambda payload: sent.append(payload) if isinstance(payload, str) else None)
+
+                page.on("websocket", watch)
                 page.goto(url)
                 page.locator(SOURCE_PANEL).click()
                 pages.append(page)
@@ -787,6 +821,75 @@ class BrowserTest(unittest.TestCase):
                 low, high = self.view_edges(second)     # one that framed the span frames the new one
                 self.assertAlmostEqual(low, centre - 1.2, delta=0.01)
                 self.assertAlmostEqual(high, centre + 1.2, delta=0.01)
+
+    def waterfall_readout_at(self, page: Page, frequency_mhz: float, age: int) -> str:
+        """The readout under the pointer, moved over the waterfall at
+        ``frequency_mhz``, which the view shows, on the line ``age`` lines
+        below the newest."""
+        low, high = self.view_edges(page)
+        box = page.locator("#wfwrap").bounding_box()
+        page.mouse.move(box["x"] + 1 + (box["width"] - 2) * (frequency_mhz - low) / (high - low), box["y"] + age + 0.5)
+        return page.locator("#hoverinfo").inner_text()
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_step_into_the_edge_moves_the_span_once_and_the_waterfall_slides_with_it(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        age = 60                # a waterfall line older than the move: 2.4 s at 25 lines a second
+        for browser in BROWSERS:
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # each browser starts on 145 MHz, the VFO on 145.6
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                page.locator(DEMOD_PANEL).click()
+                page.locator("#dm-step").select_option("25000")
+                page.locator(DEMOD_PANEL).click()   # closes the panel, which lies over the spectrum
+                deadline = time.monotonic() + TIMEOUT_MS / 1000
+                while " ago" not in self.waterfall_readout_at(page, 145.5, age):
+                    self.assertLess(time.monotonic(), deadline, f"the waterfall has no line {age} lines down")
+                    page.wait_for_timeout(100)
+                freq = page.locator("#freq")
+                freq.focus()
+                for _ in range(4):      # steps of 250 kHz: the second goes past 145.96 MHz, into the span's upper tenth
+                    freq.press("Shift+ArrowUp")
+                deadline = time.monotonic() + TIMEOUT_MS / 1000
+                while abs(self.view_edges(page)[0] - 144.825) > 0.01:     # the view frames the new span
+                    self.assertLess(time.monotonic(), deadline, "the span did not move")
+                    page.wait_for_timeout(50)
+                # The waterfall's older lines keep their frequencies, within the new span only.
+                self.assertNotIn(" dB", self.waterfall_readout_at(page, 146.7, age))
+                self.assertRegex(self.waterfall_readout_at(page, 145.5, age), rf"^145\.\d+ MHz {DOT} -?\d+ dB {DOT} \d+ s ago")
+                # One move, 75 kHz below the step that went past: the steps made meanwhile add up.
+                expect(page.locator("#src-center")).to_have_value("146.0250")
+                expect(freq).to_have_attribute("aria-valuenow", "146600000")
+                centres = [message["centre_hz"] for message in map(json.loads, self.sent[page]) if "centre_hz" in message]
+                self.assertEqual(centres, [146_025_000])
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(high, 147.225, delta=0.01)
+
+    def test_the_waterfall_draws_each_line_at_its_frequencies(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                up, down, half = page.evaluate(WATERFALL_PROBE)
+                self.assertEqual(up, [[1, 2, 3, 4, 5, 6, 7, 8], [40, 50, 60, 70, 80, 0, 0, 0]])
+                self.assertEqual(down, [[0, 0, 1, 2, 3, 4, 5, 6], [20, 30, 40, 50, 60, 70, 80, 0]])
+                self.assertEqual(half[1], [30, 40, 50, 60, 70, 80, 0, 0])
+
+    def test_steps_stop_at_the_edge_of_the_simulated_span(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.locator(DEMOD_PANEL).click()
+                page.locator("#dm-step").select_option("25000")
+                page.locator(DEMOD_PANEL).click()   # closes the panel, which lies over the spectrum
+                span = self.view_edges(page)
+                freq = page.locator("#freq")
+                freq.focus()
+                for _ in range(8):      # steps of 250 kHz, from 145.6 MHz: a source that does not tune keeps its span
+                    freq.press("Shift+ArrowUp")
+                expect(freq).to_have_attribute("aria-valuenow", "146200000")
+                self.assertEqual(self.view_edges(page), span)
+                self.assertEqual([message for message in self.sent[page] if "centre_hz" in message], [])
 
     def test_the_view_stays_in_the_simulated_span_and_comes_back_to_the_vfo_or_the_span(self):
         url = self.serve()

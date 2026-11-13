@@ -38,6 +38,7 @@ const STRIP_SEGMENT_PX = 12;        // the band strip shows a band's ranges whil
 const RETUNE_SHARE = 1 / 32;        // a span that moves for the VFO puts it this share of its width above its centre,
 const RETUNE_MARGIN_HZ = 5000;      // and this far at least past the channel's lower half: clear of the DC residue
 const PENDING_FADE = 0.55;          // how much the span's data fades while the receiver moves to another span
+const EDGE_SHARE = 0.1;             // share of the span by each edge that the receiver's filter dims: a step into it moves the span
 // Each mode's filter width once tuned to a bookmark (bw) is also the engine's,
 // for its memory scan (demod.py, MODE_BANDWIDTHS_HZ): change them together.
 const MODES = {
@@ -134,6 +135,7 @@ function passband(f = S.vfo) {
 
 // ------------------------------------------------------------------ buffers
 let frameLin, avgLin, avgDb, peakDb, wfAcc, hist, histTime;
+let histCentre;                     // the centre of the capture each waterfall line comes from, Hz
 let wfCount = 0, histHead = -1, histFilled = 0, avgPrimed = false, levelsPrimed = false, frameCounter = 0;
 let lastFrameMs = -Infinity;        // performance.now() at the latest frame of this capture
 let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
@@ -158,10 +160,34 @@ function resetBuffers() {
   wfAcc = new Float32Array(nb);
   hist = new Uint8Array(nb * HIST_ROWS);
   histTime = new Float64Array(HIST_ROWS);
+  histCentre = new Float64Array(HIST_ROWS);
   wfCount = 0; histHead = -1; histFilled = 0; avgPrimed = false; levelsPrimed = false;
   lastFrameMs = -Infinity;
   if (waterfallView) waterfallView.setBins(nb);
   clearStamps();
+}
+// The same receiver's span moved by less than its width: the waterfall's
+// lines and the peak hold keep their frequencies, what left the span goes and
+// the new part starts empty. The next frame starts the averages again.
+function slideBuffers(fromCentre) {
+  const nb = S.nb, moved = Math.round((fromCentre - S.fc) / binHz());    // bin i of the old span is bin i + moved
+  if (moved > 0) {
+    peakDb.copyWithin(moved, 0, nb - moved);
+    peakDb.fill(-300, 0, moved);
+  } else if (moved < 0) {
+    peakDb.copyWithin(0, -moved);
+    peakDb.fill(-300, nb + moved);
+  }
+  wfAcc.fill(0);
+  wfCount = 0; avgPrimed = false;
+  lastFrameMs = -Infinity;
+  if (waterfallView) waterfallView.setOffsets(lineOffsets());
+}
+// Where each waterfall line's first bin lies, in bins from the span's first bin.
+function lineOffsets() {
+  const offsets = new Float32Array(HIST_ROWS), bin = binHz();
+  for (let row = 0; row < HIST_ROWS; row += 1) offsets[row] = (histCentre[row] - S.fc) / bin;
+  return offsets;
 }
 
 // ------------------------------------------------------------------ engine stream
@@ -187,12 +213,13 @@ let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
 let pendingTune = null;     // { centre, before, f, opts }: where the VFO goes once frames come from centre;
                             // before lists the centres the engine may report on the way
+let newSource = false;      // the next frames come from another receiver: every buffer starts again
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
 
 function onFrame(frame) {
   const codes = frame.codes, nb = codes.length;
-  if (frame.centreHz !== S.fc || frame.rateHz !== S.fs || nb !== S.nb) setCapture(frame.centreHz, frame.rateHz, nb);
+  if (newSource || frame.centreHz !== S.fc || frame.rateHz !== S.fs || nb !== S.nb) setCapture(frame.centreHz, frame.rateHz, nb);
   if (frame.dbMin !== codeDbMin || frame.dbStep !== codeDbStep) {
     codeDbMin = frame.dbMin;
     codeDbStep = frame.dbStep;
@@ -210,13 +237,16 @@ function onFrame(frame) {
 
 // The engine changed its capture: a view that framed the span frames the new
 // one, another keeps its frequencies within its new limits. The VFO goes
-// where a retune asked for it, or stays inside the new span.
+// where a retune asked for it, or stays inside the new span. A span that
+// moved by less than its width keeps what it shows.
 function setCapture(centre, rate, bins) {
-  const framed = viewFramesSpan();
+  const framed = viewFramesSpan(), from = S.fc;
+  const slides = !newSource && rate === S.fs && bins === S.nb && Math.abs(centre - from) < rate;
+  newSource = false;
   S.fc = centre;
   S.fs = rate;
   S.nb = bins;
-  resetBuffers();
+  if (slides) slideBuffers(from); else resetBuffers();
   if (framed) setView(fStart(), fEnd()); else setView(view.f0, view.f1);
   const pending = pendingTune;
   if (pending && pending.centre === centre) {
@@ -251,6 +281,7 @@ const stream = new EngineStream({
   onAudio: (frame) => audio.play(frame),
   onSource: (state) => {
     const limits = viewLimits();
+    if (source && (state.kind !== source.kind || state.address !== source.address)) newSource = true;
     source = state;
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
@@ -350,7 +381,11 @@ const stream = new EngineStream({
     if (state === 'unpaired' && streamOpened) { location.reload(); return; }
     if (state === 'open') streamOpened = true;
     streamState = state;
-    if (state !== 'open') { rateSince = 0; frameRate = 0; audio.reset(); }
+    if (state !== 'open') {
+      rateSince = 0; frameRate = 0; audio.reset();
+      // The engine's state after the next connection tells what became of a retune on its way.
+      if (pendingTune) pendingTune.before = [];
+    }
     if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
     syncSource();
     syncScanner();
@@ -553,6 +588,7 @@ function commitWfLine(now) {
   }
   wfCount = 0;
   histTime[histHead] = now;
+  histCentre[histHead] = S.fc;
   if (waterfallView) waterfallView.uploadRow(histHead, hist.subarray(base, base + nb));
   const slot = Math.floor(now / STAMP_MS);
   if (S.timestamps) {
@@ -566,7 +602,7 @@ let wfKey = '';                     // what the waterfall shows: drawn again onl
 function renderWaterfall() {
   if (!waterfallView) return;
   const W = waterfallView.width;
-  const key = `${histHead} ${histFilled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${S.nb}`;
+  const key = `${histHead} ${histFilled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${S.nb} ${S.fc}`;
   if (key === wfKey) return;
   wfKey = key;
   const bin = binHz();
@@ -970,7 +1006,10 @@ function showHover(e, area) {
       const age = Math.floor(e.clientY - wfWrap.getBoundingClientRect().top);
       if (age >= 0 && age < histFilled) {
         const row = (histHead - age + HIST_ROWS) % HIST_ROWS;
-        txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + bi] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
+        const lineBin = Math.floor((f - histCentre[row] + S.fs / 2) / binHz());    // the line keeps its own frequencies
+        if (lineBin >= 0 && lineBin < S.nb) {
+          txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + lineBin] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
+        }
       }
     }
   } else {
@@ -1178,8 +1217,22 @@ function tune(f, opts = {}) {
   sendDemod(before);
   showVfo(opts.keepView);
 }
+// One step from where the VFO shows. A step into the tenth of the span by an
+// edge, which the receiver's filter dims, moves a span that can move, as a
+// click outside it would. One move at a time: while the span settles, steps
+// add up within the span on its way.
 function stepTune(dir, mult = 1) {
-  tune(snapAt(S.vfo) + dir * stepAt(S.vfo) * mult);
+  const from = shownVfo(), f = snapAt(from) + dir * stepAt(from) * mult;
+  if (streamState === 'open' && sourceTunes()) {
+    const [lo, hi] = targetSpan(), edge = (hi - lo) * EDGE_SHARE;
+    if (pendingTune) {
+      pendingTune.f = Math.round(clamp(f, lo, hi));
+      updateOverlays();
+      return;
+    }
+    if (((dir > 0 && f > hi - edge) || (dir < 0 && f < lo + edge)) && retuneFor(Math.round(clamp(f, ...reach())), {})) return;
+  }
+  tune(f);
 }
 function setMode(mode) {
   const before = demodSnapshot();
@@ -1717,8 +1770,7 @@ function tuneAnywhere(f, opts = {}) {
     f = Math.round(clamp(f, ...reach()));
     const [lo, hi] = targetSpan();
     if (f < lo || f > hi) {
-      const centre = retuneCentre(f, opts);
-      if (centre !== (pendingTune ? pendingTune.centre : source.centreHz) && requestCentre(centre, f, opts)) return;
+      if (retuneFor(f, opts)) return;
     } else if (pendingTune) {
       pendingTune.f = f;              // within the span on its way: the VFO goes there with it
       pendingTune.opts = opts;
@@ -1748,6 +1800,12 @@ function retuneCentre(f, opts) {
   const below = mode === 'USB' ? 0 : mode === 'LSB' ? bw : bw / 2;
   const offset = Math.max(source.rateHz * RETUNE_SHARE, below + RETUNE_MARGIN_HZ);
   return Math.round(clamp(f - offset, source.rangeHz[0], source.rangeHz[1]));
+}
+// Move the span for the VFO to sit at f; false when the span would stay where
+// it is, or goes, or the engine cannot be asked.
+function retuneFor(f, opts) {
+  const centre = retuneCentre(f, opts);
+  return centre !== (pendingTune ? pendingTune.centre : source.centreHz) && requestCentre(centre, f, opts);
 }
 // Ask the engine for the span around centre; the VFO goes to f once frames
 // come from it. A newer request replaces one still on its way.
