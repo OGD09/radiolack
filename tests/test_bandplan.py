@@ -10,10 +10,11 @@ from radiolack.server import WEB_DIR
 MODES = {"NFM", "AM", "USB", "LSB", "CW"}
 COLOUR = re.compile(r"#[0-9a-f]{6}")
 REQUIRED_KEYS = {"from", "to", "name", "type"}
-BAND_KEYS = REQUIRED_KEYS | {"mode", "step", "segments"}
+BAND_KEYS = REQUIRED_KEYS | {"short", "mode", "step", "segments"}
 LOWEST_HZ = 9_000               # where the ITU allocation table starts
 HIGHEST_HZ = 6_425_000_000      # above the 6 GHz of the highest receivers in scope
 LONGEST_NAME = 40               # names show in the readout's single line
+LONGEST_SHORT_NAME = 12         # short names stand in where a band's name does not fit in the band strip
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 
 
@@ -75,6 +76,20 @@ class BandPlanTest(unittest.TestCase):
                     self.assertGreater(entry["step"], 0)
                 if "segments" in entry:
                     self.assertTrue(entry["segments"])
+
+    def test_short_names_are_shorter_and_on_bands_only(self):
+        for band in self.bands:
+            for segment in band.get("segments", ()):
+                with self.subTest(segment=segment["name"]):
+                    self.assertNotIn("short", segment)
+            if "short" not in band:
+                continue
+            short = band["short"]
+            with self.subTest(band=band["name"], short=short):
+                self.assertIs(type(short), str)
+                self.assertTrue(short and short == short.strip() and short.isascii(), short)
+                self.assertLess(len(short), len(band["name"]))
+                self.assertLessEqual(len(short), LONGEST_SHORT_NAME)
 
     def test_every_type_is_used(self):
         self.assertEqual({entry["type"] for entry in self.entries}, set(self.plan["types"]))

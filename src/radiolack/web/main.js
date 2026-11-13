@@ -32,6 +32,12 @@ const AXIS_H = 18;                  // frequency scale under the spectrum, CSS p
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
 const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
 const FIRST_MANUAL_GAIN_DB = 30;    // offered when automatic gain is turned off before any manual gain
+const MAX_ZOOM_OUT = 10;            // widest view, in spans, with a receiver that tunes
+const DETENT_HOLD = 1.15;           // zooming out holds at the span's width until pushed this much further
+const STRIP_SEGMENT_PX = 12;        // the band strip shows a band's ranges while they average this wide, CSS px
+const RETUNE_SHARE = 1 / 32;        // a span that moves for the VFO puts it this share of its width above its centre,
+const RETUNE_MARGIN_HZ = 5000;      // and this far at least past the channel's lower half: clear of the DC residue
+const PENDING_FADE = 0.55;          // how much the span's data fades while the receiver moves to another span
 // Each mode's filter width once tuned to a bookmark (bw) is also the engine's,
 // for its memory scan (demod.py, MODE_BANDWIDTHS_HZ): change them together.
 const MODES = {
@@ -71,6 +77,10 @@ const stampsEl = $('#wf-stamps');
 const vfoEl = $('#vfo');
 const vfoLine = $('#vfo-line');
 const xline = $('#xline');
+const vfoReturnEl = $('#vfo-return');
+const tuneTipEl = $('#tune-tip');
+const showNextSpan = outline($('#span-next'));       // the span a retune on its way brings
+const showPreviewSpan = outline($('#span-preview')); // the span a click would bring
 const marksEl = $('#marks');
 const freqEl = $('#freq');
 const meterFill = $('#smeter .fill');
@@ -95,7 +105,7 @@ const S = {
   autoHide: true, keepAwake: false,
 };
 const view = { f0: 0, f1: 0 };
-let plan = { name: '', ranges: [] };    // band plan, empty until loaded
+let plan = { name: '', ranges: [], bands: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
 let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan }
 
@@ -103,6 +113,7 @@ const fStart = () => S.fc - S.fs / 2;
 const fEnd = () => S.fc + S.fs / 2;
 const binHz = () => S.fs / S.nb;
 const segmentAt = (f) => rangeAt(plan.ranges, f);
+const bandAt = (f) => rangeAt(plan.bands, f);
 // Strip tooltip: a segment of a band also names its band.
 const rangeTitle = (r) => (r.kind === 'segment' ? `${r.band} · ${r.name}` : r.name);
 function stepAt(f) {
@@ -111,8 +122,10 @@ function stepAt(f) {
   return seg && seg.step ? seg.step : DEFAULT_STEP;
 }
 const snapAt = (f) => { const st = stepAt(f); return Math.round(f / st) * st; };
-function passband() {
-  const f = S.vfo, bw = S.bw;
+// Where the VFO shows: where a retune on its way puts it, else where it is.
+const shownVfo = () => (pendingTune ? pendingTune.f : S.vfo);
+function passband(f = S.vfo) {
+  const bw = S.bw;
   if (S.mode === 'USB') return [f, f + bw];
   if (S.mode === 'LSB') return [f - bw, f];
   return [f - bw / 2, f + bw / 2];
@@ -148,9 +161,6 @@ function resetBuffers() {
   lastFrameMs = -Infinity;
   if (waterfallView) waterfallView.setBins(nb);
   clearStamps();
-  const lo = fStart(), hi = fEnd();
-  if (!(view.f1 > view.f0 && view.f0 >= lo && view.f1 <= hi)) { view.f0 = lo; view.f1 = hi; }
-  viewChanged();
 }
 
 // ------------------------------------------------------------------ engine stream
@@ -174,7 +184,8 @@ let remoteNote = '';        // why this interface's last remote access change di
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
-let pendingTune = null;     // { centre, previous, f, opts }: where the VFO goes once frames come from centre
+let pendingTune = null;     // { centre, before, f, opts }: where the VFO goes once frames come from centre;
+                            // before lists the centres the engine may report on the way
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
 
@@ -196,13 +207,16 @@ function onFrame(frame) {
   countFrame(performance.now());
 }
 
-// The engine changed its capture: the VFO goes where a retune asked for it,
-// or stays inside the new span.
+// The engine changed its capture: a view that framed the span frames the new
+// one, another keeps its frequencies within its new limits. The VFO goes
+// where a retune asked for it, or stays inside the new span.
 function setCapture(centre, rate, bins) {
+  const framed = viewFramesSpan();
   S.fc = centre;
   S.fs = rate;
   S.nb = bins;
   resetBuffers();
+  if (framed) setView(fStart(), fEnd()); else setView(view.f0, view.f1);
   const pending = pendingTune;
   if (pending && pending.centre === centre) {
     pendingTune = null;
@@ -235,10 +249,12 @@ const stream = new EngineStream({
   onFrame,
   onAudio: (frame) => audio.play(frame),
   onSource: (state) => {
+    const limits = viewLimits();
     source = state;
     sourceError = '';
-    // A centre that is neither the requested one nor the previous one: another change won.
-    if (pendingTune && state.centreHz !== pendingTune.centre && state.centreHz !== pendingTune.previous) pendingTune = null;
+    // A centre that is neither the requested one nor one reported before it: another change won.
+    if (pendingTune && state.centreHz !== pendingTune.centre && !pendingTune.before.includes(state.centreHz)) dropPendingTune();
+    if (viewLimits() !== limits) setView(view.f0, view.f1);     // the view's limits follow the source's
     syncSource();
     syncSweep();          // whether the receiver tunes, as the sweep needs,
     syncMem();            // and as the memory scan's list tells
@@ -324,7 +340,7 @@ const stream = new EngineStream({
       return;
     }
     sourceError = message;
-    pendingTune = null;
+    dropPendingTune();
     syncSource();       // the controls show the engine's settings again
   },
   onState: (state) => {
@@ -591,11 +607,45 @@ const displayTop = () => Math.round((S.autoRange ? autoTop : S.top) * 10) / 10;
 const levelStep = () => (((specH - AXIS_H) / S.range) * 10 >= 24 ? 10 : 20);
 const freqStep = () => niceStep(((view.f1 - view.f0) * 110) / appW);
 
+// The band plan's colours for the decor outside the span, one texel per
+// column: its band's colour, or nothing outside the plan and while the band
+// strip is hidden.
+let bandGlow = new Uint8Array(0), bandGlowKey = '', bandGlowVersion = 0;
+function updateBandGlow(W) {
+  const key = `${view.f0} ${view.f1} ${W} ${S.showPlan} ${plan.bands.length}`;
+  if (key === bandGlowKey) return;
+  bandGlowKey = key;
+  bandGlowVersion += 1;
+  if (bandGlow.length === 4 * W) bandGlow.fill(0); else bandGlow = new Uint8Array(4 * W);
+  if (!S.showPlan) return;
+  const span = view.f1 - view.f0;
+  let band = null, rgb = [0, 0, 0];
+  for (let x = 0; x < W; x += 1) {
+    const f = view.f0 + ((x + 0.5) / W) * span;
+    if (!band || f < band.from || f >= band.to) {
+      band = bandAt(f);
+      if (band) rgb = band.rgb.split(',').map(Number);
+    }
+    if (!band) continue;
+    bandGlow[4 * x] = rgb[0];
+    bandGlow[4 * x + 1] = rgb[1];
+    bandGlow[4 * x + 2] = rgb[2];
+    bandGlow[4 * x + 3] = 255;
+  }
+}
+
 let specKey = '';                   // what the spectrum shows: drawn again only when it changes
 function renderSpectrum() {
   if (!spectrumView || !specColumns) return;
   const W = spectrumView.width, H = spectrumView.height, s = GLS, top = displayTop();
-  const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks} ${peaksVersion}`;
+  // Outside the span the view draws a decor, and hatches beyond the receiver's reach.
+  const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
+  const [reachLo, reachHi] = reach();
+  const spanX = [toX(fStart()), toX(fEnd())], reachX = [toX(reachLo), toX(reachHi)];
+  const fade = pendingTune ? PENDING_FADE : 0;
+  updateBandGlow(W);
+  const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks} ${peaksVersion}`
+    + ` ${spanX} ${reachX} ${fade} ${bandGlowVersion}`;
   if (key === specKey) return;
   specKey = key;
   const plotH = Math.max(2, H - Math.round(AXIS_H * s));
@@ -629,6 +679,7 @@ function renderSpectrum() {
   spectrumView.draw({
     columns: specColumns, plotHeight: plotH, fill: S.fill, traceWidth: 1.1 * s, peakWidth: S.peakHold ? s : 0,
     grid, markers: markerCorners, markerCount,
+    span: spanX, reach: reachX, floorY: clamp(yOf(floorDb), 0, plotH), scale: s, fade, glow: bandGlow, glowVersion: bandGlowVersion,
   });
 }
 
@@ -682,25 +733,50 @@ function renderScales() {
 const fToX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * appW;
 const xToF = (x) => view.f0 + (x / appW) * (view.f1 - view.f0);
 
+// The band strip by levels of detail, as a map: a band shows its ranges
+// while they average STRIP_SEGMENT_PX on screen, and is one block of its
+// type's colour below that.
+const showsSegments = (band) => band.count > 1 && (fToX(band.to) - fToX(band.from)) / band.count >= STRIP_SEGMENT_PX;
+// What the strip shows at f: a range, or a band drawn as one block.
+function stripItemAt(f) {
+  const band = bandAt(f);
+  return band && !showsSegments(band) ? band : segmentAt(f);
+}
+// Clipped to the strip, in its px: a range can be thousands of times wider than the view.
+const stripExtent = (item) => [Math.max(fToX(item.from) * DPR, 0), Math.min(fToX(item.to) * DPR, bandCanvas.width)];
+// The first of the names that fits between a and b, if one does; whether one did.
+function drawStripLabel(ctx, a, b, names) {
+  const name = names.find((n) => n && ctx.measureText(n).width + 8 * DPR < b - a);
+  if (!name) return false;
+  ctx.fillStyle = 'rgba(230,235,240,0.85)';
+  ctx.fillText(name, (a + b) / 2, bandCanvas.height / 2 - DPR);
+  return true;
+}
+function drawStripBlock(ctx, item, names) {
+  const H = bandCanvas.height, d = DPR, [a, b] = stripExtent(item);
+  ctx.fillStyle = `rgba(${item.rgb},0.26)`;
+  ctx.fillRect(a, 0, Math.max(1, b - a), H);
+  ctx.fillStyle = `rgba(${item.rgb},0.85)`;
+  ctx.fillRect(a, H - 2 * d, Math.max(1, b - a), 2 * d);
+  return drawStripLabel(ctx, a, b, names);
+}
 function drawBandStrip() {
-  const ctx = bandCtx, W = bandCanvas.width, H = bandCanvas.height, d = DPR;
-  ctx.clearRect(0, 0, W, H);
+  const ctx = bandCtx;
+  ctx.clearRect(0, 0, bandCanvas.width, bandCanvas.height);
   if (!S.showPlan) return;
-  ctx.font = `${10 * d}px system-ui, sans-serif`;
+  ctx.font = `${10 * DPR}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  for (const s of plan.ranges) {
-    if (s.to <= view.f0 || s.from >= view.f1) continue;
-    // Clipped to the strip: a range can be thousands of times wider than the view.
-    const a = Math.max(fToX(s.from) * d, 0), b = Math.min(fToX(s.to) * d, W);
-    ctx.fillStyle = `rgba(${s.rgb},0.26)`;
-    ctx.fillRect(a, 0, Math.max(1, b - a), H);
-    ctx.fillStyle = `rgba(${s.rgb},0.85)`;
-    ctx.fillRect(a, H - 2 * d, Math.max(1, b - a), 2 * d);
-    if (ctx.measureText(s.name).width + 8 * d < b - a) {
-      ctx.fillStyle = 'rgba(230,235,240,0.85)';
-      ctx.fillText(s.name, (a + b) / 2, H / 2 - d);
+  for (const band of plan.bands) {
+    if (band.to <= view.f0 || band.from >= view.f1) continue;
+    if (!showsSegments(band)) { drawStripBlock(ctx, band, [band.name, band.short]); continue; }
+    let named = false;
+    for (let i = band.first; i < band.first + band.count; i += 1) {
+      const r = plan.ranges[i];
+      if (r.to > view.f0 && r.from < view.f1 && drawStripBlock(ctx, r, [r.name])) named = true;
     }
+    // Ranges too narrow for their names: the band's name goes over them.
+    if (!named) drawStripLabel(ctx, ...stripExtent(band), [band.name, band.short]);
   }
 }
 
@@ -724,7 +800,7 @@ function renderMarks() {
     el.title = `${it.b.name} · ${fmtMHz(it.b.f)} MHz · ${it.b.mode}`;
     el.style.left = `${it.x}px`;
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
-    el.addEventListener('click', (e) => { e.stopPropagation(); tune(it.b.f, { mode: it.b.mode }); });
+    el.addEventListener('click', (e) => { e.stopPropagation(); tuneAnywhere(it.b.f, { mode: it.b.mode }); });
     marksEl.appendChild(el);
   }
   // Marks are placed left to right: only the first one can reach the dB label column (7 px tick included).
@@ -735,7 +811,7 @@ function renderMarks() {
 
 function renderFreq() {
   if (editingFreq) return;
-  const s = String(Math.round(S.vfo)), n = s.length;
+  const vfo = shownVfo(), s = String(Math.round(vfo)), n = s.length;
   let html = '';
   for (let i = 0; i < n; i += 1) {
     const pos = n - 1 - i;
@@ -743,14 +819,14 @@ function renderFreq() {
     if (pos > 0 && pos % 3 === 0) html += '<span class="sep">.</span>';
   }
   freqEl.innerHTML = html;
-  freqEl.setAttribute('aria-valuenow', String(Math.round(S.vfo)));
-  freqEl.setAttribute('aria-valuetext', `${fmtMHz(S.vfo)} MHz`);
+  freqEl.setAttribute('aria-valuenow', String(Math.round(vfo)));
+  freqEl.setAttribute('aria-valuetext', `${fmtMHz(vfo)} MHz`);
 }
 
 function updateMeta() {
   $('#m-mode').textContent = S.mode;
   $('#m-bw').textContent = fmtBw(S.bw);
-  const seg = segmentAt(S.vfo), step = `step ${fmtBw(stepAt(S.vfo))}`;
+  const vfo = shownVfo(), seg = segmentAt(vfo), step = `step ${fmtBw(stepAt(vfo))}`;
   const where = seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState];
   $('#m-seg').textContent = where ? `${where} · ${step}` : step;
 }
@@ -787,23 +863,88 @@ function updateMeterUi(ts) {
 
 function updateOverlays() {
   if (!appW) return;
-  const [lo, hi] = passband();
+  const vfo = shownVfo(), [lo, hi] = passband(vfo);
   const x0 = fToX(lo), x1 = fToX(hi);
   const visible = x1 >= -2 && x0 <= appW + 2;
   vfoEl.style.display = visible ? '' : 'none';
   vfoLine.style.display = visible ? '' : 'none';
   vfoEl.style.transform = `translateX(${x0}px)`;
   vfoEl.style.width = `${Math.max(1, x1 - x0)}px`;
-  vfoLine.style.transform = `translateX(${Math.round(fToX(S.vfo))}px)`;
+  vfoLine.style.transform = `translateX(${Math.round(fToX(vfo))}px)`;
+  showNextSpan(pendingTune ? spanAround(pendingTune.centre) : null);
+  syncVfoReturn(vfo);
   renderMarks();
   drawBandStrip();
   updateMeta();
   renderFreq();
 }
 
+// An outline over the views around a range of frequencies, written to the
+// page only when it moves; null hides it.
+function outline(el) {
+  let shownKey = '';
+  return (range) => {
+    const x0 = range ? Math.round(fToX(range[0])) : 0, x1 = range ? Math.round(fToX(range[1])) : 0;
+    const key = range && x1 >= 0 && x0 <= appW ? `${x0} ${x1}` : '';
+    if (key === shownKey) return;
+    shownKey = key;
+    el.hidden = !key;
+    if (!key) return;
+    el.style.transform = `translateX(${x0}px)`;
+    el.style.width = `${Math.max(1, x1 - x0)}px`;
+  };
+}
+
+// When the VFO lies outside the view, a label at that edge of the spectrum
+// gives its frequency; clicking it brings the view back to it, at the same zoom.
+let vfoReturnText = '';
+function syncVfoReturn(vfo) {
+  const side = vfo < view.f0 ? 'left' : vfo > view.f1 ? 'right' : '';
+  const text = side === 'left' ? `← ${fmtMHz(vfo)} MHz` : side === 'right' ? `${fmtMHz(vfo)} MHz →` : '';
+  if (text === vfoReturnText) return;
+  vfoReturnText = text;
+  vfoReturnEl.hidden = !side;
+  if (!side) return;
+  vfoReturnEl.textContent = text;
+  vfoReturnEl.classList.toggle('right', side === 'right');
+  vfoReturnEl.setAttribute('aria-label', `Show the VFO, at ${fmtMHz(vfo)} MHz`);
+}
+vfoReturnEl.addEventListener('click', () => {
+  const span = view.f1 - view.f0, f = shownVfo();
+  setView(f - span / 2, f + span / 2);
+});
+
+// Before a click outside the span, an outline shows where the span would go
+// and a tip by the pointer says what the click does. A mouse only: a finger
+// has no hover, and sees the span on its way just after its tap.
+let tuneTipText = '';
+function showTunePreview(at, f) {
+  let range = null, tip = '';
+  if (at && at.pointerType === 'mouse' && at.area !== 'band' && !(drag && drag.moved) && streamState === 'open' && sourceTunes()) {
+    const [lo, hi] = targetSpan();
+    if (f < lo || f > hi) {
+      range = spanAround(retuneCentre(snapAt(clamp(f, ...reach())), {}));
+      tip = reachable(f) ? 'Click: tune here' : "Out of the receiver's reach · Click: tune to the nearest frequency";
+      if (memoryRuns()) tip += ' · stops the memory scan';
+      else if (sweepRuns()) tip += ' · stops the sweep';
+    }
+  }
+  showPreviewSpan(range);
+  if (tip !== tuneTipText) {
+    tuneTipText = tip;
+    tuneTipEl.textContent = tip;
+    tuneTipEl.hidden = !tip;
+  }
+  if (!tip) return;
+  // Beside the pointer, on the side with room.
+  const x = at.clientX > appW * 0.6 ? `calc(${Math.round(at.clientX) - 12}px - 100%)` : `${Math.round(at.clientX) + 12}px`;
+  const y = at.clientY > window.innerHeight - 48 ? `calc(${Math.round(at.clientY) - 10}px - 100%)` : `${Math.round(at.clientY) + 16}px`;
+  tuneTipEl.style.transform = `translate(${x}, ${y})`;
+}
+
 let hoverAt = null;                 // last pointer position over a view, to refresh the readout when the view moves
 function showHover(e, area) {
-  hoverAt = { clientX: e.clientX, clientY: e.clientY, area };
+  hoverAt = { clientX: e.clientX, clientY: e.clientY, area, pointerType: e.pointerType };
   const x = e.clientX, f = xToF(x);
   xline.hidden = false;
   xline.style.transform = `translateX(${Math.round(x)}px)`;
@@ -819,12 +960,15 @@ function showHover(e, area) {
         txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + bi] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
       }
     }
+  } else {
+    txt += reachable(f) ? ' · outside the span' : ' · out of reach';
   }
   const seg = segmentAt(f);
   if (seg) txt += ` · ${seg.name}`;
   hoverEl.textContent = txt;
+  showTunePreview(hoverAt, f);
 }
-function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; }
+function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; showTunePreview(null, 0); }
 
 function updateStatus() {
   let text;
@@ -893,6 +1037,7 @@ function layout() {
   dbCanvas.height = Math.max(2, Math.round((specH - AXIS_H) * DPR));
   specKey = wfKey = axisKey = levelKey = '';     // resized canvases are blank
   noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
+  vfoReturnEl.style.top = `${Math.round((specH - AXIS_H) / 2)}px`;
   // On narrow screens the readout sits over the dB label column: start the labels below it.
   const ro = readoutEl.getBoundingClientRect();
   labelTopCss = ro.left < 60 ? Math.ceil(ro.bottom) + 8 : 40;
@@ -905,29 +1050,71 @@ function viewChanged() {
   if (hoverAt) showHover(hoverAt, hoverAt.area);
 }
 
+// The view stays within the span with a source that does not tune. With one
+// that does, it reaches MAX_ZOOM_OUT spans, its centre within the receiver's
+// reach; zooming out holds at the span's width first (the detent).
 const minSpan = () => Math.max(4000, binHz() * 16);
-function setView(f0, f1) {
-  const lo = fStart(), hi = fEnd();
-  const span = clamp(f1 - f0, minSpan(), hi - lo);
-  const a = clamp((f0 + f1) / 2 - span / 2, lo, hi - span);
-  view.f0 = a;
-  view.f1 = a + span;
+const freeView = () => sourceTunes();
+const clampSpan = (span) => clamp(span, minSpan(), (freeView() ? MAX_ZOOM_OUT : 1) * S.fs);
+const viewLimits = () => `${freeView()} ${reach()}`;
+const viewInSpan = () => view.f0 >= fStart() - 1 && view.f1 <= fEnd() + 1;
+const viewFramesSpan = () => Math.abs(view.f0 - fStart()) <= 1 && Math.abs(view.f1 - fEnd()) <= 1;
+const atSpanWidth = (span) => Math.abs(span - S.fs) <= S.fs * 1e-9;
+// Where a view of this centre and width goes. One kept in the span stays
+// inside it while it fits, as with a source that does not tune.
+function fitView(centre, span, keepInSpan = false) {
+  const s = clampSpan(span);
+  const [lo, hi] = freeView() && !(keepInSpan && s <= S.fs) ? reach() : [fStart() + s / 2, fEnd() - s / 2];
+  const c = clamp(centre, lo, hi);
+  return [c - s / 2, c + s / 2];
+}
+function setView(f0, f1, keepInSpan = false) {
+  [view.f0, view.f1] = fitView((f0 + f1) / 2, f1 - f0, keepInSpan);
   viewChanged();
+}
+// The width a step of zoom from span to s gives: zooming in stops once at the
+// span's width, zooming out holds there until pushed DETENT_HOLD times further.
+let detentPush = 1;
+function detentSpan(span, s) {
+  if (freeView()) {
+    if (atSpanWidth(span)) {
+      if (s > span) {
+        detentPush *= s / span;
+        if (detentPush < DETENT_HOLD) return S.fs;
+        s = S.fs * (detentPush / DETENT_HOLD);
+      }
+    } else if ((span < S.fs) !== (s < S.fs)) {
+      s = S.fs;
+    }
+  }
+  detentPush = 1;
+  return s;
+}
+// The same detent for a pinch, from the width it started at: past the span's
+// width, the view stays there until the fingers spread DETENT_HOLD times
+// further, and the other way round.
+function pinchSpan(raw, start) {
+  const whole = S.fs;
+  if (!freeView()) return raw;
+  if (start <= whole || atSpanWidth(start)) return raw <= whole ? raw : raw < whole * DETENT_HOLD ? whole : raw / DETENT_HOLD;
+  return raw >= whole ? raw : raw > whole / DETENT_HOLD ? whole : raw * DETENT_HOLD;
 }
 function zoomAt(factor, anchor) {
   const span = view.f1 - view.f0, r = (anchor - view.f0) / span;
-  const s = clamp(span * factor, minSpan(), fEnd() - fStart());
-  const a = clamp(anchor - r * s, fStart(), fEnd() - s);
-  view.f0 = a;
-  view.f1 = a + s;
-  viewChanged();
+  const s = clampSpan(detentSpan(span, span * factor));
+  // At the detent, zooming around a point of the span frames the span.
+  if (freeView() && atSpanWidth(s) && anchor >= fStart() && anchor <= fEnd()) setView(fStart(), fEnd());
+  else setView(anchor - r * s, anchor + (1 - r) * s, viewInSpan());
 }
+// Frame a range or a band; framing it again frames the span. With a source
+// that does not tune, only the part inside the span can show.
 function zoomToSegment(seg) {
   if (!seg) return;
-  // Only the part inside the captured span can be shown.
-  const from = Math.max(seg.from, fStart()), to = Math.min(seg.to, fEnd());
+  const from = freeView() ? seg.from : Math.max(seg.from, fStart());
+  const to = freeView() ? seg.to : Math.min(seg.to, fEnd());
   if (!(to > from)) return;
-  const pad = (to - from) * 0.08, a = from - pad, b = to + pad, w = b - a;
+  const pad = (to - from) * 0.08;
+  const [a, b] = fitView((from + to) / 2, to - from + 2 * pad), w = b - a;
   const same = Math.abs(view.f1 - view.f0 - w) < w * 0.05 && Math.abs((view.f0 + view.f1) / 2 - (a + b) / 2) < w * 0.05;
   if (same) setView(fStart(), fEnd()); else setView(a, b);
 }
@@ -953,9 +1140,11 @@ function sendDemod(before) {
   if (S.sqlAuto !== before.sqlAuto) changes.squelchAuto = S.sqlAuto;
   if (Object.keys(changes).length) stream.sendDemod(changes);
 }
-// Show the VFO's settings, bringing the VFO into view unless keepView.
+// Show the VFO's settings, bringing the VFO into view unless keepView. A view
+// that frames the span stays: the VFO lies outside the span only while the
+// span follows it, and the view frames the new span when its frames come.
 function showVfo(keepView = false) {
-  if (!keepView && (S.vfo < view.f0 || S.vfo > view.f1)) {
+  if (!keepView && !viewFramesSpan() && (S.vfo < view.f0 || S.vfo > view.f1)) {
     const span = view.f1 - view.f0;
     setView(S.vfo - span / 2, S.vfo + span / 2);
   }
@@ -995,6 +1184,7 @@ function setBandwidth(bw) {
 // mode applies only when the user tunes into another range.
 function applyDemod(state) {
   if (!MODES[state.mode]) return;
+  const moved = state.frequencyHz !== S.vfo;
   S.vfo = state.frequencyHz;
   S.mode = state.mode;
   S.bw = state.bandwidthHz;
@@ -1002,8 +1192,11 @@ function applyDemod(state) {
   S.sqlAuto = state.squelchAuto;
   audioModes = state.audioModes;
   demodError = '';
-  lastSeg = segmentAt(S.vfo);
-  showVfo();
+  // While a retune is on its way, the engine keeps the VFO inside the new span
+  // until frames come: the view, and the range the user tunes from, stay.
+  const settling = pendingTune !== null;
+  if (!settling) lastSeg = segmentAt(S.vfo);
+  showVfo(settling || !moved);  // a view looking elsewhere stays there, unless the VFO moved
   syncAudioNote();
 }
 
@@ -1478,12 +1671,7 @@ $('#src-address').addEventListener('change', (e) => {
 $('#src-center').addEventListener('change', (e) => {
   const hz = Math.round(parseFloat(e.target.value.replace(',', '.')) * 1e6);
   if (!source || !Number.isFinite(hz) || hz === source.centreHz) { syncSource(); return; }
-  const previous = source.centreHz;
-  if (stream.sendSource({ centreHz: hz })) {
-    pendingTune = { centre: hz, previous, f: hz + (S.vfo - S.fc), opts: {} };   // the VFO keeps its place in the span
-  } else {
-    syncSource();
-  }
+  if (!requestCentre(hz, hz + (S.vfo - S.fc), {})) syncSource();     // the VFO keeps its place in the span
 });
 $('#src-rate').addEventListener('change', (e) => { if (!stream.sendSource({ rateHz: Number(e.target.value) })) syncSource(); });
 $('#src-gain').addEventListener('input', () => { const g = sliderGain(); if (g !== undefined) $('#src-gain-v').textContent = `${g.toFixed(1)} dB`; });
@@ -1505,28 +1693,61 @@ $('#src-ppm').addEventListener('change', (e) => {
 });
 $('#src-dc').addEventListener('change', (e) => { if (!stream.sendSource({ dcRemoval: e.target.checked })) syncSource(); });
 
-// Tune to f, asking the engine for another span when f lies outside the
-// current one: f then sits a quarter of the span above the centre, clear of
-// the DC spike. A source that cannot retune keeps the VFO within its span.
+// Tune to f. Outside the span, with a source that tunes, the engine moves the
+// span first, and the VFO goes to f once frames come from there; beyond the
+// receiver's reach, f becomes the nearest frequency it reaches. A source that
+// cannot retune keeps the VFO within its span.
 function tuneAnywhere(f, opts = {}) {
   if (!Number.isFinite(f)) return;
-  const inside = f >= fStart() && f <= fEnd();
-  if (!inside && streamState === 'open' && source && source.settable.includes('centre_hz')) {
-    const [lo, hi] = source.rangeHz;
-    const centre = Math.round(clamp(f - source.rateHz / 4, lo, hi));
-    const previous = source.centreHz;
-    if (centre !== previous && stream.sendSource({ centreHz: centre })) {
-      pendingTune = { centre, previous, f: Math.round(f), opts };
+  if (streamState === 'open' && sourceTunes()) {
+    f = Math.round(clamp(f, ...reach()));
+    const [lo, hi] = targetSpan();
+    if (f < lo || f > hi) {
+      const centre = retuneCentre(f, opts);
+      if (centre !== (pendingTune ? pendingTune.centre : source.centreHz) && requestCentre(centre, f, opts)) return;
+    } else if (pendingTune) {
+      pendingTune.f = f;              // within the span on its way: the VFO goes there with it
+      pendingTune.opts = opts;
+      updateOverlays();
       return;
     }
   }
   tune(f, opts);
 }
-// Whether the source can show f: its centre range, widened by half a span.
-function reachable(f) {
-  if (!source) return f >= fStart() && f <= fEnd();
-  const half = (source.settable.includes('centre_hz') ? source.rateHz : S.fs) / 2;
-  return f >= source.rangeHz[0] - half && f <= source.rangeHz[1] + half;
+// What the source can show: its centre range widened by half a span, or the
+// span alone when it does not tune.
+function reach() {
+  if (!sourceTunes()) return [fStart(), fEnd()];
+  const half = source.rateHz / 2;
+  return [source.rangeHz[0] - half, source.rangeHz[1] + half];
+}
+function reachable(f) { const [lo, hi] = reach(); return f >= lo && f <= hi; }
+const spanAround = (centre) => [centre - (source ? source.rateHz : S.fs) / 2, centre + (source ? source.rateHz : S.fs) / 2];
+// The span the VFO has to lie in: the one a retune on its way brings, else the one in use.
+const targetSpan = () => (pendingTune ? spanAround(pendingTune.centre) : [fStart(), fEnd()]);
+// Where the span goes for the VFO to sit at f: nearly centred, f a little
+// above the centre, clear of the DC residue there and of the channel's lower
+// half, within the receiver's range. The mode is the one tune() will pick.
+function retuneCentre(f, opts) {
+  const seg = segmentAt(f), picked = opts.mode || (S.autoMode && seg && seg.mode) || S.mode;
+  const mode = MODES[picked] ? picked : S.mode, bw = mode === S.mode ? S.bw : MODES[mode].bw;
+  const below = mode === 'USB' ? 0 : mode === 'LSB' ? bw : bw / 2;
+  const offset = Math.max(source.rateHz * RETUNE_SHARE, below + RETUNE_MARGIN_HZ);
+  return Math.round(clamp(f - offset, source.rangeHz[0], source.rangeHz[1]));
+}
+// Ask the engine for the span around centre; the VFO goes to f once frames
+// come from it. A newer request replaces one still on its way.
+function requestCentre(centre, f, opts) {
+  if (!stream.sendSource({ centreHz: centre })) return false;
+  const before = pendingTune ? [...pendingTune.before, pendingTune.centre] : [source.centreHz];
+  pendingTune = { centre, before, f, opts };
+  viewChanged();      // the outlines, and the tip under a pointer that has not moved
+  return true;
+}
+function dropPendingTune() {
+  if (!pendingTune) return;
+  pendingTune = null;
+  viewChanged();
 }
 
 // Demodulation
@@ -2065,7 +2286,7 @@ ctxEl.addEventListener('click', (e) => {
   const b = e.target.closest('button[data-cmd]');
   if (!b || b.disabled) return;
   const f = snapAt(ctxF), seg = segmentAt(ctxF);
-  if (b.dataset.cmd === 'tune') tune(f);
+  if (b.dataset.cmd === 'tune') tuneAnywhere(f);
   else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
@@ -2104,15 +2325,15 @@ function startPinch() {
   cancelLongPress();
   drag = null;
   const [a, b] = [...touchX.values()];
-  pinch = { d0: Math.max(24, Math.abs(a - b)), mid0: (a + b) / 2, f0: view.f0, f1: view.f1 };
+  pinch = { d0: Math.max(24, Math.abs(a - b)), mid0: (a + b) / 2, f0: view.f0, f1: view.f1, inSpan: viewInSpan() };
 }
 function updatePinch() {
   const [a, b] = [...touchX.values()];
   const span0 = pinch.f1 - pinch.f0;
-  const span = span0 * (pinch.d0 / Math.max(24, Math.abs(a - b)));
+  const span = clampSpan(pinchSpan(span0 * (pinch.d0 / Math.max(24, Math.abs(a - b))), span0));
   const anchor = pinch.f0 + (pinch.mid0 / appW) * span0;   // frequency under the initial midpoint
   const start = anchor - (((a + b) / 2) / appW) * span;
-  setView(start, start + span);
+  setView(start, start + span, pinch.inSpan);
 }
 function releaseTouch(e) {
   touchX.delete(e.pointerId);
@@ -2176,7 +2397,7 @@ function onUp(e) {
   guardCtxRelease(e);
   releaseTouch(e);
   if (!drag) return;
-  if (drag.hit === 'free' && !drag.moved) tune(snapAt(drag.f0));
+  if (drag.hit === 'free' && !drag.moved) tuneAnywhere(snapAt(drag.f0));
   drag = null;
 }
 function onCancel(e) {
@@ -2226,15 +2447,15 @@ bandEl.addEventListener('pointerdown', (e) => {
 bandEl.addEventListener('pointermove', (e) => {
   poke();
   showHover(e, 'band');
-  const seg = segmentAt(xToF(e.clientX));
-  bandEl.title = seg ? `${rangeTitle(seg)} · ${fmtEdge(seg.from)}–${fmtEdge(seg.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+  const item = stripItemAt(xToF(e.clientX));
+  bandEl.title = item ? `${rangeTitle(item)} · ${fmtEdge(item.from)}–${fmtEdge(item.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
   if (bandDrag.moved) { S.split = clamp((bandDrag.h0 + dy) / (window.innerHeight - bandHeight()), 0.12, 0.8); layoutPending = true; }
 });
 bandEl.addEventListener('pointerup', (e) => {
-  if (bandDrag && !bandDrag.moved) zoomToSegment(segmentAt(xToF(e.clientX)));
+  if (bandDrag && !bandDrag.moved) zoomToSegment(stripItemAt(xToF(e.clientX)));
   bandDrag = null;
 });
 bandEl.addEventListener('pointercancel', () => { bandDrag = null; });
@@ -2248,7 +2469,7 @@ function editFreq() {
   input.type = 'text';
   input.inputMode = 'decimal';
   input.className = 'freq-input';
-  input.value = fmtMHz(S.vfo);
+  input.value = fmtMHz(shownVfo());
   input.setAttribute('aria-label', 'Frequency in MHz');
   freqEl.replaceChildren(input);
   input.focus();
@@ -2324,8 +2545,8 @@ window.addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'ArrowRight': stepTune(1, e.shiftKey ? 10 : 1); break;
     case 'ArrowLeft': stepTune(-1, e.shiftKey ? 10 : 1); break;
-    case '+': case '=': zoomAt(1 / 1.5, S.vfo); break;
-    case '-': case '_': zoomAt(1.5, S.vfo); break;
+    case '+': case '=': zoomAt(1 / 1.5, shownVfo()); break;
+    case '-': case '_': zoomAt(1.5, shownVfo()); break;
     case '0': setView(fStart(), fEnd()); break;
     case 'm': case 'M': setMode(MODE_ORDER[(MODE_ORDER.indexOf(S.mode) + 1) % MODE_ORDER.length]); break;
     default:
@@ -2394,6 +2615,7 @@ function loop(ts) {
 
 // ------------------------------------------------------------------ start
 resetBuffers();
+setView(fStart(), fEnd());
 layout();
 syncSource();
 syncDisplay();

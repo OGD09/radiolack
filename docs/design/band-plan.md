@@ -43,6 +43,7 @@ Each band, and each segment inside a band:
 | --- | --- |
 | `from`, `to` | Edges in whole Hz; `to` is excluded. |
 | `name` | What the range is used for: English, ASCII, at most 40 characters. |
+| `short` | Bands only, optional: a shorter name, at most 12 characters, that the band strip shows where the name does not fit (`2 m` for `2 m amateur`). |
 | `type` | One of `types`. |
 | `mode` | Optional: `NFM`, `AM`, `USB`, `LSB` or `CW`, the demodulator selected when tuning into the range. Without it, the mode stays as it is. |
 | `step` | Optional: tuning step in Hz, used by the Automatic step. The default is 100 Hz. |
@@ -54,5 +55,10 @@ steps reach its channel centres (446.00625 MHz + n × 12.5 kHz). FM broadcast
 steps by 50 kHz, to reach the stations that some countries place between the
 100 kHz channels; it has no mode until a WFM demodulator exists (open question
 in [`scoping.md`](scoping.md)).
+
+Zoomed out, the band strip draws a band's segments while they average at
+least 12 px on screen, and the whole band as one block of its type's colour
+below that. The shortwave broadcast bands have no short name: theirs would
+read like the amateur bands' (`15 m`).
 
 Plans for other regions will be other files in the same format.

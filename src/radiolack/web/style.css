@@ -41,6 +41,26 @@ html, body {
 #vfo.open { background: rgba(89, 167, 255, 0.19); }
 #vfo-line { width: 1px; background: rgba(89, 167, 255, 0.95); }
 #xline { width: 1px; background: rgba(255, 255, 255, 0.16); }
+/* The span that a click outside it would bring, and the one a retune on its way brings. */
+.span-outline {
+  position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2; will-change: transform;
+  border-left: 1px solid rgba(215, 221, 229, 0.45); border-right: 1px solid rgba(215, 221, 229, 0.45);
+}
+#span-preview { background: rgba(215, 221, 229, 0.035); }
+#span-next { border-left-style: dashed; border-right-style: dashed; border-color: rgba(215, 221, 229, 0.6); }
+/* At the edge of the spectrum on the VFO's side, when the VFO lies outside the view. */
+#vfo-return {
+  position: absolute; left: 44px; z-index: 3; transform: translateY(-50%); white-space: nowrap; cursor: pointer;
+  font: 11px/1.5 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--text);
+  background: rgba(14, 17, 22, 0.78); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px;
+}
+#vfo-return.right { left: auto; right: 8px; }
+#vfo-return:hover { border-color: rgba(89, 167, 255, 0.6); }
+#tune-tip {
+  position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; white-space: nowrap;
+  font-size: 11px; padding: 2px 7px; color: var(--text); background: rgba(10, 12, 15, 0.85);
+  border: 1px solid var(--line); border-radius: 5px;
+}
 
 #brand {
   position: absolute; top: calc(10px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); z-index: 5; margin: 0;
@@ -261,7 +281,7 @@ table.peaks tr.active .freq-link { color: var(--ok); }
   .btn, .link { min-height: 36px; }
   .freq-link { min-height: 32px; }
   #ctx button { padding: 12px 14px; }
-  .mark { font-size: 12px; padding: 3px 8px; }
+  .mark, #vfo-return { font-size: 12px; padding: 3px 8px; }
   #status, #hoverinfo { display: none; }
   #tunepad { display: block; }
   #sound { display: flex; }

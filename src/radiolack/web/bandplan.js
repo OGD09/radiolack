@@ -2,7 +2,9 @@
  * Band plan: what each frequency range is used for, read from a JSON file
  * served next to the interface (format in docs/design/band-plan.md). The
  * file's bands and segments become one sorted list of ranges for the band
- * strip, the readouts and the automatic mode and step.
+ * strip, the readouts and the automatic mode and step, and the bands stay
+ * whole beside it, for the band strip when a band's segments are too narrow
+ * to read.
  */
 
 export const BAND_PLAN_FORMAT = 1;
@@ -24,9 +26,23 @@ const COLOUR = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
  */
 
 /**
+ * One band of the file, whole: its ranges are `count` ranges of
+ * BandPlan.ranges from `first`, one when it has no segments.
+ * @typedef {object} PlanBand
+ * @property {number} from          lower edge, Hz
+ * @property {number} to            upper edge, Hz, excluded
+ * @property {string} name
+ * @property {string | null} short  shorter name for where the name does not fit, if the file gives one
+ * @property {string} rgb           colour of its type, as "r,g,b"
+ * @property {number} first
+ * @property {number} count
+ */
+
+/**
  * @typedef {object} BandPlan
  * @property {string} name
  * @property {PlanRange[]} ranges   sorted by frequency, without overlaps
+ * @property {PlanBand[]} bands     sorted by frequency, without overlaps
  */
 
 /**
@@ -35,6 +51,7 @@ const COLOUR = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
  * @property {number} from
  * @property {number} to
  * @property {string} name
+ * @property {string | null} short
  * @property {string} rgb
  * @property {string | null} mode
  * @property {number | null} step
@@ -77,34 +94,37 @@ export function parseBandPlan(data, modes) {
 
   /** @type {PlanRange[]} */
   const ranges = [];
+  /** @type {PlanBand[]} */
+  const bands = [];
   let edge = -Infinity;
   for (const item of data.bands) {
     const band = readEntry(item, colours, modes);
     if (band.from < edge) fail(`${band.name}: bands overlap or are out of order`);
     edge = band.to;
-    if (band.segments.length === 0) {
-      ranges.push(toRange(band, band.name, 'band'));
-      continue;
-    }
+    const first = ranges.length;
+    if (band.segments.length === 0) ranges.push(toRange(band, band.name, 'band'));
     let cursor = band.from;
     for (const part of band.segments) {
       const segment = readEntry(part, colours, modes);
       if (segment.segments.length) fail(`${segment.name}: a segment cannot have segments`);
+      if (segment.short !== null) fail(`${segment.name}: only bands have a short name`);
       if (segment.from < cursor || segment.to > band.to) fail(`${band.name}: ${segment.name} is out of order or outside the band`);
       if (segment.from > cursor) ranges.push(toRange({ ...band, from: cursor, to: segment.from }, band.name, 'gap'));
       ranges.push(toRange(segment, band.name, 'segment'));
       cursor = segment.to;
     }
-    if (cursor < band.to) ranges.push(toRange({ ...band, from: cursor, to: band.to }, band.name, 'gap'));
+    if (band.segments.length && cursor < band.to) ranges.push(toRange({ ...band, from: cursor, to: band.to }, band.name, 'gap'));
+    bands.push({ from: band.from, to: band.to, name: band.name, short: band.short, rgb: band.rgb, first, count: ranges.length - first });
   }
-  return { name, ranges };
+  return { name, ranges, bands };
 }
 
 /**
- * The range that contains a frequency, or null outside the plan.
- * @param {readonly PlanRange[]} ranges  sorted, without overlaps
+ * The range, or the band, that contains a frequency, or null outside the plan.
+ * @template {{ from: number, to: number }} R
+ * @param {readonly R[]} ranges  sorted, without overlaps
  * @param {number} f  Hz
- * @returns {PlanRange | null}
+ * @returns {R | null}
  */
 export function rangeAt(ranges, f) {
   let lo = 0, hi = ranges.length - 1;
@@ -126,6 +146,7 @@ export function rangeAt(ranges, f) {
 function readEntry(item, colours, modes) {
   if (!isObject(item)) fail('bands and segments must be objects');
   const name = text(item.name, 'name');
+  const short = item.short === undefined ? null : text(item.short, `${name}: the short name`);
   const { from, to } = item;
   if (!isHz(from) || !isHz(to) || from >= to) fail(`${name}: from and to must be whole Hz, from below to`);
   const rgb = colours.get(String(item.type));
@@ -144,7 +165,7 @@ function readEntry(item, colours, modes) {
   }
   const segments = item.segments ?? [];
   if (!Array.isArray(segments)) fail(`${name}: segments must be a list`);
-  return { from, to, name, rgb, mode, step, segments };
+  return { from, to, name, short, rgb, mode, step, segments };
 }
 
 /**
