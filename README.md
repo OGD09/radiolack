@@ -258,8 +258,14 @@ With either option:
   2.4 MS/s, with the channel at least 5 kHz from the centre: clear of the
   receiver's DC spike. The frequency shows at once, and the VFO goes there
   once frames come from the new span. A click beyond the receiver's reach
-  tunes to the nearest frequency it reaches. Stepping (the wheel, the arrow
-  keys, the − and + buttons) and dragging the filter stay within the span.
+  tunes to the nearest frequency it reaches.
+- Stepping (the wheel, the arrow keys, the − and + buttons) moves the span
+  by the same rule when a step would enter the outer tenth of the span on
+  either side, which the receiver's filter dims: about every megahertz at
+  2.4 MS/s. One move at a time: steps made while the receiver settles add
+  up, and the VFO goes there with the new span. Dragging the filter stays
+  within the span, and so does stepping with a source that does not tune,
+  such as the simulated band.
 - After a change of frequency, sample rate or frequency correction, the
   display waits 0.4 s for the receiver to settle.
 - When rtl_tcp cannot be reached, stops sending or drops the connection, the
@@ -338,6 +344,12 @@ dims. Then a view that showed the whole span shows the new one; another view
 stays where it is if it shows the VFO, and otherwise follows it at the same
 zoom. When the VFO lies outside the view, a label at that edge gives its
 frequency: clicking it brings the view back to the VFO, at the same zoom.
+
+When the span moves by less than its width, as a step past its edge moves
+it, the waterfall moves with it: each line stays at its own frequencies,
+within the span only, so what leaves the span goes and the new part starts
+empty. The peak hold moves the same way. A longer move, another sample
+rate or FFT size, or another receiver starts them again.
 
 ## Scanners
 
@@ -424,7 +436,9 @@ find a signal there twice in a row, then asks for the next one; it also
 moves on when, 2 s after asking for a window, the samples still come from
 elsewhere. At 2.4 MS/s, a pass of the 17 windows of 430 to 440 MHz takes
 about 16 s, the receiver taking 0.4 s to settle at each. The spectrum and
-the waterfall show each window, and the VFO stays inside it.
+the waterfall show each window, and the VFO stays inside it; the waterfall
+keeps the lines of the windows before it at their frequencies, where they
+overlap it ([Spectrum view](#spectrum-view)).
 
 Any interface starts and stops the sweep, a paired device's included, and
 every interface shows the pass and the window it is at; their status lines
