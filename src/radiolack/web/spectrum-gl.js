@@ -12,12 +12,11 @@ import { COVER_VERTEX_SHADER, createDataTexture, createProgram, getContext, unif
 // neighbour; a pixel is covered by the part of that span within half the
 // line width.
 //
-// Outside the span nothing is measured, and the decor says so: a darker
-// background where the grid goes on out of focus, the band plan's colours
-// rising faintly from the band strip, and a flat line at the span's noise
-// level, sharp where the trace ends and blurred and grey further out, which
-// holds the place of the trace without imitating one. Beyond the receiver's
-// reach, hatching instead of the line.
+// Outside the span nothing is measured, and the decor says so: the span
+// stands as a lit window whose light fades away from its edges into a darker
+// background, where the grid goes on out of focus and fades too, and the
+// band plan's colours rise faintly from the band strip. Nothing stands where
+// the trace would be. Beyond the receiver's reach, hatching as well.
 const PLOT_SHADER = `#version 300 es
 precision highp float;
 precision highp int;
@@ -32,13 +31,14 @@ uniform bool u_fill;
 uniform vec4 u_grid;                // first x, x spacing, first y, y spacing, px; a spacing of 0 hides
 uniform vec2 u_span;                // x of the span's edges, px: the data lies between them
 uniform vec2 u_reach;               // x of the edges of the receiver's reach, px
-uniform float u_floorY;             // y of the span's noise level, px from the top
 uniform float u_scale;              // px per CSS px
 uniform float u_fade;               // 0 to 1: how far the span's data fades while the receiver moves
 out vec4 colour;
 
 const vec3 BACKGROUND = vec3(10.0, 12.0, 15.0) / 255.0;
 const vec3 OUTSIDE = vec3(6.0, 7.0, 9.0) / 255.0;
+const vec3 DARK = vec3(3.0, 4.0, 5.0) / 255.0;      // the background far from the span
+const float LIGHT_FALLOFF = 90.0;   // CSS px from the span's edge over which its light falls to 1/e
 const float GRID_ALPHA = 0.055;
 const float SOFT_GRID_ALPHA = 0.026;
 const float BASELINE_ALPHA = 0.08;
@@ -48,8 +48,6 @@ const float GLOW_ALPHA = 0.08;
 const vec3 AREA = vec3(89.0, 167.0, 255.0) / 255.0;
 const vec4 PEAK = vec4(242.0 / 255.0, 179.0 / 255.0, 61.0 / 255.0, 0.55);
 const vec3 TRACE = vec3(214.0, 222.0, 232.0) / 255.0;
-const vec3 GREY = vec3(120.0, 127.0, 136.0) / 255.0;
-const float LINE_FADE = 40.0;       // CSS px from the span's edge over which the flat line blurs and greys
 
 int lastColumn() { return textureSize(u_columns, 0).x - 1; }
 
@@ -92,20 +90,19 @@ vec3 plot(float x, float y, vec3 c) {
   return mix(c, OUTSIDE, u_fade);
 }
 
-vec3 decor(float x, float y, vec3 c) {
+vec3 decor(float x, float y) {
+  float light = exp(-min(abs(x - u_span.x), abs(x - u_span.y)) / (LIGHT_FALLOFF * u_scale));
+  vec3 c = mix(DARK, BACKGROUND, light);
   vec4 band = texelFetch(u_glow, ivec2(clamp(int(x), 0, lastColumn()), 0), 0);
   c = mix(c, band.rgb, band.a * GLOW_ALPHA * y / u_plotHeight);
-  float sigma = 1.6 * u_scale;
-  if (u_grid.y > 0.0) c = mix(c, vec3(1.0), SOFT_GRID_ALPHA * blur(lineDistance(x, u_grid.x, u_grid.y), sigma));
-  if (u_grid.w > 0.0) c = mix(c, vec3(1.0), SOFT_GRID_ALPHA * blur(lineDistance(y, u_grid.z, u_grid.w), sigma));
+  float sigma = 1.6 * u_scale, soft = SOFT_GRID_ALPHA * (0.35 + 0.65 * light);
+  if (u_grid.y > 0.0) c = mix(c, vec3(1.0), soft * blur(lineDistance(x, u_grid.x, u_grid.y), sigma));
+  if (u_grid.w > 0.0) c = mix(c, vec3(1.0), soft * blur(lineDistance(y, u_grid.z, u_grid.w), sigma));
   if (x < u_reach.x || x >= u_reach.y) {
     float period = max(4.0, floor(8.0 * u_scale));
     if (mod(floor(x) + floor(y), period) < 1.0) c = mix(c, vec3(1.0), HATCH_ALPHA);
-    return c;
   }
-  float t = smoothstep(0.0, LINE_FADE * u_scale, min(abs(x - u_span.x), abs(x - u_span.y)));
-  float line = mix(0.85, 0.3, t) * blur(y - u_floorY, mix(0.6, 2.2, t) * u_scale);
-  return mix(c, mix(TRACE, GREY, t), line);
+  return c;
 }
 
 // A thin line at each edge of the span that lies inside the view.
@@ -123,7 +120,7 @@ void main() {
   if (y >= u_plotHeight) {
     if (floor(y) == u_plotHeight) c = mix(c, vec3(1.0), BASELINE_ALPHA);
   } else {
-    c = edges(x, inside ? plot(x, y, c) : decor(x, y, c));
+    c = edges(x, inside ? plot(x, y, c) : decor(x, y));
   }
   colour = vec4(c, 1.0);
 }`;
@@ -145,7 +142,7 @@ void main() { colour = u_colour; }`;
 export const MAX_MARKERS = 256;
 const MARKER_COLOUR = [60 / 255, 207 / 255, 154 / 255, 0.9];
 const PLOT_UNIFORMS = /** @type {const} */ (['u_columns', 'u_glow', 'u_height', 'u_plotHeight', 'u_traceWidth', 'u_peakWidth', 'u_fill',
-  'u_grid', 'u_span', 'u_reach', 'u_floorY', 'u_scale', 'u_fade']);
+  'u_grid', 'u_span', 'u_reach', 'u_scale', 'u_fade']);
 const MARKER_UNIFORMS = /** @type {const} */ (['u_size', 'u_colour']);
 
 /**
@@ -161,7 +158,6 @@ const MARKER_UNIFORMS = /** @type {const} */ (['u_size', 'u_colour']);
  * @property {number} markerCount    triangles to draw
  * @property {[number, number]} span   x of the span's edges; outside them, the decor
  * @property {[number, number]} reach  x of the edges of the receiver's reach; hatched beyond
- * @property {number} floorY         y of the span's noise level, for the decor's flat line
  * @property {number} scale          px per CSS px
  * @property {number} fade           0 to 1: how far the span's data fades
  * @property {Uint8Array} glow       RGBA for each column: its band's colour, alpha 0 without one
@@ -254,7 +250,6 @@ export class SpectrumView {
     gl.uniform4fv(u.u_grid, scene.grid || [0, 0, 0, 0]);
     gl.uniform2f(u.u_span, scene.span[0], scene.span[1]);
     gl.uniform2f(u.u_reach, scene.reach[0], scene.reach[1]);
-    gl.uniform1f(u.u_floorY, scene.floorY);
     gl.uniform1f(u.u_scale, scene.scale);
     gl.uniform1f(u.u_fade, scene.fade);
     gl.bindVertexArray(res.coverArray);

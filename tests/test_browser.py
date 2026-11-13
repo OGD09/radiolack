@@ -735,6 +735,7 @@ class BrowserTest(unittest.TestCase):
                     page.keyboard.press("-")
                 low, high = self.view_edges(page)
                 self.assertAlmostEqual(high - low, 24, delta=0.05)     # ten spans at most
+                expect(page.locator("#span-fit")).to_be_visible()
                 # Zoomed out, a band whose ranges would be too narrow shows as one block.
                 where = (145 - low) / (high - low)
                 self.assertEqual(self.band_title_at(page, where),
@@ -748,6 +749,7 @@ class BrowserTest(unittest.TestCase):
                 low, high = self.view_edges(page)
                 self.assertAlmostEqual(low, 143.8, delta=0.01)
                 self.assertAlmostEqual(high, 146.2, delta=0.01)
+                expect(page.locator("#span-fit")).to_be_hidden()
                 expect(page.locator("#src-center")).to_have_value("145.0000")    # the view alone moved
                 expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
 
@@ -786,12 +788,14 @@ class BrowserTest(unittest.TestCase):
                 self.assertAlmostEqual(low, centre - 1.2, delta=0.01)
                 self.assertAlmostEqual(high, centre + 1.2, delta=0.01)
 
-    def test_the_view_stays_in_the_simulated_span_and_a_label_brings_back_the_vfo(self):
+    def test_the_view_stays_in_the_simulated_span_and_comes_back_to_the_vfo_or_the_span(self):
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
                 page.keyboard.press("Escape")       # the Source panel lies over the spectrum
+                fit = page.get_by_role("button", name="Show the whole span")
+                expect(fit).to_be_hidden()          # the view frames the span
                 span = self.view_edges(page)
                 for _ in range(3):
                     page.keyboard.press("-")        # a source that does not tune shows its span at most
@@ -813,6 +817,9 @@ class BrowserTest(unittest.TestCase):
                 low, high = self.view_edges(page)   # around the VFO, at the same zoom
                 self.assertAlmostEqual((low + high) / 2, vfo / 1e6, delta=0.001)
                 self.assertAlmostEqual(high - low, (span[1] - span[0]) / 1.5 ** 3, delta=0.01)
+                fit.click()
+                expect(fit).to_be_hidden()
+                self.assertEqual(self.view_edges(page), span)
 
 
 if __name__ == "__main__":

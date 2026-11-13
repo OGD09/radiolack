@@ -78,6 +78,7 @@ const vfoEl = $('#vfo');
 const vfoLine = $('#vfo-line');
 const xline = $('#xline');
 const vfoReturnEl = $('#vfo-return');
+const spanFitEl = $('#span-fit');
 const tuneTipEl = $('#tune-tip');
 const showNextSpan = outline($('#span-next'));       // the span a retune on its way brings
 const showPreviewSpan = outline($('#span-preview')); // the span a click would bring
@@ -679,7 +680,7 @@ function renderSpectrum() {
   spectrumView.draw({
     columns: specColumns, plotHeight: plotH, fill: S.fill, traceWidth: 1.1 * s, peakWidth: S.peakHold ? s : 0,
     grid, markers: markerCorners, markerCount,
-    span: spanX, reach: reachX, floorY: clamp(yOf(floorDb), 0, plotH), scale: s, fade, glow: bandGlow, glowVersion: bandGlowVersion,
+    span: spanX, reach: reachX, scale: s, fade, glow: bandGlow, glowVersion: bandGlowVersion,
   });
 }
 
@@ -873,6 +874,7 @@ function updateOverlays() {
   vfoLine.style.transform = `translateX(${Math.round(fToX(vfo))}px)`;
   showNextSpan(pendingTune ? spanAround(pendingTune.centre) : null);
   syncVfoReturn(vfo);
+  syncSpanFit();
   renderMarks();
   drawBandStrip();
   updateMeta();
@@ -913,6 +915,17 @@ vfoReturnEl.addEventListener('click', () => {
   const span = view.f1 - view.f0, f = shownVfo();
   setView(f - span / 2, f + span / 2);
 });
+
+// While the view does not frame the span, a button at the bottom right of the
+// spectrum frames it again, as the 0 key does.
+let spanFitShown = false;
+function syncSpanFit() {
+  const shown = !viewFramesSpan();
+  if (shown === spanFitShown) return;
+  spanFitShown = shown;
+  spanFitEl.hidden = !shown;
+}
+spanFitEl.addEventListener('click', () => setView(fStart(), fEnd()));
 
 // Before a click outside the span, an outline shows where the span would go
 // and a tip by the pointer says what the click does. A mouse only: a finger
@@ -1038,6 +1051,7 @@ function layout() {
   specKey = wfKey = axisKey = levelKey = '';     // resized canvases are blank
   noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
   vfoReturnEl.style.top = `${Math.round((specH - AXIS_H) / 2)}px`;
+  spanFitEl.style.top = `${specH - AXIS_H - 6}px`;     // its bottom, just above the frequency scale
   // On narrow screens the readout sits over the dB label column: start the labels below it.
   const ro = readoutEl.getBoundingClientRect();
   labelTopCss = ro.left < 60 ? Math.ceil(ro.bottom) + 8 : 40;

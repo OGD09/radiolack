@@ -314,16 +314,18 @@ recorded.
 ## Spectrum view
 
 The spectrum and the waterfall show the received span, or a part of it:
-Ctrl + wheel, a pinch or the + and − keys zoom, dragging the background
-scrolls, and 0 shows the whole span again. Settings lists every gesture and
-shortcut. The readout at the bottom right gives the frequency and the level
-under the pointer.
+Ctrl + wheel, a pinch or the + and − keys zoom, and dragging the background
+scrolls. While the view does not show the whole span, a small button at the
+bottom right of the spectrum, two bars with an arrow between them, shows it
+again, as the 0 key does. Settings lists every gesture and shortcut. The
+readout at the window's bottom right gives the frequency and the level under
+the pointer.
 
 With a receiver that tunes, the view also goes past the span, out to ten
 times its width; zooming out holds at the span's width before it goes on.
 Nothing is measured outside the span, and the view shows no level there:
-the grid goes on, blurred, a flat line at the span's noise level stands
-where the trace would be, and the band plan's colours tint the background.
+the span stands out like a lit window whose light fades away from it, the
+grid goes on, blurred, and the band plan's colours tint the background.
 Beyond the receiver's reach the background is hatched. The readout says
 "outside the span" or "out of reach" there. The simulated band, which does
 not tune, keeps the view within its span.
