@@ -1,7 +1,8 @@
 """Tests for remote access's HTTPS listener (server.py, remote.py), over real
 sockets: the listener binds 127.0.0.1, which remote access accepts as a
 private address, on an ephemeral port, and resolves the computer's name to
-it. This computer's interface is a stream to the loopback server."""
+it; where the computer's addresses change, it moves to 127.0.0.2, loopback
+too on Linux. This computer's interface is a stream to the loopback server."""
 
 import asyncio
 import hashlib
@@ -20,7 +21,7 @@ from aiohttp.abc import AbstractResolver
 
 from radiolack.engine import REMOTE_BINS
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE
-from radiolack.server import CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer, _limit_unsent
+from radiolack.server import CLOSE_MOVING, CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer, _limit_unsent
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import Store
 from tests.fakes import LOOPBACK, FakeSource, free_port
@@ -30,6 +31,24 @@ HOST = "radiolack-test"
 IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 "
           "(KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1")
 REFUSED = "only Radiolack's interface on the computer may change this"
+SECOND = "127.0.0.2"    # another address of this computer, for remote access to move to
+WAIT_S = 10.0           # the longest a test waits for a message that frames may hide
+NO_ADDRESS_FOR_NOW = ("This computer has no address on a local network for now: remote access "
+                      "listens again once it has one.")
+
+
+def binds(address: str) -> bool:
+    """Whether a socket can listen on ``address`` here: Linux gives all of
+    127.0.0.0/8 to loopback, macOS only 127.0.0.1."""
+    try:
+        with socket.socket() as sock:
+            sock.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
+MOVES = unittest.skipUnless(binds(SECOND), f"{SECOND} is not an address of this computer")
 
 
 class LocalNames(AbstractResolver):
@@ -48,6 +67,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        self.addresses = [LOOPBACK]     # this computer's addresses, which a test may change
         self.server = self.serve()
         self.session = aiohttp.ClientSession()
         self.addAsyncCleanup(self.session.close)
@@ -61,7 +81,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
 
     def serve(self) -> LocalServer:
         server = LocalServer(source=FakeSource(), store=Store(self.directory),
-                             remote_addresses=lambda: [LOOPBACK], host=HOST)
+                             remote_addresses=lambda: list(self.addresses), host=HOST)
         server.start()
         self.addCleanup(server.stop)
         return server
@@ -75,17 +95,23 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
 
     async def next_remote(self, until=lambda state: True, ws=None) -> dict:
         """The next remote access state that this computer's interface receives
-        and that satisfies ``until``."""
-        while True:
-            message = await next_text(ws or self.local)
-            if message["type"] == "remote" and until(message):
-                self.remote_state = message
-                return message
+        and that satisfies ``until``, within WAIT_S, as frames keep coming."""
+        async def wait() -> dict:
+            while (message := await next_text(ws or self.local))["type"] != "remote" or not until(message):
+                continue
+            return message
+
+        self.remote_state = await asyncio.wait_for(wait(), WAIT_S)
+        return self.remote_state
 
     async def next_error(self, ws=None) -> dict:
-        while (message := await next_text(ws or self.local))["type"] != "error":
-            continue
-        return message
+        """The next refusal that this computer's interface receives, within WAIT_S."""
+        async def wait() -> dict:
+            while (message := await next_text(ws or self.local))["type"] != "error":
+                continue
+            return message
+
+        return await asyncio.wait_for(wait(), WAIT_S)
 
     async def turn_on(self) -> dict:
         await self.local.send_json({"type": "remote", "on": True})
@@ -131,16 +157,35 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             return response.status, response.headers, await response.read()
 
     async def closed(self, ws) -> int:
-        """Read until the server closes the stream: returns the code of its
-        close frame, which browsers report."""
-        while (message := await ws.receive(timeout=5)).type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-            continue
+        """Read until the server closes the stream, within WAIT_S: returns
+        the code of its close frame, which browsers report."""
+        async def wait() -> aiohttp.WSMessage:
+            while (message := await ws.receive()).type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                continue
+            return message
+
+        message = await asyncio.wait_for(wait(), WAIT_S)
         self.assertEqual(message.type, aiohttp.WSMsgType.CLOSE)
         return message.data
 
-    def assert_refused(self, port: int) -> None:
+    def assert_refused(self, port: int, address: str = LOOPBACK) -> None:
         with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection((LOOPBACK, port), timeout=5).close()
+            socket.create_connection((address, port), timeout=5).close()
+
+    def follow_quickly(self) -> None:
+        """Remote access looks at this computer's addresses every 50 ms, not every 10 s."""
+        self.enterContext(mock.patch("radiolack.server.ADDRESS_CHECK_S", 0.05))
+
+    async def stays_open(self, ws, seconds: float) -> None:
+        """Read the stream for ``seconds``, during which the server must not close it."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + seconds
+        while (left := end - loop.time()) > 0:
+            try:
+                message = await ws.receive(timeout=left)
+            except asyncio.TimeoutError:
+                return
+            self.assertIn(message.type, (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY))
 
     async def test_off_until_turned_on_and_off_again_once_turned_off(self):
         self.assertEqual(self.remote_state, {
@@ -423,6 +468,91 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             state = await self.next_remote(lambda state: state["problem"])
         self.assertEqual((state["on"], state["problem"]),
                          (False, f"Port {self.port} is in use by another program: choose another port."))
+
+    @MOVES
+    async def test_follows_this_computers_addresses_while_on(self):
+        self.follow_quickly()
+        state = await self.turn_on()
+        device = self.device()
+        await self.pair(device)
+        ws = await self.remote_stream(device)
+        await self.next_remote(lambda state: state["devices"] and state["devices"][0]["connected"])
+        await self.stays_open(ws, 0.3)      # the same addresses at each check: nothing moves
+        # An address comes, as a VPN's that comes up: remote access listens
+        # there too, with a new certificate that names it, and with the same
+        # code and authority.
+        self.addresses.append(SECOND)
+        moved = await self.next_remote(lambda state: len(state["urls"]) == 3)
+        self.assertEqual(moved["urls"], [f"https://{LOOPBACK}:{self.port}/", f"https://{SECOND}:{self.port}/",
+                                         f"https://{HOST}.local:{self.port}/"])
+        self.assertEqual((moved["on"], moved["code"], moved["fingerprint"], moved["problem"]),
+                         (True, state["code"], state["fingerprint"], ""))
+        self.assertEqual(await self.closed(ws), CLOSE_MOVING)
+        async with self.device().get(f"https://{SECOND}:{self.port}/") as response:
+            self.assertEqual(response.status, 200)
+        # The device on the address that remains reconnects, still paired.
+        ws = await self.remote_stream(device)
+        hello = await ws.receive_json(timeout=5)
+        self.assertEqual((hello["type"], hello["remote"]), ("hello", True))
+        # An address goes: remote access no longer listens there.
+        self.addresses.remove(LOOPBACK)
+        moved = await self.next_remote(lambda state: len(state["urls"]) == 2)
+        self.assertEqual(moved["urls"], [f"https://{SECOND}:{self.port}/", f"https://{HOST}.local:{self.port}/"])
+        self.assertEqual(await self.closed(ws), CLOSE_MOVING)
+        self.assert_refused(self.port)
+
+    @MOVES
+    async def test_stays_on_without_an_address_until_it_has_one(self):
+        self.follow_quickly()
+        state = await self.turn_on()
+        with self.assertLogs("radiolack.server", "WARNING") as logs:
+            self.addresses.clear()
+            waiting = await self.next_remote(lambda state: not state["urls"])
+            await asyncio.sleep(0.3)        # checks that find no address still
+        self.assertEqual((waiting["on"], waiting["code"], waiting["problem"]),
+                         (True, state["code"], NO_ADDRESS_FOR_NOW))
+        self.assertEqual([record.getMessage() for record in logs.records],
+                         ["remote access listens nowhere until this computer has an address on a local network"])
+        self.assert_refused(self.port)
+        await self.local.send_json({"type": "remote", "port": self.port + 1})
+        self.assertEqual((await self.next_error())["message"], "the port changes only while remote access is off")
+        # An address again, another one here: remote access listens there.
+        self.addresses.append(SECOND)
+        state = await self.next_remote(lambda state: state["urls"])
+        self.assertEqual((state["urls"][0], state["problem"]), (f"https://{SECOND}:{self.port}/", ""))
+        async with self.device().get(f"https://{SECOND}:{self.port}/") as response:
+            self.assertEqual(response.status, 200)
+
+    @MOVES
+    async def test_a_busy_port_on_a_new_address_is_tried_again_at_each_check(self):
+        self.follow_quickly()
+        await self.turn_on()
+        busy_port = f"Port {self.port} is in use by another program: choose another port."
+        with socket.socket() as busy:
+            busy.bind((SECOND, self.port))
+            busy.listen()
+            with self.assertLogs("radiolack.server", "WARNING") as logs:
+                self.addresses.append(SECOND)
+                state = await self.next_remote(lambda state: state["problem"])
+                await asyncio.sleep(0.3)    # refused at each check, and said once
+            self.assertEqual((state["on"], state["urls"], state["problem"]), (True, [], busy_port))
+            self.assertEqual([record.getMessage() for record in logs.records],
+                             [f"remote access cannot listen on this computer's new addresses: {busy_port}"])
+        # The other program has stopped: remote access listens on both addresses.
+        state = await self.next_remote(lambda state: state["urls"])
+        self.assertEqual((len(state["urls"]), state["problem"]), (3, ""))
+        async with self.device().get(f"https://{SECOND}:{self.port}/") as response:
+            self.assertEqual(response.status, 200)
+
+    @MOVES
+    async def test_turned_off_it_follows_nothing(self):
+        self.follow_quickly()
+        await self.turn_on()
+        await self.turn_off()
+        self.addresses[:] = [SECOND]
+        await asyncio.sleep(0.3)
+        self.assert_refused(self.port, SECOND)
+        self.assertEqual((await self.turn_on())["urls"][0], f"https://{SECOND}:{self.port}/")
 
     async def test_what_remote_access_keeps_outlives_the_server(self):
         state = await self.turn_on()

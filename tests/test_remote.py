@@ -114,6 +114,23 @@ class RemoteAccessTest(unittest.TestCase):
         self.assertEqual(self.access.describe()["problem"],
                          "Port 8443 is in use by another program: choose another port.")
 
+    def test_on_while_listening_nowhere_and_unchanged_states_not_sent_again(self):
+        code = self.prepare()
+        self.access.started(["https://192.168.1.10:8443/"])
+        changes = self.changes
+        self.access.started(["https://192.168.1.10:8443/"])
+        self.assertEqual(self.changes, changes)
+        # This computer lost its addresses: remote access stays on, and says why.
+        problem = "This computer has no address on a local network for now."
+        for _ in range(2):      # at each check, the same: sent once
+            self.access.started([], problem)
+        self.assertEqual(self.changes, changes + 1)
+        state = self.access.describe()
+        self.assertEqual((state["on"], state["urls"], state["code"], state["problem"]),
+                         (True, [], format_code(code), problem))
+        self.access.started(["https://10.0.0.2:8443/"])
+        self.assertEqual((self.changes, self.access.describe()["problem"]), (changes + 2, ""))
+
     def test_the_code_ignores_case_spaces_and_dashes(self):
         code = self.prepare()
         for given in (code, code.lower(), format_code(code), f" {code[:4]} {code[4:]} ".lower()):

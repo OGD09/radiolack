@@ -20,6 +20,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest import mock
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
@@ -575,6 +576,32 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#st-remote-info")).to_be_hidden()
                 expect(page.locator("#st-remote-devices")).to_have_text("No paired device")
                 expect(page.locator("#status")).not_to_contain_text("remote access")
+
+    def test_remote_access_stays_on_while_this_computer_has_no_address(self):
+        self.enterContext(mock.patch("radiolack.server.ADDRESS_CHECK_S", 0.05))
+        addresses: list[str] = []
+        for browser in BROWSERS:
+            addresses[:] = [LOOPBACK]
+            url = self.serve(remote_addresses=lambda: list(addresses), host="radiolack-test")
+            port = free_port()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page], \
+                    self.assertLogs("radiolack.server", "WARNING"):
+                page.locator(SETTINGS_PANEL).click()
+                page.locator("#st-remote-port").fill(str(port))
+                page.locator("#st-remote-port").blur()
+                page.locator("#st-remote").click()
+                expect(page.locator("#st-remote-url")).to_have_text(f"https://{LOOPBACK}:{port}/")
+                addresses.clear()
+                expect(page.locator("#st-remote-msg")).to_have_text(
+                    "This computer has no address on a local network for now: remote access "
+                    "listens again once it has one.")
+                expect(page.locator("#st-remote")).to_be_checked()
+                expect(page.locator("#st-remote-url-field")).to_be_hidden()
+                expect(page.locator("#st-remote-code")).to_have_text(re.compile(r"^[2-9A-Z]{4}-[2-9A-Z]{4}$"))
+                addresses.append(LOOPBACK)
+                expect(page.locator("#st-remote-url")).to_have_text(f"https://{LOOPBACK}:{port}/")
+                expect(page.locator("#st-remote-url-field")).to_be_visible()
+                expect(page.locator("#st-remote-msg")).to_be_empty()
 
     def test_a_device_pairs_with_the_code_then_shares_the_receiver_until_forgotten(self):
         for browser in BROWSERS:

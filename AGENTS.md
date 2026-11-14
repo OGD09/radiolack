@@ -17,7 +17,8 @@ the history under the tag `v0.1.0`.
   own event loop in a background thread; interface files, read once at
   start, and the `/stream` WebSocket; starts the scan given at start;
   remote access's HTTPS listener, a second application with a runner of
-  its own, in the same loop), `remote` (remote access: the
+  its own, in the same loop, which follows the computer's addresses while
+  on), `remote` (remote access: the
   local certificate authority, with `cryptography`, the access code, paired
   devices with their sessions and interface preferences, the private
   addresses to listen on), `engine`
@@ -212,10 +213,10 @@ the history under the tag `v0.1.0`.
   this computer: its interface, in Settings, or the `--remote` option given
   at start. Never turn it on implicitly (no other option, setting or saved
   state turns it on), and never on the owner's network for a check,
-  `radiolack --remote` included: the tests make it listen on 127.0.0.1
-  (`remote_addresses`), and `smoke_test.py --remote` runs in CI's
-  containers or in a network namespace of its own (`unshare -rn` with a
-  dummy interface).
+  `radiolack --remote` included: the tests make it listen on 127.0.0.1,
+  or move to 127.0.0.2, loopback too on Linux (`remote_addresses`), and
+  `smoke_test.py --remote` runs in CI's containers or in a network
+  namespace of its own (`unshare -rn` with a dummy interface).
 - `data/` holds the airband explorer's personal data: apart from its README,
   never write, replace, regenerate or delete anything there, above all
   `data/airband-peaks.json`. `profiles/` holds personal files: leave them

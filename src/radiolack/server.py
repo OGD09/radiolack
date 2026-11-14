@@ -17,10 +17,10 @@ always come from the same version.
 Remote access (remote.py), once this computer's interface or the command
 line turns it on, adds a second web application to the same loop, with a
 runner of its own: it serves the interface and the stream over HTTPS on
-this computer's private addresses to devices that entered the access code,
-and turning it off stops it without stopping the first. Remote devices may
-not change remote access, the update check or the rtl_tcp server's address,
-and the preferences they give are their own.
+this computer's private addresses, which it follows while on, to devices
+that entered the access code, and turning it off stops it without stopping
+the first. Remote devices may not change remote access, the update check or
+the rtl_tcp server's address, and the preferences they give are their own.
 """
 
 from __future__ import annotations
@@ -52,6 +52,8 @@ PROTOCOL_VERSION = 6
 WEB_DIR = Path(__file__).with_name("web")
 CLOSE_NOT_PAIRED = 4001     # closes a remote stream whose device is not paired, or no longer
 CLOSE_REMOTE_OFF = 4002     # closes the remote streams when remote access turns off
+CLOSE_MOVING = 1012         # (Service Restart) closes them when remote access moves to new addresses
+ADDRESS_CHECK_S = 10.0      # how often remote access, while on, looks at this computer's addresses
 
 _START_TIMEOUT_S = 10.0
 _STOP_TIMEOUT_S = 10.0
@@ -73,7 +75,8 @@ _PAIRING_FILES = frozenset({"pair.js", "pair.css", "style.css"})   # what a devi
 # aiohttp 3.8 (Debian 12) takes it on the sites only.
 _REMOTE_SHUTDOWN = {"shutdown_timeout": _CLOSE_TIMEOUT_S}
 _SHUTDOWN_ON_RUNNER = "shutdown_timeout" in inspect.signature(web.BaseRunner.__init__).parameters
-_CLOSE_REASONS = {CLOSE_NOT_PAIRED: b"This device is not paired.", CLOSE_REMOTE_OFF: b"Remote access is off."}
+_CLOSE_REASONS = {CLOSE_NOT_PAIRED: b"This device is not paired.", CLOSE_REMOTE_OFF: b"Remote access is off.",
+                  CLOSE_MOVING: b"Remote access moves to this computer's new addresses."}
 _BLOCKED = "Too many wrong codes: make a new code in Radiolack's settings on the computer."
 
 log = logging.getLogger(__name__)
@@ -330,11 +333,15 @@ class RemoteListener:
     addresses.
 
     This computer's interfaces turn it on and off, and change its settings,
-    with ``remote`` messages (``command``). It listens only while on. Turning
-    off, it refuses every request at once, then closes the remote streams
-    and stops listening. ``addresses`` gives the addresses to listen on at
-    each turn-on; ``host`` is this computer's mDNS name, without ``.local``,
-    or "" for none. It serves ``interface``, the local server's."""
+    with ``remote`` messages (``command``). It listens only while on, on the
+    private addresses among those that ``addresses`` gives, which it looks
+    at every ADDRESS_CHECK_S: once they change, it listens on the new ones,
+    with a new certificate, and stays on while there are none, or while it
+    cannot listen on them, until they change again. Moving, or turning off,
+    it refuses every request at once, then closes the remote streams and
+    stops listening. ``host`` is this computer's mDNS name, without
+    ``.local``, or "" for none. It serves ``interface``, the local
+    server's."""
 
     def __init__(self, engine: Engine, access: RemoteAccess, addresses: Callable[[], Sequence[str]],
                  host: str, interface: InterfaceFiles) -> None:
@@ -345,13 +352,17 @@ class RemoteListener:
         self._interface = interface
         self._runner: web.AppRunner | None = None
         self._sockets: list[socket.socket] = []
-        self._serving = False       # on, and not turning off: requests are answered
+        self._serving = False       # listening, and not stopping: requests are answered
         self._hosts: frozenset[str] = frozenset()     # the Host headers that name this listener
         self._streams: dict[web.WebSocketResponse, Device] = {}     # the open remote streams
-        self._switching = asyncio.Lock()    # one turn-on or turn-off at a time
+        self._switching = asyncio.Lock()    # one turn-on, turn-off or move at a time
         self._pairing = asyncio.Lock()      # one code checked at a time
         self._tasks: set[asyncio.Future] = set()
         self._closed = False
+        self._on = False            # turned on, and not off since: listens where it can
+        # The addresses listened on, or tried last; None to try them again at the next check.
+        self._tried: frozenset[str] | None = frozenset()
+        self._follower: asyncio.Task | None = None     # looks at the addresses while on
 
     def command(self, changes: Mapping[str, object]) -> None:
         """Apply a ``remote`` message from this computer's interface: one of
@@ -382,35 +393,40 @@ class RemoteListener:
 
     async def turn_on(self) -> None:
         """Listen on this computer's private addresses with a new server
-        certificate; the remote access state says why when it cannot."""
+        certificate, then follow them; the remote access state says why when
+        it cannot, and remote access then stays off."""
         async with self._switching:
-            if self._runner is not None or self._closed:
+            if self._on or self._closed:
                 return
             try:
-                await self._listen()
+                addresses = self._private_addresses()
+                if not addresses:
+                    raise _Refusal("This computer has no address on a local network: connect it to one, "
+                                   "then turn remote access on.")
+                await self._listen(addresses)
             except _Refusal as refusal:
                 self._access.stopped(str(refusal))
+                return
             except Exception:
                 log.exception("remote access could not turn on")
                 self._access.stopped("Remote access could not turn on: Radiolack's error output says why.")
+                return
+            self._on, self._tried = True, frozenset(addresses)
+            self._follower = asyncio.ensure_future(self._follow())
 
     async def turn_off(self) -> None:
-        """Stop listening: every remote request is refused at once, then the
-        remote streams close and the port is released."""
+        """Stop following the addresses and stop listening: every remote
+        request is refused at once, then the remote streams close and the
+        port is released."""
         async with self._switching:
-            runner, sockets = self._runner, self._sockets
-            if runner is None:
+            if not self._on:
                 return
-            self._serving = False
-            self._runner, self._sockets = None, []
-            await self._close_streams(lambda _device: True, CLOSE_REMOTE_OFF)
-            try:
-                await asyncio.wait_for(runner.cleanup(), _STOP_TIMEOUT_S)
-            except Exception:
-                log.exception("remote access did not stop cleanly")
-            finally:
-                for sock in sockets:
-                    sock.close()
+            self._on = False
+            follower, self._follower = self._follower, None
+            if follower is not None:    # between two checks, as a move holds the lock held here
+                follower.cancel()
+                await asyncio.gather(follower, return_exceptions=True)
+            await self._stop_listening(CLOSE_REMOTE_OFF)
             self._access.stopped()
 
     async def close(self) -> None:
@@ -420,12 +436,73 @@ class RemoteListener:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.turn_off()
 
-    async def _listen(self) -> None:
-        port = self._access.port
-        addresses = [address for address in dict.fromkeys(self._addresses()) if is_private(address)]
+    def _private_addresses(self) -> list[str]:
+        """The private addresses among those that ``addresses`` gives now, once each, in its order."""
+        return [address for address in dict.fromkeys(self._addresses()) if is_private(address)]
+
+    async def _follow(self) -> None:
+        """While on, look at this computer's addresses every ADDRESS_CHECK_S:
+        move once they change, and try again where listening was refused."""
+        while True:
+            await asyncio.sleep(ADDRESS_CHECK_S)
+            async with self._switching:
+                if not self._on or self._closed:
+                    return
+                try:
+                    addresses = self._private_addresses()
+                    if frozenset(addresses) != self._tried:
+                        await self._move(addresses)
+                except Exception:
+                    log.exception("remote access could not follow this computer's addresses")
+
+    async def _move(self, addresses: list[str]) -> None:
+        """Listen on ``addresses``, this computer's private addresses now, in
+        place of those before: the remote streams close with CLOSE_MOVING, and
+        the devices on an address that remains reconnect. Without addresses,
+        or where it cannot listen, remote access stays on, listening nowhere,
+        and its state says why."""
+        self._tried = frozenset(addresses)
+        await self._stop_listening(CLOSE_MOVING)
         if not addresses:
-            raise _Refusal("This computer has no address on a local network: connect it to one, "
-                           "then turn remote access on.")
+            log.warning("remote access listens nowhere until this computer has an address on a local network")
+            problem = ("This computer has no address on a local network for now: remote access listens "
+                       "again once it has one.")
+        else:
+            try:
+                await self._listen(addresses)
+                return
+            except _Refusal as refusal:
+                problem = str(refusal)
+                self._tried = None      # the port, say, may be free at the next check
+                if problem != self._access.problem:     # once, and not at each check
+                    log.warning("remote access cannot listen on this computer's new addresses: %s", problem)
+            except Exception:
+                log.exception("remote access could not listen on this computer's new addresses")
+                problem = ("Remote access could not listen on this computer's new addresses: Radiolack's "
+                           "error output says why.")
+        self._access.started([], problem)
+
+    async def _stop_listening(self, code: int) -> None:
+        """Refuse every remote request at once, close the remote streams with
+        ``code``, then release the port."""
+        runner, sockets = self._runner, self._sockets
+        if runner is None:
+            return
+        self._serving = False
+        self._runner, self._sockets = None, []
+        await self._close_streams(lambda _device: True, code)
+        try:
+            await asyncio.wait_for(runner.cleanup(), _STOP_TIMEOUT_S)
+        except Exception:
+            log.exception("remote access did not stop cleanly")
+        finally:
+            for sock in sockets:
+                sock.close()
+
+    async def _listen(self, addresses: Sequence[str]) -> None:
+        """Listen on ``addresses``, private ones, at least one, with a new
+        server certificate that names them. Raises _Refusal when it cannot."""
+        port = self._access.port
         names = [f"{self._host}.local"] if self._host else []
         try:
             chain, key = issue_server_certificate(self._access.prepare(self._host), names, addresses)
@@ -580,7 +657,8 @@ class RemoteListener:
         # forgetting the device closes the stream.
         device = self._device(request)
         if not self._serving or device is None:
-            code = CLOSE_REMOTE_OFF if not self._serving else CLOSE_NOT_PAIRED
+            # Not serving: remote access turns off, or moves while it stays on.
+            code = CLOSE_NOT_PAIRED if self._serving else CLOSE_MOVING if self._on else CLOSE_REMOTE_OFF
             await ws.close(code=code, message=_CLOSE_REASONS[code])
             return ws
         self._streams[ws] = device
@@ -641,10 +719,10 @@ class LocalServer:
     ``start_scan`` starts one.
 
     Remote access, which stays off until an interface or ``turn_on_remote``
-    turns it on, listens on the addresses that ``remote_addresses`` gives at
-    each turn-on, such as remote.private_addresses: without it, it finds none
-    and cannot turn on. ``host`` is this computer's mDNS name, by default its
-    host name.
+    turns it on, listens on the addresses that ``remote_addresses`` gives,
+    such as remote.private_addresses, at each turn-on and then every
+    ADDRESS_CHECK_S while on: without it, it finds none and cannot turn on.
+    ``host`` is this computer's mDNS name, by default its host name.
     """
 
     def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
