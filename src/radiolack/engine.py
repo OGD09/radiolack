@@ -58,15 +58,21 @@ own: they get one display frame for every two blocks, the mean power of
 both, in fewer bins.
 
 With a recordings folder (recordings.py), any client may record what the
-VFO plays: a recording keeps the engine reading without any client, like a
-scan, and goes on when the VFO moves, a scan included, or another receiver
-replaces this one, until a client stops it. It stops by itself once the
-audio rate changes, into or out of WFM, on the simulated band, which is
-never recorded, and when its disk falls short of space, its file is full or
-the disk fails; every client then learns why. It never starts by itself and
-is never saved. The clients receive the recording state, and the list of
-the recordings when they ask, and may delete one; this computer's
-interfaces may also choose another folder, which is saved.
+VFO plays, and the receiver's raw I/Q, at the same time or not: a recording
+keeps the engine reading without any client, like a scan, until a client
+stops it. The audio's goes on when the VFO moves, a scan included, or
+another receiver replaces this one, and stops by itself once the audio rate
+changes, into or out of WFM, and on the simulated band, which is never
+recorded. The I/Q's takes the samples as the source receives them, before
+the DC removal, those the engine leaves when it falls behind included; it
+goes on when the receiver retunes, a scan included, and after a gap in the
+samples, and stops by itself once the sample rate changes or another
+receiver is chosen. Both stop by themselves when their disk falls short of
+space, the audio's file is full or the disk fails; every client then learns
+why. Neither starts by itself nor is saved. The clients receive the
+recording state, and the list of the recordings when they ask, and may
+delete one; this computer's interfaces may also choose another folder,
+which is saved.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
@@ -85,6 +91,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import logging
 import math
 import time
@@ -101,8 +108,8 @@ from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, D
                     noise_clearance_hz)
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
-from .recordings import (WAV_HEADER, AudioRecording, check_folder, chosen_folder, delete_recording,
-                         is_recording_name, list_recordings)
+from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, check_folder, chosen_folder,
+                         delete_recording, is_recording_file, is_recording_name, list_recordings, meta_name)
 from .remote import REMOTE_FILE, RemoteAccess
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
                        MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal,
@@ -133,6 +140,7 @@ LOCAL_SETTINGS = ("address",)   # source settings only this computer's interface
 LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this computer's interfaces may change
 # Why a recording stopped by itself, as the output tells it.
 _RECORDING_STOPS = {"rate": "the audio rate changed, into or out of WFM", "source": "the simulated band was chosen",
+                    "sample_rate": "the receiver's sample rate changed", "receiver": "another receiver was chosen",
                     "space": "less than 2 GiB is free on its disk", "full": "its file reached the WAV limit of 4 GiB",
                     "disk": "a disk error"}
 
@@ -149,6 +157,8 @@ class Source(Protocol):
     the engine saves: each key has its own. ``given`` names the settings
     chosen when the source was made, which saved ones do not replace.
     ``reopen`` is what opens the same receiver again (sources.py).
+    ``tap`` hands the receiver's raw samples to an I/Q recording, which
+    ``hardware`` names the receiver for.
     """
 
     kind: str
@@ -164,6 +174,17 @@ class Source(Protocol):
     @property
     def reopen(self) -> dict[str, Any]:
         """Such as {"kind": "rtl_sdr", "device": "0"}, as JSON values."""
+
+    @property
+    def hardware(self) -> str:
+        """The receiver, such as "RTL-SDR, Rafael Micro R820T"."""
+
+    def tap(self, receiver: Callable[[bytes, float, float, bool], None] | None) -> None:
+        """Hand ``receiver`` the raw samples as they arrive, whether read or
+        not: whole I/Q pairs of unsigned bytes, I first, with the centre
+        frequency and the sample rate they were taken with, and whether they
+        follow those handed before without a gap (rtltcp.RtlTcpSource.tap).
+        None stops. Raises ValueError for a source without raw samples."""
 
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples once they have arrived, or ``None`` when
@@ -200,6 +221,14 @@ class FixedSource:
     @property
     def reopen(self) -> dict[str, Any]:
         return {"kind": self.kind}
+
+    @property
+    def hardware(self) -> str:
+        return self.kind
+
+    def tap(self, receiver: Callable[[bytes, float, float, bool], None] | None) -> None:
+        if receiver is not None:
+            raise ValueError(f"the {self.kind} source has no raw samples to record")
 
     def describe(self) -> dict[str, Any]:
         centre = self.centre_hz
@@ -443,19 +472,22 @@ class Engine:
         self._restore_scanner(settings.get("scanner"))
         self._peaks_sent_s = -math.inf      # when the clients were last told of the signals
         self._peaks_timer: asyncio.TimerHandle | None = None
-        # Recording: the default folder and the one chosen, if any; the
-        # recording that runs, the rate of its audio once it came, how many
-        # samples it was given and why the latest stopped by itself; the
+        # Recording: the default folder and the one chosen, if any; the audio
+        # recording that runs, the rate of its audio once it came and how
+        # many samples it was given; the I/Q recording that runs and how
+        # many bytes it was given; why the latest stopped by itself; the
         # recordings whose thread may still write, and the clients' requests
         # that wait for the disk.
         self._default_recordings = recordings
         self._chosen_recordings = _saved_recordings_folder(settings.get("recordings"))
-        self._recording: AudioRecording | None = None
-        self._recording_rate: float | None = None
-        self._recorded_samples = 0
+        self._audio: AudioRecording | None = None
+        self._audio_rate: float | None = None
+        self._audio_samples = 0
+        self._iq: IQRecording | None = None
+        self._iq_bytes = 0
         self._recording_stopped: dict[str, str] | None = None
         self._progress_timer: asyncio.TimerHandle | None = None
-        self._unfinished: set[AudioRecording] = set()
+        self._unfinished: set[Recording] = set()
         self._requests: set[asyncio.Future] = set()
         self._adopt()
         self._watch_bookmarks()
@@ -513,7 +545,8 @@ class Engine:
         comes alone; ``dc_removal`` is the engine's own; the others go to the
         source. Raises ValueError, changing nothing, when one is refused.
         Every client then receives the new state. A new centre frequency or
-        sample rate stops a scan, before the receiver's samples show it."""
+        sample rate stops a scan, before the receiver's samples show it; a
+        new sample rate or address stops an I/Q recording."""
         if "kind" in changes:
             if len(changes) > 1:
                 raise ValueError("the kind of source changes on its own, without other settings")
@@ -524,10 +557,15 @@ class Engine:
             raise ValueError("DC removal must be true or false")
         source_changes = {name: value for name, value in changes.items() if name != "dc_removal"}
         if source_changes:
-            span = self._span()
+            span, address = self._span(), self.source.describe()["address"]
             self.source.configure(source_changes)
             if self._span() != span:
                 self._stop_scan("tuned")
+            # An I/Q recording keeps one sample rate, from one receiver.
+            if self._span()[1] != span[1]:
+                self._stop_recording("iq", "sample_rate")
+            elif self.source.describe()["address"] != address:
+                self._stop_recording("iq", "receiver")
         self._dc_removal = dc_removal
         self._source_changed()
 
@@ -770,18 +808,21 @@ class Engine:
 
     def recording_state(self, remote: bool = False) -> dict[str, Any]:
         """The recording state message (docs/design/protocol.md): the audio
-        recording that runs, if one does, and why the latest stopped by
+        and I/Q recordings that run, if any, and why the latest stopped by
         itself; unless for a ``remote`` client, the recordings folder too."""
-        recording = self._recording
-        audio = None
-        if recording is not None:
-            rate, samples = self._recording_rate, self._recorded_samples
+        audio = iq = None
+        if (recording := self._audio) is not None:
+            rate, samples = self._audio_rate, self._audio_samples
             audio = {"file": recording.file, "started": round(recording.started),
                      "frequency_hz": recording.frequency_hz, "mode": recording.mode,
                      "rate_hz": None if rate is None else round(rate),
                      "seconds": round(samples / rate, 1) if rate else 0.0,
                      "bytes": WAV_HEADER.size + 2 * samples if recording.file is not None else 0}
-        state: dict[str, Any] = {"type": "recording", "audio": audio,
+        if (raw := self._iq) is not None:
+            iq = {"file": raw.file, "started": round(raw.started), "frequency_hz": raw.frequency_hz,
+                  "rate_hz": round(raw.rate_hz), "seconds": round(self._iq_bytes / 2 / raw.rate_hz, 1),
+                  "bytes": self._iq_bytes if raw.file is not None else 0}
+        state: dict[str, Any] = {"type": "recording", "audio": audio, "iq": iq,
                                  "stopped": None if self._recording_stopped is None else dict(self._recording_stopped)}
         if not remote:
             folder, default = self._recordings_folder(), self._default_recordings
@@ -790,26 +831,29 @@ class Engine:
         return state
 
     def configure_recording(self, changes: Mapping[str, object], subscription: Subscription | None = None) -> None:
-        """Start (``audio``: true) or stop (false) recording the audio; or
-        choose the recordings ``folder``, a full path, or null for the
-        default, which this computer's interfaces alone may change: once
-        checked, as the disk may be slow, it applies, or ``subscription``
-        learns why not. Each comes alone in its message. Raises ValueError,
-        changing nothing, when refused."""
+        """Start (``audio``: true) or stop (false) recording the audio, and
+        the same with ``iq`` for the receiver's raw I/Q; or choose the
+        recordings ``folder``, a full path, or null for the default, which
+        this computer's interfaces alone may change: once checked, as the
+        disk may be slow, it applies, or ``subscription`` learns why not.
+        Each comes alone in its message. Raises ValueError, changing
+        nothing, when refused."""
         if len(changes) != 1:
             raise ValueError("a recording message changes one setting at a time")
         [(name, value)] = changes.items()
-        if name == "audio":
+        if name in ("audio", "iq"):
             if not isinstance(value, bool):
-                raise ValueError("the audio is recorded or not: true or false")
-            if value:
-                self._start_recording()
+                raise ValueError(f"the {'audio' if name == 'audio' else 'I/Q'} is recorded or not: true or false")
+            if not value:
+                self._stop_recording(name, None)
+            elif name == "audio":
+                self._start_audio()
             else:
-                self._stop_recording(None)
+                self._start_iq()
         elif name == "folder":
             self._check_recordings()
             folder = chosen_folder(value)
-            if self._recording is not None:
+            if self._recording_runs():
                 raise ValueError("a recording runs: stop it before choosing another folder")
             self._request(self._choose_folder(folder, subscription))
         else:
@@ -817,11 +861,11 @@ class Engine:
 
     def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's recordings message, which without any field asks
-        for the list of the recordings; ``delete``, a recording's file, which
-        must not be the one that runs, deletes it first. Once the disk
-        answered, the client receives the list, or an error when the
-        recording could not be deleted. Raises ValueError, changing nothing,
-        when refused."""
+        for the list of the recordings; ``delete``, a recording as the list
+        names it, which must not be one that runs, deletes it first, with
+        an I/Q recording's metadata. Once the disk answered, the client
+        receives the list, or an error when the recording could not be
+        deleted. Raises ValueError, changing nothing, when refused."""
         for name in changes:
             if name != "delete":
                 raise ValueError(f"unknown recordings field: {str(name)[:40]}")
@@ -830,24 +874,22 @@ class Engine:
         if "delete" in changes:
             if not is_recording_name(delete):
                 raise ValueError("delete takes the file of a recording")
-            if self._recording is not None and delete == self._recording.file:
+            if delete in self._running_files():
                 raise ValueError("this recording runs: stop it before deleting it")
         self._request(self._answer_recordings(self._recordings_folder(), delete, subscription))
 
     def download_folder(self, name: str) -> Path | None:
-        """The folder of the recording whose file is ``name``, to download
-        it; None unless the name is a recording's, or for the recording that
+        """The folder of the recording's file ``name``, to download it; None
+        unless the name is a recording's file, or for a recording that
         runs."""
         folder = self._recordings_folder()
-        if folder is None or not is_recording_name(name):
-            return None
-        if self._recording is not None and name == self._recording.file:
+        if folder is None or not is_recording_file(name) or name in self._running_files():
             return None
         return folder
 
     def close(self) -> None:
         """Stop for good: every client's messages end with ``None``, the
-        source is closed, a recording that runs stops and a running update
+        source is closed, the recordings that run stop and a running update
         check stops. Safe to repeat."""
         self._closed = True
         for subscription in self._clients:
@@ -855,9 +897,12 @@ class Engine:
         self._clients.clear()
         self._wanted.set()
         self.source.close()
-        if self._recording is not None:
-            self._recording.stop()      # its thread writes what came, then closes the file
-            self._recording = None
+        if self._iq is not None:
+            self.source.tap(None)
+        for recording in (self._audio, self._iq):
+            if recording is not None:
+                recording.stop()        # its thread writes what came, then closes its files
+        self._audio = self._iq = None
         if self._progress_timer is not None:
             self._progress_timer.cancel()
             self._progress_timer = None
@@ -922,7 +967,7 @@ class Engine:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
                     self._watch_bookmarks()     # in case the source retuned by itself, as when it connects
-                audio = self._recording is not None or any(subscription.audio for subscription in self._clients)
+                audio = self._audio is not None or any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
                 # The memory scan's channels are those of the span asked of the
                 # receiver: none while the samples still come from another.
@@ -934,7 +979,7 @@ class Engine:
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
                     None if channels is None else self._bands)
                 self._publish(capture, power, codes, meter, pcm)
-                if self._recording is not None and pcm is not None and len(pcm):
+                if self._audio is not None and pcm is not None and len(pcm):
                     self._record_audio(pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
                 if detections is not None and self._detection and source is self.source:
@@ -1047,70 +1092,122 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("recording")
 
-    def _start_recording(self) -> None:
-        """Start recording the audio, unless a recording runs: from the next
-        block, which also gives the audio rate, into a file that its thread
-        makes. Raises ValueError, starting nothing, without a recordings
-        folder and on the simulated band."""
-        if self._recording is not None or self._closed:
+    def _start_audio(self) -> None:
+        """Start recording the audio, unless such a recording runs: from the
+        next block, which also gives the audio rate, into a file that its
+        thread makes. Raises ValueError, starting nothing, without a
+        recordings folder and on the simulated band."""
+        if self._audio is not None or self._closed:
             return
+        folder = self._recording_folder()
+        recording = AudioRecording(folder, time.time(), self._demod.frequency_hz, self._demod.mode,
+                                   make_folder=folder == self._default_recordings, report=self._reporter())
+        self._audio, self._audio_rate, self._audio_samples = recording, None, 0
+        self._started(recording)
+
+    def _start_iq(self) -> None:
+        """Start recording the receiver's raw I/Q, unless such a recording
+        runs: from the samples that arrive next, at the sample rate asked of
+        the receiver, into files that its thread makes. Raises ValueError,
+        starting nothing, without a recordings folder, on the simulated band
+        and for a source without raw samples."""
+        if self._iq is not None or self._closed:
+            return
+        folder = self._recording_folder()
+        source = self.source
+        centre_hz, rate_hz = self._span()
+        recording = IQRecording(folder, time.time(), centre_hz, rate_hz, hardware=source.hardware,
+                                make_folder=folder == self._default_recordings, report=self._reporter())
+        source.tap(functools.partial(self._record_iq, recording))
+        self._iq, self._iq_bytes = recording, 0
+        self._started(recording)
+
+    def _recording_folder(self) -> Path:
+        """The folder a new recording goes to. Raises ValueError without a
+        recordings folder and on the simulated band."""
         self._check_recordings()
-        folder = self._recordings_folder()
         if self.source.kind in UNRECORDED_KINDS:
             raise ValueError("the simulated band is not recorded")
+        return self._recordings_folder()
+
+    def _reporter(self) -> Callable[[Recording, str, Any], None]:
+        """What a recording's thread tells, brought to the event loop."""
         loop = asyncio.get_running_loop()
 
-        def report(recording: AudioRecording, event: str, value: Any) -> None:
+        def report(recording: Recording, event: str, value: Any) -> None:
             with contextlib.suppress(RuntimeError):     # the loop closed meanwhile
                 loop.call_soon_threadsafe(self._recording_event, recording, event, value)
 
-        recording = AudioRecording(folder, time.time(), self._demod.frequency_hz, self._demod.mode,
-                                   make_folder=folder == self._default_recordings, report=report)
-        self._recording, self._recording_rate, self._recorded_samples = recording, None, 0
-        self._recording_stopped = None
+        return report
+
+    def _started(self, recording: Recording) -> None:
+        """Start the thread of ``recording``, which now runs, and keep the
+        engine reading for it; the clients learn of it every second."""
+        if self._recording_stopped is not None and self._recording_stopped["kind"] == recording.kind:
+            self._recording_stopped = None
         self._unfinished.add(recording)
         recording.start()
         self._wanted.set()          # the recording goes on without any client
-        self._progress_timer = loop.call_later(RECORDING_PROGRESS_S, self._recording_progress)
+        if self._progress_timer is None:
+            self._progress_timer = asyncio.get_running_loop().call_later(RECORDING_PROGRESS_S,
+                                                                         self._recording_progress)
         self._recording_changed()
 
-    def _stop_recording(self, reason: str | None, detail: str = "") -> None:
-        """Stop the recording that runs, if one does, for ``reason``: "rate",
-        "source", "space", "full" or "disk", with ``detail`` for the last, or
-        None when a client asked. Its thread writes what came, then closes
-        the file. Without any client and scan, the engine stops reading. The
-        output tells of a stop by itself, as no interface may be open to
-        show it."""
-        recording = self._recording
+    def _recording_runs(self) -> bool:
+        return self._audio is not None or self._iq is not None
+
+    def _running_files(self) -> set[str]:
+        """The files of the recordings that run, which their threads write."""
+        files = set()
+        if self._audio is not None and self._audio.file is not None:
+            files.add(self._audio.file)
+        if self._iq is not None and self._iq.file is not None:
+            files |= {self._iq.file, meta_name(self._iq.file)}
+        return files
+
+    def _stop_recording(self, kind: str, reason: str | None, detail: str = "") -> None:
+        """Stop the recording of ``kind`` that runs, "audio" or "iq", if one
+        does, for ``reason``: "rate", "source", "sample_rate", "receiver",
+        "space", "full" or "disk", with ``detail`` for the last, or None
+        when a client asked. Its thread writes what came, then closes its
+        files. Without any client, scan and recording, the engine stops
+        reading. The output tells of a stop by itself, as no interface may
+        be open to show it."""
+        recording: Recording | None
+        if kind == "audio":
+            recording, self._audio = self._audio, None
+        else:
+            recording, self._iq = self._iq, None
+            if recording is not None:
+                self.source.tap(None)
         if recording is None:
             return
-        self._recording = None
         recording.stop()
-        if self._progress_timer is not None:
+        if self._progress_timer is not None and not self._recording_runs():
             self._progress_timer.cancel()
             self._progress_timer = None
-        self._recording_stopped = None if reason is None else {"kind": recording.kind, "reason": reason,
-                                                               "detail": detail}
         if reason is not None:
-            log.warning("the recording %s stopped: %s%s", recording.file or "just started",
+            self._recording_stopped = {"kind": kind, "reason": reason, "detail": detail}
+            log.warning("the recording %s stopped: %s%s", recording.file or f"of {kind} just started",
                         _RECORDING_STOPS.get(reason, reason), f" ({detail})" if detail else "")
         self._recording_changed()
         if self._idle():
             self._wanted.clear()
 
-    def _recording_event(self, recording: AudioRecording, event: str, value: Any) -> None:
+    def _recording_event(self, recording: Recording, event: str, value: Any) -> None:
         """What a recording's thread told: its file was made ("opened", its
         name), or it stopped ("stopped", the reason and its detail)."""
+        running = recording is self._audio or recording is self._iq
         if event == "opened":
             recording.file = value
-            if recording is self._recording:
+            if running:
                 self._recording_changed()
             return
         self._unfinished.discard(recording)
         reason, detail = value
-        if recording is self._recording:        # by itself
-            self._stop_recording(reason or "disk", detail)
-        elif reason is not None:                # while closing its file, once stopped
+        if running:                             # by itself
+            self._stop_recording(recording.kind, reason or "disk", detail)
+        elif reason is not None:                # while closing its files, once stopped
             log.warning("the recording %s may be incomplete: %s%s", recording.file or "just started",
                         _RECORDING_STOPS.get(reason, reason), f" ({detail})" if detail else "")
 
@@ -1118,27 +1215,49 @@ class Engine:
         """Every RECORDING_PROGRESS_S while a recording runs, the clients
         learn its length and size."""
         self._progress_timer = None
-        if self._recording is None or self._closed:
+        if not self._recording_runs() or self._closed:
             return
         self._recording_changed()
         self._progress_timer = asyncio.get_running_loop().call_later(RECORDING_PROGRESS_S,
                                                                      self._recording_progress)
 
     def _record_audio(self, pcm: np.ndarray) -> None:
-        """Hand a block's audio to the recording that runs: the first sets
-        its rate, and another rate stops it, as does a disk that does not
-        keep up."""
-        recording = self._recording
+        """Hand a block's audio to the audio recording that runs: the first
+        sets its rate, and another rate stops it, as does a disk that does
+        not keep up."""
+        recording = self._audio
         rate = self._demodulator.audio_rate_hz
-        if self._recording_rate is None:
-            self._recording_rate = rate
-        elif rate != self._recording_rate:
-            self._stop_recording("rate")
+        if self._audio_rate is None:
+            self._audio_rate = rate
+        elif rate != self._audio_rate:
+            self._stop_recording("audio", "rate")
             return
         if not recording.write(pcm.tobytes(), round(rate)):
-            self._stop_recording("disk", "the disk did not keep up")
+            self._stop_recording("audio", "disk", "the disk did not keep up")
             return
-        self._recorded_samples += len(pcm)
+        self._audio_samples += len(pcm)
+
+    def _record_iq(self, recording: IQRecording, data: bytes, centre_hz: float, rate_hz: float,
+                   joined: bool) -> None:
+        """Hand raw samples, as they arrive, to ``recording`` while it runs:
+        another sample rate stops it, as does a disk that does not keep up.
+        Samples that follow a gap may come from a receiver that connected
+        again: the metadata names it as it is then."""
+        if recording is not self._iq:
+            return
+        try:
+            if rate_hz != recording.rate_hz:
+                self._stop_recording("iq", "sample_rate")
+                return
+            if not joined:
+                recording.hardware = self.source.hardware
+            if not recording.write(data, centre_hz, time.time(), joined):
+                self._stop_recording("iq", "disk", "the disk did not keep up")
+                return
+            self._iq_bytes += len(data)
+        except Exception:
+            log.exception("the I/Q recording stopped on an error")
+            self._stop_recording("iq", "disk", "an unexpected error, which Radiolack's error output gives")
 
     async def _choose_folder(self, folder: Path | None, subscription: Subscription | None) -> None:
         """Record into ``folder``, or into the default one (None), once
@@ -1147,7 +1266,7 @@ class Engine:
         try:
             if folder is not None:
                 await asyncio.to_thread(check_folder, folder)
-            if self._recording is not None:
+            if self._recording_runs():
                 raise ValueError("a recording runs: stop it before choosing another folder")
         except ValueError as error:
             if subscription is not None:
@@ -1163,6 +1282,10 @@ class Engine:
         the recordings to ``subscription``, or an error when the recording
         could not be deleted. The disk is read in a worker thread."""
         if delete is not None:
+            # A recording stopped a moment ago may still be closing its files,
+            # which would bring an I/Q recording's metadata back: once done.
+            for recording in [recording for recording in self._unfinished if recording.file == delete]:
+                await asyncio.to_thread(recording.join, RECORDING_CLOSE_S)
             try:
                 await asyncio.to_thread(delete_recording, folder, delete)
             except FileNotFoundError:
@@ -1171,8 +1294,7 @@ class Engine:
                 reason = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
                 subscription.reply({"type": "error", "command": "recordings",
                                     "message": f"{delete} cannot be deleted: {reason}"})
-        running = self._recording.file if self._recording is not None else None
-        listed = await asyncio.to_thread(list_recordings, folder, running)
+        listed = await asyncio.to_thread(list_recordings, folder, self._running_files())
         subscription.reply({"type": "recordings", **listed})
 
     def _request(self, work: Coroutine[Any, Any, None]) -> None:
@@ -1270,7 +1392,7 @@ class Engine:
     def _idle(self) -> bool:
         """Whether nothing needs the source's samples: no client, no scan and
         no recording, while the engine runs."""
-        return not self._clients and not self._scanning() and self._recording is None and not self._closed
+        return not self._clients and not self._scanning() and not self._recording_runs() and not self._closed
 
     def _stop_scan(self, reason: str | None) -> None:
         """Stop the scan that runs, if one does, for ``reason``: "tuned",
@@ -1437,8 +1559,9 @@ class Engine:
             # Saved before the scan stops: those of the scan's start.
             self._receivers[old.settings_key] = self._receiver_settings()
             self._stop_scan("source")
+            self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
             if kind in UNRECORDED_KINDS:
-                self._stop_recording("source")
+                self._stop_recording("audio", "source")
             old.on_change = None
             old.close()
             self._closing.add(asyncio.ensure_future(self._release(old)))

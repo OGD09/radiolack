@@ -19,7 +19,7 @@ from unittest import mock
 import aiohttp
 
 from radiolack import __version__
-from radiolack.recordings import wav_header
+from radiolack.recordings import meta_name, wav_header
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
 from radiolack.sources import Sources
@@ -33,6 +33,7 @@ from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns
 STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "storage", "update",
           "remote")
 RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
+IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
                  "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
@@ -244,7 +245,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "remote": False,
-                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio"]})
+                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -257,8 +258,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "preferences", "values": {}})
             # Without a recordings folder, nothing is recorded.
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "recording", "audio": None, "stopped": None,
-                                                                "folder": None, "default_folder": None})
+            self.assertEqual(await ws.receive_json(timeout=5),
+                             {"type": "recording", "audio": None, "iq": None, "stopped": None, "folder": None,
+                              "default_folder": None})
             # Without a settings folder, nothing is saved.
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "storage", "directory": None, "saving": False, "problem": ""})
@@ -636,7 +638,7 @@ class RecordingStreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_records_lists_and_serves_a_recording(self):
         async with self.connect() as ws:
             states = await read_start(self, ws)
-            self.assertEqual(states["recording"], {"type": "recording", "audio": None, "stopped": None,
+            self.assertEqual(states["recording"], {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                    "folder": str(self.folder), "default_folder": str(self.folder)})
             await ws.send_json({"type": "recording", "audio": True})
             state = await self.next_message(ws, "recording", lambda state: state["audio"] and state["audio"]["file"])
@@ -662,13 +664,28 @@ class RecordingStreamTest(unittest.IsolatedAsyncioTestCase):
         with wave.open(io.BytesIO(body)) as recorded:
             self.assertEqual(recorded.getframerate(), 12_000)
 
+    async def test_serves_an_iq_recording_and_its_metadata(self):
+        self.folder.mkdir()
+        data, meta = self.folder / IQ_RECORDING_NAME, self.folder / meta_name(IQ_RECORDING_NAME)
+        data.write_bytes(bytes(range(256)) * 4)
+        meta.write_text('{"global": {"core:datatype": "cu8"}, "captures": [], "annotations": []}\n', encoding="ascii")
+        for path in (data, meta):
+            with self.subTest(file=path.name):
+                status, headers, body = await asyncio.to_thread(get, self.server, f"/recordings/{path.name}")
+                self.assertEqual((status, body), (200, path.read_bytes()))
+                # Neither guessed nor JSON: browsers keep the name as it is.
+                self.assertEqual((headers["Content-Type"], headers["Content-Disposition"]),
+                                 ("application/octet-stream", f'attachment; filename="{path.name}"'))
+
     async def test_serves_nothing_else(self):
         self.folder.mkdir()
         target = self.folder.parent / "secret.txt"
         target.write_text("secret")
         os.symlink(target, self.folder / RECORDING_NAME)
+        os.symlink(target, self.folder / meta_name(IQ_RECORDING_NAME))
         (self.folder / "notes.txt").write_text("not a recording")
-        for path in (f"/recordings/{RECORDING_NAME}", "/recordings/notes.txt", "/recordings/../secret.txt",
+        for path in (f"/recordings/{RECORDING_NAME}", f"/recordings/{meta_name(IQ_RECORDING_NAME)}",
+                     "/recordings/notes.txt", "/recordings/../secret.txt",
                      "/recordings/%2E%2E%2Fsecret.txt", f"/recordings/{RECORDING_NAME.replace('.wav', '-2.wav')}",
                      "/recordings/", "/recordings"):
             with self.subTest(path=path):

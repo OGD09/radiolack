@@ -275,7 +275,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "remote": True,
-                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio"]})
+                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
@@ -386,6 +386,9 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         while (message := await next_text(ws))["type"] != "recording" or message["audio"] is None:
             self.assertNotEqual(message["type"], "error")
         self.assertNotIn("folder", message)    # this computer's own
+        await ws.send_json({"type": "recording", "iq": True})     # its own to start too, from a receiver
+        self.assertEqual(await self.next_error(ws), {"type": "error", "command": "recording",
+                                                     "message": "the test source has no raw samples to record"})
         await ws.send_json({"type": "recording", "audio": False})
         while (message := await next_text(self.local))["type"] != "recording" or message["audio"] is not None:
             continue

@@ -244,12 +244,13 @@
     </section>
 
     <section data-panel="record" hidden>
-      <div class="row"><button type="button" class="btn primary" id="rec-audio" disabled>Record audio</button><span class="note" id="rec-state"></span></div>
+      <div class="row"><button type="button" class="btn primary" id="rec-audio" aria-describedby="rec-state" disabled>Record audio</button><span class="note" id="rec-state"></span></div>
+      <div class="row"><button type="button" class="btn" id="rec-iq" aria-describedby="rec-iq-state" disabled>Record I/Q</button><span class="note" id="rec-iq-state"></span></div>
       <p class="note" id="rec-note" role="status" hidden></p>
       <h3>Recordings</h3>
       <ul class="list" id="rec-list"></ul>
       <p class="note" id="rec-summary"></p>
-      <p class="note">Radiolack records the audio it plays into WAV files, on the computer that receives, and goes on without any interface. A new audio rate, into or out of WFM, ends a recording, as does a disk with less than 2 GiB free. The simulated band is not recorded.</p>
+      <p class="note">Radiolack records the audio it plays into WAV files, and the receiver's raw I/Q into SigMF files, which take about 17 GB an hour at 2.4 MS/s, on the computer that receives, and goes on without any interface. A new audio rate, into or out of WFM, ends an audio recording, a new sample rate or another receiver an I/Q recording, and a disk with less than 2 GiB free either. The simulated band is not recorded.</p>
     </section>
 
     <section data-panel="settings" hidden>

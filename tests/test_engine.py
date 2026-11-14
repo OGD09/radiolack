@@ -21,7 +21,7 @@ import numpy as np
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack import __version__, recordings
 from radiolack.engine import Engine, Source, Subscription
-from radiolack.recordings import wav_header
+from radiolack.recordings import meta_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.scanners import VISIT_S, memory_windows, sweep_windows
@@ -29,7 +29,7 @@ from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECT
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, FakeRtlTcp, FakeSource, FakeUpdates,
-                         free_port, wide_signal)
+                         fake_codes, free_port, wide_signal)
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
@@ -174,7 +174,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.get_nowait(), {"type": "peaks", "peaks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
         # Without a recordings folder, nothing is recorded.
-        self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "stopped": None,
+        self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                      "folder": None, "default_folder": None})
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
@@ -2207,6 +2207,11 @@ def with_file(state: dict) -> bool:
     return state["audio"] is not None and state["audio"]["file"] is not None
 
 
+def with_iq_file(state: dict) -> bool:
+    """Whether an I/Q recording runs and its files were made."""
+    return state["iq"] is not None and state["iq"]["file"] is not None
+
+
 class SimulatedBandSources(FakeSources):
     """Fake sources whose last kind passes for the simulated band."""
 
@@ -2219,11 +2224,8 @@ class SimulatedBandSources(FakeSources):
 RECORDED_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 
 
-class RecordingTest(unittest.IsolatedAsyncioTestCase):
-    """Recording the audio: started and stopped by any client, kept up
-    without one, never on the simulated band, stopped by a new audio rate,
-    a disk short of space and the simulated band; the list of the
-    recordings, their deletion, and the folder, chosen and saved."""
+class RecordingCase(unittest.IsolatedAsyncioTestCase):
+    """An engine that records into a temporary folder."""
 
     async def asyncSetUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -2254,6 +2256,13 @@ class RecordingTest(unittest.IsolatedAsyncioTestCase):
         engine.close()
         await asyncio.wait_for(engine.wait_closed(), timeout=15)
 
+
+class RecordingTest(RecordingCase):
+    """Recording the audio: started and stopped by any client, kept up
+    without one, never on the simulated band, stopped by a new audio rate,
+    a disk short of space and the simulated band; the list of the
+    recordings, their deletion, and the folder, chosen and saved."""
+
     async def test_records_the_audio_until_a_client_stops_it(self):
         engine = self.engine()
         subscription = engine.subscribe()
@@ -2267,7 +2276,7 @@ class RecordingTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(audio["seconds"], (audio["bytes"] - 44) / 2 / 12_000, delta=0.05)    # to the tenth
         self.assertEqual((state["stopped"], state["folder"]), (None, str(self.folder)))
         engine.configure_recording({"audio": False})
-        self.assertEqual(engine.recording_state(), {"type": "recording", "audio": None, "stopped": None,
+        self.assertEqual(engine.recording_state(), {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                     "folder": str(self.folder), "default_folder": str(self.folder)})
         await self.stopped(engine)
         with wave.open(str(self.folder / audio["file"])) as recorded:
@@ -2433,7 +2442,7 @@ class RecordingTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(engine.close)
         [state] = [message for message in ready_messages(engine.subscribe(device="5f0c2a91"))
                    if message["type"] == "recording"]
-        self.assertEqual(state, {"type": "recording", "audio": None, "stopped": None})
+        self.assertEqual(state, {"type": "recording", "audio": None, "iq": None, "stopped": None})
 
     async def test_without_a_folder_nothing_is_recorded(self):
         engine = Engine(FakeSource())
@@ -2445,3 +2454,188 @@ class RecordingTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "^this Radiolack does not record$"):
                 command()
         self.assertIsNone(engine.download_folder(RECORDED_NAME))
+
+
+class IQRecordingTest(RecordingCase):
+    """Recording the receiver's raw I/Q, from the fake rtl_tcp, whose
+    samples tell their setting: a capture for each retune, stopped by a new
+    sample rate, another receiver and the disk, never on the simulated band
+    nor from a source without raw samples, at the same time as the audio or
+    not; its files listed, downloaded and deleted together."""
+
+    async def receiver(self, **options) -> RtlTcpSource:
+        """An rtl_tcp receiver: the fake rtl_tcp, on 145 MHz."""
+        self.fake = FakeRtlTcp()
+        await self.fake.__aenter__()
+        self.addAsyncCleanup(self.fake.__aexit__, None, None, None)
+        return RtlTcpSource(LOOPBACK, self.fake.port, settle_s=0.1, **options)
+
+    @staticmethod
+    def iq_bytes(state: dict) -> int:
+        """How much the I/Q recording that runs was given; -1 when none runs."""
+        return state["iq"]["bytes"] if state["iq"] is not None else -1
+
+    async def test_records_the_samples_with_a_capture_for_each_retune(self):
+        engine = self.engine(await self.receiver(sample_rate_hz=1_024_000))
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription, lambda state: with_iq_file(state) and state["iq"]["bytes"] >= 50_000)
+        iq = state["iq"]
+        self.assertRegex(iq["file"], r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}Z_145\.000000MHz_1\.024000MSps\.sigmf-data$")
+        self.assertEqual((iq["frequency_hz"], iq["rate_hz"]), (145e6, 1_024_000))
+        self.assertAlmostEqual(iq["started"], time.time(), delta=10)
+        self.assertAlmostEqual(iq["seconds"], iq["bytes"] / 2 / 1_024_000, delta=0.05)    # to the tenth
+        self.assertEqual((state["audio"], state["stopped"]), (None, None))
+        for changes in ({"centre_hz": 433_000_000}, {"ppm": 3}):    # a correction too: on the same frequency
+            given = self.iq_bytes(engine.recording_state())
+            engine.configure(changes)
+            await next_recording(subscription, lambda state: self.iq_bytes(state) >= given + 200_000)
+        engine.configure_recording({"iq": False})
+        self.assertIsNone(engine.recording_state()["iq"])
+        await self.stopped(engine)
+        data = (self.folder / iq["file"]).read_bytes()
+        metadata = json.loads((self.folder / meta_name(iq["file"])).read_text(encoding="ascii"))
+        self.assertEqual(metadata["global"], {"core:datatype": "cu8", "core:sample_rate": 1_024_000,
+                                              "core:version": "1.0.0", "core:hw": "RTL-SDR, Rafael Micro R820T",
+                                              "core:recorder": f"Radiolack {__version__}"})
+        captures = metadata["captures"]
+        self.assertEqual([capture["core:frequency"] for capture in captures], [145_000_000, 433_000_000, 433_000_000])
+        # Each capture holds the samples of its setting, as rtl_tcp sent them.
+        starts = [capture["core:sample_start"] for capture in captures] + [len(data) // 2]
+        for capture, start, end in zip(captures, starts, starts[1:]):
+            segment = data[2 * start:2 * end]
+            i_code, q_code = fake_codes(capture["core:frequency"], 1_024_000)
+            self.assertTrue(segment)
+            self.assertEqual((set(segment[0::2]), set(segment[1::2])), ({i_code}, {q_code}))
+
+    async def test_goes_on_without_any_client(self):
+        engine = self.engine(await self.receiver())
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        await next_recording(subscription, with_iq_file)
+        engine.unsubscribe(subscription)
+        given = self.iq_bytes(engine.recording_state())
+        await eventually(lambda: self.iq_bytes(engine.recording_state()) > given + 100_000)
+        engine.configure_recording({"iq": False})
+        self.assertIsNone(engine.recording_state()["iq"])
+
+    async def test_a_new_sample_rate_or_another_receiver_stops_it(self):
+        engine = self.engine(await self.receiver())
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        await next_recording(subscription, with_iq_file)
+        engine.configure({"gain_db": 20})       # it goes on
+        with self.assertRaises(ValueError):
+            engine.configure({"sample_rate_hz": 0})     # refused: it goes on
+        self.assertIsNotNone(engine.recording_state()["iq"])
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.configure({"sample_rate_hz": 1_024_000})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "sample_rate", "detail": ""}))
+        self.assertIn("stopped: the receiver's sample rate changed", logs.output[0])
+        # An audio recording leaves the I/Q's stop as it is; an I/Q recording clears it.
+        engine.configure_recording({"audio": True})
+        engine.configure_recording({"audio": False})
+        self.assertEqual(engine.recording_state()["stopped"]["kind"], "iq")
+        engine.configure_recording({"iq": True})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"]["rate_hz"], state["stopped"]), (1_024_000, None))
+        await next_recording(subscription, with_iq_file)
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            engine.configure({"address": f"{LOOPBACK}:{free_port()}"})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "receiver", "detail": ""}))
+
+    async def test_another_kind_of_source_stops_it(self):
+        engine = self.engine(await self.receiver(), sources=FakeSources())
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        engine.configure_recording({"iq": True})
+        await next_recording(subscription, lambda state: with_file(state) and with_iq_file(state))
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            engine.configure({"kind": "test"})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "receiver", "detail": ""}))
+        self.assertIsNotNone(state["audio"])        # another receiver goes on with the audio
+
+    async def test_never_on_the_simulated_band_nor_from_a_source_without_raw_samples(self):
+        for source, refusal in ((SimulatedBandSource(), "^the simulated band is not recorded$"),
+                                (FakeSource(), "^the test source has no raw samples to record$")):
+            engine = self.engine(source)
+            with self.subTest(kind=source.kind), self.assertRaisesRegex(ValueError, refusal):
+                engine.configure_recording({"iq": True})
+            self.assertIsNone(engine.recording_state()["iq"])
+        with self.assertRaisesRegex(ValueError, "^the I/Q is recorded or not: true or false$"):
+            engine.configure_recording({"iq": "yes"})
+        self.assertFalse(self.folder.exists())
+
+    async def test_a_disk_error_stops_it(self):
+        engine = self.engine(await self.receiver())
+        subscription = engine.subscribe()
+        failure = OSError(errno.EIO, "Input/output error")
+        with mock.patch.object(recordings, "_write_all", side_effect=failure), \
+                self.assertLogs("radiolack.engine", "WARNING"):
+            engine.configure_recording({"iq": True})
+            state = await next_recording(subscription, lambda state: state["stopped"] is not None)
+        self.assertEqual((state["iq"], state["stopped"]),
+                         (None, {"kind": "iq", "reason": "disk", "detail": "Input/output error"}))
+
+    async def test_records_with_the_audio_its_files_neither_deleted_nor_downloaded_while_it_runs(self):
+        engine = self.engine(await self.receiver(sample_rate_hz=1_024_000))
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription, lambda state: with_file(state) and with_iq_file(state))
+        audio, iq = state["audio"]["file"], state["iq"]["file"]
+        meta = meta_name(iq)
+        await eventually(lambda: (self.folder / meta).exists())
+        for name in (audio, iq, meta):
+            self.assertIsNone(engine.download_folder(name))
+        for name in (audio, iq):
+            with self.assertRaisesRegex(ValueError, "^this recording runs"):
+                engine.configure_recordings({"delete": name}, subscription)
+        with self.assertRaisesRegex(ValueError, "^delete takes the file of a recording$"):
+            engine.configure_recordings({"delete": meta}, subscription)     # it goes with its data
+        with self.assertRaisesRegex(ValueError, "^a recording runs"):
+            engine.configure_recording({"folder": None}, subscription)
+        engine.configure_recordings({}, subscription)
+        files = (await next_reply(subscription, "recordings"))["files"]
+        self.assertEqual({(entry["name"], entry["kind"], entry["running"]) for entry in files},
+                         {(audio, "audio", True), (iq, "iq", True)})
+        engine.configure_recording({"audio": False})
+        self.assertIsNotNone(engine.recording_state()["iq"])       # each stops on its own
+        engine.configure_recording({"iq": False})
+        for name in (audio, iq, meta):
+            self.assertEqual(engine.download_folder(name), self.folder)
+
+    async def test_a_recording_deleted_as_it_stops_leaves_nothing(self):
+        engine = self.engine(await self.receiver())
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        iq = (await next_recording(subscription, with_iq_file))["iq"]["file"]
+        given = self.iq_bytes(engine.recording_state())
+        engine.configure({"centre_hz": 433_000_000})    # a capture that its metadata gets at the end
+        await next_recording(subscription, lambda state: self.iq_bytes(state) >= given + 100_000)
+        close = recordings.IQRecording._close
+
+        def slow_close(recording):
+            time.sleep(0.3)         # a large file reaching the disk
+            return close(recording)
+
+        with mock.patch.object(recordings.IQRecording, "_close", slow_close):
+            engine.configure_recording({"iq": False})
+            engine.configure_recordings({"delete": iq}, subscription)
+            self.assertEqual((await next_reply(subscription, "recordings"))["files"], [])
+            await self.stopped(engine)      # its thread done too
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+    async def test_stopping_the_engine_closes_its_files(self):
+        engine = self.engine(await self.receiver())
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription, lambda state: self.iq_bytes(state) >= 100_000)
+        await self.stopped(engine)
+        iq = state["iq"]["file"]
+        self.assertGreaterEqual((self.folder / iq).stat().st_size, state["iq"]["bytes"])
+        metadata = json.loads((self.folder / meta_name(iq)).read_text(encoding="ascii"))
+        self.assertEqual(len(metadata["captures"]), 1)

@@ -135,7 +135,7 @@ class Store:
                 os.fsync(file.fileno())
             os.replace(temporary, self.directory / name)
             temporary = None
-            _sync_directory(self.directory)
+            sync_directory(self.directory)
         except OSError as error:
             message = f"{name} cannot be saved: {_reason(error)}."
             if self._errors.get(name) != message:
@@ -173,7 +173,7 @@ class Store:
         self._notes[name] = message
 
 
-def _sync_directory(directory: Path) -> None:
+def sync_directory(directory: Path) -> None:
     """Make a rename in ``directory`` last through a crash, where the system allows."""
     if os.name != "posix":
         return

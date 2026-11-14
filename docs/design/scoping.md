@@ -345,6 +345,12 @@ broadcast station cleanly; audio and I/Q recordings started from the iPhone
 download on the laptop, where the I/Q opens in another SDR program at the
 right frequency; and every test passes in CI.
 
+Checked on 2026-11-14 on the owner's laptop with the receiver: the audio's
+recording, made, downloaded in the window, played and deleted; a recording
+of a broadcast station in WFM, which a change of mode ended, as designed;
+and the recordings folder chosen in Settings. WFM played that station
+cleanly, the check that WFM's pull request had left.
+
 ### Later milestones
 
 - Receivers and bands, the former v3, once the public release is the goal
@@ -993,12 +999,58 @@ Decisions).
   records and downloads but does not choose the folder, the window's
   downloads through stand-ins, and in browsers, the panel, the list,
   Download, Delete and the folder.
+- Recording the raw I/Q, 2026-11-14, v3's sixth pull request: `rtltcp.py`
+  hands every sample that it keeps, after the settling that follows a
+  change, to a tap, in whole I/Q pairs (a chunk's odd byte waits for the
+  next), with the setting they were read with and whether they follow the
+  previous ones; a retune, a new correction and a new connection leave a
+  gap. `recordings.py`'s I/Q recording writes them from a thread of its
+  own, as the audio's: the `.sigmf-data` file holds the bytes as rtl_tcp
+  sent them (`cu8`), and the `.sigmf-meta` file, in SigMF 1.0.0, which
+  Inspectrum and SDRangel read, the sample rate, the receiver
+  (`core:hw`: RTL-SDR and the tuner that rtl_tcp names) and a capture for
+  each gap or new centre frequency: its first sample, its frequency and
+  its first sample's time in UTC, the arrival less the chunk's length, to
+  the millisecond. The metadata is written whole (a temporary file, fsync,
+  rename, then the folder's fsync) with the first samples, within 5 s of a
+  new capture and at the end, so that a crash leaves one that reads the
+  data, short of its latest captures at worst. More than 64 MiB waiting
+  for the disk, about 14 s at 2.4 MS/s, stops the recording as a disk too
+  slow for it. The engine sets the tap with the recording and removes it
+  with the stop; a new sample rate, which the tap's samples confirm,
+  stops it (`sample_rate`), as do another rtl_tcp address and another
+  kind of source (`receiver`), while the audio's recording goes on. The
+  name carries the centre frequency and the sample rate of the start
+  (`..._145.000000MHz_2.400000MSps.sigmf-data`), and its number skips a
+  name whose data or metadata is taken. The list shows the data files,
+  with their rate, their length from their size and their metadata's
+  name; a metadata file without its data is not listed. Delete removes the
+  metadata, then the data; right after a stop, it waits for the
+  recording's thread, whose last metadata would otherwise come back. The
+  downloads serve both files as `application/octet-stream`, so that
+  browsers keep their names. Protocol version 6 stays: the hello's
+  `recording` gains `iq`, the recording state `iq`, the stops
+  `sample_rate` and `receiver`, and the list's entries `rate_hz` and
+  `meta`, which an older interface ignores. The Record panel gains Record
+  I/Q and its row, the status line says which recordings run, and an I/Q
+  recording's entry gives Data and Metadata. The tests check the tap
+  (whole pairs, their settings, the gaps, its removal, a tap that fails),
+  the files against known samples, the captures and the metadata's
+  timing, the names taken, the space, a disk error and the disk too slow;
+  in the engine, on the fake rtl_tcp, a capture for a retune and for a
+  correction, each holding its setting's samples, the stops and the
+  refusals (the simulated band, a source without raw samples), both
+  recordings at once, the downloads and deletions refused while one runs,
+  a deletion right after the stop, and the close; the server's downloads,
+  a paired device that may start one, and in browsers, Record I/Q, Data,
+  Metadata and Delete.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
-  done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3's last pull request, the raw I/Q's
-  recording (SigMF), which joins the Record panel and its list.
+  done too, and with the raw I/Q's recording, v3's. Left: the owner's
+  acceptance of v1, of v2 and of v3 with the receiver (see Milestones),
+  v3's on the computer next to the receiver, where the I/Q recorded there
+  opens in another SDR program at the right frequency.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
