@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -42,13 +43,24 @@ def no_wait():
     yield stop
 
 
-def run_main(*argv):
-    """Run cli.main in-process without waiting for a signal."""
+def run_main(*argv, stop_signals=no_wait):
+    """Run cli.main in-process, without waiting for a signal unless
+    ``stop_signals`` stands in for cli._stop_signals."""
     out, err = io.StringIO(), io.StringIO()
-    with mock.patch.object(cli, "_stop_signals", no_wait), \
+    with mock.patch.object(cli, "_stop_signals", stop_signals), \
             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = cli.main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+@contextlib.contextmanager
+def stop_once_connected(rtl_tcp: socket.socket):
+    """Stand in for cli._stop_signals: the stop event is set once a
+    connection waits on ``rtl_tcp``, a listening socket, or after 10 s."""
+    select.select([rtl_tcp], [], [], 10)
+    stop = threading.Event()
+    stop.set()
+    yield stop
 
 
 @contextlib.contextmanager
@@ -87,8 +99,8 @@ class ParserTest(unittest.TestCase):
 
     def test_defaults(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual((args.ui, args.port, args.remote, args.rtl_sdr, args.rtl_tcp),
-                         ("window", 0, None, None, None))
+        self.assertEqual((args.ui, args.port, args.remote, args.scan, args.rtl_sdr, args.rtl_tcp),
+                         ("window", 0, None, None, None, None))
 
     def test_remote_ports(self):
         for argv, port in ((["--remote"], 0), (["--remote", "--ui", "none"], 0),     # 0: the port used last
@@ -202,6 +214,70 @@ class RemoteOptionTest(unittest.TestCase):
                     mock.patch.object(cli.LocalServer, "turn_on_remote", side_effect=failure):
                 code, out, err = run_main("--ui", "none", "--remote")
             self.assertEqual((code, out, err), (1, "", message))
+
+
+class ScanOptionTest(unittest.TestCase):
+    """--scan, on the simulated band and against a stand-in for rtl_tcp: the
+    scan starts before any interface opens, and one that cannot start is
+    reported while Radiolack runs on."""
+
+    def test_scans(self):
+        for scan in ("memory", "sweep"):
+            with self.subTest(scan=scan):
+                self.assertEqual(cli.build_parser().parse_args(["--scan", scan]).scan, scan)
+        for argv in (["--scan"], ["--scan", "history"], ["--scan", "Memory"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(argv)
+                self.assertEqual(raised.exception.code, 2)
+
+    def test_says_why_a_scan_cannot_start_and_runs_on(self):
+        # The simulated band, the first time: it does not tune, and no bookmark is ticked.
+        for scan, message in (
+                ("sweep", "the sweep cannot start: the sweep needs a receiver that tunes, such as an RTL-SDR"),
+                ("memory", "the memory scan cannot start: no ticked bookmark lies within the receiver's reach")):
+            with self.subTest(scan=scan), own_settings():
+                code, out, err = run_main("--ui", "none", "--scan", scan)
+            self.assertEqual((code, err), (0, f"radiolack: {message}\n"))
+            self.assertRegex(out, URL_LINE)
+
+    def test_starts_the_memory_scan_on_the_simulated_band(self):
+        with own_settings() as settings:
+            settings.parent.mkdir()
+            bookmarks = {"version": 1, "bookmarks": [{"frequency_hz": 145_500_000.0, "name": "Calling",
+                                                      "mode": "NFM", "scan": True}]}
+            (settings.parent / "bookmarks.json").write_text(json.dumps(bookmarks), encoding="utf-8")
+            with mock.patch.object(cli.LocalServer, "start_scan", autospec=True,
+                                   side_effect=cli.LocalServer.start_scan) as start_scan:
+                code, out, err = run_main("--ui", "none", "--scan", "memory")
+        self.assertEqual((code, err), (0, ""))
+        start_scan.assert_called_once_with(mock.ANY, "memory")
+        self.assertRegex(out, URL_LINE)
+
+    def test_reads_the_receiver_at_start_without_any_interface(self):
+        # Without --scan, nothing connects until an interface opens (MainTest).
+        with silent_rtl_tcp() as (rtl_tcp, address), own_settings():
+            code, out, err = run_main("--ui", "none", "--rtl-tcp", address, "--scan", "sweep",
+                                      stop_signals=functools.partial(stop_once_connected, rtl_tcp))
+            self.assertEqual((code, err), (0, ""))
+            connection, _ = rtl_tcp.accept()
+            connection.close()
+
+    def test_starts_the_scan_before_the_window_opens(self):
+        events = []
+        with mock.patch.object(cli.LocalServer, "start_scan", autospec=True,
+                               side_effect=lambda server, scan: events.append(f"scan {scan}")), \
+                mock.patch.object(cli.window, "unavailable_reason", return_value=None), \
+                mock.patch.object(cli.window, "show", side_effect=lambda url: events.append("window")):
+            code, out, err = run_main("--scan", "sweep")
+        self.assertEqual((code, out, err), (0, "", ""))
+        self.assertEqual(events, ["scan sweep", "window"])
+
+    def test_says_when_the_scan_did_not_start_in_time(self):
+        with mock.patch.object(cli.LocalServer, "start_scan", side_effect=TimeoutError()):
+            code, out, err = run_main("--ui", "none", "--scan", "memory")
+        self.assertEqual((code, err), (0, "radiolack: the memory scan did not start in time\n"))
+        self.assertRegex(out, URL_LINE)
 
 
 class MainTest(unittest.TestCase):

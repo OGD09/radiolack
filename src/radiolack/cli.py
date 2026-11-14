@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from . import __version__, window
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
+from .scanners import SCANS
 from .server import LOOPBACK_HOST, InterfaceUnreadable, LocalServer
 from .sources import Sources
 from .store import Store, settings_dir
@@ -78,12 +79,17 @@ def build_parser() -> argparse.ArgumentParser:
              "they open, the certificate's fingerprint and the access code; exit with status 1 when "
              "it cannot turn on",
     )
+    parser.add_argument(
+        "--scan", choices=SCANS,
+        help="start the memory scan or the sweep at start, with its saved settings, which goes on "
+             "without any interface; when it cannot start, say why and run on without it",
+    )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
         "--rtl-sdr", nargs="?", const="0", type=_device, metavar="DEVICE",
         help="read the RTL-SDR receiver plugged into this computer, through an rtl_tcp that "
-             "Radiolack starts while an interface is open: DEVICE is its index or serial "
-             "number (default: 0, the first one)",
+             "Radiolack starts while an interface is open or a scan runs: DEVICE is its index "
+             "or serial number (default: 0, the first one)",
     )
     # Without ADDRESS, an empty address: the source takes the saved one.
     sources.add_argument(
@@ -119,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     with server:
         if args.remote is not None and not _turn_on_remote(server, args.remote or None):
             return 1
+        if args.scan is not None:
+            _start_scan(server, args.scan)
         if args.ui == "window":
             reason = window.unavailable_reason()
             if reason is None:
@@ -162,6 +170,19 @@ def _turn_on_remote(server: LocalServer, port: int | None) -> bool:
     else:
         print(f"Access code: {state['code']}", flush=True)
     return True
+
+
+def _start_scan(server: LocalServer, scan: str) -> None:
+    """Start the scan given to --scan, before any interface opens; when it
+    cannot start, the error output says why, and Radiolack runs on without
+    it."""
+    name = "memory scan" if scan == "memory" else "sweep"
+    try:
+        server.start_scan(scan)
+    except ValueError as error:
+        print(f"radiolack: the {name} cannot start: {error}", file=sys.stderr)
+    except TimeoutError:
+        print(f"radiolack: the {name} did not start in time", file=sys.stderr)
 
 
 @contextlib.contextmanager

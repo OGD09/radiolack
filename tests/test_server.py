@@ -559,6 +559,48 @@ class SavedSettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((states["storage"]["saving"], states["storage"]["problem"]), (True, ""))
 
 
+class StartScanTest(unittest.IsolatedAsyncioTestCase):
+    """LocalServer.start_scan, for --scan: the scan goes on without any
+    interface, and an interface that opens later learns why one could not
+    start."""
+
+    async def asyncSetUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    async def scanner_state(self, server: LocalServer) -> dict:
+        async with self.session.ws_connect(f"{server.url}stream", origin=f"http://{LOOPBACK_HOST}:{server.port}") as ws:
+            return (await read_start(self, ws))["scanner"]
+
+    async def test_starts_a_scan_that_goes_on_without_any_interface(self):
+        Store(self.directory).save(BOOKMARKS_FILE, {"bookmarks": [
+            {"frequency_hz": FAKE_CENTRE_HZ + 40_000, "name": "Near", "mode": "NFM", "scan": True}]})
+        source = FakeSource()
+        server = LocalServer(source=source, store=Store(self.directory))
+        self.addCleanup(server.stop)
+        server.start()
+        await asyncio.to_thread(server.start_scan, "memory")
+        deadline = time.monotonic() + 5
+        while source.reads == 0:
+            self.assertLess(time.monotonic(), deadline, "the engine did not read its source")
+            await asyncio.sleep(0.01)
+        state = await self.scanner_state(server)
+        self.assertEqual((state["scan"], state["stopped"]), ("memory", None))
+
+    async def test_says_why_a_scan_cannot_start(self):
+        server = LocalServer(source=FakeSource())
+        self.addCleanup(server.stop)
+        with self.assertRaisesRegex(RuntimeError, "^the server is not running$"):
+            server.start_scan("memory")
+        server.start()
+        with self.assertRaises(ValueError) as raised:
+            await asyncio.to_thread(server.start_scan, "sweep")
+        self.assertEqual(str(raised.exception), "the sweep needs a receiver that tunes, such as an RTL-SDR")
+        state = await self.scanner_state(server)
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "start", "sweep"))
+
+
 class UpdateStreamTest(unittest.IsolatedAsyncioTestCase):
     """An interface asks the engine to check for updates, and turns the check
     at start off; every interface learns the outcome."""

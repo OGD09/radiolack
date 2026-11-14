@@ -192,8 +192,8 @@ flowchart LR
   browser on 127.0.0.1.
 - Remote access, scans and recordings are off at each start: they run only
   once an interface starts them, this computer's alone for remote access,
-  or an option given at start does (`--remote`, and from v3 `--scan`), and
-  whether they run is never saved.
+  or an option given at start does (`--remote` or `--scan`), and whether
+  they run is never saved.
 
 ### Remote access
 
@@ -874,12 +874,33 @@ Decisions).
   the engine, on a fake receiver with a wide signal, the automatic squelch
   that opens on the station and not on the noise, and a memory scan that
   stops on a WFM bookmark.
+- `--scan`, 2026-11-14, v3's second pull request: `--scan memory` or
+  `--scan sweep` starts that scan at start, with its saved settings, once
+  remote access is on and before the window or any interface opens
+  (`cli.py`), through the server (`LocalServer.start_scan`, `server.py`)
+  and the engine (`Engine.start_given_scan`, `engine.py`), as an
+  interface's Start does: the engine then reads the receiver without any
+  client. A scan that cannot start is printed on the error output, the
+  scanner state's `stopped` gives `start`, with the scan in
+  `stopped_scan`, which the interface shows once the cause it already
+  shows is gone (`main.js`), and Radiolack runs on without it, its exit
+  status unchanged. Until an rtl_tcp receiver answers, its range is
+  unknown: every ticked bookmark and every window then lies within reach,
+  and a scan started at start stops as one that an interface started, for
+  want of a ticked bookmark within the range or on a refused window,
+  which the output now tells in both cases. Protocol version 6 stays: an
+  older interface shows the new reason as a plain stop. The tests check,
+  against the fake rtl_tcp, both scans running without any client and
+  filling the History, the sweep with its saved range; the refusals, said
+  to the caller and in the scanner state, with the engine idle; the
+  server's and the command line's messages, the scan started before the
+  window, and the receiver read at start without any interface.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3's next pull requests, from `--scan`, in
-  the order of its decisions.
+  receiver (see Milestones), and v3's next pull requests, from remote
+  access that follows the addresses, in the order of its decisions.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

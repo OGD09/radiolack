@@ -13,10 +13,11 @@ the history under the tag `v0.1.0`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
-  `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop
-  in a background thread; interface files, read once at start, and the
-  `/stream` WebSocket; remote access's HTTPS listener, a second application
-  with a runner of its own, in the same loop), `remote` (remote access: the
+  `--scan`, `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1,
+  own event loop in a background thread; interface files, read once at
+  start, and the `/stream` WebSocket; starts the scan given at start;
+  remote access's HTTPS listener, a second application with a runner of
+  its own, in the same loop), `remote` (remote access: the
   local certificate authority, with `cryptography`, the access code, paired
   devices with their sessions and interface preferences, the private
   addresses to listen on), `engine`
@@ -181,13 +182,14 @@ the history under the tag `v0.1.0`.
   the user asks for it in the current conversation. Running the interface
   without a receiver is fine. `radiolack --rtl-sdr` starts rtl_tcp, which
   opens the receiver, as soon as an interface opens (the default window
-  included), and `radiolack --rtl-tcp` tunes the receiver behind a running
-  rtl_tcp: tests and checks use the fake rtl_tcp server of `tests/fakes.py`
-  or the fake rtl_tcp program `tests/fake_rtl_tcp.py` instead. `radiolack`
-  without either option reopens the source used last, which may be a
-  receiver, and choosing a receiver in the Source panel's list opens it: a
-  check started with a temporary `XDG_CONFIG_HOME` begins on the simulated
-  band.
+  included), or at start with `--scan`, and `radiolack --rtl-tcp` tunes
+  the receiver behind a running rtl_tcp: tests and checks use the fake
+  rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
+  `tests/fake_rtl_tcp.py` instead. `radiolack` without either option
+  reopens the source used last, which may be a receiver, read at start
+  with `--scan`, and choosing a receiver in the Source panel's list opens
+  it: a check started with a temporary `XDG_CONFIG_HOME` begins on the
+  simulated band.
 - Never install, upgrade or remove the Debian package, or any system
   package: that needs sudo, which the owner runs.
 - Never use, export or change the owner's GnuPG keys (`~/.gnupg`), never
