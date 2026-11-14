@@ -91,9 +91,10 @@ from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
-                       MAX_IGNORED, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal, Signals,
-                       Sweep, SweepWindows, checked_frequency, checked_resume, checked_sweep_range, checked_threshold,
-                       checked_window, memory_window, memory_windows, search_blocks, sweep_windows, watched_channels)
+                       MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal,
+                       Signals, Sweep, SweepWindows, checked_frequency, checked_resume, checked_sweep_range,
+                       checked_threshold, checked_window, memory_window, memory_windows, search_blocks, sweep_windows,
+                       watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
@@ -412,7 +413,8 @@ class Engine:
         self._tour: MemoryTour | None = None        # the memory scan's windows, while it runs
         self._sweep: Sweep | None = None
         self._home: tuple[float, float] | None = None   # centre frequency and VFO at the start of the scan that runs
-        # Which scan stopped by itself last, and why; None once a client stopped one, or starts one.
+        # Which scan stopped by itself last, or could not start as given at
+        # start, and why; None once a client stopped one, or starts one.
         self._stopped: tuple[str, str] | None = None
         self._restore_scanner(settings.get("scanner"))
         self._peaks_sent_s = -math.inf      # when the clients were last told of the signals
@@ -608,6 +610,22 @@ class Engine:
         self._settings_changed()
         if self._signals.changed(time.monotonic()):
             self._peaks_changed(at_once=True)
+
+    def start_given_scan(self, scan: str) -> None:
+        """Start ``scan``, "memory" or "sweep", given at start (cli's --scan),
+        as an interface would. Raises ValueError, saying why, for another
+        scan, and when it cannot start: unless the other scan runs, which
+        goes on, the scanner state then tells the clients, ``start`` being
+        why it stopped."""
+        if scan not in SCANS:
+            raise ValueError(f'a scan is "memory" or "sweep", not {str(scan)[:40]!r}')
+        try:
+            self.configure_scanner({"scan": scan})
+        except ValueError:
+            if not self._scanning():
+                self._stopped = (scan, "start")
+                self._scanner_changed()
+            raise
 
     def observations_state(self) -> dict[str, Any]:
         """The observations message: the channels where detection found
@@ -967,11 +985,15 @@ class Engine:
         tuned by hand or left for another source, the receiver and the VFO
         come back where the scan found them: after a sweep, and after a
         memory scan that moved the receiver, unless it stays on a channel.
-        Without any client, the engine stops reading."""
+        Without any client, the engine stops reading. The output tells of a
+        stop for want of bookmarks, as ``_tune_scan`` does of a refused
+        window: no interface may be open to show it."""
         if not self._scanning():
             return
         home, memory, tour = self._home, self._memory, self._tour
         scan = "memory" if memory is not None else "sweep"
+        if reason == "bookmarks":
+            log.warning("the memory scan stopped: no ticked bookmark lies within the receiver's reach any more")
         self._memory = self._tour = self._sweep = self._home = None
         self._stopped = None if reason is None else (scan, reason)
         if home is not None:

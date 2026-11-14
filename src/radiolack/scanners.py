@@ -59,6 +59,7 @@ from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
 SCANNERS = ("peaks", "memory", "history", "sweep")   # what the engine runs, as the hello lists it
+SCANS = ("memory", "sweep")         # the scans, of which one runs at a time
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency

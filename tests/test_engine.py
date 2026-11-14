@@ -1287,7 +1287,11 @@ class MemoryScanTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(reason=reason):
                 if engine.scanner_state()["memory"]["watched"]:
                     await listening()
-                stop()
+                # The output tells of a stop for want of bookmarks.
+                logs = (self.assertLogs("radiolack.engine", "WARNING") if reason == "bookmarks"
+                        else contextlib.nullcontext())
+                with logs:
+                    stop()
                 state = engine.scanner_state()
                 self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"], state["memory"]["state"]),
                                  (None, reason, "memory", None))
@@ -1800,7 +1804,10 @@ class MemoryScanWindowsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state["scan"], state["memory"]["watched"], state["memory"]["windows"],
                           state["memory"]["window"]), ("memory", [near], 1, 0))
         await eventually(lambda: source.centre_hz == HOME_HZ)      # the span it started from holds the one left
-        engine.edit_bookmarks({"action": "change", "id": near, "scan": False})
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.edit_bookmarks({"action": "change", "id": near, "scan": False})
+        self.assertEqual(logs.output, ["WARNING:radiolack.engine:the memory scan stopped: no ticked bookmark lies "
+                                       "within the receiver's reach any more"])
         state = engine.scanner_state()
         self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "bookmarks", "memory"))
         self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
@@ -1886,6 +1893,109 @@ class RtlTcpMemoryScanTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["memory"]["bookmark_id"], ids["On the air"])
         self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["frequency_hz"]), (windows[1], on_air))
         await eventually(lambda: fake.frequency_hz == windows[1])
+
+
+def heard(engine: Engine, frequency_hz: float) -> bool:
+    """Whether the engine's observations hold a channel within 2 kHz of ``frequency_hz``."""
+    return any(abs(channel["frequency_hz"] - frequency_hz) <= 2_000
+               for channel in engine.observations_state()["channels"])
+
+
+class GivenScanTest(unittest.IsolatedAsyncioTestCase):
+    """A scan given at start (cli's --scan), with its saved settings: it
+    goes on without any client, reading the receiver, and the History
+    fills; one that cannot start says why to its caller and in the scanner
+    state, and the engine stays idle."""
+
+    async def asyncSetUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+
+    def engine(self, source: Source) -> Engine:
+        engine = Engine(source, store=Store(self.directory))
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def rtl_tcp(self, carriers: dict[float, float]) -> RtlTcpSource:
+        """A receiver at HOME_HZ behind the fake rtl_tcp, with ``carriers``,
+        not yet connected, as at start."""
+        fake = FakeRtlTcp(carriers=carriers, chunk_bytes=16_384, interval_s=0.004)
+        await fake.__aenter__()
+        self.addAsyncCleanup(fake.__aexit__, None, None, None)
+        return RtlTcpSource(LOOPBACK, fake.port, centre_hz=HOME_HZ, sample_rate_hz=1_024_000.0, settle_s=0.1)
+
+    async def test_the_memory_scan_runs_without_any_client_and_fills_the_history(self):
+        on_air = HOME_HZ + 200_000
+        Store(self.directory).save(BOOKMARKS_FILE, {"bookmarks": [
+            {"frequency_hz": on_air, "name": "On the air", "mode": "NFM", "scan": True}]})
+        engine = self.engine(await self.rtl_tcp({on_air: 0.2}))
+        engine.start_given_scan("memory")
+        self.assertEqual(engine.scanner_state()["scan"], "memory")
+        await eventually(lambda: engine.scanner_state()["memory"]["state"] == "listening", timeout=30)
+        self.assertEqual((engine.state()["status"], engine.demod_state()["frequency_hz"]), ("streaming", on_air))
+        await eventually(lambda: heard(engine, on_air), timeout=30)
+
+    async def test_the_sweep_runs_with_its_saved_range_without_any_client_and_fills_the_history(self):
+        low, high = 145_000_000.0, 145_600_000.0
+        on_air = high - 50_000      # in the last of its three windows
+        Store(self.directory).save(SETTINGS_FILE, {"scanner": {"sweep_low_hz": low, "sweep_high_hz": high,
+                                                               "sweep_window_s": 0.25}})
+        engine = self.engine(await self.rtl_tcp({on_air: 0.2}))
+        engine.start_given_scan("sweep")
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["sweep"]["windows"]), ("sweep", 3))
+        await eventually(lambda: heard(engine, on_air), timeout=30)
+        self.assertEqual(engine.state()["status"], "streaming")
+
+    async def test_one_that_cannot_start_says_why_and_the_engine_stays_idle(self):
+        refusals = (
+            ("memory", FakeSource, "no ticked bookmark lies within the receiver's reach"),
+            ("sweep", FakeSource, "the sweep needs a receiver that tunes, such as an RTL-SDR"),
+            # Saved before the start: a range beyond the receiver's reach.
+            ("sweep", lambda: TuningSource({}), "the receiver cannot tune to every window of the sweep's "
+                                                "range: it tunes from 24 to 1766 MHz"),
+        )
+        Store(self.directory).save(SETTINGS_FILE, {"scanner": {"sweep_low_hz": 1_800e6, "sweep_high_hz": 1_810e6}})
+        for scan, make_source, reason in refusals:
+            with self.subTest(scan=scan, reason=reason):
+                source = make_source()
+                engine = self.engine(source)
+                with self.assertRaises(ValueError) as raised:
+                    engine.start_given_scan(scan)
+                self.assertEqual(str(raised.exception), reason)
+                await asyncio.sleep(0.1)
+                self.assertEqual(source.reads, 0)
+                # An interface that opens later learns why.
+                subscription = engine.subscribe()
+                state = await next_scanner(subscription)
+                engine.unsubscribe(subscription)
+                self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "start", scan))
+
+    async def test_a_refusal_reaches_the_clients_and_leaves_the_other_scan_running(self):
+        engine = self.engine(FakeSource())
+        subscription = engine.subscribe()
+        with self.assertRaises(ValueError):
+            engine.start_given_scan("sweep")    # the source does not tune
+        state = await asyncio.wait_for(next_scanner(subscription, until=lambda message: message["stopped"] is not None),
+                                       timeout=10)
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "start", "sweep"))
+        engine.edit_bookmarks({"action": "add", "frequency_hz": FAKE_CENTRE_HZ + 40_000, "name": "Near",
+                               "mode": "NFM", "scan": True})
+        engine.configure_scanner({"scan": "memory"})
+        self.assertEqual(engine.scanner_state()["stopped"], None)
+        with self.assertRaises(ValueError):
+            engine.start_given_scan("sweep")
+        for scan in ("history", "Memory", None):
+            with self.subTest(scan=scan), self.assertRaisesRegex(ValueError, '^a scan is "memory" or "sweep", not '):
+                engine.start_given_scan(scan)
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), ("memory", None, None))
 
 
 class SimulatedBandSource(FakeSource):

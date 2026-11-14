@@ -637,7 +637,8 @@ class LocalServer:
     with ``sources``, an interface may switch to another kind of source.
     Without either, it reads the synthetic band. With a ``store``, the engine
     starts from the saved settings and saves their changes; with ``updates``,
-    it checks for a newer Radiolack.
+    it checks for a newer Radiolack. No scan runs until an interface or
+    ``start_scan`` starts one.
 
     Remote access, which stays off until an interface or ``turn_on_remote``
     turns it on, listens on the addresses that ``remote_addresses`` gives at
@@ -665,6 +666,7 @@ class LocalServer:
         self._stop_requested: asyncio.Event | None = None
         self._error: BaseException | None = None
         # Made in the server's loop before it is ready, and used only there.
+        self._engine: Engine | None = None
         self._access: RemoteAccess | None = None
         self._remote: RemoteListener | None = None
 
@@ -723,6 +725,25 @@ class LocalServer:
             future.cancel()
             raise
 
+    def start_scan(self, scan: str) -> None:
+        """Start ``scan``, "memory" or "sweep", given at start, as
+        Engine.start_given_scan does: it goes on without any interface.
+        Raises ValueError, saying why, when it cannot start, and TimeoutError
+        when the server does not answer in time."""
+        loop, engine = self._loop, self._engine
+        if loop is None or engine is None:
+            raise RuntimeError("the server is not running")
+
+        async def start() -> None:
+            engine.start_given_scan(scan)
+
+        future = asyncio.run_coroutine_threadsafe(start(), loop)
+        try:
+            future.result(_START_TIMEOUT_S)
+        except TimeoutError:
+            future.cancel()
+            raise
+
     def _run(self) -> None:
         try:
             asyncio.run(self._serve())
@@ -736,7 +757,7 @@ class LocalServer:
         access = RemoteAccess()
         engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access)
         remote = RemoteListener(engine, access, self._remote_addresses, self._host, self._interface)
-        self._access, self._remote = access, remote
+        self._engine, self._access, self._remote = engine, access, remote
         runner = web.AppRunner(create_app(self.port, engine, remote, self._interface), handle_signals=False)
         await runner.setup()
         try:

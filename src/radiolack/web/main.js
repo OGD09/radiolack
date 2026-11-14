@@ -1377,6 +1377,7 @@ const MEM_STOPPED = {
   tuned: 'Stopped: the receiver was tuned by hand.',
   source: 'Stopped: another receiver was chosen.',
   range: 'Stopped: the receiver did not tune to a window of the bookmarks.',
+  start: 'Did not start with Radiolack: no ticked bookmark lay within reach.',
 };
 // Why the latest scan stopped, in the tab of `scan`: the engine's reason when
 // it is about that scan, or Stopped. An engine older than the sweep names no
@@ -1437,6 +1438,7 @@ const SWEEP_STOPPED = {
   tuned: 'Stopped: the receiver was tuned by hand.',
   source: 'Stopped: another receiver was chosen.',
   range: 'Stopped: the receiver did not tune to a window of the range.',
+  start: 'Did not start with Radiolack: the receiver could not tune to the range.',
 };
 const swFrom = $('#sw-from'), swTo = $('#sw-to'), swWindow = $('#sw-window'), swWindowOut = $('#sw-window-v');
 const swStart = $('#sw-start');

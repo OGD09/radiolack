@@ -8,6 +8,7 @@ radiolack \- receive\-only SDR receiver with band plans
 [\fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR]
 [\fB\-\-port\fR \fIPORT\fR]
 [\fB\-\-remote\fR [\fIPORT\fR]]
+[\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR]
 [\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR]]
 .br
 .B radiolack
@@ -77,9 +78,21 @@ with status 1.
 Without a window, Settings stays on 127.0.0.1: reach it through an SSH
 tunnel whose two ends use the port given to \fB\-\-port\fR.
 .TP
+\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR
+Start the memory scan or the sweep at start, with its saved settings, as
+the Start button of an interface does: the scan goes on without any
+interface, and the signals it finds fill the History, so that after a
+power cut or an upgrade Radiolack goes on scanning.
+The receiver then opens at start.
+When the scan cannot start, for instance the memory scan without a ticked
+bookmark within the receiver's reach, or the sweep with a source that does
+not tune, Radiolack says why, in its output and in its interface, and runs
+on without it.
+Without this option, no scan runs at start.
+.TP
 \fB\-\-rtl\-sdr\fR [\fIDEVICE\fR]
 Read the RTL\-SDR receiver plugged into this computer, through an rtl_tcp
-that Radiolack runs while an interface is open.
+that Radiolack runs while an interface is open or a scan runs.
 \fIDEVICE\fR is the receiver's index or serial number: 0, the first one,
 by default.
 rtl_tcp comes with the rtl\-sdr package.

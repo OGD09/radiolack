@@ -22,7 +22,8 @@ interface plays the audio; the Demod panel's CTCSS and processing settings
 do nothing yet. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
-sweeps a range with such a receiver ([Scanners](#scanners)). Levels are in
+sweeps a range with such a receiver ([Scanners](#scanners)), from an
+interface or, with `--scan`, at each start. Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
 package on Debian and Ubuntu. Remote access, off at each start unless
@@ -142,6 +143,7 @@ stops Radiolack.
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
+| `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Source panel can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
@@ -188,8 +190,8 @@ radiolack --rtl-sdr
 ```
 
 - Radiolack starts rtl_tcp, on 127.0.0.1 and a free port, when an interface
-  opens, and stops it once no interface is open and no scan runs, or when
-  Radiolack stops:
+  opens or a scan starts, `--scan` at start included, and stops it once no
+  interface is open and no scan runs, or when Radiolack stops:
   the receiver then stays free for other programs, such as Gqrx. On Linux,
   should Radiolack end without stopping rtl_tcp, killed for instance, the
   system stops it (through setpriv, from util-linux).
@@ -278,7 +280,7 @@ With either option:
   another one uses it, Radiolack waits.
 - While no interface is open and no scan runs, Radiolack hangs up, which
   leaves rtl_tcp free for another program, and connects again when an
-  interface opens. The
+  interface opens or a scan starts. The
   first samples then take a moment, a little longer with `--rtl-sdr`, which
   starts rtl_tcp again.
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
@@ -430,9 +432,10 @@ no ticked bookmark left within reach and a receiver that refuses a window,
 which stop it too. Tuning by hand from any interface (the VFO, the centre
 frequency or the sample rate) or choosing another receiver stops it,
 leaving them where they are. While it runs, the receiver's settings saved
-are those of its start. Whether it runs is never saved, so none runs at
-start; the resume time is the same for every interface and kept for the
-next start.
+are those of its start. Whether it runs is never saved: none runs at start,
+unless `--scan memory` starts it ([Without a window](#without-a-window)).
+The resume time is the same for every interface and kept for the next
+start.
 
 The Sweep tab's sweep runs in the engine too, the same for every interface,
 with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
@@ -466,9 +469,9 @@ choosing another receiver stops it, leaving the receiver where it is.
 While it runs, the receiver's settings saved are those it comes back to,
 and the memory scan's windows are those it would take from that span,
 where a memory scan started then begins. A new range starts a running
-sweep again from its first window. Whether it runs is never saved; the
-range and the time per window are the same for every interface and kept
-for the next start.
+sweep again from its first window. Whether it runs is never saved: none
+runs at start, unless `--scan sweep` starts it. The range and the time per
+window are the same for every interface and kept for the next start.
 
 The engine keeps the channels where it found signals for 90 days: for each
 one, when it was first and last heard, how many transmissions, how long it
@@ -660,6 +663,24 @@ ssh -L 8080:127.0.0.1:8080 COMPUTER
 ```
 
 then open `http://127.0.0.1:8080/` on the computer that runs ssh.
+
+`--scan memory` or `--scan sweep` starts that scan at each start, with its
+saved settings, as Start does in the Scanners panel, so that after a power
+cut or an upgrade the computer goes on scanning, and the History fills,
+without any interface:
+
+```bash
+radiolack --ui none --rtl-sdr --scan memory
+```
+
+The receiver then opens at start, not once an interface opens. When the
+scan cannot start, as the memory scan without a ticked bookmark within the
+receiver's reach or the sweep with a source that does not tune, Radiolack
+says why in its output and in the Scanners panel, and runs on without it:
+an interface can start it later. A receiver's range is known once it
+answers: the output also says when the memory scan then stops because no
+ticked bookmark lies within that range, and when a scan stops because the
+receiver refused a window. Without `--scan`, no scan runs at start.
 
 ## Updates
 
