@@ -569,9 +569,17 @@ wherever the device reaches them; then `https://NAME.local:8443/` with its
 host name, which works on networks where mDNS resolves such names (Avahi on
 Linux; iOS, macOS, Android and Windows resolve them), unless this computer
 also has an IPv6 address: the name then leads there too, where remote access
-does not listen, and an iPhone opens it slowly or not at all. When the
-router gives this computer another address, turn remote access off and on,
-then open the new address and enter the code again. On each device, once:
+does not listen, and an iPhone opens it slowly or not at all.
+
+Remote access follows this computer's addresses while it is on: within
+about ten seconds of a change, such as a new address from the router or a
+VPN that comes up, it listens on the new ones, and Settings shows them.
+Devices on an address that remains reconnect by themselves; on a new
+address, a device enters the code again. While this computer has no address
+on a local network, remote access stays on and listens nowhere, as Settings
+says, until it has one. It also listens on any private network that this
+computer joins while it is on, such as a hotel's Wi-Fi: turn it off before
+joining a network you do not trust. On each device, once:
 
 1. Open the address. The browser warns that the connection is not private:
    Radiolack's certificate comes from Radiolack's own local authority, which
@@ -590,7 +598,8 @@ in `.local`, `.home.arpa` or `.internal`: name constraints, in the
 certificate that signs Radiolack's, keep it from vouching for any other
 website, and the root's key was destroyed as soon as it signed that
 certificate. Radiolack gives itself a new certificate, for this computer's
-current addresses, each time remote access turns on.
+current addresses, each time remote access turns on and each time they
+change.
 
 A paired device gets the interface, the spectrum and the audio, and shares
 the receiver with every other interface: its changes to the VFO, the mode,
@@ -628,8 +637,10 @@ again from this computer's. A wrong code is answered after a second, and
 after 10 wrong codes the code no longer works until Settings makes a new
 one.
 Turning remote access off closes the devices' connections; their interfaces
-wait for it to be on again. Radiolack keeps a hash of each device's session,
-never the session itself, in `remote.json`, which only you can read.
+wait for it to be on again. A change of this computer's addresses closes
+them too, and the interfaces reconnect by themselves. Radiolack keeps a hash
+of each device's session, never the session itself, in `remote.json`, which
+only you can read.
 
 ### Without a window
 
@@ -649,9 +660,11 @@ on a port in use or without an address on a local network yet, Radiolack
 says why and exits with status 1, so that a service manager can start it
 again, as systemd's `Restart=on-failure` does. Away from home, devices reach
 it through a VPN that gives this computer an address in the ranges above,
-such as WireGuard on a private range or Tailscale. Remote access listens on
-the addresses that this computer has when it turns on: start Radiolack once
-the VPN is up, or start it again.
+such as WireGuard on a private range or Tailscale. Once on, remote access
+follows this computer's addresses: within about ten seconds, it also listens
+on a VPN that comes up after the start. The output then says only when
+remote access listens nowhere, or cannot listen on new addresses; Settings
+shows the addresses.
 
 Settings stays on this computer's own interface, on 127.0.0.1: to turn
 remote access off, forget a device or make a new code, reach it through SSH

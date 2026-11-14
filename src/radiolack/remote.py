@@ -3,9 +3,10 @@
 Remote access is off at each start. Once this computer turns it on, by its
 interface or by the --remote option (cli.py), the server (server.py) also
 listens over HTTPS, on a fixed port, on this computer's private IPv4
-addresses. A device installs the certificate of Radiolack's local authority
-once, then enters the access code once: it then holds a session cookie, and
-with it the interface, the stream and the audio.
+addresses, which it follows until turned off. A device installs the
+certificate of Radiolack's local authority once, then enters the access code
+once: it then holds a session cookie, and with it the interface, the stream
+and the audio.
 
 This module keeps what remote access needs between starts, in remote.json in
 the settings folder (store.py): the port, the access code and the wrong codes
@@ -19,7 +20,8 @@ that intermediate to private IPv4 addresses and local names (``.local``,
 ``home.arpa``, ``.internal``), and its extended key usage to TLS servers: a
 device that trusts the root trusts nothing else, even should someone take the
 intermediate's key from the settings folder. The intermediate signs a new
-server certificate, for the addresses in use, at each turn-on.
+server certificate, for the addresses in use, at each turn-on and each time
+they change.
 
 A session is a random token in an HttpOnly cookie, of which this computer
 keeps only the SHA-256 hash. A device stays paired until the user forgets
@@ -328,9 +330,14 @@ class RemoteAccess:
         self._seen(device)
         self._changed()
 
-    def started(self, urls: Sequence[str]) -> None:
-        """Remote access listens: devices open one of ``urls``."""
-        self.on, self.urls, self.problem = True, list(urls), ""
+    def started(self, urls: Sequence[str], problem: str = "") -> None:
+        """Remote access is on: devices open one of ``urls``, or, without
+        any, it listens nowhere for ``problem`` until this computer's
+        addresses change."""
+        urls = list(urls)
+        if self.on and self.urls == urls and self.problem == problem:
+            return
+        self.on, self.urls, self.problem = True, urls, problem
         self._changed()
 
     def stopped(self, problem: str = "") -> None:

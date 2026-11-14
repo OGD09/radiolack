@@ -2243,6 +2243,7 @@ function syncRemote() {
   if (!typingIn.has(remotePortEl)) remotePortEl.value = String(r.port);
   remotePortEl.disabled = r.on;     // the engine changes it only while off
   $('#st-remote-info').hidden = !r.on;
+  $('#st-remote-url-field').hidden = !r.urls.length;     // on, but listening nowhere: the message says why
   $('#st-remote-url').textContent = r.urls[0] ?? '';
   $('#st-remote-urls').textContent = r.urls.length > 1 ? `Or: ${r.urls.slice(1).join(', ')}` : '';
   $('#st-remote-code').textContent = r.code ?? '';

@@ -298,14 +298,14 @@ preferences apart from this computer's.
 
     | Field | Meaning |
     | --- | --- |
-    | `on` | Whether remote access listens. False at each start. |
+    | `on` | Whether remote access is on: it then listens on the addresses that `urls` gives, unless it has none. False at each start. |
     | `port` | The port it listens on, or will. |
-    | `urls` | What a device opens: by each address it listens on, then by this computer's mDNS name, when its host name is a valid one. The name also leads to the computer's IPv6 addresses, if any, where remote access does not listen. Empty while off. |
+    | `urls` | What a device opens: by each address it listens on, then by this computer's mDNS name, when its host name is a valid one. The name also leads to the computer's IPv6 addresses, if any, where remote access does not listen. Empty while off, and while on without an address to listen on, as `problem` then says. |
     | `code` | The access code, in two groups of four characters, while on; null while off. |
     | `blocked` | Too many wrong codes were entered (10): the code no longer works until a new one is made. |
     | `devices` | The paired devices, in the order they were paired: `id`, which a `remote` message names; `label`, such as `iPhone · Safari`, made of known words only; `paired` and `seen`, when it was paired and last used, in Unix time, the latter to the hour; `connected`, whether it has a stream open. |
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
-    | `problem` | Why remote access could not turn on, in sentences for the user, or empty. |
+    | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
 11. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
@@ -599,7 +599,7 @@ one setting at a time:
 
 | Field | Value |
 | --- | --- |
-| `on` | `true` or `false`. Turning on gives remote access a new server certificate, for this computer's current addresses, and listens; turning off closes the remote streams, then releases the port. Both go on in the background: the remote access state tells how it went, with a `problem` when remote access could not turn on. |
+| `on` | `true` or `false`. Turning on gives remote access a new server certificate, for this computer's current addresses, and listens; turning off closes the remote streams, then releases the port. Both go on in the background: the remote access state tells how it went, with a `problem` when remote access could not turn on. While on, remote access looks at this computer's addresses every 10 s: once they change, it closes the remote streams with code 1012, then listens on the new addresses with a new certificate. It stays on, listening nowhere, while there are none or while it cannot listen on them, and tries again at each check where it could not listen; `problem` says why. |
 | `port` | From 1024 to 65535, for the next turn-on: only while remote access is off. |
 | `new_code` | `true`: a new access code, which no wrong code has been tried against. Every device is forgotten, and its streams close. |
 | `forget` | A paired device's `id`: the device is forgotten, and its streams close. |
@@ -638,10 +638,10 @@ While on, remote access serves the interface and the stream over HTTPS, with
 a server certificate from Radiolack's local authority, on the port and the
 addresses its state gives. It answers only peers whose own address is
 private (the ranges README.md lists, under Remote access), and only requests
-whose `Host` header names it as one of its `urls` does; while off or turning
-off, it answers every request with 503. Its answers carry
-`Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
-`Referrer-Policy: no-referrer`.
+whose `Host` header names it as one of its `urls` does; while off, turning
+off or moving to new addresses, it answers every request with 503. Its
+answers carry `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`
+and `Referrer-Policy: no-referrer`.
 
 | Request | Answer |
 | --- | --- |
@@ -673,14 +673,16 @@ the user in `error`:
 | 429 | `{"error": …}` | 10 wrong codes were entered: the code no longer works until a new one is made. |
 
 Other refusals are plain text: 403 for another origin, 413 for a larger
-body, 415 for a body that is not `application/json`, and 503 while off.
+body, 415 for a body that is not `application/json`, and 503 while off or
+moving.
 
 The stream needs the same origin too. Its handshake succeeds whatever the
 cookie, so that the page learns why the stream closes: with code 4001 at
 once for a device that is not paired, and later when the device is
 forgotten or a new code is made; with code 4002 when remote access turns
-off. The server pings a remote client every 20 s, and drops one that stops
-answering.
+off; with code 1012 (Service Restart) when it moves to this computer's new
+addresses. The server pings a remote client every 20 s, and drops one that
+stops answering.
 
 The stream accepts permessage-deflate (RFC 7692), which browsers offer and
 which halves the spectrum frames; a message from the device must stay
@@ -739,7 +741,8 @@ and later.
   otherwise, as reloading would bring the same page back, it asks for a
   reload. One whose stream closes with code 4002 reconnects in the same way
   as after a drop, saying that remote access is off on the computer, until
-  a hello comes.
+  a hello comes. One whose stream closes with code 1012 reconnects as after
+  a drop: on an address that remains, it finds remote access again.
 - While its page is hidden, the interface closes the stream, unless it plays
   audio; it opens it again when the page shows.
 
@@ -785,7 +788,13 @@ and later.
   mode, without a new version either: `modes` and `audio_modes` gain WFM,
   with its filter widths and its 32 kHz audio. An older interface ignores
   the settings of a mode it does not know, keeping those it shows, and
-  plays the audio at the rate its frames give, as before.
+  plays the audio at the rate its frames give, as before. The same day, the
+  scanner state's `stopped` value `start`, for a scan given at start that
+  could not start, which an older interface shows without a reason; and
+  remote access that follows the computer's addresses: close code 1012,
+  which an older interface takes for a drop, and a remote access state
+  that is on with empty `urls` and a `problem`, which an older interface
+  shows as on, with an empty address.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

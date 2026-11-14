@@ -39,7 +39,8 @@ It is off at each start, and only this computer turns it on: its
 interface, in Settings, or the \fB\-\-remote\fR option.
 Radiolack then also listens over HTTPS, on port 8443 unless Settings or
 \fB\-\-remote\fR chooses another, on this computer's private IPv4
-addresses, and answers only devices on these networks.
+addresses, which it follows until turned off, and answers only devices on
+these networks.
 A device installs the certificate of Radiolack's local authority, whose
 SHA\-256 fingerprint Settings shows, and enters the access code that
 Settings shows, once: \fB\-\-remote\fR prints both.

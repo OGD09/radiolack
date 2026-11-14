@@ -895,12 +895,37 @@ Decisions).
   to the caller and in the scanner state, with the engine idle; the
   server's and the command line's messages, the scan started before the
   window, and the receiver read at start without any interface.
+- Remote access that follows the addresses, 2026-11-14, v3's third pull
+  request: while on, remote access looks at this computer's private
+  addresses every 10 s (`RemoteListener`, `server.py`), which costs a few
+  system calls and sends nothing. Once they change, it closes the remote
+  streams with code 1012 (Service Restart), which the interfaces take for a
+  drop, then listens on the new addresses with a new certificate, with the
+  same port, code and authority: the devices on an address that remains
+  reconnect by themselves. Without an address, or where it cannot listen,
+  as on a port that another program holds on a new address, remote access
+  stays on and listens nowhere: its state is on, without an address and
+  with the reason, which Settings shows in place of the address
+  (`main.js`); the output says it once, and a refused address is tried
+  again at each check. Turning on still needs an address, so that
+  `--remote` without one still exits with status 1. Remote access also
+  listens on a private network that a laptop joins while it is on, which
+  README.md tells: turn it off before joining a network you do not trust.
+  Protocol version 6 stays: an older interface takes the new close code
+  for a drop. The tests move remote access between 127.0.0.1 and
+  127.0.0.2, both loopback on Linux, through a stand-in for the list of
+  addresses, checked every 50 ms: an address that comes, with a
+  certificate that names it, and one that goes; a device that reconnects
+  on the address that remains; no address at all, then another one; a
+  busy port on a new address, tried again until free; nothing followed
+  once off. A browser test shows Settings while remote access listens
+  nowhere.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3's next pull requests, from remote
-  access that follows the addresses, in the order of its decisions.
+  receiver (see Milestones), and v3's next pull requests, from the
+  service's unit and the package's scripts, in the order of its decisions.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
