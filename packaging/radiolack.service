@@ -1,0 +1,60 @@
+# Radiolack as a system service, on a computer next to the receiver and
+# without a display, which devices use through remote access (README.md, As a
+# service). The Debian package installs this unit and never enables or
+# starts it: `systemctl enable --now radiolack` does, as the administrator
+# chooses, and `systemctl edit radiolack` changes its options.
+[Unit]
+Description=Radiolack SDR receiver, for remote access
+Documentation=man:radiolack(1)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080
+# Again 10 s after a failure, such as remote access without an address yet.
+Restart=on-failure
+RestartSec=10
+# Its settings, bookmarks and History, in /var/lib/radiolack.
+StateDirectory=radiolack
+StateDirectoryMode=0700
+Environment=XDG_CONFIG_HOME=%S PYTHONUNBUFFERED=1
+UMask=0077
+# A user of its own, made at each start, in the group that may open the
+# receivers (their device rules give it to plugdev).
+DynamicUser=yes
+SupplementaryGroups=plugdev
+# The sandbox, so that a flaw in remote access reaches neither a user's
+# account nor the system: no privilege, the users' homes hidden, the system's
+# files read-only, a private temporary folder, and only the devices, address
+# families and system calls that Radiolack and rtl_tcp need.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+DevicePolicy=closed
+DeviceAllow=char-usb_device rw
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# setpriv, which stops rtl_tcp with Radiolack, sets the capabilities that it
+# keeps: none, with none to gain.
+SystemCallFilter=capset
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

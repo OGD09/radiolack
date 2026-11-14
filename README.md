@@ -81,11 +81,13 @@ sudo apt install ./radiolack_VERSION_all.deb
 Radiolack then shows in the applications menu. The package also adds
 Radiolack's APT repository, so that apt installs each later release with the
 system's other updates ([APT repository](#apt-repository)), and Radiolack
-says when one is out ([Updates](#updates)). `sudo apt remove radiolack`
-removes Radiolack but leaves your settings and bookmarks, and the
-repository's source and key; `sudo apt purge radiolack` also removes the
-source and the key. The release notes also give the command that checks
-the attestation of the package's build.
+says when one is out ([Updates](#updates)). It also installs a service for
+a computer without a display, which it never enables
+([As a service](#as-a-service)). `sudo apt remove radiolack` removes
+Radiolack but leaves your settings and bookmarks, and the repository's
+source and key; `sudo apt purge radiolack` also removes the source and the
+key, and the service's settings and History. The release notes also give
+the command that checks the attestation of the package's build.
 
 To install the latest commit instead, build the package from the
 repository, with your name and address as its maintainer; building needs
@@ -695,6 +697,61 @@ answers: the output also says when the memory scan then stops because no
 ticked bookmark lies within that range, and when a scan stops because the
 receiver refused a window. Without `--scan`, no scan runs at start.
 
+### As a service
+
+On a computer without a display, next to the receiver, the Debian package's
+systemd service runs Radiolack from boot, with remote access on. The package
+installs it and never enables or starts it: enabling it is the
+administrator's choice, as giving `--remote` at start is.
+
+```bash
+sudo systemctl enable --now radiolack
+```
+
+It runs `radiolack --ui none --rtl-sdr --remote --port 8080`: the receiver
+plugged into that computer, remote access on the port it used last (8443
+the first time), and that computer's own interface on 127.0.0.1:8080, which
+the SSH tunnel above reaches, with Settings, the update notice and the full
+spectrum. The addresses to open, the certificate's fingerprint and the
+access code go to the system's journal, which root and the members of the
+adm and systemd-journal groups read:
+
+```bash
+sudo journalctl -u radiolack
+```
+
+The service starts once the network is up, and again 10 s after a failure,
+such as remote access without an address on a local network yet. The
+package restarts it after an upgrade when it runs, and stops it before its
+removal; `sudo systemctl disable --now radiolack` stops it and keeps it from
+starting at boot. `sudo systemctl edit radiolack` changes its command, for
+instance to start the memory scan at each start or to take another local
+port, with an empty `ExecStart=` before the new one:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080 --scan memory
+```
+
+It runs as a user of its own, which systemd makes at each start
+(`DynamicUser`), in the plugdev group that the receivers' device rules let
+in, within systemd's sandbox: without any privilege, the users' homes
+hidden, the system's files read-only, a temporary folder of its own, and
+only the devices, address families and system calls that Radiolack and
+rtl_tcp need, so that a flaw in remote access reaches neither a user's
+account nor the system; `systemd-analyze security radiolack` details it.
+Its settings, bookmarks and History live in its state directory,
+`/var/lib/radiolack`, which only the service and root read;
+`sudo apt purge radiolack` removes it.
+
+Its interface on 127.0.0.1:8080 answers every account and program on that
+computer, as Radiolack's interface does on any computer: give that
+computer's accounts only to those who may use the receiver. A receiver
+serves one program at a time: an rtl_tcp service or another Radiolack on
+the same receiver must stay stopped, or the service's interfaces wait,
+saying that another program uses the receiver.
+
 ## Updates
 
 Installed from its Debian package, Radiolack checks at each start whether
@@ -758,7 +815,10 @@ The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
 they use a temporary settings folder and GnuPG home, never yours. Where
 dpkg-deb is installed, they also build the Debian package twice in a
-temporary folder, compare the builds and run the package's command; where
+temporary folder, compare the builds and run the package's command, check
+its service with systemd-analyze where it is installed, and run its
+maintainer scripts on a copy of its files, with stand-ins for the commands
+that would act on your system; where
 git is, they make releases in temporary repositories, never in yours; where
 GnuPG is too, they build APT repositories, sign them with throwaway keys and
 read them with apt-get, run as you in a folder of its own, away from your
@@ -853,8 +913,9 @@ services or radio hardware:
   26.04, checks that apt reads the source that it adds, runs it there with
   `packaging/smoke_test.py`, whose update check reads the published APT
   repository with the source and key that the package adds, and which pairs
-  a device with remote access on the container's network, removes it,
-  which keeps the source and its key,
+  a device with remote access on the container's network, checks that it
+  installs its service without enabling it, removes it, which keeps the
+  source and its key and the service's enabling and state,
   then purges it, which removes them, and checks it with lintian; when the
   package or its packaging change.
 - Workflows: actionlint and zizmor check the workflows themselves when they
@@ -1030,8 +1091,9 @@ src/radiolack/
 tests/          tests without hardware
 docs/design/    design documents
 packaging/      Debian package (build script, manual page, menu entry,
-                icon, licence notice, APT source and key), its smoke test,
-                the release script and the APT repository's tools
+                icon, systemd service, licence notice, APT source and
+                key), its smoke test, the release script and the APT
+                repository's tools
 .github/        GitHub Actions workflows, their settings and Dependabot's
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3

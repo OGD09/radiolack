@@ -1,8 +1,10 @@
 """Tests for the Debian package (packaging/build_deb.py): its version, its
 control fields, its files and their dates, built into a temporary folder,
 twice, to compare. The launcher it installs runs from the extracted package,
-without a window, through packaging/smoke_test.py. Building needs dpkg-deb,
-as on Debian and Ubuntu."""
+without a window, through packaging/smoke_test.py. Its systemd service is
+checked with systemd-analyze, and its maintainer scripts run on a copy of the
+package's files, as DPKG_ROOT, with stand-ins for the commands that would act
+on this computer. Building needs dpkg-deb, as on Debian and Ubuntu."""
 
 import contextlib
 import email.utils
@@ -25,7 +27,8 @@ import radiolack
 from radiolack import cli
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("build_deb", ROOT / "packaging" / "build_deb.py")
+UNIT = "usr/lib/systemd/system/radiolack.service"     # the service, in the package
+spec =importlib.util.spec_from_file_location("build_deb", ROOT / "packaging" / "build_deb.py")
 build_deb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build_deb)
 
@@ -158,6 +161,8 @@ class PackageTest(unittest.TestCase):
         cls.epoch = build_deb.source_date_epoch()
         cls.tree = cls.folder / "tree"
         subprocess.run(["dpkg-deb", "-x", str(cls.package), str(cls.tree)], check=True, timeout=60)
+        cls.scripts = cls.folder / "control"
+        subprocess.run(["dpkg-deb", "-e", str(cls.package), str(cls.scripts)], check=True, timeout=60)
 
     def field(self, name: str) -> str:
         return subprocess.run(["dpkg-deb", "--field", str(self.package), name], capture_output=True, text=True,
@@ -286,6 +291,163 @@ class PackageTest(unittest.TestCase):
         entry = self.tree / "usr/share/applications/radiolack.desktop"
         result = subprocess.run(["desktop-file-validate", str(entry)], capture_output=True, text=True, timeout=60)
         self.assertEqual((result.returncode, result.stdout + result.stderr), (0, ""))
+
+    def test_installs_the_service_where_systemd_reads_the_units_of_packages(self):
+        listing = subprocess.run(["dpkg-deb", "--contents", str(self.package)], capture_output=True, text=True,
+                                 check=True, timeout=60).stdout.splitlines()
+        modes = {line.split()[-1].removeprefix("."): (line.split()[0], line.split()[1]) for line in listing}
+        self.assertEqual(modes[f"/{UNIT}"], ("-rw-r--r--", "root/root"))
+        self.assertEqual((self.tree / UNIT).read_bytes(), (ROOT / "packaging/radiolack.service").read_bytes())
+        # Not a configuration file: an administrator changes it with systemctl edit, in /etc.
+        self.assertNotIn(f"/{UNIT}", self.control("conffiles"))
+
+    def test_the_service_runs_the_packaged_command_in_a_sandbox(self):
+        settings = unit_settings((self.tree / UNIT).read_text(encoding="utf-8"))
+        command = settings["Service.ExecStart"][0].split()
+        self.assertEqual(command[0], "/usr/bin/radiolack")
+        options = cli.build_parser().parse_args(command[1:])
+        # Remote access on the port it used last, this computer's interface on a port that SSH can reach.
+        self.assertEqual((options.ui, options.rtl_sdr, options.remote, options.port, options.scan),
+                         ("none", "0", 0, 8080, None))
+        for key, values in {
+            # Once the network is up, again 10 s after a failure, and only once the administrator enables it.
+            "Unit.Wants": ["network-online.target"], "Unit.After": ["network-online.target"],
+            "Service.Restart": ["on-failure"], "Service.RestartSec": ["10"],
+            "Install.WantedBy": ["multi-user.target"],
+            # Its settings, bookmarks and History in its state directory, which only it reads.
+            "Service.StateDirectory": ["radiolack"], "Service.StateDirectoryMode": ["0700"],
+            "Service.Environment": ["XDG_CONFIG_HOME=%S PYTHONUNBUFFERED=1"],
+            # A user of its own, in the group that opens the receivers, without any privilege, in a sandbox.
+            "Service.DynamicUser": ["yes"], "Service.SupplementaryGroups": ["plugdev"],
+            "Service.CapabilityBoundingSet": [""], "Service.NoNewPrivileges": ["yes"],
+            "Service.ProtectSystem": ["strict"], "Service.ProtectHome": ["yes"], "Service.PrivateTmp": ["yes"],
+            "Service.DevicePolicy": ["closed"], "Service.DeviceAllow": ["char-usb_device rw"],
+            "Service.RestrictAddressFamilies": ["AF_INET AF_INET6 AF_UNIX AF_NETLINK"],
+            "Service.SystemCallFilter": ["@system-service", "~@privileged @resources", "capset"],
+        }.items():
+            self.assertEqual(settings.get(key), values, key)
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze (systemd)")
+    def test_systemd_reads_the_service(self):
+        with tempfile.TemporaryDirectory() as folder:
+            # systemd-analyze checks that the command exists, and the package is not installed here.
+            unit = Path(folder) / "radiolack.service"
+            unit.write_text((self.tree / UNIT).read_text(encoding="utf-8").replace(
+                "\nExecStart=/usr/bin/radiolack ", f"\nExecStart={shutil.which('true')} "), encoding="utf-8")
+            result = subprocess.run(["systemd-analyze", "verify", "--man=no", "--recursive-errors=no", str(unit)],
+                                    capture_output=True, text=True, timeout=120)
+        output = result.stdout + result.stderr
+        # It may also report this computer's other units: only the service's lines matter.
+        self.assertEqual((result.returncode, [line for line in output.splitlines() if "radiolack" in line]),
+                         (0, []), output)
+
+    @unittest.skipUnless(shutil.which("deb-systemd-helper"), "deb-systemd-helper (init-system-helpers)")
+    def test_the_package_never_enables_the_service_and_its_purge_removes_its_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "root"
+            subprocess.run(["dpkg-deb", "-x", str(self.package), str(root)], check=True, timeout=60)
+            # The system's deb-systemd-helper, which records and removes the service's links in DPKG_ROOT.
+            run, calls = self.maintainer_scripts(Path(folder), root=root)
+            link = root / "etc/systemd/system/multi-user.target.wants/radiolack.service"
+            state = root / "var/lib/systemd/deb-systemd-helper-enabled/radiolack.service.dsh-also"
+            run("postinst", "configure", "")
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(state.read_text(encoding="utf-8").split(), [f"/{link.relative_to(root)}"])
+            # The administrator enables it; an upgrade keeps it enabled.
+            link.parent.mkdir(parents=True)
+            link.symlink_to(f"/{UNIT}")
+            run("postinst", "configure", "0.8.0")
+            self.assertEqual(os.readlink(link), f"/{UNIT}")
+            # Its state directory as systemd makes it under DynamicUser, next to another service's.
+            private = root / "var/lib/private"
+            (private / "radiolack").mkdir(parents=True)
+            (private / "radiolack/settings.json").write_text("{}", encoding="utf-8")
+            (root / "var/lib/radiolack").symlink_to("private/radiolack")
+            (private / "other").mkdir()
+            # dpkg removes the package's files between prerm and postrm: the removal keeps its enabling and state.
+            run("prerm", "remove")
+            (root / UNIT).unlink()
+            run("postrm", "remove")
+            self.assertTrue(link.is_symlink())
+            self.assertTrue((root / "var/lib/radiolack/settings.json").is_file())
+            run("postrm", "purge")
+            for path in (link, state, root / "var/lib/radiolack", private / "radiolack"):
+                self.assertFalse(path.exists() or path.is_symlink(), path)
+            self.assertTrue((private / "other").is_dir())
+            # Nothing reached this computer's systemd: DPKG_ROOT is another system's.
+            self.assertEqual(calls(), ["py3compile -p radiolack", "py3compile -p radiolack", "py3clean -p radiolack"])
+
+    @unittest.skipUnless(Path("/run/systemd/system").is_dir(), "a computer that systemd runs")
+    def test_the_package_restarts_the_running_service_after_an_upgrade_and_stops_it_before_its_removal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            # Stand-ins for every command, deb-systemd-helper included, without DPKG_ROOT: this computer's
+            # systemd, as the scripts see it. Never the purge here: it would remove this computer's
+            # /var/lib/radiolack.
+            run, calls = self.maintainer_scripts(Path(folder), root=None)
+            run("postinst", "configure", "")
+            self.assertEqual(calls(), ["py3compile -p radiolack",
+                                       "deb-systemd-helper debian-installed radiolack.service",
+                                       "deb-systemd-helper update-state radiolack.service",
+                                       "systemctl --system daemon-reload"])
+            run("postinst", "configure", "0.8.0")
+            self.assertEqual(calls()[-2:], ["systemctl --system daemon-reload",
+                                            "deb-systemd-invoke try-restart radiolack.service"])
+            run("prerm", "upgrade", "0.9.0")
+            self.assertEqual(calls(), ["py3clean -p radiolack"])
+            run("prerm", "remove")
+            self.assertEqual(calls(), ["deb-systemd-invoke stop radiolack.service", "py3clean -p radiolack"])
+            run("postrm", "remove")
+            self.assertEqual(calls(), ["systemctl --system daemon-reload"])
+
+    def maintainer_scripts(self, folder: Path, root: Path | None):
+        """Run the package's maintainer scripts with stand-ins, which note their arguments, for py3compile,
+        py3clean, systemctl and deb-systemd-invoke, and for deb-systemd-helper without ``root``, for which the
+        service was never installed. With ``root``, the scripts act on it as DPKG_ROOT. Returns run(script,
+        *arguments) and calls(), which gives the stand-ins' calls since the last calls()."""
+        stand_ins, log = folder / "bin", folder / "calls"
+        names = ["py3compile", "py3clean", "systemctl", "deb-systemd-invoke"] + ([] if root else ["deb-systemd-helper"])
+        for name in names:
+            _write_program(stand_ins / name, '#!/bin/sh\necho "${0##*/} $*" >> "$STAND_IN_LOG"\n'
+                                             'case "$*" in *debian-installed*|*was-enabled*) exit 1;; esac\n')
+        environment = {**os.environ, "PATH": f"{stand_ins}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+                       "STAND_IN_LOG": str(log), "DPKG_MAINTSCRIPT_PACKAGE": "radiolack"}
+        environment.pop("DPKG_ROOT", None)
+        if root is not None:
+            environment["DPKG_ROOT"] = str(root)
+
+        def run(script: str, *arguments: str) -> None:
+            result = subprocess.run([str(self.scripts / script), *arguments], capture_output=True, text=True,
+                                    env=environment, timeout=60)
+            self.assertEqual(result.returncode, 0, f"{script} {' '.join(arguments)}: {result.stdout}{result.stderr}")
+
+        def calls() -> list[str]:
+            noted = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+            log.unlink(missing_ok=True)
+            return noted
+
+        return run, calls
+
+
+def unit_settings(text: str) -> dict[str, list[str]]:
+    """A systemd unit's settings, "Section.Key" -> its values in their order, as a key may come more than once."""
+    settings: dict[str, list[str]] = {}
+    section = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        else:
+            key, _, value = line.partition("=")
+            settings.setdefault(f"{section}.{key.strip()}", []).append(value.strip())
+    return settings
+
+
+def _write_program(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
 
 
 def ar_members(path: Path) -> dict[str, tuple[int, bytes]]:

@@ -116,6 +116,11 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(self.store.location, "~/radiolack")
             self.assertEqual(Store(Path("/srv/radiolack")).location, "/srv/radiolack")
 
+    def test_shows_the_whole_folder_to_a_user_without_a_home_folder(self):
+        # As the service's user, whose home is the root.
+        with mock.patch("radiolack.store.Path.home", return_value=Path("/")):
+            self.assertEqual(Store(Path("/var/lib/radiolack")).location, "/var/lib/radiolack")
+
 
 if __name__ == "__main__":
     unittest.main()

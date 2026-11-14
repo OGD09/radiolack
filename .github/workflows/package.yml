@@ -5,8 +5,9 @@
 # on each supported release of Debian and Ubuntu, installs it with apt from
 # that repository, checks the APT source that it adds, runs it
 # (packaging/smoke_test.py), with its update check against the published APT
-# repository and remote access on the container's own network, removes and
-# purges it, and on Debian 13 checks it with lintian.
+# repository and remote access on the container's own network, checks that it
+# installs its service without enabling it, removes and purges it, and on
+# Debian 13 checks it with lintian.
 # No secrets, services or radio hardware.
 name: Package
 
@@ -209,13 +210,39 @@ jobs:
           fi
           xvfb-run -a python3 packaging/smoke_test.py --window --check-updates --remote
 
+      # The package installs the service and never enables it. The container
+      # runs no systemd: the link that `systemctl enable radiolack` makes and
+      # the state directory of a first start stand in for an administrator's.
+      - name: Check the service that the package installs, without enabling it
+        timeout-minutes: 5
+        run: |
+          if [ ! -f /usr/lib/systemd/system/radiolack.service ]; then
+            echo "::error::the package does not install radiolack.service"
+            exit 1
+          fi
+          link=/etc/systemd/system/multi-user.target.wants/radiolack.service
+          if [ -e "$link" ] || [ -L "$link" ]; then
+            echo "::error::the package enabled radiolack.service"
+            exit 1
+          fi
+          if [ ! -f /var/lib/systemd/deb-systemd-helper-enabled/radiolack.service.dsh-also ]; then
+            echo "::error::the package did not record the service's links, which its purge removes"
+            exit 1
+          fi
+          mkdir -p "$(dirname "$link")" /var/lib/private/radiolack
+          ln -s /usr/lib/systemd/system/radiolack.service "$link"
+          echo '{}' > /var/lib/private/radiolack/settings.json
+          ln -s private/radiolack /var/lib/radiolack
+
       # Removing it keeps its configuration files, the APT source and the key
-      # that the source needs; purging it removes them.
+      # that the source needs, and the service's enabling and state; purging
+      # it removes them.
       - name: Remove the package, then purge it
         timeout-minutes: 5
         run: |
           apt-get remove -y radiolack
-          for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack; do
+          for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack \
+              /usr/lib/systemd/system/radiolack.service; do
             if [ -e "$path" ]; then
               echo "::error::$path is left after the package's removal"
               exit 1
@@ -227,14 +254,22 @@ jobs:
               exit 1
             fi
           done
+          if [ ! -L /etc/systemd/system/multi-user.target.wants/radiolack.service ] \
+              || [ ! -f /var/lib/radiolack/settings.json ]; then
+            echo "::error::the package's removal took the service's enabling or its state"
+            exit 1
+          fi
           apt-get purge -y radiolack
           if dpkg --status radiolack > /dev/null 2>&1; then
             echo "::error::dpkg still knows radiolack after its purge"
             exit 1
           fi
           for path in /usr/bin/radiolack /usr/lib/python3/dist-packages/radiolack /usr/share/doc/radiolack \
-              /etc/apt/sources.list.d/radiolack.sources /etc/apt/keyrings/radiolack-archive-keyring.gpg; do
-            if [ -e "$path" ]; then
+              /etc/apt/sources.list.d/radiolack.sources /etc/apt/keyrings/radiolack-archive-keyring.gpg \
+              /etc/systemd/system/multi-user.target.wants/radiolack.service \
+              /var/lib/systemd/deb-systemd-helper-enabled/radiolack.service.dsh-also \
+              /var/lib/radiolack /var/lib/private/radiolack; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
               echo "::error::$path is left after the package's purge"
               exit 1
             fi
