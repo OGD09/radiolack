@@ -7,7 +7,9 @@ streams its frames, its audio, its source state, its demodulation settings,
 its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
-audio, for an update check and for the observations.
+audio, for an update check, for the observations and for the list of the
+recordings. It serves the recordings that the engine lists, to download
+(``/recordings/NAME``).
 
 The server reads the interface's files once, when it is made, and serves
 them from memory: a running Radiolack keeps serving the interface it started
@@ -19,8 +21,9 @@ line turns it on, adds a second web application to the same loop, with a
 runner of its own: it serves the interface and the stream over HTTPS on
 this computer's private addresses, which it follows while on, to devices
 that entered the access code, and turning it off stops it without stopping
-the first. Remote devices may not change remote access, the update check or
-the rtl_tcp server's address, and the preferences they give are their own.
+the first. Remote devices may not change remote access, the update check,
+the rtl_tcp server's address or the recordings folder, and the preferences
+they give are their own.
 """
 
 from __future__ import annotations
@@ -40,9 +43,10 @@ from typing import Any
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from .engine import LOCAL_SETTINGS, Engine, Source, SourceOpener, Subscription, UpdateChecker
+from .engine import LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener, Subscription, UpdateChecker
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
                      is_private, issue_server_certificate, remote_urls, server_context)
+from .recordings import open_recording
 from .scanners import SCANNERS
 from .store import Store
 from .synthetic import SyntheticBand
@@ -61,9 +65,13 @@ _REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authori
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "update",
-             "remote")
+_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "recording",
+             "recordings", "update", "remote")
 _LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
+# The fields of other commands refused to remote devices.
+_LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
+RECORDING_KINDS = ("audio",)    # what the engine records, as the hello tells
+_DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
 _REMOTE_KEEPALIVE_S = 15.0      # an idle HTTPS connection closes after this long
@@ -98,6 +106,8 @@ CONTENT_SECURITY_POLICY = "; ".join((
 _FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
 _FILE_NAME = r"[a-z0-9][a-z0-9_-]*\.(?:css|js|json)"
 _FILE_ROUTE = rf"/{{name:{_FILE_NAME}}}"
+# A recording to download: the engine checks the name.
+_RECORDING_ROUTE = r"/recordings/{name:[A-Za-z0-9._-]+}"
 _PAGES = ("index.html", "pair.html")
 
 
@@ -175,6 +185,9 @@ def create_app(port: int, engine: Engine, remote: RemoteListener, interface: Int
     async def interface_file(request: web.Request) -> web.Response:
         return interface.file(request.match_info["name"])
 
+    async def recording(request: web.Request) -> web.StreamResponse:
+        return await _download(request, engine)
+
     async def stream(request: web.Request) -> web.StreamResponse:
         # Any page may open a WebSocket to any address, but browsers always
         # tell the page's origin: only the interface itself may connect.
@@ -201,6 +214,7 @@ def create_app(port: int, engine: Engine, remote: RemoteListener, interface: Int
     app.router.add_get("/", index)
     app.router.add_get("/stream", stream)
     app.router.add_get(_FILE_ROUTE, interface_file)
+    app.router.add_get(_RECORDING_ROUTE, recording, allow_head=False)
     app.on_shutdown.append(stop_streams)
     app.cleanup_ctx.append(run_engine)
     return app
@@ -213,7 +227,7 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
     and the interface's commands the other, until either side ends it."""
     try:
         await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": device is not None,
-                            "scanners": list(SCANNERS)})
+                            "scanners": list(SCANNERS), "recording": list(RECORDING_KINDS)})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -269,7 +283,7 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
     kind = command["type"]
     changes = {key: value for key, value in command.items() if key != "type"}
     if subscription.remote and (kind in _LOCAL_COMMANDS
-                                or kind == "source" and any(name in changes for name in LOCAL_SETTINGS)):
+                                or any(name in changes for name in _LOCAL_FIELDS.get(kind, ()))):
         return kind, "only Radiolack's interface on the computer may change this"
     try:
         if kind == "source":
@@ -286,6 +300,10 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.configure_scanner(changes)
         elif kind == "observations":
             engine.configure_observations(changes, subscription)
+        elif kind == "recording":
+            engine.configure_recording(changes, subscription)
+        elif kind == "recordings":
+            engine.configure_recordings(changes, subscription)
         elif kind == "preferences":
             values = changes.pop("values", None)
             if changes:
@@ -305,6 +323,45 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
     except ValueError as error:
         return kind, str(error)
     return kind, None
+
+
+async def _download(request: web.Request, engine: Engine) -> web.StreamResponse:
+    """The recording that the request names, as an attachment: only one
+    named as the engine names them, in its recordings folder, a regular file
+    and not the recording that runs; HTTPNotFound for any other."""
+    name = request.match_info["name"]
+    folder = engine.download_folder(name)
+    if folder is None:
+        raise web.HTTPNotFound()
+    try:
+        file, size = await asyncio.to_thread(open_recording, folder, name)
+    except FileNotFoundError:
+        raise web.HTTPNotFound() from None
+    except OSError as error:
+        log.warning("the recording %s cannot be read: %s", name, error.strerror or error)
+        raise web.HTTPForbidden(text="This recording cannot be read.\n") from None
+    try:
+        response = web.StreamResponse(headers={
+            "Content-Type": "audio/wav",
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        })
+        response.content_length = size
+        response.force_close()      # should the file come short, the connection tells
+        await response.prepare(request)
+        remaining = size
+        while remaining > 0:
+            chunk = await asyncio.to_thread(file.read, min(_DOWNLOAD_CHUNK, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            await response.write(chunk)
+        await response.write_eof()
+    finally:
+        file.close()
+    return response
 
 
 def _bind(host: str, port: int) -> socket.socket:
@@ -583,6 +640,7 @@ class RemoteListener:
         app.router.add_post("/pair", self._pair)
         app.router.add_get("/certificate", self._certificate)
         app.router.add_get(_FILE_ROUTE, self._file)
+        app.router.add_get(_RECORDING_ROUTE, self._recording, allow_head=False)
         return app
 
     async def _index(self, request: web.Request) -> web.Response:
@@ -594,6 +652,11 @@ class RemoteListener:
         if name not in _PAIRING_FILES and self._device(request) is None:
             raise web.HTTPForbidden(text="This device is not paired.\n")
         return self._interface.file(name)
+
+    async def _recording(self, request: web.Request) -> web.StreamResponse:
+        if self._device(request) is None:
+            raise web.HTTPForbidden(text="This device is not paired.\n")
+        return await _download(request, self._engine)
 
     async def _certificate(self, _request: web.Request) -> web.Response:
         """The local authority's root certificate, which a device installs."""
@@ -715,8 +778,10 @@ class LocalServer:
     with ``sources``, an interface may switch to another kind of source.
     Without either, it reads the synthetic band. With a ``store``, the engine
     starts from the saved settings and saves their changes; with ``updates``,
-    it checks for a newer Radiolack. No scan runs until an interface or
-    ``start_scan`` starts one.
+    it checks for a newer Radiolack. It records into ``recordings``, unless
+    the user chose another folder; without it, it never does. No scan runs
+    until an interface or ``start_scan`` starts one, and no recording until
+    an interface starts one.
 
     Remote access, which stays off until an interface or ``turn_on_remote``
     turns it on, listens on the addresses that ``remote_addresses`` gives,
@@ -727,11 +792,13 @@ class LocalServer:
 
     def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
                  sources: SourceOpener | None = None, updates: UpdateChecker | None = None,
-                 remote_addresses: Callable[[], Sequence[str]] | None = None, host: str | None = None) -> None:
+                 remote_addresses: Callable[[], Sequence[str]] | None = None, host: str | None = None,
+                 recordings: Path | None = None) -> None:
         self._source = source
         self._sources = sources
         self._store = store
         self._updates = updates
+        self._recordings = recordings
         self._remote_addresses = remote_addresses if remote_addresses is not None else _no_addresses
         self._host = host_name() if host is None else host
         self._interface = InterfaceFiles(WEB_DIR)
@@ -833,7 +900,8 @@ class LocalServer:
     async def _serve(self) -> None:
         source = SyntheticBand() if self._source is None and self._sources is None else self._source
         access = RemoteAccess()
-        engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access)
+        engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access,
+                        recordings=self._recordings)
         remote = RemoteListener(engine, access, self._remote_addresses, self._host, self._interface)
         self._engine, self._access, self._remote = engine, access, remote
         runner = web.AppRunner(create_app(self.port, engine, remote, self._interface), handle_signals=False)

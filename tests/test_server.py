@@ -3,6 +3,7 @@
 import asyncio
 import html.parser
 import http.client
+import io
 import json
 import os
 import re
@@ -11,12 +12,14 @@ import socket
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
 import aiohttp
 
 from radiolack import __version__
+from radiolack.recordings import wav_header
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
 from radiolack.sources import Sources
@@ -27,7 +30,9 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update", "remote")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "storage", "update",
+          "remote")
+RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
                  "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
@@ -239,7 +244,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "remote": False,
-                              "scanners": ["peaks", "memory", "history", "sweep"]})
+                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -251,6 +256,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                              SCANNER_STATE)
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "preferences", "values": {}})
+            # Without a recordings folder, nothing is recorded.
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "recording", "audio": None, "stopped": None,
+                                                                "folder": None, "default_folder": None})
             # Without a settings folder, nothing is saved.
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "storage", "directory": None, "saving": False, "problem": ""})
@@ -599,6 +607,89 @@ class StartScanTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(raised.exception), "the sweep needs a receiver that tunes, such as an RTL-SDR")
         state = await self.scanner_state(server)
         self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "start", "sweep"))
+
+
+class RecordingStreamTest(unittest.IsolatedAsyncioTestCase):
+    """An interface records the audio, lists the recordings and downloads
+    one: the server serves the recordings the engine lists, and nothing
+    else."""
+
+    async def asyncSetUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+        self.server = LocalServer(source=FakeSource(), recordings=self.folder)
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    def connect(self):
+        return self.session.ws_connect(f"{self.server.url}stream", origin=f"http://{LOOPBACK_HOST}:{self.server.port}")
+
+    @staticmethod
+    async def next_message(ws, kind: str, until=lambda message: True) -> dict:
+        async def wait() -> dict:
+            while (message := await next_text(ws))["type"] != kind or not until(message):
+                continue
+            return message
+        return await asyncio.wait_for(wait(), 10)
+
+    async def test_records_lists_and_serves_a_recording(self):
+        async with self.connect() as ws:
+            states = await read_start(self, ws)
+            self.assertEqual(states["recording"], {"type": "recording", "audio": None, "stopped": None,
+                                                   "folder": str(self.folder), "default_folder": str(self.folder)})
+            await ws.send_json({"type": "recording", "audio": True})
+            state = await self.next_message(ws, "recording", lambda state: state["audio"] and state["audio"]["file"])
+            name = state["audio"]["file"]
+            # Not while it runs.
+            self.assertEqual((await asyncio.to_thread(get, self.server, f"/recordings/{name}"))[0], 404)
+            await ws.send_json({"type": "recording", "audio": False})
+            await self.next_message(ws, "recording", lambda state: state["audio"] is None)
+            await ws.send_json({"type": "recordings"})
+            listed = await self.next_message(ws, "recordings")
+            self.assertEqual([(entry["name"], entry["running"]) for entry in listed["files"]], [(name, False)])
+        path = self.folder / name
+        deadline = time.monotonic() + 5
+        while path.stat().st_size != listed["files"][0]["bytes"] or path.stat().st_size <= 44:
+            self.assertLess(time.monotonic(), deadline)     # its thread closes the file
+            await asyncio.sleep(0.05)
+        status, headers, body = await asyncio.to_thread(get, self.server, f"/recordings/{name}")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, path.read_bytes())
+        self.assertEqual((headers["Content-Type"], headers["Content-Disposition"], headers["Content-Length"]),
+                         ("audio/wav", f'attachment; filename="{name}"', str(len(body))))
+        self.assertEqual((headers["Cache-Control"], headers["X-Content-Type-Options"]), ("no-store", "nosniff"))
+        with wave.open(io.BytesIO(body)) as recorded:
+            self.assertEqual(recorded.getframerate(), 12_000)
+
+    async def test_serves_nothing_else(self):
+        self.folder.mkdir()
+        target = self.folder.parent / "secret.txt"
+        target.write_text("secret")
+        os.symlink(target, self.folder / RECORDING_NAME)
+        (self.folder / "notes.txt").write_text("not a recording")
+        for path in (f"/recordings/{RECORDING_NAME}", "/recordings/notes.txt", "/recordings/../secret.txt",
+                     "/recordings/%2E%2E%2Fsecret.txt", f"/recordings/{RECORDING_NAME.replace('.wav', '-2.wav')}",
+                     "/recordings/", "/recordings"):
+            with self.subTest(path=path):
+                self.assertEqual((await asyncio.to_thread(get, self.server, path))[0], 404)
+        self.assertEqual((await asyncio.to_thread(get, self.server, f"/recordings/{RECORDING_NAME}",
+                                                  host="attacker.example"))[0], 403)
+
+    async def test_a_recording_is_neither_downloaded_with_head_nor_from_another_folder(self):
+        self.folder.mkdir()
+        (self.folder / RECORDING_NAME).write_bytes(wav_header(12_000, 0))
+        connection = http.client.HTTPConnection(LOOPBACK_HOST, self.server.port, timeout=5)
+        self.addCleanup(connection.close)
+        await asyncio.to_thread(connection.request, "HEAD", f"/recordings/{RECORDING_NAME}")
+        self.assertEqual((await asyncio.to_thread(connection.getresponse)).status, 405)
+        other = self.folder.parent / "other"
+        other.mkdir()
+        async with self.connect() as ws:
+            await read_start(self, ws)
+            await ws.send_json({"type": "recording", "folder": str(other)})
+            await self.next_message(ws, "recording", lambda state: state["folder"] == str(other))
+        self.assertEqual((await asyncio.to_thread(get, self.server, f"/recordings/{RECORDING_NAME}"))[0], 404)
 
 
 class UpdateStreamTest(unittest.IsolatedAsyncioTestCase):

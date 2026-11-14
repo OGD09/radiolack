@@ -48,6 +48,17 @@ def settings_dir(environ: Mapping[str, str] | None = None) -> Path:
     return (Path(home) if home else Path.home()) / ".config" / "radiolack"
 
 
+def shown_path(path: Path) -> str:
+    """``path`` as the interfaces show it: ``~`` standing for the home folder."""
+    try:
+        home = Path.home()
+        relative = path.relative_to(home)
+    except (ValueError, RuntimeError):     # outside the home folder, or no home folder
+        return str(path)
+    # A user without a home folder, such as the service's, has the root as its home.
+    return str(path) if home == home.parent else f"~/{relative.as_posix()}" if relative.parts else "~"
+
+
 class Store:
     """The settings folder. ``load`` reads a file once, at the start; ``save``
     writes it whole. ``save`` may run in a worker thread, one at a time."""
@@ -61,13 +72,7 @@ class Store:
     @property
     def location(self) -> str:
         """The folder, as the interfaces show it."""
-        try:
-            home = Path.home()
-            relative = self.directory.relative_to(home)
-        except (ValueError, RuntimeError):     # outside the home folder, or no home folder
-            return str(self.directory)
-        # A user without a home folder, such as the service's, has the root as its home.
-        return str(self.directory) if home == home.parent else f"~/{relative.as_posix()}"
+        return shown_path(self.directory)
 
     @property
     def saving(self) -> bool:

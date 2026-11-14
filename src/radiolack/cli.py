@@ -12,6 +12,7 @@ import webbrowser
 from collections.abc import Iterator
 
 from . import __version__, window
+from .recordings import default_folder
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
 from .scanners import SCANS
@@ -57,9 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it opens the "
                     "receiver used last, the simulated 2 m band the first time; the Source panel "
                     "switches between them. Settings, bookmarks and history are saved in "
-                    "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack). Remote access, "
-                    "for phones and tablets on the local network, is off at each start: Settings "
-                    "or --remote turns it on.",
+                    "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack), and recordings, "
+                    "made only from the interface, in $XDG_DATA_HOME/radiolack/recordings (by default "
+                    "~/.local/share/radiolack/recordings) unless Settings chooses another folder. "
+                    "Remote access, for phones and tablets on the local network, is off at each "
+                    "start: Settings or --remote turns it on.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -114,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         source = RtlTcpSource(*args.rtl_tcp)
     try:
         server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
-                             updates=UpdateCheck(), remote_addresses=private_addresses)
+                             updates=UpdateCheck(), remote_addresses=private_addresses,
+                             recordings=default_folder())
     except InterfaceUnreadable as error:
         print(f"radiolack: {error}", file=sys.stderr)
         return 1

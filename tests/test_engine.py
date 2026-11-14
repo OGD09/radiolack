@@ -6,19 +6,22 @@ memory scan and its windows, the sweep, clean stop."""
 
 import asyncio
 import contextlib
+import errno
 import json
 import math
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
-from radiolack import __version__
+from radiolack import __version__, recordings
 from radiolack.engine import Engine, Source, Subscription
+from radiolack.recordings import wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.scanners import VISIT_S, memory_windows, sweep_windows
@@ -31,7 +34,7 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 # What a new client gets first; a remote client, without the last two.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "storage", "update")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "storage", "update")
 
 
 def scanner_state(**changes) -> dict:
@@ -170,6 +173,9 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.get_nowait(), scanner_state())
         self.assertEqual(subscription.get_nowait(), {"type": "peaks", "peaks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
+        # Without a recordings folder, nothing is recorded.
+        self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "stopped": None,
+                                                     "folder": None, "default_folder": None})
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
                          {"type": "storage", "directory": None, "saving": False, "problem": ""})
@@ -2168,3 +2174,274 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.observations_state()["channels"], [])
         self.assertIn("observations.json could not be read", engine.storage_state()["problem"])
         self.assertEqual(len(list(self.directory.glob(f"{OBSERVATIONS_FILE}.invalid-*"))), 1)
+
+
+def recording_states(subscription: Subscription) -> list[dict]:
+    """The recording states ready for a client, now."""
+    return [message for message in waiting(subscription)
+            if isinstance(message, dict) and message["type"] == "recording"]
+
+
+async def next_recording(subscription: Subscription, until=lambda state: True) -> dict:
+    """The next recording state for which ``until`` holds."""
+    async def wait() -> dict:
+        while True:
+            message = await next_message(subscription)
+            if isinstance(message, dict) and message["type"] == "recording" and until(message):
+                return message
+    return await asyncio.wait_for(wait(), timeout=10)
+
+
+async def next_reply(subscription: Subscription, kind: str) -> dict:
+    """The next message of type ``kind``, skipping the others."""
+    async def wait() -> dict:
+        while True:
+            message = await next_message(subscription)
+            if isinstance(message, dict) and message["type"] == kind:
+                return message
+    return await asyncio.wait_for(wait(), timeout=10)
+
+
+def with_file(state: dict) -> bool:
+    """Whether a recording runs and its file was made."""
+    return state["audio"] is not None and state["audio"]["file"] is not None
+
+
+class SimulatedBandSources(FakeSources):
+    """Fake sources whose last kind passes for the simulated band."""
+
+    kinds = ("test", "other", "synthetic")
+
+    def __init__(self) -> None:
+        super().__init__(synthetic=SimulatedBandSource)
+
+
+RECORDED_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
+
+
+class RecordingTest(unittest.IsolatedAsyncioTestCase):
+    """Recording the audio: started and stopped by any client, kept up
+    without one, never on the simulated band, stopped by a new audio rate,
+    a disk short of space and the simulated band; the list of the
+    recordings, their deletion, and the folder, chosen and saved."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.folder = self.base / "data" / "radiolack" / "recordings"
+        self.directory = self.base / "config" / "radiolack"
+
+    def engine(self, source: Source | None = None, sources: FakeSources | None = None, run: bool = True,
+               **options) -> Engine:
+        if source is None and sources is None:
+            source = FakeSource()
+        engine = Engine(source, sources=sources, recordings=self.folder, **options)
+        task = asyncio.ensure_future(engine.run()) if run else None
+
+        async def stop():
+            engine.close()
+            if task is not None:
+                await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=15)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    @staticmethod
+    async def stopped(engine: Engine) -> None:
+        """Stop the engine: its recordings reach the disk."""
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=15)
+
+    async def test_records_the_audio_until_a_client_stops_it(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        state = await next_recording(subscription, lambda state: with_file(state) and state["audio"]["seconds"] >= 0.5)
+        audio = state["audio"]
+        self.assertRegex(audio["file"], r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}Z_145\.061440MHz_NFM\.wav$")
+        self.assertEqual((audio["frequency_hz"], audio["mode"], audio["rate_hz"]),
+                         (FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "NFM", 12_000))
+        self.assertAlmostEqual(audio["started"], time.time(), delta=10)
+        self.assertAlmostEqual(audio["seconds"], (audio["bytes"] - 44) / 2 / 12_000, delta=0.05)    # to the tenth
+        self.assertEqual((state["stopped"], state["folder"]), (None, str(self.folder)))
+        engine.configure_recording({"audio": False})
+        self.assertEqual(engine.recording_state(), {"type": "recording", "audio": None, "stopped": None,
+                                                    "folder": str(self.folder), "default_folder": str(self.folder)})
+        await self.stopped(engine)
+        with wave.open(str(self.folder / audio["file"])) as recorded:
+            self.assertEqual((recorded.getnchannels(), recorded.getframerate()), (1, 12_000))
+            self.assertGreaterEqual(recorded.getnframes(), (audio["bytes"] - 44) / 2)     # and what came later
+
+    async def test_goes_on_without_any_client_until_stopped(self):
+        source = FakeSource()
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        engine.unsubscribe(subscription)
+        reads = source.reads
+        await asyncio.sleep(0.3)
+        self.assertGreater(source.reads, reads + 5)
+        engine.configure_recording({"audio": False})
+        await asyncio.sleep(0.05)       # the block read meanwhile
+        reads = source.reads
+        await asyncio.sleep(0.3)
+        self.assertLessEqual(source.reads, reads + 1)
+
+    async def test_never_on_the_simulated_band(self):
+        engine = self.engine(SimulatedBandSource())
+        with self.assertRaisesRegex(ValueError, "^the simulated band is not recorded$"):
+            engine.configure_recording({"audio": True})
+        self.assertIsNone(engine.recording_state()["audio"])
+        self.assertFalse(self.folder.exists())
+
+    async def test_the_simulated_band_stops_it_and_another_receiver_does_not(self):
+        engine = self.engine(sources=SimulatedBandSources())
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        await next_recording(subscription, with_file)
+        engine.configure({"kind": "other"})
+        self.assertIsNotNone(engine.recording_state()["audio"])
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.configure({"kind": "synthetic"})
+        state = engine.recording_state()
+        self.assertEqual((state["audio"], state["stopped"]),
+                         (None, {"kind": "audio", "reason": "source", "detail": ""}))
+        self.assertIn("stopped: the simulated band was chosen", logs.output[0])
+
+    async def test_a_new_audio_rate_stops_it(self):
+        engine = self.engine(WideSource())
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        await next_recording(subscription, lambda state: with_file(state) and state["audio"]["rate_hz"] == 12_000)
+        engine.configure_demod({"mode": "AM"})      # the same rate: it goes on
+        await asyncio.sleep(0.2)
+        self.assertIsNotNone(engine.recording_state()["audio"])
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            engine.configure_demod({"mode": "WFM"})
+            state = await next_recording(subscription, lambda state: state["audio"] is None)
+        self.assertEqual(state["stopped"], {"kind": "audio", "reason": "rate", "detail": ""})
+
+    async def test_stops_when_its_disk_falls_short_and_says_why_until_the_next(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        with mock.patch.object(recordings, "MIN_FREE_BYTES", 2 ** 62), \
+                self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.configure_recording({"audio": True})
+            state = await next_recording(subscription, lambda state: state["audio"] is None)
+        self.assertEqual(state["stopped"], {"kind": "audio", "reason": "space", "detail": ""})
+        self.assertIn("less than 2 GiB is free on its disk", logs.output[0])
+        self.assertEqual(list(self.folder.iterdir()), [])
+        engine.configure_recording({"audio": True})
+        state = engine.recording_state()
+        self.assertEqual((state["audio"]["file"], state["stopped"]), (None, None))
+
+    async def test_a_disk_error_stops_it(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        failure = OSError(errno.EIO, "Input/output error")
+        with mock.patch.object(recordings, "_write_all", side_effect=failure), \
+                self.assertLogs("radiolack.engine", "WARNING"):
+            engine.configure_recording({"audio": True})
+            state = await next_recording(subscription, lambda state: state["audio"] is None)
+        self.assertEqual(state["stopped"], {"kind": "audio", "reason": "disk", "detail": "Input/output error"})
+
+    async def test_stopping_the_engine_closes_the_file(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        state = await next_recording(subscription, lambda state: with_file(state) and state["audio"]["seconds"] >= 0.3)
+        await self.stopped(engine)
+        path = self.folder / state["audio"]["file"]
+        with wave.open(str(path)) as recorded:
+            self.assertEqual(path.stat().st_size, 44 + 2 * recorded.getnframes())
+            self.assertGreaterEqual(recorded.getnframes(), (state["audio"]["bytes"] - 44) / 2)
+
+    async def test_lists_and_deletes_the_recordings(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        self.folder.mkdir(parents=True)
+        (self.folder / RECORDED_NAME).write_bytes(wav_header(12_000, 24_000) + bytes(24_000))
+        engine.configure_recordings({}, subscription)
+        reply = await next_reply(subscription, "recordings")
+        self.assertEqual(reply["files"], [{"name": RECORDED_NAME, "kind": "audio", "started": 1_794_000_000,
+                                           "frequency_hz": 145_500_000, "mode": "NFM", "bytes": 24_044,
+                                           "seconds": 1.0, "running": False}])
+        self.assertEqual((reply["more"], reply["problem"]), (0, ""))
+        self.assertEqual(engine.download_folder(RECORDED_NAME), self.folder)
+        engine.configure_recordings({"delete": RECORDED_NAME}, subscription)
+        self.assertEqual((await next_reply(subscription, "recordings"))["files"], [])
+        self.assertFalse((self.folder / RECORDED_NAME).exists())
+        for changes in ({"delete": "notes.txt"}, {"delete": None}, {"clear": True}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_recordings(changes, subscription)
+
+    async def test_the_recording_that_runs_is_neither_deleted_nor_downloaded(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        engine.configure_recording({"audio": True})
+        name = (await next_recording(subscription, with_file))["audio"]["file"]
+        self.assertIsNone(engine.download_folder(name))
+        with self.assertRaisesRegex(ValueError, "^this recording runs"):
+            engine.configure_recordings({"delete": name}, subscription)
+        engine.configure_recordings({}, subscription)
+        [entry] = (await next_reply(subscription, "recordings"))["files"]
+        self.assertEqual((entry["name"], entry["running"]), (name, True))
+        engine.configure_recording({"audio": False})
+        self.assertEqual(engine.download_folder(name), self.folder)
+        self.assertIsNone(engine.download_folder("../settings.json"))
+
+    async def test_records_into_a_folder_chosen_which_is_saved(self):
+        engine = self.engine(store=Store(self.directory), save_delay_s=0.01)
+        subscription = engine.subscribe()
+        chosen = self.base / "chosen"
+        chosen.mkdir()
+        engine.configure_recording({"folder": str(chosen)}, subscription)
+        state = await next_recording(subscription, lambda state: state["folder"] == str(chosen))
+        self.assertEqual(state["default_folder"], str(self.folder))
+        engine.configure_recording({"audio": True})
+        name = (await next_recording(subscription, with_file))["audio"]["file"]
+        with self.assertRaisesRegex(ValueError, "^a recording runs"):
+            engine.configure_recording({"folder": None}, subscription)
+        await self.stopped(engine)
+        self.assertTrue((chosen / name).is_file())
+        self.assertFalse(self.folder.exists())
+        settings = json.loads((self.directory / SETTINGS_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(settings["recordings"], {"folder": str(chosen)})
+        again = self.engine(store=Store(self.directory), save_delay_s=0.01)
+        self.assertEqual(again.recording_state()["folder"], str(chosen))
+        subscription = again.subscribe()
+        again.configure_recording({"folder": None}, subscription)
+        await next_recording(subscription, lambda state: state["folder"] == str(self.folder))
+
+    async def test_refuses_a_folder_it_cannot_record_into(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        missing = self.base / "missing"
+        engine.configure_recording({"folder": str(missing)}, subscription)
+        self.assertEqual(await next_reply(subscription, "error"),
+                         {"type": "error", "command": "recording", "message": f"{missing} does not exist"})
+        for changes in ({"folder": "relative"}, {"folder": 3}, {"audio": "yes"}, {"audio": True, "folder": None},
+                        {}, {"other": 1}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_recording(changes, subscription)
+        self.assertEqual(engine.recording_state()["folder"], str(self.folder))
+
+    async def test_a_remote_client_does_not_learn_the_folder(self):
+        engine = Engine(FakeSource(), remote=RemoteAccess(), recordings=self.folder)
+        self.addCleanup(engine.close)
+        [state] = [message for message in ready_messages(engine.subscribe(device="5f0c2a91"))
+                   if message["type"] == "recording"]
+        self.assertEqual(state, {"type": "recording", "audio": None, "stopped": None})
+
+    async def test_without_a_folder_nothing_is_recorded(self):
+        engine = Engine(FakeSource())
+        self.addCleanup(engine.close)
+        subscription = engine.subscribe()
+        for command in (lambda: engine.configure_recording({"audio": True}),
+                        lambda: engine.configure_recording({"folder": None}),
+                        lambda: engine.configure_recordings({}, subscription)):
+            with self.assertRaisesRegex(ValueError, "^this Radiolack does not record$"):
+                command()
+        self.assertIsNone(engine.download_folder(RECORDED_NAME))

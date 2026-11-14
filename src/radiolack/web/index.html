@@ -45,6 +45,7 @@
     <button type="button" data-panel="display" aria-expanded="false" aria-controls="panel">Display</button>
     <button type="button" data-panel="bands" aria-expanded="false" aria-controls="panel">Bands</button>
     <button type="button" data-panel="scanners" aria-expanded="false" aria-controls="panel">Scanners</button>
+    <button type="button" data-panel="record" aria-expanded="false" aria-controls="panel">Record</button>
     <button type="button" data-panel="settings" aria-expanded="false" aria-controls="panel">Settings</button>
   </nav>
 
@@ -242,14 +243,29 @@
       </div>
     </section>
 
+    <section data-panel="record" hidden>
+      <div class="row"><button type="button" class="btn primary" id="rec-audio" disabled>Record audio</button><span class="note" id="rec-state"></span></div>
+      <p class="note" id="rec-note" role="status" hidden></p>
+      <h3>Recordings</h3>
+      <ul class="list" id="rec-list"></ul>
+      <p class="note" id="rec-summary"></p>
+      <p class="note">Radiolack records the audio it plays into WAV files, on the computer that receives, and goes on without any interface. A new audio rate, into or out of WFM, ends a recording, as does a disk with less than 2 GiB free. The simulated band is not recorded.</p>
+    </section>
+
     <section data-panel="settings" hidden>
       <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
       <label class="check"><input id="st-wake" type="checkbox"> Keep the screen on while listening</label>
-      <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, updates and remote access are set on the computer.</p>
-      <!-- The engine sends these three sections' states to this computer's interfaces only. -->
+      <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, the recordings folder, updates and remote access are set on the computer.</p>
+      <!-- The engine sends these four sections' states to this computer's interfaces only. -->
       <div id="st-storage-section" hidden>
         <h3>Storage</h3>
         <p class="note" id="st-storage" role="status"></p>
+      </div>
+      <div id="st-rec-section" hidden>
+        <h3>Recordings</h3>
+        <div class="field"><label for="st-rec-folder">Folder</label><input id="st-rec-folder" type="text" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><button type="button" class="btn" id="st-rec-default">Default folder</button><span class="note" id="st-rec-msg" role="status"></span></div>
+        <p class="note">New recordings go to this folder, which must exist; ~ stands for the home folder. Those made before stay where they are. The folder can only be changed on this computer, while nothing records.</p>
       </div>
       <div id="st-update-section" hidden>
         <h3>Updates</h3>
@@ -292,7 +308,7 @@
         <dt>← →</dt><dd>Step (Shift: ×10)</dd>
         <dt>+ − 0</dt><dd>Zoom, whole span</dd>
         <dt>M</dt><dd>Next mode</dd>
-        <dt>1 to 6</dt><dd>Panels</dd>
+        <dt>1 to 7</dt><dd>Panels</dd>
         <dt>Esc</dt><dd>Close</dd>
         <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
       </dl>

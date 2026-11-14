@@ -1,7 +1,8 @@
 """Browser tests: the interface in headless Chromium, Firefox and WebKit,
 driven by Playwright against a server on an ephemeral port, with the
 simulated band or the fake rtl_tcp program: no receiver. Remote access
-listens on 127.0.0.1 only, on another ephemeral port.
+listens on 127.0.0.1 only, on another ephemeral port. Recordings go to
+temporary folders.
 
 They launch browsers, so they run only when the RADIOLACK_BROWSER_TESTS
 environment variable is 1, as in CI, and then need Playwright and its
@@ -25,7 +26,7 @@ from unittest import mock
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
-from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
+from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
@@ -37,6 +38,7 @@ DEMOD_PANEL = '#toolbar button[data-panel="demod"]'
 DISPLAY_PANEL = '#toolbar button[data-panel="display"]'
 BANDS_PANEL = '#toolbar button[data-panel="bands"]'
 SCANNERS_PANEL = '#toolbar button[data-panel="scanners"]'
+RECORD_PANEL = '#toolbar button[data-panel="record"]'
 SETTINGS_PANEL = '#toolbar button[data-panel="settings"]'
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
@@ -121,10 +123,12 @@ class BrowserTest(unittest.TestCase):
 
     def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
               sources: Sources | None = None, updates: FakeUpdates | None = None,
-              remote_addresses: Callable[[], list[str]] | None = None, host: str | None = None) -> str:
-        """The address of a server started for this test."""
+              remote_addresses: Callable[[], list[str]] | None = None, host: str | None = None,
+              recordings: Path | None = None) -> str:
+        """The address of a server started for this test, which records
+        into ``recordings``, if given."""
         server = LocalServer(source=source, store=store, sources=sources, updates=updates,
-                             remote_addresses=remote_addresses, host=host)
+                             remote_addresses=remote_addresses, host=host, recordings=recordings)
         server.start()
         self.addCleanup(server.stop)
         return server.url
@@ -560,6 +564,74 @@ class BrowserTest(unittest.TestCase):
                 expect(second.locator("#hist-summary")).to_have_text("The simulated band is not recorded.")
                 expect(clear_all).to_be_hidden()
                 expect(second.locator("#hist-note")).to_be_hidden()
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_every_interface_records_the_audio_and_lists_the_recordings(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP), recordings=folder)    # the VFO on 145.6 MHz
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                for page in (first, second):
+                    page.locator(RECORD_PANEL).click()
+                    expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
+                    expect(page.locator("#rec-summary")).to_contain_text(f"In {shown_path(folder)}, ")
+                first.locator("#rec-audio").click()
+                for page in (first, second):    # once the first audio made the file
+                    expect(page.locator("#rec-state")).to_have_text(re.compile(
+                        rf"^145\.600 MHz NFM {DOT} \d+:\d\d {DOT} [\d.]+ (B|KiB|MiB)$"))
+                    expect(page.locator("#rec-audio")).to_have_text("Stop")
+                    expect(page.locator(RECORD_PANEL)).to_have_class("recording")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} recording audio")
+                    expect(page.locator("#rec-list li.rec .num")).to_have_text("Recording")
+                second.locator("#rec-audio").click()
+                for page in (first, second):
+                    expect(page.locator("#rec-audio")).to_have_text("Record audio")
+                    expect(page.locator(RECORD_PANEL)).not_to_have_class("recording")
+                    expect(page.locator("#status")).not_to_contain_text("recording")
+                    expect(page.locator("#rec-list li.rec .name")).to_contain_text(["145.600 MHz NFM"])
+                    expect(page.locator("#rec-list a.link")).to_have_text(["Download"])
+                [recorded] = folder.iterdir()
+                with first.expect_download() as downloading:
+                    first.locator("#rec-list a.link").click()
+                self.assertEqual(downloading.value.suggested_filename, recorded.name)
+                downloaded = Path(downloading.value.path()).read_bytes()
+                self.assertEqual((downloaded[:4], downloaded[8:12]), (b"RIFF", b"WAVE"))
+                delete = first.locator("#rec-list button[data-del]")
+                delete.click()      # a first press asks for a second one
+                expect(delete).to_have_text("Confirm")
+                delete.click()
+                expect(first.locator("#rec-list .empty")).to_have_text("No recording yet")
+                self.assertEqual(list(folder.iterdir()), [])
+                # This computer's interfaces choose the folder, which must exist.
+                first.locator(SETTINGS_PANEL).click()
+                field, default = first.locator("#st-rec-folder"), first.locator("#st-rec-default")
+                expect(field).to_have_value(shown_path(folder))
+                expect(default).to_be_disabled()
+                other, missing = folder.parent / "other", folder.parent / "missing"
+                other.mkdir()
+                field.fill(str(other))
+                field.press("Enter")
+                expect(field).to_have_value(shown_path(other))
+                expect(default).to_be_enabled()
+                field.fill(str(missing))
+                field.press("Enter")
+                expect(first.locator("#st-rec-msg")).to_have_text(f"Refused: {shown_path(missing)} does not exist.")
+                expect(field).to_have_value(shown_path(other))      # the folder in use
+                default.click()
+                expect(field).to_have_value(shown_path(folder))
+                expect(first.locator("#st-rec-msg")).to_be_empty()
+
+    def test_the_simulated_band_is_not_recorded(self):
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+        url = self.serve(recordings=folder)
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                page.locator(RECORD_PANEL).click()
+                expect(page.locator("#rec-state")).to_have_text("The simulated band is not recorded.")
+                expect(page.locator("#rec-audio")).to_be_disabled()
+                expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
 
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network

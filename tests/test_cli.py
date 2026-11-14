@@ -306,6 +306,16 @@ class MainTest(unittest.TestCase):
         # tests/__init__.py: the test run has a settings folder of its own.
         self.assertTrue(directory.is_relative_to(tempfile.gettempdir()))
 
+    def test_records_in_the_data_folder(self):
+        with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none")
+        self.assertEqual((code, err), (0, ""))
+        folder = server.call_args.kwargs["recordings"]
+        self.assertEqual(folder, Path(os.environ["XDG_DATA_HOME"]) / "radiolack" / "recordings")
+        # tests/__init__.py: the test run has a data folder of its own, where nothing was recorded.
+        self.assertTrue(folder.is_relative_to(tempfile.gettempdir()))
+        self.assertFalse(folder.exists())
+
     def test_checks_for_updates_from_the_debian_package_only(self):
         with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
             code, out, err = run_main("--ui", "none")
