@@ -53,8 +53,8 @@ Some steps follow a channel raster rather than a round number: the airband
 step is 25 kHz / 3 (8.33 kHz channels), and PMR446 uses 6.25 kHz so that the
 steps reach its channel centres (446.00625 MHz + n × 12.5 kHz). FM broadcast
 steps by 50 kHz, to reach the stations that some countries place between the
-100 kHz channels; it has no mode until a WFM demodulator exists (open question
-in [`scoping.md`](scoping.md)).
+100 kHz channels; it has no mode until v3's WFM demodulator, decided on
+2026-11-14 ([`scoping.md`](scoping.md)), gives it WFM.
 
 Zoomed out, the band strip draws a band's segments while they average at
 least 12 px on screen, and the whole band as one block of its type's colour
