@@ -2164,40 +2164,48 @@ swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow
 swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
 swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
 
-// Recording: the engine records the VFO's audio when an interface asks, the
-// same for every interface, into WAV files in its recordings folder, and
-// goes on without any interface. It lists the folder's recordings to the
-// interface that asks: this one asks when its Record panel opens, when a
-// recording's file comes or goes, when the folder changes, and every
-// RECORDINGS_REFRESH_MS while the panel shows. Download fetches a file from
-// the engine's computer; Delete waits for a second press of the same button,
-// within RECORDINGS_CONFIRM_MS. Only this computer's interfaces see the
-// folder, and change it in Settings.
+// Recording: the engine records the VFO's audio, and the receiver's raw
+// I/Q, when an interface asks, the same for every interface, into WAV and
+// SigMF files in its recordings folder, and goes on without any interface.
+// It lists the folder's recordings to the interface that asks: this one asks
+// when its Record panel opens, when a recording's file comes or goes, when
+// the folder changes, and every RECORDINGS_REFRESH_MS while the panel shows.
+// Download fetches a file from the engine's computer, as do Data and
+// Metadata for an I/Q recording's two files; Delete waits for a second press
+// of the same button, within RECORDINGS_CONFIRM_MS. Only this computer's
+// interfaces see the folder, and change it in Settings.
 const RECORDINGS_REFRESH_MS = 30000;
 const RECORDINGS_CONFIRM_MS = 5000;
 // Why a recording stopped by itself, as the engine's output says it.
 const REC_STOPPED = {
   rate: 'the audio rate changed, into or out of WFM',
   source: 'the simulated band was chosen',
+  sample_rate: "the receiver's sample rate changed",
+  receiver: 'another receiver was chosen',
   space: 'less than 2 GiB is free on its disk',
   full: 'its file reached the WAV limit of 4 GiB',
   disk: 'a disk error',
 };
-const recAudio = $('#rec-audio'), recFolderEl = $('#st-rec-folder');
+const recAudio = $('#rec-audio'), recIq = $('#rec-iq'), recFolderEl = $('#st-rec-folder');
 let recordingList = null;   // the folder's recordings (stream.js RecordingList), once received
 let recordingsStale = false; // the latest request for them did not reach the engine
 let recordNote = '';        // what this interface's last recording request or download did, or why not
 let folderNote = '';        // why this interface's last folder change did not happen
-let recordingAsk = '';      // what this interface's last recording command changed: 'audio' or 'folder'
+let recordingAsk = '';      // what this interface's last recording command changed: 'audio', 'iq' or 'folder'
 let recArmed = null;        // the recording whose Delete awaits its second press, by file, or null
 let recArmTimer = 0;
 let recordingsHtml = '';    // the list's items, as last written
 let recordingsKey = null;   // recordingKeyNow() when the list was last asked for
 const recordingKnown = () => recording !== null && stream.recordings.includes('audio');
+const iqKnown = () => recording !== null && stream.recordings.includes('iq');
 const recordingRuns = () => recordingKnown() && recording.audio !== null;
+const iqRuns = () => iqKnown() && recording.iq !== null;
 const recordShown = () => openName === 'record';
-// The running recording's file and the folder: when either changes, so does the list.
-const recordingKeyNow = () => (recording ? `${(recording.audio && recording.audio.file) || ''}\n${recording.folder ?? ''}` : '');
+// The running recordings' files and the folder: when any changes, so does the list.
+const recordingKeyNow = () => (recording
+  ? [recording.audio && recording.audio.file, recording.iq && recording.iq.file, recording.folder].map((v) => v ?? '').join('\n')
+  : '');
+const fmtRate = (hz) => `${(hz / 1e6).toFixed(3)} MS/s`;
 // A length in seconds as m:ss, or h:mm:ss from an hour on.
 function fmtLength(seconds) {
   const s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
@@ -2217,32 +2225,48 @@ function recordingStop() {
   const reason = REC_STOPPED[stop.reason] || 'an unknown reason';
   return stop.detail ? `${reason} (${stop.detail})` : reason;
 }
-// What the status line says of the recordings: one that runs, or why the latest stopped by itself.
+// What the status line says of the recordings: those that run, or why the latest stopped by itself.
 function recordingStatus() {
   if (!recordingKnown()) return '';
-  if (recording.audio) return ' · recording audio';
-  return recording.stopped ? ` · recording stopped: ${recordingStop()}` : '';
+  const runs = [recording.audio && 'audio', recording.iq && 'I/Q'].filter(Boolean);
+  if (runs.length) return ` · recording ${runs.join(' and ')}`;
+  if (!recording.stopped) return '';
+  return ` · ${recording.stopped.kind === 'iq' ? 'I/Q recording' : 'recording'} stopped: ${recordingStop()}`;
+}
+// What a recording that runs has made so far.
+const recordingMade = (r) => (r.file ? `${fmtLength(r.seconds)} · ${fmtBytes(r.bytes)}` : 'starting');
+// A Record button: its label, and whether it may start a recording.
+function syncRecordButton(button, label, disabled) {
+  if (button.textContent !== label) button.textContent = label;
+  if (button.disabled !== disabled) button.disabled = disabled;
 }
 function syncRecording() {
   const known = recordingKnown(), runs = recordingRuns(), a = runs ? recording.audio : null;
+  const iqOn = iqKnown(), iqGoes = iqRuns(), q = iqGoes ? recording.iq : null;
   const simulated = source !== null && source.kind === 'synthetic';
   // A recording's state comes every second: an unchanged text is not rewritten.
-  const label = runs ? 'Stop' : 'Record audio';
-  if (recAudio.textContent !== label) recAudio.textContent = label;
-  const disabled = !known || (!runs && simulated);
-  if (recAudio.disabled !== disabled) recAudio.disabled = disabled;
+  syncRecordButton(recAudio, runs ? 'Stop' : 'Record audio', !known || (!runs && simulated));
+  syncRecordButton(recIq, iqGoes ? 'Stop' : 'Record I/Q', !iqOn || (!iqGoes && simulated));
   let text = '';
   if (runs) {
-    text = `${fmtEdge(a.frequencyHz)} MHz ${a.mode} · ${a.file ? `${fmtLength(a.seconds)} · ${fmtBytes(a.bytes)}` : 'starting'}`;
+    text = `${fmtEdge(a.frequencyHz)} MHz ${a.mode} · ${recordingMade(a)}`;
   } else if (known && simulated) {
     text = 'The simulated band is not recorded.';
-  } else if (known && recording.stopped) {
+  } else if (known && recording.stopped && recording.stopped.kind !== 'iq') {
     text = `Stopped: ${recordingStop()}.`;
   }
   const el = $('#rec-state');
   if (el.textContent !== text) el.textContent = text;
-  const button = $('#toolbar button[data-panel="record"]');
-  if (button.classList.contains('recording') !== runs) button.classList.toggle('recording', runs);
+  let iqText = '';
+  if (iqGoes) {
+    iqText = `${fmtEdge(q.frequencyHz)} MHz · ${fmtRate(q.rateHz)} · ${recordingMade(q)}`;
+  } else if (iqOn && recording.stopped && recording.stopped.kind === 'iq') {
+    iqText = `Stopped: ${recordingStop()}.`;
+  }
+  const iqEl = $('#rec-iq-state');
+  if (iqEl.textContent !== iqText) iqEl.textContent = iqText;
+  const button = $('#toolbar button[data-panel="record"]'), any = runs || iqGoes;
+  if (button.classList.contains('recording') !== any) button.classList.toggle('recording', any);
   syncRecordingLive();
   syncRecordingFolder();
 }
@@ -2268,9 +2292,15 @@ function askRecordings() {
   recordingsStale = !stream.askRecordings();
   syncRecordNote();
 }
+// A link that downloads a recording's file.
+function recordingLink(file, text) {
+  const name = escapeHtml(file);
+  return `<a class="link" href="recordings/${encodeURIComponent(file)}" download="${name}" data-get="${name}">${text}</a>`;
+}
 function recordingItem(f) {
-  const name = escapeHtml(f.name);
+  const name = escapeHtml(f.name), iq = f.kind === 'iq';
   let facts = fmtDate(f.startedS), acts;
+  if (iq && f.rateHz !== null) facts += ` · ${fmtRate(f.rateHz)}`;
   if (f.running) {
     facts += ` · <span data-live="${name}"></span>`;     // the state's, every second
     acts = '<span class="num">Recording</span>';
@@ -2278,7 +2308,9 @@ function recordingItem(f) {
     if (f.seconds !== null) facts += ` · ${fmtLength(f.seconds)}`;
     if (f.bytes !== null) facts += ` · ${fmtBytes(f.bytes)}`;
     const armed = recArmed === f.name;
-    acts = `<a class="link" href="recordings/${encodeURIComponent(f.name)}" download="${name}" data-get="${name}">Download</a>`
+    // An I/Q recording's two files: the samples, and the metadata that tells how to read them.
+    acts = (iq ? recordingLink(f.name, 'Data') + (f.meta ? recordingLink(f.meta, 'Metadata') : '')
+      : recordingLink(f.name, 'Download'))
       + `<button type="button" class="link" data-del="${name}"${armed ? ` aria-label="Confirm deleting ${name}"` : ''}>`
       + `${armed ? 'Confirm' : 'Delete'}</button>`;
   }
@@ -2299,13 +2331,13 @@ function renderRecordings() {
   syncRecordingSummary();
   syncRecordNote();
 }
-// The running recording's length and size, which its state brings every second.
+// The running recordings' lengths and sizes, which their state brings every second.
 function syncRecordingLive() {
-  const el = $('#rec-list [data-live]');
-  if (!el) return;
-  const a = recordingRuns() ? recording.audio : null;
-  const text = a && a.file === el.dataset.live ? `${fmtLength(a.seconds)} · ${fmtBytes(a.bytes)}` : '';
-  if (el.textContent !== text) el.textContent = text;
+  for (const el of document.querySelectorAll('#rec-list [data-live]')) {
+    const r = [recordingRuns() && recording.audio, iqRuns() && recording.iq].find((r) => r && r.file === el.dataset.live);
+    const text = r ? `${fmtLength(r.seconds)} · ${fmtBytes(r.bytes)}` : '';
+    if (el.textContent !== text) el.textContent = text;
+  }
 }
 // Where the recordings are, on this computer, the space left, and the older ones the list leaves out.
 function syncRecordingSummary() {
@@ -2336,6 +2368,11 @@ recAudio.addEventListener('click', () => {
   const on = !recordingRuns();
   recordingAsk = 'audio';
   setRecordNote(stream.setRecording(on) ? '' : notConnected(on ? 'nothing is recorded' : 'the recording goes on'));
+});
+recIq.addEventListener('click', () => {
+  const on = !iqRuns();
+  recordingAsk = 'iq';
+  setRecordNote(stream.setIqRecording(on) ? '' : notConnected(on ? 'nothing is recorded' : 'the recording goes on'));
 });
 $('#rec-list').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-del]');
@@ -2484,7 +2521,7 @@ function syncRecordingFolder() {
   const section = $('#st-rec-section');
   if (section.hidden === local) section.hidden = !local;
   if (!local) return;
-  const runs = r.audio !== null, value = r.folder ?? '';
+  const runs = r.audio !== null || r.iq !== null, value = r.folder ?? '';
   if (!typingIn.has(recFolderEl) && recFolderEl.value !== value) recFolderEl.value = value;
   if (recFolderEl.disabled !== runs) recFolderEl.disabled = runs;
   const fixed = runs || r.folder === r.defaultFolder, use = $('#st-rec-default');

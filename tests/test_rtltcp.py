@@ -316,6 +316,91 @@ class AddressTest(SourceTest):
         self.assertEqual((source.address, source.status), ("192.0.2.10:1234", "idle"))
 
 
+class TapTest(SourceTest):
+    """The raw samples that an I/Q recording takes: whole I/Q pairs as
+    rtl_tcp sends them, labelled with their setting, whether the source's
+    reader takes them or not, with a gap after a retune or a new
+    connection."""
+
+    def tap(self, source: RtlTcpSource) -> list[tuple[bytes, float, float, bool]]:
+        """What the source hands over from now on, in order."""
+        handed: list[tuple[bytes, float, float, bool]] = []
+        source.tap(lambda data, centre_hz, rate_hz, joined: handed.append((bytes(data), centre_hz, rate_hz, joined)))
+        return handed
+
+    def assert_pairs(self, handed: list[tuple[bytes, float, float, bool]]) -> None:
+        """Each hand-over holds whole I/Q pairs, taken with the setting it gives."""
+        for data, centre_hz, rate_hz, _ in handed:
+            self.assertEqual(len(data) % 2, 0)
+            i_code, q_code = fake_codes(centre_hz, rate_hz)
+            self.assertEqual((set(data[0::2]), set(data[1::2])), ({i_code}, {q_code}))
+
+    async def test_hands_whole_pairs_labelled_with_their_setting(self):
+        source = await self.start(centre_hz=433_000_000, sample_rate_hz=1_024_000, idle_s=10.0)
+        self.assertEqual(source.hardware, "RTL-SDR")        # until rtl_tcp names its tuner
+        handed = self.tap(source)
+        await self.read(source)
+        # Every later chunk of the fake rtl_tcp starts with a Q byte.
+        await eventually(lambda: sum(len(data) for data, *_ in handed) >= 20_000)
+        self.assert_pairs(handed)
+        self.assertEqual({(centre, rate) for _, centre, rate, _ in handed}, {(433e6, 1_024_000.0)})
+        self.assertEqual([joined for *_, joined in handed], [False] + [True] * (len(handed) - 1))
+        self.assertEqual(source.hardware, "RTL-SDR, Rafael Micro R820T")
+
+    async def test_hands_the_samples_that_the_reader_leaves(self):
+        source = await self.start(buffer_s=0.01, idle_s=10.0)
+        handed = self.tap(source)
+        await self.read(source)         # then no more reads
+        kept = 2 * round(0.01 * 2.4e6)  # what the source keeps for its reader, in bytes
+        await eventually(lambda: sum(len(data) for data, *_ in handed) > 4 * kept)
+        self.assertTrue(all(joined for *_, joined in handed[1:]))
+
+    async def test_a_retune_leaves_a_gap_then_hands_the_new_setting(self):
+        source = await self.start(idle_s=10.0)
+        handed = self.tap(source)
+        await self.read(source)
+        await eventually(lambda: handed)
+        source.configure({"centre_hz": 433_000_000})
+        await eventually(lambda: sum(len(data) for data, centre, *_ in handed if centre == 433e6) >= 10_000)
+        self.assert_pairs(handed)
+        first = next(index for index, (_, centre, _, _) in enumerate(handed) if centre == 433e6)
+        self.assertEqual({centre for _, centre, _, _ in handed[:first]}, {145e6})
+        self.assertEqual([joined for *_, joined in handed[first:]], [False] + [True] * (len(handed) - first - 1))
+
+    async def test_a_new_connection_leaves_a_gap(self):
+        source = await self.start(idle_s=10.0)
+        handed = self.tap(source)
+        await self.read(source)
+        await eventually(lambda: handed)
+        self.fake.drop()
+        await eventually(lambda: self.fake.connections == 2 and [h for h in handed if not h[3]][1:])
+        self.assert_pairs(handed)
+
+    async def test_stops_handing_once_untapped(self):
+        source = await self.start(idle_s=10.0)
+        handed = self.tap(source)
+        await self.read(source)
+        await eventually(lambda: handed)
+        source.tap(None)
+        count = len(handed)
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(handed), count)
+
+    async def test_a_tap_that_fails_is_left_and_the_samples_go_on(self):
+        source = await self.start()
+        calls = []
+
+        def fail(*handed):
+            calls.append(handed)
+            raise RuntimeError("a broken recording")
+
+        source.tap(fail)
+        with self.assertLogs("radiolack.rtltcp", "ERROR"):
+            self.assert_labelled(source, await self.read(source))
+        self.assert_labelled(source, await self.read(source))
+        self.assertEqual(len(calls), 1)
+
+
 class AddressParsingTest(unittest.TestCase):
     def test_reads_a_host_a_port_or_both(self):
         addresses = {

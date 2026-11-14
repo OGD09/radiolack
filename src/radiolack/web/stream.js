@@ -173,7 +173,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * A recording that runs.
+ * An audio recording that runs.
  * @typedef {object} RunningRecording
  * @property {string | null} file       its file, once made: the first audio makes it
  * @property {number} startedS          when it started, in Unix time
@@ -185,10 +185,21 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * An I/Q recording that runs.
+ * @typedef {object} RunningIqRecording
+ * @property {string | null} file       its data file, once made: the first samples make it
+ * @property {number} startedS          when it started, in Unix time
+ * @property {number} frequencyHz       the receiver's centre frequency when it started
+ * @property {number} rateHz            the receiver's sample rate, which stays the same
+ * @property {number} seconds           its length so far, to the tenth
+ * @property {number} bytes             its data's size so far
+ */
+
+/**
  * Why the latest recording stopped by itself.
  * @typedef {object} RecordingStop
- * @property {string} kind      "audio"
- * @property {string} reason    "rate", "source", "space", "full" or "disk"
+ * @property {string} kind      "audio" or "iq"
+ * @property {string} reason    "rate", "source", "sample_rate", "receiver", "space", "full" or "disk"
  * @property {string} detail    what went wrong with the disk, or ""
  */
 
@@ -196,8 +207,10 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * The engine's recordings, shared by every interface.
  * @typedef {object} RecordingState
  * @property {RunningRecording | null} audio  the audio recording that runs, if one does
+ * @property {RunningIqRecording | null} iq   the I/Q recording that runs, if one does
  * @property {RecordingStop | null} stopped
- *   why the latest recording stopped by itself; null when an interface stopped it, or none ran
+ *   why the latest recording stopped by itself, until one of its kind starts; null when an interface stopped
+ *   it, or none ran
  * @property {string | null} folder
  *   where the recordings go, "~" standing for the home folder; null on a device that remote access serves,
  *   or when the engine does not record
@@ -207,14 +220,16 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 /**
  * A recording in the recordings folder.
  * @typedef {object} RecordingFile
- * @property {string} name            its file, which Download and Delete take
- * @property {string} kind            "audio"
+ * @property {string} name            its file, which Download and Delete take: an I/Q recording's data file
+ * @property {string} kind            "audio" or "iq"
  * @property {number} startedS        when it started, in Unix time, as its name tells
- * @property {number} frequencyHz     the VFO's frequency when it started
- * @property {string} mode            the mode when it started
- * @property {number | null} bytes    its size; null when it cannot be read
+ * @property {number} frequencyHz     the VFO's frequency when it started, or the receiver's centre for I/Q
+ * @property {string} mode            the mode when it started, or "I/Q"
+ * @property {number | null} rateHz   an I/Q recording's sample rate; null for audio
+ * @property {string | null} meta     an I/Q recording's metadata file; null for audio, or when it is missing
+ * @property {number | null} bytes    its size, with an I/Q recording's metadata; null when it cannot be read
  * @property {number | null} seconds  its length, to the tenth; null when it cannot be read
- * @property {boolean} running        the recording that runs, which is neither downloaded nor deleted
+ * @property {boolean} running        a recording that runs, which is neither downloaded nor deleted
  */
 
 /**
@@ -628,7 +643,8 @@ export function decodePreferences(message) {
 /**
  * Decode a recording state message. Returns null when a field is missing or
  * malformed, apart from the folders, which the engine sends this computer's
- * interfaces only: missing or malformed, they are null.
+ * interfaces only: missing or malformed, they are null; and `iq`, which an
+ * engine that records no I/Q leaves out: missing, it is null.
  * @param {any} message  a parsed JSON message of type "recording"
  * @returns {RecordingState | null}
  */
@@ -638,12 +654,16 @@ export function decodeRecording(message) {
   /** @param {unknown} value */
   const textOrNull = (value) => (typeof value === 'string' ? value : null);
   const { audio, stopped } = message;
+  const iq = message.iq === undefined ? null : message.iq;
   const validAudio = audio === null || (typeof audio === 'object' && (audio.file === null || typeof audio.file === 'string')
     && finite(audio.started) && finite(audio.frequency_hz) && typeof audio.mode === 'string'
     && (audio.rate_hz === null || finite(audio.rate_hz)) && finite(audio.seconds) && finite(audio.bytes));
+  const validIq = iq === null || (typeof iq === 'object' && (iq.file === null || typeof iq.file === 'string')
+    && finite(iq.started) && finite(iq.frequency_hz) && finite(iq.rate_hz) && iq.rate_hz > 0
+    && finite(iq.seconds) && finite(iq.bytes));
   const validStop = stopped === null || (typeof stopped === 'object' && typeof stopped.kind === 'string'
     && typeof stopped.reason === 'string' && typeof stopped.detail === 'string');
-  if (!validAudio || !validStop) return null;
+  if (!validAudio || !validIq || !validStop) return null;
   return {
     audio: audio && {
       file: audio.file,
@@ -654,6 +674,14 @@ export function decodeRecording(message) {
       seconds: audio.seconds,
       bytes: audio.bytes,
     },
+    iq: iq && {
+      file: iq.file,
+      startedS: iq.started,
+      frequencyHz: iq.frequency_hz,
+      rateHz: iq.rate_hz,
+      seconds: iq.seconds,
+      bytes: iq.bytes,
+    },
     stopped: stopped && { kind: stopped.kind, reason: stopped.reason, detail: stopped.detail },
     folder: textOrNull(message.folder),
     defaultFolder: textOrNull(message.default_folder),
@@ -662,7 +690,8 @@ export function decodeRecording(message) {
 
 /**
  * Decode a recordings message. Returns null when it holds no list, or holds
- * a malformed recording.
+ * a malformed recording: an I/Q recording also needs its sample rate and its
+ * metadata file, or null.
  * @param {any} message  a parsed JSON message of type "recordings"
  * @returns {RecordingList | null}
  */
@@ -677,10 +706,13 @@ export function decodeRecordings(message) {
   for (const f of message.files) {
     const valid = f !== null && typeof f === 'object' && typeof f.name === 'string' && typeof f.kind === 'string'
       && finite(f.started) && finite(f.frequency_hz) && typeof f.mode === 'string'
-      && sizeOrNull(f.bytes) && sizeOrNull(f.seconds) && typeof f.running === 'boolean';
+      && sizeOrNull(f.bytes) && sizeOrNull(f.seconds) && typeof f.running === 'boolean'
+      && (f.kind !== 'iq' || (finite(f.rate_hz) && f.rate_hz > 0 && (f.meta === null || typeof f.meta === 'string')));
     if (!valid) return null;
+    const iq = f.kind === 'iq';
     files.push({ name: f.name, kind: f.kind, startedS: f.started, frequencyHz: f.frequency_hz, mode: f.mode,
-      bytes: f.bytes, seconds: f.seconds, running: f.running });
+      rateHz: iq ? f.rate_hz : null, meta: iq ? f.meta : null, bytes: f.bytes, seconds: f.seconds,
+      running: f.running });
   }
   const valid = Number.isSafeInteger(message.more) && message.more >= 0 && sizeOrNull(message.free_bytes)
     && typeof message.problem === 'string';
@@ -818,8 +850,8 @@ export class EngineStream {
   }
 
   /**
-   * What the engine records, as its last hello listed it, such as "audio":
-   * an older engine records nothing.
+   * What the engine records, as its last hello listed it, such as "audio"
+   * and "iq": an older engine records less, or nothing.
    * @returns {string[]}
    */
   get recordings() {
@@ -1001,15 +1033,25 @@ export class EngineStream {
   }
 
   /**
-   * Start recording the audio (true), unless a recording runs, or stop it
-   * (false): every interface then receives the recording state, or this one
-   * an error, such as on the simulated band. Returns false, sending nothing,
-   * when the stream is not open.
+   * Start recording the audio (true), unless an audio recording runs, or
+   * stop it (false): every interface then receives the recording state, or
+   * this one an error, such as on the simulated band. Returns false, sending
+   * nothing, when the stream is not open.
    * @param {boolean} on
    * @returns {boolean}
    */
   setRecording(on) {
     return this.#send({ type: 'recording', audio: on });
+  }
+
+  /**
+   * Start recording the receiver's raw I/Q (true), unless an I/Q recording
+   * runs, or stop it (false), as `setRecording` does for the audio.
+   * @param {boolean} on
+   * @returns {boolean}
+   */
+  setIqRecording(on) {
+    return this.#send({ type: 'recording', iq: on });
   }
 
   /**
@@ -1036,10 +1078,10 @@ export class EngineStream {
   }
 
   /**
-   * Ask the engine to delete a recording, unless it runs; this interface
-   * then receives the recordings left, or an error. Returns false, sending
-   * nothing, when the stream is not open.
-   * @param {string} name  the recording's file
+   * Ask the engine to delete a recording, unless it runs, with an I/Q
+   * recording's metadata; this interface then receives the recordings left,
+   * or an error. Returns false, sending nothing, when the stream is not open.
+   * @param {string} name  the recording's file, as the list names it
    * @returns {boolean}
    */
   deleteRecording(name) {

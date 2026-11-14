@@ -1,48 +1,68 @@
-"""Recordings: what the VFO plays, in WAV files, and the list of the
-recordings in their folder.
+"""Recordings: what the VFO plays, in WAV files, and the receiver's raw I/Q,
+in SigMF files, and the list of the recordings in their folder.
 
 Radiolack records only when an interface asks, never at start and never on
 the simulated band (engine.py). A recording is written by a thread of its
 own, so that a slow disk never holds up the receiver: the engine hands it
-the audio of each block, and the thread writes what came about twice a
-second. The file is made with the first audio, in 16-bit mono WAV at the
-audio rate, readable by the user only, and named after the recording's
-start, in UTC, the VFO's frequency and its mode, such as
-``2026-11-14_15-30-45Z_145.500000MHz_NFM.wav``; a name already taken gets
-``-2``, ``-3`` and so on. The WAV header follows each write, so that a crash
-leaves a file that plays. A recording that ends before any audio came leaves
+what comes, and the thread writes it about twice a second. Its files are
+made with the first data, readable by the user only, and named after the
+recording's start, in UTC, and its frequency; a name already taken gets
+``-2``, ``-3`` and so on. A recording that ends before any data came leaves
 no file.
 
+An audio recording is a 16-bit mono WAV file at the audio rate, named after
+the VFO's frequency and its mode, such as
+``2026-11-14_15-30-45Z_145.500000MHz_NFM.wav``. The WAV header follows each
+write, so that a crash leaves a file that plays.
+
+An I/Q recording keeps the receiver's samples as rtl_tcp sends them, before
+anything else, in a SigMF recording (https://sigmf.org): a ``.sigmf-data``
+file of unsigned 8-bit I/Q pairs, I first (SigMF's "cu8"), and a
+``.sigmf-meta`` file, which gives the sample rate, the receiver, and a
+capture for each stretch of samples: its first sample, its centre frequency
+and the UTC time it started. A retune, and a gap in the samples, start a new
+capture. Both files are named after the receiver's centre frequency and its
+sample rate, such as
+``2026-11-14_15-30-45Z_145.000000MHz_2.400000MSps.sigmf-data``. The
+metadata is written whole, under a temporary name then renamed, with the
+first samples, then after the captures change, at most every
+META_INTERVAL_S, and at the end: a crash leaves a recording that reads.
+
 A recording does not start, or stops by itself, when less than 2 GiB stays
-free on its disk (``space``); it also stops when its file reaches the WAV
-format's limit of 4 GiB (``full``), and on a disk error or a disk too slow
-for it (``disk``, with what went wrong).
+free on its disk (``space``); an audio recording also stops when its file
+reaches the WAV format's limit of 4 GiB (``full``), and both stop on a disk
+error or a disk too slow for them (``disk``, with what went wrong).
 
 The recordings go to ``$XDG_DATA_HOME/radiolack/recordings``, or
 ``~/.local/share/radiolack/recordings`` when that variable is unset or not
 an absolute path, made when needed and readable by the user only, unless
 the user chose another folder, which must exist. The list shows the latest
 LIST_LIMIT recordings of the folder, the newest first: the regular files
-named as Radiolack names them, which alone are downloaded or deleted.
+named as Radiolack names them, which alone are downloaded or deleted. An
+I/Q recording is listed and deleted as its data file, with its metadata.
 """
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import json
 import logging
 import os
 import re
 import stat
 import struct
+import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, NamedTuple
 
+from . import __version__
 from .demod import MODES
-from .store import shown_path
+from .store import shown_path, sync_directory
 
 FOLDER_NAME = "recordings"
 MIN_FREE_BYTES = 2 * 1024 ** 3      # a recording does not start, or stops, with less free on its disk
@@ -53,17 +73,26 @@ LIST_LIMIT = 500                    # the recordings listed, the latest
 WRITE_INTERVAL_S = 0.5              # the thread writes what came this often
 SPACE_CHECK_S = 1.0                 # and checks the free space this often
 PENDING_LIMIT_BYTES = 16 * 1024 * 1024      # audio waiting for the disk: more stops the recording
+IQ_PENDING_LIMIT_BYTES = 64 * 1024 * 1024   # I/Q waiting for the disk: 14 s at 2.4 MS/s
+META_INTERVAL_S = 5.0               # an I/Q recording's metadata follows its captures this often
+SIGMF_VERSION = "1.0.0"             # the SigMF version the metadata follows, its readers' oldest
+IQ_MODE = "I/Q"                     # an I/Q recording's mode in the list
+DATA_SUFFIX = ".sigmf-data"
+META_SUFFIX = ".sigmf-meta"
 MAX_COUNT = 999                     # recordings of the same name, -2 to -999 after the first
 FOLDER_PATH_LIMIT = 4096            # characters in a folder that a user gives
 _SAMPLE_BYTES = 2                   # 16-bit mono
-_NAME = re.compile(r"(?P<start>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})Z_(?P<mhz>\d{1,5}\.\d{6})MHz_(?P<mode>"
-                   + "|".join(MODES) + r")(?:-(?P<count>[1-9]\d{0,2}))?\.wav")
+_IQ_SAMPLE_BYTES = 2                # an unsigned byte of I, then one of Q
+_START = r"(?P<start>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})Z_(?P<mhz>\d{1,5}\.\d{6})MHz_"
+_COUNT = r"(?:-(?P<count>[1-9]\d{0,2}))?"
+_AUDIO_NAME = re.compile(_START + "(?P<mode>" + "|".join(MODES) + ")" + _COUNT + r"\.wav")
+_IQ_NAME = re.compile(_START + r"(?P<msps>\d{1,3}\.\d{6})MSps" + _COUNT + r"\.(?P<part>sigmf-data|sigmf-meta)")
 
 log = logging.getLogger(__name__)
 
 # What the engine is told from a recording's thread, as (recording, event, value):
 # "opened" with the file's name, then "stopped" with (reason or None, detail).
-Report = Callable[["AudioRecording", str, Any], None]
+Report = Callable[["Recording", str, Any], None]
 
 
 def default_folder(environ: Mapping[str, str] | None = None) -> Path:
@@ -77,37 +106,76 @@ def default_folder(environ: Mapping[str, str] | None = None) -> Path:
 
 
 def recording_name(started: float, frequency_hz: float, mode: str, count: int = 1) -> str:
-    """The name of a recording started at ``started`` (Unix time) on
+    """The name of an audio recording started at ``started`` (Unix time) on
     ``frequency_hz`` in ``mode``: the ``count``-th of that name."""
-    stamp = time.strftime("%Y-%m-%d_%H-%M-%SZ", time.gmtime(started))
-    suffix = "" if count == 1 else f"-{count}"
-    return f"{stamp}_{frequency_hz / 1e6:.6f}MHz_{mode}{suffix}.wav"
+    return f"{_stamp(started)}_{frequency_hz / 1e6:.6f}MHz_{mode}{_suffix(count)}.wav"
+
+
+def iq_name(started: float, frequency_hz: float, rate_hz: float, count: int = 1) -> str:
+    """The name of the data file of an I/Q recording started at ``started``
+    (Unix time) on ``frequency_hz`` at ``rate_hz`` samples per second: the
+    ``count``-th of that name. ``meta_name`` gives its metadata's."""
+    return f"{_stamp(started)}_{frequency_hz / 1e6:.6f}MHz_{rate_hz / 1e6:.6f}MSps{_suffix(count)}{DATA_SUFFIX}"
+
+
+def meta_name(data_name: str) -> str:
+    """The name of the metadata of the I/Q recording whose data file is ``data_name``."""
+    if not data_name.endswith(DATA_SUFFIX):
+        raise ValueError(f"{data_name} is not an I/Q recording's data")
+    return data_name.removesuffix(DATA_SUFFIX) + META_SUFFIX
+
+
+def _stamp(started: float) -> str:
+    return time.strftime("%Y-%m-%d_%H-%M-%SZ", time.gmtime(started))
+
+
+def _suffix(count: int) -> str:
+    return "" if count == 1 else f"-{count}"
 
 
 class _Named(NamedTuple):
-    """What a recording's name tells."""
+    """What a recording's file name tells."""
     started: int            # Unix time
     frequency_hz: int
-    mode: str
+    mode: str               # the audio's mode, or IQ_MODE
     count: int              # 1, then 2 and on for the names already taken
+    part: str               # "wav", or "sigmf-data" or "sigmf-meta" for I/Q
+    rate_hz: int | None     # an I/Q recording's sample rate
 
 
 def _named(name: object) -> _Named | None:
-    """What ``name`` tells, if Radiolack could have named a recording so;
-    None otherwise."""
-    match = _NAME.fullmatch(name) if isinstance(name, str) else None
+    """What ``name`` tells, if Radiolack could have named a recording's file
+    so; None otherwise."""
+    if not isinstance(name, str):
+        return None
+    match = _AUDIO_NAME.fullmatch(name) or _IQ_NAME.fullmatch(name)
     if match is None:
         return None
     try:
         started = datetime.strptime(match["start"], "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
     except ValueError:      # such as a 13th month
         return None
-    return _Named(int(started.timestamp()), int(match["mhz"].replace(".", "")), match["mode"],
-                  int(match["count"] or 1))
+    count = int(match["count"] or 1)
+    # Six decimals of MHz or MS/s: their digits are hertz, or samples per second.
+    frequency_hz = int(match["mhz"].replace(".", ""))
+    if match.re is _AUDIO_NAME:
+        return _Named(int(started.timestamp()), frequency_hz, match["mode"], count, "wav", None)
+    rate_hz = int(match["msps"].replace(".", ""))
+    if not rate_hz:
+        return None
+    return _Named(int(started.timestamp()), frequency_hz, IQ_MODE, count, match["part"], rate_hz)
 
 
 def is_recording_name(name: object) -> bool:
-    """Whether ``name`` is named as Radiolack names its recordings."""
+    """Whether ``name`` is named as Radiolack names its recordings, as listed
+    and deleted: a WAV file, or an I/Q recording's data file."""
+    named = _named(name)
+    return named is not None and named.part != "sigmf-meta"
+
+
+def is_recording_file(name: object) -> bool:
+    """Whether ``name`` is named as Radiolack names its recordings' files, to
+    download: a recording's, or an I/Q recording's metadata."""
     return _named(name) is not None
 
 
@@ -158,10 +226,10 @@ def free_bytes(folder: Path) -> int | None:
             return info.f_bavail * info.f_frsize
 
 
-def list_recordings(folder: Path, running: str | None, limit: int = LIST_LIMIT) -> dict[str, Any]:
+def list_recordings(folder: Path, running: Collection[str] = (), limit: int = LIST_LIMIT) -> dict[str, Any]:
     """The recordings of ``folder``, the latest ``limit`` of them, the newest
-    first, ``running`` being the file of the recording that runs, how many
-    others it holds, the free space and what went wrong reading it: the
+    first, ``running`` holding the files of the recordings that run, how
+    many others it holds, the free space and what went wrong reading it: the
     recordings message's fields (docs/design/protocol.md). For a worker
     thread."""
     found: dict[str, _Named] = {}
@@ -170,38 +238,46 @@ def list_recordings(folder: Path, running: str | None, limit: int = LIST_LIMIT) 
         with os.scandir(folder) as entries:
             for entry in entries:
                 named = _named(entry.name)
-                if named is not None and entry.is_file(follow_symlinks=False):
+                # An I/Q recording is listed as its data file.
+                if named is not None and named.part != "sigmf-meta" and entry.is_file(follow_symlinks=False):
                     found[entry.name] = named
     except FileNotFoundError:
         pass        # nothing recorded there yet
     except OSError as error:
         problem = f"{shown_path(folder)} cannot be read: {_reason(error)}."
     # In the order they started.
-    names = sorted(found, key=lambda name: (found[name].started, found[name].count), reverse=True)
+    names = sorted(found, key=lambda name: (found[name].started, found[name].count, name), reverse=True)
     files = [described for name in names[:limit]
-             if (described := _describe(folder / name, found[name], name == running)) is not None]
+             if (described := _describe(folder, name, found[name], name in running)) is not None]
     return {"files": files, "more": max(0, len(names) - limit), "free_bytes": free_bytes(folder),
             "problem": problem}
 
 
 def delete_recording(folder: Path, name: str) -> None:
-    """Delete the recording ``name`` of ``folder``. Raises ValueError for a
-    file that is not a recording, FileNotFoundError when it is no longer
-    there and OSError when it cannot be deleted. For a worker thread."""
+    """Delete the recording ``name`` of ``folder``: an I/Q recording's data
+    file, with its metadata. Raises ValueError for a file that is not a
+    recording, FileNotFoundError when it is no longer there and OSError when
+    it cannot be deleted. For a worker thread."""
     if not is_recording_name(name):
         raise ValueError("not a recording")
     path = folder / name
     if not stat.S_ISREG(os.lstat(path).st_mode):
         raise ValueError(f"{name} is not a recording")
+    if name.endswith(DATA_SUFFIX):
+        # The metadata first: a failure leaves the data, which the list shows.
+        meta = folder / meta_name(name)
+        with contextlib.suppress(FileNotFoundError):
+            if stat.S_ISREG(os.lstat(meta).st_mode):
+                os.unlink(meta)
     os.unlink(path)
 
 
 def open_recording(folder: Path, name: str) -> tuple[BinaryIO, int]:
-    """The recording ``name`` of ``folder``, open for reading, and its size.
-    Raises FileNotFoundError when there is no such recording, a link or
+    """The recording's file ``name`` of ``folder``, open for reading, and its
+    size. Raises FileNotFoundError when there is no such file, a link or
     another kind of file included, and OSError when it cannot be read. For
     a worker thread."""
-    if not is_recording_name(name):
+    if not is_recording_file(name):
         raise FileNotFoundError(errno.ENOENT, "not a recording", name)
     try:
         # Without following a link, and without waiting for a named pipe's writer.
@@ -243,55 +319,39 @@ def wav_seconds(header: bytes, size: int) -> float | None:
     return round(audio_bytes / (rate * align), 1)
 
 
-class AudioRecording:
-    """A recording of the VFO's audio, written by a thread of its own into
-    ``folder``, which it makes first if ``make_folder``, the default
-    folder's way. ``started``, ``frequency_hz`` and ``mode`` name its file.
-    The thread tells ``report`` of its file once made, and that it stopped,
-    with the reason when it stopped by itself. ``file`` is for the engine,
-    which sets it once told."""
+class Recording:
+    """What both kinds of recordings share: a thread of their own writes
+    what the engine hands over into ``folder``, which it makes first if
+    ``make_folder``, the default folder's way. ``started`` and
+    ``frequency_hz`` name the files. The thread tells ``report`` of its file
+    once made, and that it stopped, with the reason when it stopped by
+    itself. ``file`` is for the engine, which sets it once told."""
 
-    kind = "audio"
+    kind = ""
 
-    def __init__(self, folder: Path, started: float, frequency_hz: float, mode: str, *,
-                 make_folder: bool, report: Report) -> None:
+    def __init__(self, folder: Path, started: float, frequency_hz: float, *, make_folder: bool,
+                 report: Report) -> None:
         self.folder = folder
         self.started = started
         self.frequency_hz = frequency_hz
-        self.mode = mode
         self.file: str | None = None
         self._make_folder = make_folder
         self._report = report
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         # Shared with the thread, under the lock.
-        self._chunks: list[bytes] = []
-        self._pending = 0               # bytes in _chunks
-        self._rate: int | None = None   # the WAV's rate, from the first audio
+        self._items: list[Any] = []
+        self._pending = 0               # bytes in _items
         self._stopping = False
         # The thread's own.
         self._descriptor: int | None = None
-        self._data = 0                  # bytes of audio written
-        self._thread = threading.Thread(target=self._run, name="radiolack-recording", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=f"radiolack-{self.kind}-recording", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
-    def write(self, pcm: bytes, rate_hz: int) -> bool:
-        """Hand over 16-bit audio at ``rate_hz``, which the first audio sets
-        for the whole recording. Returns False, taking nothing, when too much
-        already waits for the disk."""
-        with self._lock:
-            if self._pending + len(pcm) > PENDING_LIMIT_BYTES:
-                return False
-            if self._rate is None:
-                self._rate = rate_hz
-            self._chunks.append(pcm)
-            self._pending += len(pcm)
-        return True
-
     def stop(self) -> None:
-        """Write what came, then close the file. Safe to repeat."""
+        """Write what came, then close the files. Safe to repeat."""
         with self._lock:
             self._stopping = True
             self._wake.notify()
@@ -301,6 +361,20 @@ class AudioRecording:
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
+    def _queue(self, item: Any, size: int, limit: int) -> bool:
+        """Hand ``item``, of ``size`` bytes, to the thread; False, taking
+        nothing, when more than ``limit`` bytes would wait for the disk."""
+        with self._lock:
+            if self._pending + size > limit:
+                return False
+            self._items.append(item)
+            self._pending += size
+        return True
+
+    def _consume(self, items: list[Any]) -> str | None:
+        """Write ``items``, making the file first; the reason to stop, if any."""
+        raise NotImplementedError
+
     def _run(self) -> None:
         reason: str | None = None
         detail = ""
@@ -308,12 +382,10 @@ class AudioRecording:
             reason = self._prepare()
             checked_s = time.monotonic()
             while reason is None:
-                chunks, rate, stopping = self._take()
-                if chunks:
-                    if self._descriptor is None:
-                        self._create(rate)
-                    if not self._append(b"".join(chunks)):
-                        reason = "full"
+                items, stopping = self._take()
+                if items:
+                    reason = self._consume(items)
+                    if reason is not None:
                         break
                 if time.monotonic() - checked_s >= SPACE_CHECK_S:
                     checked_s = time.monotonic()
@@ -338,45 +410,14 @@ class AudioRecording:
             _make_folders(self.folder)
         return "space" if self._free_bytes() < MIN_FREE_BYTES else None
 
-    def _take(self) -> tuple[list[bytes], int | None, bool]:
+    def _take(self) -> tuple[list[Any], bool]:
         """What came, once WRITE_INTERVAL_S passed or a stop was asked, and
-        the rate, and whether to stop."""
+        whether to stop."""
         with self._lock:
             if not self._stopping:
                 self._wake.wait(WRITE_INTERVAL_S)
-            chunks, self._chunks, self._pending = self._chunks, [], 0
-            return chunks, self._rate, self._stopping
-
-    def _create(self, rate_hz: int | None) -> None:
-        """Make the file, under the first name not taken, with its header."""
-        if rate_hz is None:
-            raise RuntimeError("audio came without its rate")
-        for count in range(1, MAX_COUNT + 1):
-            name = recording_name(self.started, self.frequency_hz, self.mode, count)
-            try:
-                descriptor = os.open(self.folder / name,
-                                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-            except FileExistsError:
-                continue
-            self._descriptor = descriptor
-            _write_all(descriptor, wav_header(rate_hz, 0))
-            self._report(self, "opened", name)
-            return
-        raise FileExistsError(errno.EEXIST, "every name for this recording is taken")
-
-    def _append(self, data: bytes) -> bool:
-        """Write ``data`` and bring the header up to date; returns False once
-        the file is full, with what fitted written."""
-        descriptor = self._descriptor
-        room = WAV_DATA_LIMIT - self._data
-        full = len(data) > room
-        if full:
-            data = data[:room]
-        _write_all(descriptor, data)
-        self._data += len(data)
-        os.pwrite(descriptor, struct.pack("<I", WAV_HEADER.size - 8 + self._data), 4)
-        os.pwrite(descriptor, struct.pack("<I", self._data), WAV_HEADER.size - 4)
-        return not full
+            items, self._items, self._pending = self._items, [], 0
+            return items, self._stopping
 
     def _free_bytes(self) -> int:
         info = os.fstatvfs(self._descriptor) if self._descriptor is not None else os.statvfs(self.folder)
@@ -399,6 +440,158 @@ class AudioRecording:
         return problem
 
 
+class AudioRecording(Recording):
+    """A recording of the VFO's audio into a WAV file, named after
+    ``started``, ``frequency_hz`` and ``mode``."""
+
+    kind = "audio"
+
+    def __init__(self, folder: Path, started: float, frequency_hz: float, mode: str, *,
+                 make_folder: bool, report: Report) -> None:
+        super().__init__(folder, started, frequency_hz, make_folder=make_folder, report=report)
+        self.mode = mode
+        self._data = 0                  # bytes of audio written, the thread's own
+
+    def write(self, pcm: bytes, rate_hz: int) -> bool:
+        """Hand over 16-bit audio at ``rate_hz``, which the first audio sets
+        for the whole recording. Returns False, taking nothing, when too much
+        already waits for the disk."""
+        return self._queue((pcm, rate_hz), len(pcm), PENDING_LIMIT_BYTES)
+
+    def _consume(self, items: list[tuple[bytes, int]]) -> str | None:
+        if self._descriptor is None:
+            self._create(items[0][1])
+        return None if self._append(b"".join(pcm for pcm, _ in items)) else "full"
+
+    def _create(self, rate_hz: int) -> None:
+        """Make the file, under the first name not taken, with its header."""
+        for count in range(1, MAX_COUNT + 1):
+            name = recording_name(self.started, self.frequency_hz, self.mode, count)
+            descriptor = _new_file(self.folder / name)
+            if descriptor is None:
+                continue
+            self._descriptor = descriptor
+            _write_all(descriptor, wav_header(rate_hz, 0))
+            self._report(self, "opened", name)
+            return
+        raise FileExistsError(errno.EEXIST, "every name for this recording is taken")
+
+    def _append(self, data: bytes) -> bool:
+        """Write ``data`` and bring the header up to date; returns False once
+        the file is full, with what fitted written."""
+        descriptor = self._descriptor
+        room = WAV_DATA_LIMIT - self._data
+        full = len(data) > room
+        if full:
+            data = data[:room]
+        _write_all(descriptor, data)
+        self._data += len(data)
+        os.pwrite(descriptor, struct.pack("<I", WAV_HEADER.size - 8 + self._data), 4)
+        os.pwrite(descriptor, struct.pack("<I", self._data), WAV_HEADER.size - 4)
+        return not full
+
+
+class IQRecording(Recording):
+    """A recording of the receiver's raw I/Q into a SigMF recording, named
+    after ``started``, ``frequency_hz``, the receiver's centre frequency, and
+    ``rate_hz``, its sample rate, which stays the same throughout.
+    ``hardware`` names the receiver in the metadata: the engine may change
+    it, before handing the samples that follow a gap."""
+
+    kind = "iq"
+
+    def __init__(self, folder: Path, started: float, frequency_hz: float, rate_hz: float, *, hardware: str,
+                 make_folder: bool, report: Report) -> None:
+        super().__init__(folder, started, frequency_hz, make_folder=make_folder, report=report)
+        self.rate_hz = rate_hz
+        self.hardware = hardware
+        # The thread's own.
+        self._meta: str | None = None           # the metadata's name, once the data file is made
+        self._samples = 0                       # I/Q pairs written
+        self._captures: list[dict[str, Any]] = []
+        self._centre_hz: float | None = None    # that of the latest capture
+        self._meta_due = False                  # the captures changed since the metadata was written
+        self._meta_next_s = 0.0                 # when it may be written again
+
+    def write(self, data: bytes, centre_hz: float, when_s: float, joined: bool) -> bool:
+        """Hand over raw samples: whole I/Q pairs of unsigned bytes, I first,
+        taken on ``centre_hz``, which came at ``when_s`` (Unix time), and
+        whether they follow those handed before without a gap. Returns
+        False, taking nothing, when too much already waits for the disk."""
+        return self._queue((data, centre_hz, when_s, joined), len(data), IQ_PENDING_LIMIT_BYTES)
+
+    def _consume(self, items: list[tuple[bytes, float, float, bool]]) -> str | None:
+        for data, centre_hz, when_s, joined in items:
+            if self._descriptor is None:
+                self._create()
+            if not joined or centre_hz != self._centre_hz:
+                # The first sample came the chunk's length before the chunk ended.
+                first_s = when_s - len(data) / _IQ_SAMPLE_BYTES / self.rate_hz
+                self._captures.append({"core:sample_start": self._samples, "core:frequency": _number(centre_hz),
+                                       "core:datetime": _utc(first_s)})
+                self._centre_hz = centre_hz
+                self._meta_due = True
+            _write_all(self._descriptor, data)
+            self._samples += len(data) // _IQ_SAMPLE_BYTES
+        if self._meta_due and time.monotonic() >= self._meta_next_s:
+            self._write_meta()
+        return None
+
+    def _create(self) -> None:
+        """Make the data file, under the first name not taken by either file."""
+        for count in range(1, MAX_COUNT + 1):
+            name = iq_name(self.started, self.frequency_hz, self.rate_hz, count)
+            if os.path.lexists(self.folder / meta_name(name)):
+                continue        # metadata whose data went: it stays as it is
+            descriptor = _new_file(self.folder / name)
+            if descriptor is None:
+                continue
+            self._descriptor, self._meta = descriptor, meta_name(name)
+            self._report(self, "opened", name)
+            return
+        raise FileExistsError(errno.EEXIST, "every name for this recording is taken")
+
+    def _write_meta(self) -> None:
+        """Write the metadata whole, under a temporary name that is then
+        renamed, so that a crash leaves the previous one."""
+        metadata = {
+            "global": {
+                "core:datatype": "cu8",
+                "core:sample_rate": _number(self.rate_hz),
+                "core:version": SIGMF_VERSION,
+                "core:hw": self.hardware,
+                "core:recorder": f"Radiolack {__version__}",
+            },
+            "captures": self._captures,
+            "annotations": [],
+        }
+        text = json.dumps(metadata, indent=2) + "\n"
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{self._meta}.", suffix=".tmp", dir=self.folder)
+        try:
+            try:
+                _write_all(descriptor, text.encode("ascii"))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.replace(temporary, self.folder / self._meta)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+        sync_directory(self.folder)
+        self._meta_due, self._meta_next_s = False, time.monotonic() + META_INTERVAL_S
+
+    def _close(self) -> str:
+        """Close the data file, then bring the metadata up to date."""
+        problem = super()._close()
+        if self._meta_due:
+            try:
+                self._write_meta()
+            except OSError as error:
+                problem = problem or _reason(error)
+        return problem
+
+
 def _make_folders(folder: Path) -> None:
     """Make ``folder`` and the folders missing above it, readable by the user only."""
     missing = []
@@ -416,19 +609,41 @@ def _make_folders(folder: Path) -> None:
                 raise
 
 
+def _new_file(path: Path) -> int | None:
+    """A new file at ``path``, open for writing and readable by the user
+    only; None when the name is taken."""
+    try:
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        return None
+
+
 def _write_all(descriptor: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
         view = view[os.write(descriptor, view):]
 
 
-def _describe(path: Path, named: _Named, running: bool) -> dict[str, Any] | None:
+def _number(value: float) -> int | float:
+    """A number for the metadata, without a decimal part when it has none."""
+    return int(value) if float(value).is_integer() else value
+
+
+def _utc(when: float) -> str:
+    """``when`` (Unix time) as SigMF writes times: in UTC, to the millisecond."""
+    return datetime.fromtimestamp(when, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _describe(folder: Path, name: str, named: _Named, running: bool) -> dict[str, Any] | None:
     """A recording's entry in the list; None once it is no longer there."""
-    entry: dict[str, Any] = {"name": path.name, "kind": "audio", "started": named.started,
+    iq = named.part == "sigmf-data"
+    entry: dict[str, Any] = {"name": name, "kind": "iq" if iq else "audio", "started": named.started,
                              "frequency_hz": named.frequency_hz, "mode": named.mode, "bytes": None, "seconds": None,
                              "running": running}
+    if iq:
+        entry.update(rate_hz=named.rate_hz, meta=None)
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
         return None
     except OSError:
@@ -438,11 +653,21 @@ def _describe(path: Path, named: _Named, running: bool) -> dict[str, Any] | None
         if not stat.S_ISREG(info.st_mode):
             return None
         entry["bytes"] = info.st_size
-        entry["seconds"] = wav_seconds(os.pread(descriptor, WAV_HEADER.size, 0), info.st_size)
+        if iq:
+            entry["seconds"] = round(info.st_size // _IQ_SAMPLE_BYTES / named.rate_hz, 1)
+        else:
+            entry["seconds"] = wav_seconds(os.pread(descriptor, WAV_HEADER.size, 0), info.st_size)
     except OSError:
         pass
     finally:
         os.close(descriptor)
+    if iq:
+        with contextlib.suppress(OSError):
+            meta = os.lstat(folder / meta_name(name))
+            if stat.S_ISREG(meta.st_mode):
+                entry["meta"] = meta_name(name)
+                if entry["bytes"] is not None:
+                    entry["bytes"] += meta.st_size
     return entry
 
 

@@ -37,19 +37,23 @@ the history under the tag `v0.1.0`.
   receiver's settings of its start and bringing the receiver back once
   stopped;
   keeps the observations, the simulated band's excepted, and
-  sends them to the client that asks; records the VFO's audio when a
-  client asks, never on the simulated band, until a client stops it or a
-  new audio rate, the disk or the WAV limit does, lists the recordings
-  folder and deletes from it for the client that asks; idle without
+  sends them to the client that asks; records the VFO's audio, and an
+  RTL-SDR's raw I/Q, when a client asks, never on the simulated band,
+  until a client stops it or a new audio rate (the audio), a new sample
+  rate or another receiver (the I/Q), the disk or the WAV limit does,
+  lists the recordings folder and deletes from it for the client that
+  asks; idle without
   clients unless a scan or a recording runs; remote clients get neither
   the storage, update nor remote access states, nor the recordings
   folder, which they may not change, and lighter spectrum frames),
-  `recordings` (the audio's WAV files, written by a thread of their own
-  that checks the free space and the WAV limit, named after their start,
-  frequency and mode; the recordings folder, `$XDG_DATA_HOME/radiolack/recordings`
+  `recordings` (the audio's WAV files and the raw I/Q's SigMF files, data
+  and metadata, each recording written by a thread of its own that checks
+  the free space, and the WAV limit for the audio, named after their
+  start, frequency and mode, or sample rate for the I/Q; the recordings
+  folder, `$XDG_DATA_HOME/radiolack/recordings`
   unless the user chose another, its checks and its list; opening a
-  recording to download it, and deleting it, only for the files named as
-  recordings),
+  recording's file to download it, and deleting a recording, with an I/Q
+  recording's metadata, only for the files named as recordings),
   `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
@@ -72,7 +76,8 @@ the history under the tag `v0.1.0`.
   32 kHz in WFM), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
-  waiting state), `sources` (opens each kind of source from its saved
+  waiting state; hands the raw samples to an I/Q recording's tap),
+  `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK; an ephemeral WebKit context writes nothing to disk; downloads

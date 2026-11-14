@@ -22,7 +22,7 @@ preferences apart from this computer's.
 
    ```json
    {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history", "sweep"],
-    "recording": ["audio"]}
+    "recording": ["audio", "iq"]}
    ```
 
    `remote` is true for a remote client. `scanners` lists the scanners that
@@ -34,8 +34,10 @@ preferences apart from this computer's.
    `sweep_high_hz`, `sweep_window_s`, `stopped_scan` and `sweep`, below).
    An engine older than the scanners sends no `scanners`: it runs none.
    `recording` lists what the engine records: `audio`, the audio of the
-   VFO (the recording state and the recordings, below). An engine older
-   than the recordings sends no `recording`: it records nothing.
+   VFO, and `iq`, the receiver's raw I/Q (the recording state and the
+   recordings, below). An engine older than the recordings sends no
+   `recording`: it records nothing; one older than the I/Q recordings lists
+   `audio` alone.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -265,6 +267,8 @@ preferences apart from this computer's.
    {"type": "recording",
     "audio": {"file": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav", "started": 1794670245,
               "frequency_hz": 145500000, "mode": "NFM", "rate_hz": 12000, "seconds": 61.4, "bytes": 2947244},
+    "iq": {"file": "2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-data", "started": 1794670262,
+           "frequency_hz": 145000000, "rate_hz": 2400000, "seconds": 44.2, "bytes": 212160000},
     "stopped": null,
     "folder": "~/.local/share/radiolack/recordings", "default_folder": "~/.local/share/radiolack/recordings"}
    ```
@@ -272,7 +276,8 @@ preferences apart from this computer's.
    | Field | Meaning |
    | --- | --- |
    | `audio` | The audio recording that runs, or null. `file` is its file's name, null until the first audio makes the file; `started` its start, in Unix time, to the second; `frequency_hz` and `mode` the VFO's when it started, which name the file; `rate_hz` the audio rate, null until the first audio; `seconds` its length, to the tenth; `bytes` its file's size, 0 until the file is made. |
-   | `stopped` | Why the latest recording stopped by itself, until the next one starts: `kind` (`audio`), `reason` and `detail`, a sentence for the user with `disk`, otherwise empty. Null when an interface stopped it, or none ran since the engine started. |
+   | `iq` | The I/Q recording that runs, or null. `file` is its data file's name, null until the first samples make the files; `started` its start, in Unix time, to the second; `frequency_hz` and `rate_hz` the receiver's centre frequency and sample rate when it started, which name the files; `seconds` its length, to the tenth; `bytes` its data's size, 0 until the files are made. |
+   | `stopped` | Why the latest recording stopped by itself, until a recording of its kind starts: `kind` (`audio` or `iq`), `reason` and `detail`, a sentence for the user with `disk`, otherwise empty. Null when an interface stopped it, or none ran since the engine started. When both recordings stop at once, as when the disk fills, it tells of the latter. |
    | `folder` | To this computer's interfaces only: the folder the recordings go to, `~` standing for the home folder, or null when the engine does not record (a server started without a recordings folder, as in tests). |
    | `default_folder` | To this computer's interfaces only: the folder they go to unless another was chosen, `$XDG_DATA_HOME/radiolack/recordings`, or null as `folder`. |
 
@@ -280,10 +285,12 @@ preferences apart from this computer's.
 
    | Reason | When |
    | --- | --- |
-   | `rate` | The audio rate changed, into or out of WFM. |
-   | `source` | The simulated band was chosen; another receiver goes on recording. |
+   | `rate` | Audio: the audio rate changed, into or out of WFM. |
+   | `source` | Audio: the simulated band was chosen; another receiver goes on recording. |
+   | `sample_rate` | I/Q: the receiver's sample rate changed. |
+   | `receiver` | I/Q: another kind of source, or another rtl_tcp address, was chosen. |
    | `space` | Less than 2 GiB is free on its disk, at its start or later. |
-   | `full` | Its file reached the WAV format's limit of 4 GiB. |
+   | `full` | Audio: its file reached the WAV format's limit of 4 GiB. |
    | `disk` | A disk error, such as a folder that went, or a disk too slow for the recording: `detail` says which. |
 
    A recording writes 16-bit mono WAV at the audio rate, from the block
@@ -295,6 +302,30 @@ preferences apart from this computer's.
    that a crash leaves a file that plays. A recording stopped before any
    audio leaves no file. It goes on without any client, like a scan, and
    never starts at start: whether one runs is not saved.
+
+   An I/Q recording keeps the receiver's samples as rtl_tcp sends them,
+   before the DC removal, from the samples that arrive after it started,
+   whether the engine reads them or not, in a SigMF recording: a
+   `.sigmf-data` file of unsigned 8-bit I/Q pairs, I first (`cu8`), and a
+   `.sigmf-meta` file, both readable by their owner only and named after the
+   start in UTC, the receiver's centre frequency and its sample rate, such
+   as `2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-data`, with
+   `-2` to `-999` before the extension when either name is taken. Its
+   metadata, SigMF 1.0.0, gives `core:datatype` (`cu8`),
+   `core:sample_rate`, `core:hw` (the receiver, such as `RTL-SDR, Rafael
+   Micro R820T`) and `core:recorder` (`Radiolack` and its version), and a
+   capture for each stretch of samples: `core:sample_start`,
+   `core:frequency`, the receiver's centre frequency, and `core:datetime`,
+   the time of its first sample, in UTC to the millisecond; no annotation.
+   A retune, by an interface or a scan, starts a capture, as do a change of
+   frequency correction and the samples that come after a gap, such as
+   when rtl_tcp's connection drops and comes back. The engine writes the
+   metadata whole, renaming a new file over the old one, with the first
+   samples, then at most every 5 s while the captures change, and at the
+   end: a crash leaves a recording that reads. It takes about 17 GB an hour
+   at 2.4 MS/s. Like the audio's, it goes on without any client, never
+   starts at start and never runs on the simulated band; both may run at
+   once.
 
 9. Then, to this computer's interfaces only, the storage state, a JSON text
    message, sent again whenever it changes:
@@ -464,6 +495,9 @@ preferences apart from this computer's.
 
     ```json
     {"type": "recordings", "files": [
+      {"name": "2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-data", "kind": "iq",
+       "started": 1794670262, "frequency_hz": 145000000, "mode": "I/Q", "bytes": 212161024, "seconds": 44.2,
+       "running": false, "rate_hz": 2400000, "meta": "2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-meta"},
       {"name": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav", "kind": "audio", "started": 1794670245,
        "frequency_hz": 145500000, "mode": "NFM", "bytes": 2947244, "seconds": 61.4, "running": false}],
      "more": 0, "free_bytes": 52613349376, "problem": ""}
@@ -471,7 +505,7 @@ preferences apart from this computer's.
 
     | Field | Meaning |
     | --- | --- |
-    | `files` | The regular files of the folder named as the engine names its recordings, links excluded. Each gives its `name`, its `kind` (`audio`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them, its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV. `running` is true for the recording that runs. |
+    | `files` | The regular files of the folder named as the engine names its recordings, links excluded: WAV files, and I/Q recordings' data files. Each gives its `name`, its `kind` (`audio` or `iq`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them (`I/Q` for an I/Q recording), its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header or its data's size; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV. `running` is true for a recording that runs. An I/Q recording also gives `rate_hz`, its sample rate as its name tells it, and `meta`, its metadata file, which `bytes` includes, or null when it is missing. |
     | `more` | How many older recordings the folder holds besides. |
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
@@ -628,20 +662,23 @@ interface, or chooses the recordings folder, one setting at a time:
 ```json
 {"type": "recording", "audio": true}
 {"type": "recording", "audio": false}
+{"type": "recording", "iq": true}
 {"type": "recording", "folder": "~/Music/Radiolack"}
 {"type": "recording", "folder": null}
 ```
 
 | Field | Value |
 | --- | --- |
-| `audio` | `true` starts recording the audio, unless a recording runs; `false` stops the recording that runs, if any: its file is complete a moment later. |
+| `audio` | `true` starts recording the audio, unless an audio recording runs; `false` stops the audio recording that runs, if any: its file is complete a moment later. |
+| `iq` | `true` starts recording the receiver's raw I/Q, unless an I/Q recording runs; `false` stops the I/Q recording that runs, if any: its files are complete a moment later. |
 | `folder` | The folder that the recordings go to from now on, a full path, `~` standing for the home folder, up to 4096 characters; null or an empty text for the default folder. Only while nothing records. The engine checks, in the background, that the folder exists and that it may write into it, then saves it with its settings: this computer's interfaces receive the recording state, or the sender an error. Recordings made before stay where they are. |
 
 The engine refuses a message without a setting or with more than one, an
 unknown or invalid setting, a recording on the simulated band ("the
-simulated band is not recorded"), a recording or a folder when it has no
-recordings folder ("this Radiolack does not record"), and a folder while a
-recording runs; it answers the sender with an error. A recording that
+simulated band is not recorded"), an I/Q recording from a source without
+raw samples, a recording or a folder when it has no recordings folder
+("this Radiolack does not record"), and a folder while a recording runs;
+it answers the sender with an error. A recording that
 cannot go on, such as with less than 2 GiB free, starts and stops at once:
 the recording state's `stopped` says why.
 
@@ -652,18 +689,21 @@ A `recordings` message asks for the recordings, or deletes one:
 {"type": "recordings", "delete": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav"}
 ```
 
-`delete` takes a recording's file, named as the engine names them, but not
-the recording that runs. The engine refuses the whole message, changing
-nothing, when it has an unknown or invalid field. Otherwise it deletes the
-file in the background, when it is a regular file, and answers the sender
-alone with the recordings, after the deletion: an error comes first when the
-file could not be deleted, and a file already gone is no error. The other
-interfaces see the change when they next ask.
+`delete` takes a recording as the list names it, named as the engine names
+them, but not a recording that runs: a WAV file, or an I/Q recording's data
+file, whose metadata goes first. The engine refuses the whole message,
+changing nothing, when it has an unknown or invalid field. Otherwise it
+deletes the file in the background, when it is a regular file, and answers
+the sender alone with the recordings, after the deletion: an error comes
+first when the file could not be deleted, and a file already gone is no
+error. The other interfaces see the change when they next ask.
 
 Recordings are downloaded by HTTP, on the loopback server and on remote
-access's: `GET /recordings/<file>` answers a recording of the list, which
-the engine names so, a regular file that is not the recording that runs,
-as an attachment of type `audio/wav` with its length, and
+access's: `GET /recordings/<file>` answers a recording of the list, or an
+I/Q recording's metadata, which the engine names so, a regular file that is
+not one of a recording that runs, as an attachment with its length, of
+type `audio/wav` for a WAV file and `application/octet-stream` for SigMF's
+files, which a browser then saves under their own name, and
 `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
 `Referrer-Policy: no-referrer`. It answers 404 for any other name, a link
 included, 403 for a recording that cannot be read, and 405 for `HEAD`.
@@ -761,7 +801,7 @@ and `Referrer-Policy: no-referrer`.
 | `GET /<file>` | An interface file, as on the loopback server. Before pairing, only `pair.js`, `pair.css` and `style.css`: 403 for the others. |
 | `POST /pair` | Checks an access code, below. |
 | `GET /stream` | The stream, to a paired device. |
-| `GET /recordings/<file>` | A recording, to a paired device, as on the loopback server ([From the interface](#from-the-interface)); 403 to any other. |
+| `GET /recordings/<file>` | A recording, or an I/Q recording's metadata, to a paired device, as on the loopback server ([From the interface](#from-the-interface)); 403 to any other. |
 
 A device is paired while it sends the `__Host-radiolack` cookie that the
 right code gave it. The engine keeps only the cookie's SHA-256, forgets a
@@ -838,11 +878,13 @@ and later.
   every 30 s while it shows and its page is visible.
 - An interface whose hello does not list `audio` in its `recording`, as an
   older engine's, shows that recording needs Radiolack to restart, and
-  asks for no recordings. The interface asks for the recordings when its
-  Record panel shows, when the recording that runs makes its file or
-  stops, when the folder changes, and every 30 s while the panel shows and
-  its page is visible; a recording that runs takes its length and size
-  from the recording state.
+  asks for no recordings; one whose hello does not list `iq` offers no I/Q
+  recording, and reads a recording state without `iq` as one without an
+  I/Q recording. The interface asks for the recordings when its Record
+  panel shows, when a recording that runs makes its file or stops, when
+  the folder changes, and every 30 s while the panel shows and its page is
+  visible; a recording that runs takes its length and size from the
+  recording state.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -917,7 +959,14 @@ and later.
   shows as on, with an empty address. Later that day, the recordings: the
   hello's `recording`, the recording state, the recordings, the
   `recording` and `recordings` messages and the downloads, which an older
-  interface ignores, as it does any message of an unknown type.
+  interface ignores, as it does any message of an unknown type. Later
+  still, the I/Q recordings: the hello's `recording` value `iq`, the
+  recording state's `iq`, its `stopped` kind `iq` and reasons
+  `sample_rate` and `receiver`, the `recording` message's `iq`, the
+  recordings' I/Q entries, with `rate_hz` and `meta`, and the downloads of
+  SigMF files. An interface that records audio only ignores `iq`, shows an
+  I/Q recording's stop as a plain stop of its recording and lists an I/Q
+  recording as one of mode `I/Q`, which it downloads as its data file.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

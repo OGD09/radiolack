@@ -8,8 +8,8 @@ its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for an update check, for the observations and for the list of the
-recordings. It serves the recordings that the engine lists, to download
-(``/recordings/NAME``).
+recordings. It serves the recordings that the engine lists, and the I/Q
+recordings' metadata, to download (``/recordings/NAME``).
 
 The server reads the interface's files once, when it is made, and serves
 them from memory: a running Radiolack keeps serving the interface it started
@@ -70,7 +70,7 @@ _COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", 
 _LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
-RECORDING_KINDS = ("audio",)    # what the engine records, as the hello tells
+RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
 _DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
@@ -326,9 +326,11 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
 
 
 async def _download(request: web.Request, engine: Engine) -> web.StreamResponse:
-    """The recording that the request names, as an attachment: only one
-    named as the engine names them, in its recordings folder, a regular file
-    and not the recording that runs; HTTPNotFound for any other."""
+    """The recording's file that the request names, as an attachment: only
+    one named as the engine names them, in its recordings folder, a regular
+    file and not one of a recording that runs; HTTPNotFound for any other.
+    A WAV file is audio; SigMF files are bytes, which a browser saves under
+    their own name."""
     name = request.match_info["name"]
     folder = engine.download_folder(name)
     if folder is None:
@@ -342,7 +344,7 @@ async def _download(request: web.Request, engine: Engine) -> web.StreamResponse:
         raise web.HTTPForbidden(text="This recording cannot be read.\n") from None
     try:
         response = web.StreamResponse(headers={
-            "Content-Type": "audio/wav",
+            "Content-Type": "audio/wav" if name.endswith(".wav") else "application/octet-stream",
             "Content-Disposition": f'attachment; filename="{name}"',
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",

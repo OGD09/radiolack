@@ -623,6 +623,69 @@ class BrowserTest(unittest.TestCase):
                 expect(field).to_have_value(shown_path(folder))
                 expect(first.locator("#st-rec-msg")).to_be_empty()
 
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_every_interface_records_the_raw_iq_with_the_audio_and_downloads_its_two_files(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP), recordings=folder)    # on 145 MHz
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                for page in (first, second):
+                    page.locator(RECORD_PANEL).click()
+                    expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
+                    expect(page.locator("#rec-iq-state")).to_be_empty()
+                first.locator("#rec-iq").click()
+                for page in (first, second):    # once the first samples made the files
+                    expect(page.locator("#rec-iq-state")).to_have_text(re.compile(
+                        rf"^145\.000 MHz {DOT} 2\.400 MS/s {DOT} \d+:\d\d {DOT} [\d.]+ (B|KiB|MiB|GiB)$"))
+                    expect(page.locator("#rec-iq")).to_have_text("Stop")
+                    expect(page.locator("#rec-audio")).to_have_text("Record audio")
+                    expect(page.locator("#rec-state")).to_be_empty()
+                    expect(page.locator(RECORD_PANEL)).to_have_class("recording")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} recording I/Q")
+                    expect(page.locator("#rec-list li.rec .num")).to_have_text("Recording")
+                second.locator("#rec-audio").click()    # both at once
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} recording audio and I/Q")
+                    expect(page.locator("#rec-list li.rec .num")).to_have_text(["Recording", "Recording"])
+                first.locator("#rec-audio").click()     # each stops on its own
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} recording I/Q")
+                    expect(page.locator("#rec-iq")).to_have_text("Stop")
+                second.locator("#rec-iq").click()
+                iq_row = first.locator("#rec-list li.rec", has_text="I/Q")
+                for page in (first, second):
+                    expect(page.locator("#rec-iq")).to_have_text("Record I/Q")
+                    expect(page.locator("#rec-iq-state")).to_be_empty()
+                    expect(page.locator(RECORD_PANEL)).not_to_have_class("recording")
+                    expect(page.locator("#status")).not_to_contain_text("recording")
+                    expect(page.locator("#rec-list li.rec", has_text="I/Q").locator(".name")).to_contain_text(
+                        re.compile(rf"^145\.000 MHz I/Q.* {DOT} 2\.400 MS/s {DOT} "))
+                    expect(page.locator("#rec-list li.rec", has_text="I/Q").locator("a.link")).to_have_text(
+                        ["Data", "Metadata"])
+                [data] = folder.glob("*.sigmf-data")
+                with first.expect_download() as downloading:
+                    iq_row.get_by_role("link", name="Data", exact=True).click()
+                self.assertEqual(downloading.value.suggested_filename, data.name)
+                downloaded = Path(downloading.value.path()).read_bytes()
+                self.assertTrue(downloaded and len(downloaded) % 2 == 0)        # whole I/Q pairs
+                self.assertEqual(downloaded, data.read_bytes()[:len(downloaded)])   # its thread may be closing it
+                with first.expect_download() as downloading:
+                    iq_row.get_by_role("link", name="Metadata", exact=True).click()
+                self.assertEqual(downloading.value.suggested_filename, data.name.replace(".sigmf-data", ".sigmf-meta"))
+                metadata = json.loads(Path(downloading.value.path()).read_text(encoding="ascii"))
+                self.assertEqual((metadata["global"]["core:datatype"], metadata["global"]["core:sample_rate"]),
+                                 ("cu8", 2_400_000))
+                self.assertEqual(metadata["captures"][0]["core:frequency"], 145_000_000)
+                delete = iq_row.locator("button[data-del]")
+                delete.click()      # a first press asks for a second one
+                expect(delete).to_have_text("Confirm")
+                delete.click()
+                expect(first.locator("#rec-list li.rec")).to_have_count(1)
+                expect(first.locator("#rec-list li.rec .name")).to_contain_text("145.600 MHz NFM")    # the audio's
+                self.assertEqual([path.suffix for path in folder.iterdir()], [".wav"])
+
     def test_the_simulated_band_is_not_recorded(self):
         folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
         url = self.serve(recordings=folder)
@@ -631,6 +694,8 @@ class BrowserTest(unittest.TestCase):
                 page.locator(RECORD_PANEL).click()
                 expect(page.locator("#rec-state")).to_have_text("The simulated band is not recorded.")
                 expect(page.locator("#rec-audio")).to_be_disabled()
+                expect(page.locator("#rec-iq")).to_be_disabled()
+                expect(page.locator("#rec-iq-state")).to_be_empty()
                 expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
 
     def test_remote_access_says_why_it_cannot_turn_on(self):

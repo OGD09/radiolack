@@ -24,6 +24,11 @@ After a change of centre frequency, sample rate or frequency correction,
 samples of the previous setting still arrive for a moment: the source drops
 what arrives during the next 0.4 s, then labels the samples with the new
 setting.
+
+For a recording of the raw I/Q, the source also hands every sample that
+arrives to a tap, as rtl_tcp sends it, labelled the same way: whether the
+engine reads it or not, so that a recording loses nothing when the engine
+falls behind.
 """
 
 from __future__ import annotations
@@ -82,6 +87,11 @@ _SETTINGS = ("centre_hz", "sample_rate_hz", "gain_db", "ppm")
 _LEVELS = (np.arange(256, dtype=np.float32) - np.float32(127.5)) / np.float32(127.5)
 
 log = logging.getLogger(__name__)
+
+# Receives raw samples (RtlTcpSource.tap): whole I/Q pairs of unsigned bytes,
+# I first, the centre frequency and the sample rate they were taken with, and
+# whether they follow those it received before without a gap.
+SampleTap = Callable[[bytes, float, float, bool], None]
 
 
 @dataclass(frozen=True)
@@ -221,6 +231,13 @@ class RtlTcpSource:
         self._last_read = -math.inf     # when the latest read ended
         self._reading = False
         self._closed = False
+        # The tap of a recording: where the samples it received end in
+        # rtl_tcp's stream, None after a gap; an I byte that waits for its Q
+        # byte; and whether the next samples follow those it received.
+        self._tap: SampleTap | None = None
+        self._tap_next: int | None = None
+        self._tap_carry = b""
+        self._tap_joined = False
 
     @property
     def address(self) -> str:
@@ -242,6 +259,25 @@ class RtlTcpSource:
     def _settable(self) -> list[str]:
         """The settings an interface may change."""
         return ["address", *_SETTINGS]
+
+    @property
+    def hardware(self) -> str:
+        """The receiver, for a recording's metadata: with its tuner once
+        rtl_tcp named it, such as "RTL-SDR, Rafael Micro R820T"."""
+        return "RTL-SDR" if self.tuner is None else f"RTL-SDR, {self.tuner.name}"
+
+    def tap(self, receiver: SampleTap | None) -> None:
+        """Hand ``receiver`` every sample that arrives from now on, as rtl_tcp
+        sends them: whole I/Q pairs of unsigned bytes, I first (SigMF's
+        "cu8"), with the centre frequency and the sample rate of the setting
+        they were taken with, and whether they follow those it received
+        before without a gap. They come in the event loop as they arrive,
+        whether the engine reads them or not: those the source drops for a
+        reader that falls behind included. A new connection, and a change of
+        frequency, rate or correction, whose samples are dropped while the
+        receiver settles, leave a gap. None stops."""
+        self._tap = receiver
+        self._tap_next = None
 
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples, or ``None`` when they did not arrive
@@ -443,6 +479,8 @@ class RtlTcpSource:
         """Keep I/Q bytes that start ``offset`` bytes into rtl_tcp's stream."""
         if time.monotonic() < self._settle_until:
             return
+        if self._tap is not None:
+            self._hand(offset, data)
         if not self._buffer and offset % 2:
             data = data[1:]         # a Q byte: start with the next pair
         self._buffer += data
@@ -453,10 +491,37 @@ class RtlTcpSource:
         if len(self._buffer) >= self._wanted:
             self._arrived.set()
 
+    def _hand(self, offset: int, data: bytes) -> None:
+        """Hand the tap the whole I/Q pairs of ``data``, which starts
+        ``offset`` bytes into rtl_tcp's stream, keeping a last I byte for the
+        Q byte that follows it. A tap that fails is left, so that the
+        connection goes on."""
+        end = offset + len(data)
+        if offset != self._tap_next:            # after a gap
+            self._tap_carry, self._tap_joined = b"", False
+            if offset % 2:
+                data = data[1:]     # a Q byte: start with the next pair
+        elif self._tap_carry:
+            data = self._tap_carry + data
+        whole = len(data) - len(data) % 2
+        self._tap_carry, self._tap_next = data[whole:], end
+        if not whole:
+            return
+        if whole < len(data):
+            data = data[:whole]
+        settings, joined = self._settings, self._tap_joined
+        self._tap_joined = True
+        try:
+            self._tap(data, settings.centre_hz, settings.sample_rate_hz, joined)
+        except Exception:
+            log.exception("the samples' tap failed: it is left")
+            self._tap = None
+
     def _new_setting(self) -> None:
         """Drop the samples of the previous setting, with those still on their way."""
         self._buffer.clear()
         self._settle_until = time.monotonic() + self._settle_s
+        self._tap_next = None       # a gap for the tap
 
     def _set_status(self, status: str, detail: str) -> None:
         if (status, detail) != (self.status, self.detail):

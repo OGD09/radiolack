@@ -49,11 +49,14 @@ update check, the recordings folder or the rtl_tcp server's address.
 Never make remote access's port reachable from the Internet.
 .PP
 Any interface, a paired device's included, records the audio that
-Radiolack plays into WAV files, only when asked, never at start and never
-on the simulated band, and lists, downloads and deletes the recordings.
+Radiolack plays into WAV files, and an RTL\-SDR's raw I/Q into SigMF
+files, about 17\ GB an hour at 2.4\ MS/s, only when asked, never at start
+and never on the simulated band, and lists, downloads and deletes the
+recordings.
 A recording goes on without any interface until one stops it, and stops
-by itself with a new audio rate, into or out of WFM, with less than
-2\ GiB free on its disk or at the WAV limit of 4\ GiB.
+by itself with less than 2\ GiB free on its disk; an audio recording also
+with a new audio rate, into or out of WFM, or at the WAV limit of
+4\ GiB, and an I/Q recording with a new sample rate or another receiver.
 Local law may forbid recording what some radio services carry, or
 disclosing it.
 .PP
@@ -152,7 +155,9 @@ Remote access is off at each start all the same, unless
 \fI$XDG_DATA_HOME/radiolack/recordings\fR
 The recordings, unless Settings chooses another folder, readable by the
 user only.
-Each is named after its start in UTC, its frequency and its mode.
+Each is named after its start in UTC, its frequency and its mode, or
+its sample rate for the raw I/Q's \fI.sigmf\-data\fR and
+\fI.sigmf\-meta\fR files.
 .TP
 \fI/etc/apt/sources.list.d/radiolack.sources\fR
 Radiolack's APT source, which the package adds with the repository's key,
