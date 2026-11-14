@@ -6,17 +6,19 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
 import tempfile
 import time
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 import aiohttp
 
 from radiolack import __version__
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
-from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, LocalServer
+from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
 from radiolack.sources import Sources
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
@@ -174,6 +176,45 @@ class LocalServerTest(unittest.TestCase):
     def test_unknown_path(self):
         status, _, _ = get(self.server, "/missing")
         self.assertEqual(status, 404)
+
+
+class InterfaceReadAtStartTest(unittest.TestCase):
+    """The server serves the interface's files as it read them when made,
+    whatever happens to them afterwards, as when a newer package replaces
+    them while Radiolack runs. The files are a copy of the interface's."""
+
+    def setUp(self):
+        self.web = Path(self.enterContext(tempfile.TemporaryDirectory())) / "web"
+        shutil.copytree(WEB_DIR, self.web)
+        self.enterContext(mock.patch("radiolack.server.WEB_DIR", self.web))
+
+    def serve(self) -> LocalServer:
+        server = LocalServer()
+        server.start()
+        self.addCleanup(server.stop)
+        return server
+
+    def test_serves_the_files_as_they_were_read(self):
+        server = self.serve()
+        page, script = get(server)[2], get(server, "/main.js")[2]
+        (self.web / "index.html").write_text("<p>Newer</p>\n", encoding="utf-8")
+        (self.web / "main.js").write_text("// Newer\n", encoding="utf-8")
+        (self.web / "style.css").unlink()
+        (self.web / "newer.js").write_text("// Newer\n", encoding="utf-8")
+        self.assertEqual(get(server)[2], page)
+        self.assertEqual(get(server, "/main.js")[2], script)
+        status, headers, body = get(server, "/style.css")
+        self.assertEqual((status, headers["Content-Type"]), (200, FILE_TYPES[".css"]))
+        self.assertTrue(body)
+        self.assertEqual(get(server, "/newer.js")[0], 404)
+
+    def test_an_unreadable_file_stops_the_start_before_the_port_is_bound(self):
+        (self.web / "pair.html").unlink()
+        with mock.patch("radiolack.server._bind") as bind, self.assertRaises(InterfaceUnreadable) as raised:
+            self.serve()
+        bind.assert_not_called()
+        self.assertTrue(str(raised.exception).startswith(f"cannot read the interface: {self.web / 'pair.html'}: "),
+                        str(raised.exception))
 
 
 class StreamTest(unittest.IsolatedAsyncioTestCase):

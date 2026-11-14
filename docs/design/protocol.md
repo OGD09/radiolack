@@ -722,7 +722,9 @@ and later.
   fills a gap of up to 0.5 s with silence, and starts again, buffering
   first, after a longer gap, a change of audio rate or running dry.
 - A hello with another protocol version stops the interface, which asks for a
-  reload: the page and the engine come from different versions.
+  reload: the page and the engine come from different versions. As a running
+  Radiolack serves the interface it read at start, this happens only to a
+  page loaded before Radiolack restarted, which the reload replaces.
 - When the stream drops, the interface shows a waiting state and reconnects
   after 250 ms, then after twice as long each time, up to 4 s.
 - A remote client whose stream closes with code 4001 stops. If its stream
@@ -746,8 +748,9 @@ and later.
   preferences as a remote client keeps its changes to itself as before,
   and one that sends them to an engine that refuses them receives an
   error, the rest working. A new version would stop the interface that a
-  running Radiolack serves, which it reads from the disk at each request,
-  from the installation of a newer package until Radiolack restarts. On
+  running Radiolack serves, which it then read from the disk at each
+  request, from the installation of a newer package until Radiolack
+  restarts (since 2026-11-14, it serves the interface it read at start). On
   2026-11-12 also, for the same reason and without a new version: the
   hello's `scanners`, the scanner state, the signals found and the
   `scanner` message, as detection moved from the interface to the engine.
