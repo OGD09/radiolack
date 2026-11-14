@@ -1,15 +1,16 @@
 /*
  * Engine stream: the WebSocket that brings spectrum frames, audio, the source
  * state, the demodulation settings, the bookmarks, the scanner state, the
- * signals the engine found, the saved preferences, the storage state, the
- * update state and remote access's state from the engine, and the
- * observations when this interface asks, and takes this interface's
- * changes, its preferences, its request for audio, its update requests and
- * its remote access settings to it
- * (docs/design/protocol.md). It reconnects by itself after a disconnection.
- * On a device that remote access serves, the engine sends neither the
- * storage, update nor remote access state, and takes none of their changes;
- * it keeps that device's preferences apart from this computer's.
+ * signals the engine found, the saved preferences, the recording state, the
+ * storage state, the update state and remote access's state from the
+ * engine, and the observations and the recordings when this interface asks,
+ * and takes this interface's changes, its preferences, its request for
+ * audio, its recordings, its update requests and its remote access settings
+ * to it (docs/design/protocol.md). It reconnects by itself after a
+ * disconnection. On a device that remote access serves, the engine sends
+ * neither the storage, update nor remote access state, nor the recordings
+ * folder, and takes none of their changes; it keeps that device's
+ * preferences apart from this computer's.
  */
 
 export const PROTOCOL_VERSION = 6;
@@ -26,7 +27,8 @@ const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no lon
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'update', 'remote'];
+const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
+  'recordings', 'update', 'remote'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -171,6 +173,61 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A recording that runs.
+ * @typedef {object} RunningRecording
+ * @property {string | null} file       its file, once made: the first audio makes it
+ * @property {number} startedS          when it started, in Unix time
+ * @property {number} frequencyHz       the VFO's frequency when it started
+ * @property {string} mode              the mode when it started
+ * @property {number | null} rateHz     the audio rate, once the first audio came
+ * @property {number} seconds           its length so far, to the tenth
+ * @property {number} bytes             its file's size so far
+ */
+
+/**
+ * Why the latest recording stopped by itself.
+ * @typedef {object} RecordingStop
+ * @property {string} kind      "audio"
+ * @property {string} reason    "rate", "source", "space", "full" or "disk"
+ * @property {string} detail    what went wrong with the disk, or ""
+ */
+
+/**
+ * The engine's recordings, shared by every interface.
+ * @typedef {object} RecordingState
+ * @property {RunningRecording | null} audio  the audio recording that runs, if one does
+ * @property {RecordingStop | null} stopped
+ *   why the latest recording stopped by itself; null when an interface stopped it, or none ran
+ * @property {string | null} folder
+ *   where the recordings go, "~" standing for the home folder; null on a device that remote access serves,
+ *   or when the engine does not record
+ * @property {string | null} defaultFolder  where they go unless another folder was chosen; null as `folder`
+ */
+
+/**
+ * A recording in the recordings folder.
+ * @typedef {object} RecordingFile
+ * @property {string} name            its file, which Download and Delete take
+ * @property {string} kind            "audio"
+ * @property {number} startedS        when it started, in Unix time, as its name tells
+ * @property {number} frequencyHz     the VFO's frequency when it started
+ * @property {string} mode            the mode when it started
+ * @property {number | null} bytes    its size; null when it cannot be read
+ * @property {number | null} seconds  its length, to the tenth; null when it cannot be read
+ * @property {boolean} running        the recording that runs, which is neither downloaded nor deleted
+ */
+
+/**
+ * The recordings folder's recordings, which the engine sends to the
+ * interface that asks.
+ * @typedef {object} RecordingList
+ * @property {RecordingFile[]} files    the latest, the newest first
+ * @property {number} more              how many older ones the folder holds besides
+ * @property {number | null} freeBytes  the space free on the folder's disk; null when unknown
+ * @property {string} problem           why the folder could not be read, or ""
+ */
+
+/**
  * Where the engine saves the settings and bookmarks.
  * @typedef {object} StorageState
  * @property {string | null} directory  the settings folder; null: nothing is saved
@@ -216,7 +273,10 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} problem           why it could not turn on, or ""
  */
 
-/** @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'update' | 'remote'} Command */
+/**
+ * @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'recording'
+ *   | 'recordings' | 'update' | 'remote'} Command
+ */
 
 /**
  * "streaming" while samples arrive; "connecting", "waiting" (to retry, see
@@ -285,6 +345,10 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  *   sent when this interface asks for them, or cleared some: the latest found first
  * @property {(values: Preferences) => void} onPreferences
  *   sent next, once per connection: the latest saved for this computer's interfaces, or for this device
+ * @property {(recording: RecordingState) => void} onRecording
+ *   sent next, then at every change, and every second while a recording runs
+ * @property {(recordings: RecordingList) => void} onRecordings
+ *   sent when this interface asks for them, or deleted one
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
@@ -562,6 +626,68 @@ export function decodePreferences(message) {
 }
 
 /**
+ * Decode a recording state message. Returns null when a field is missing or
+ * malformed, apart from the folders, which the engine sends this computer's
+ * interfaces only: missing or malformed, they are null.
+ * @param {any} message  a parsed JSON message of type "recording"
+ * @returns {RecordingState | null}
+ */
+export function decodeRecording(message) {
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @param {unknown} value */
+  const textOrNull = (value) => (typeof value === 'string' ? value : null);
+  const { audio, stopped } = message;
+  const validAudio = audio === null || (typeof audio === 'object' && (audio.file === null || typeof audio.file === 'string')
+    && finite(audio.started) && finite(audio.frequency_hz) && typeof audio.mode === 'string'
+    && (audio.rate_hz === null || finite(audio.rate_hz)) && finite(audio.seconds) && finite(audio.bytes));
+  const validStop = stopped === null || (typeof stopped === 'object' && typeof stopped.kind === 'string'
+    && typeof stopped.reason === 'string' && typeof stopped.detail === 'string');
+  if (!validAudio || !validStop) return null;
+  return {
+    audio: audio && {
+      file: audio.file,
+      startedS: audio.started,
+      frequencyHz: audio.frequency_hz,
+      mode: audio.mode,
+      rateHz: audio.rate_hz,
+      seconds: audio.seconds,
+      bytes: audio.bytes,
+    },
+    stopped: stopped && { kind: stopped.kind, reason: stopped.reason, detail: stopped.detail },
+    folder: textOrNull(message.folder),
+    defaultFolder: textOrNull(message.default_folder),
+  };
+}
+
+/**
+ * Decode a recordings message. Returns null when it holds no list, or holds
+ * a malformed recording.
+ * @param {any} message  a parsed JSON message of type "recordings"
+ * @returns {RecordingList | null}
+ */
+export function decodeRecordings(message) {
+  if (!Array.isArray(message.files)) return null;
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @param {unknown} value */
+  const sizeOrNull = (value) => value === null || (finite(value) && /** @type {number} */ (value) >= 0);
+  /** @type {RecordingFile[]} */
+  const files = [];
+  for (const f of message.files) {
+    const valid = f !== null && typeof f === 'object' && typeof f.name === 'string' && typeof f.kind === 'string'
+      && finite(f.started) && finite(f.frequency_hz) && typeof f.mode === 'string'
+      && sizeOrNull(f.bytes) && sizeOrNull(f.seconds) && typeof f.running === 'boolean';
+    if (!valid) return null;
+    files.push({ name: f.name, kind: f.kind, startedS: f.started, frequencyHz: f.frequency_hz, mode: f.mode,
+      bytes: f.bytes, seconds: f.seconds, running: f.running });
+  }
+  const valid = Number.isSafeInteger(message.more) && message.more >= 0 && sizeOrNull(message.free_bytes)
+    && typeof message.problem === 'string';
+  return valid ? { files, more: message.more, freeBytes: message.free_bytes, problem: message.problem } : null;
+}
+
+/**
  * Decode a storage message. Returns null when a field is missing or
  * malformed.
  * @param {any} message  a parsed JSON message of type "storage"
@@ -655,6 +781,8 @@ export class EngineStream {
   #remote = false;        // the engine serves this interface through remote access
   /** @type {string[]} */
   #scanners = [];         // the scanners the engine runs, as its last hello listed them
+  /** @type {string[]} */
+  #recordings = [];       // what the engine records, as its last hello listed it
   #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
@@ -687,6 +815,15 @@ export class EngineStream {
    */
   get scanners() {
     return this.#scanners.slice();
+  }
+
+  /**
+   * What the engine records, as its last hello listed it, such as "audio":
+   * an older engine records nothing.
+   * @returns {string[]}
+   */
+  get recordings() {
+    return this.#recordings.slice();
   }
 
   /** Connect, unless already connected or connecting. */
@@ -864,6 +1001,52 @@ export class EngineStream {
   }
 
   /**
+   * Start recording the audio (true), unless a recording runs, or stop it
+   * (false): every interface then receives the recording state, or this one
+   * an error, such as on the simulated band. Returns false, sending nothing,
+   * when the stream is not open.
+   * @param {boolean} on
+   * @returns {boolean}
+   */
+  setRecording(on) {
+    return this.#send({ type: 'recording', audio: on });
+  }
+
+  /**
+   * Choose the folder the recordings go to, a full path, "~" standing for
+   * the home folder, or null for the default one: the engine checks it, then
+   * this computer's interfaces receive the recording state, or this one an
+   * error. Not while a recording runs, nor on a device that remote access
+   * serves. Returns false, sending nothing, when the stream is not open.
+   * @param {string | null} folder
+   * @returns {boolean}
+   */
+  setRecordingFolder(folder) {
+    return this.#send({ type: 'recording', folder });
+  }
+
+  /**
+   * Ask the engine for the recordings of its folder, which come to this
+   * interface only (`onRecordings`). Returns false, sending nothing, when the
+   * stream is not open.
+   * @returns {boolean}
+   */
+  askRecordings() {
+    return this.#send({ type: 'recordings' });
+  }
+
+  /**
+   * Ask the engine to delete a recording, unless it runs; this interface
+   * then receives the recordings left, or an error. Returns false, sending
+   * nothing, when the stream is not open.
+   * @param {string} name  the recording's file
+   * @returns {boolean}
+   */
+  deleteRecording(name) {
+    return this.#send({ type: 'recordings', delete: name });
+  }
+
+  /**
    * Ask the engine to check for a newer Radiolack now, unless a check is
    * running: every interface receives the update state as it changes.
    * Returns false, sending nothing, when the stream is not open.
@@ -1030,6 +1213,12 @@ export class EngineStream {
     } else if (message.type === 'preferences') {
       const values = decodePreferences(message);
       if (values) this.#handlers.onPreferences(values);
+    } else if (message.type === 'recording') {
+      const recording = decodeRecording(message);
+      if (recording) this.#handlers.onRecording(recording);
+    } else if (message.type === 'recordings') {
+      const recordings = decodeRecordings(message);
+      if (recordings) this.#handlers.onRecordings(recordings);
     } else if (message.type === 'storage') {
       const storage = decodeStorage(message);
       if (storage) this.#handlers.onStorage(storage);
@@ -1058,8 +1247,10 @@ export class EngineStream {
     }
     this.#greeted = true;
     this.#remote = message.remote === true;
-    this.#scanners = Array.isArray(message.scanners)
-      ? message.scanners.filter((/** @type {unknown} */ name) => typeof name === 'string') : [];
+    /** @param {unknown} list */
+    const names = (list) => (Array.isArray(list) ? list.filter((name) => typeof name === 'string') : []);
+    this.#scanners = names(message.scanners);
+    this.#recordings = names(message.recording);
     this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));

@@ -23,7 +23,9 @@ do nothing yet. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)), from an
-interface or, with `--scan`, at each start. Levels are in
+interface or, with `--scan`, at each start. Any interface records the
+audio into WAV files and lists the recordings, which it downloads or
+deletes ([Recording](#recording)). Levels are in
 dBFS, so the S-meter is not calibrated. Settings and
 bookmarks are kept from one start to the next, and Radiolack installs as a
 package on Debian and Ubuntu. Remote access, off at each start unless
@@ -33,8 +35,9 @@ control Radiolack and hear it, over HTTPS with an access code
 milestones and the decisions are in
 [docs/design/scoping.md](docs/design/scoping.md).
 
-**Receive-only.** Radiolack never transmits. It records no audio, no
-transcription and no raw I/Q.
+**Receive-only.** Radiolack never transmits. It records the audio only
+when an interface asks, never at start, and records no transcription and no
+raw I/Q.
 
 **English only.** The interface, the code and the documentation are in
 English, with no translations.
@@ -164,7 +167,8 @@ and sends its changes, over a
 WebSocket on the same address
 ([docs/design/protocol.md](docs/design/protocol.md)), which the server
 accepts only from the interface's own origin. The engine computes nothing
-while no interface is connected and no scan runs, and the interface closes
+while no interface is connected and neither a scan nor a recording runs,
+and the interface closes
 its stream while
 its page is hidden, in a background browser tab for instance, unless it
 plays audio.
@@ -330,8 +334,8 @@ at the top right shows whether the page plays sound: crossed out while the
 browser holds the audio or the volume is 0, with waves while it plays. A
 tap on it starts held audio, mutes playing audio by setting the volume to
 0, or brings the volume back. On an iPhone, Safari keeps playing the audio
-with the screen locked and with the ringer switch on silent. Nothing is
-recorded.
+with the screen locked and with the ringer switch on silent. The Record
+panel records the audio ([Recording](#recording)).
 
 ## Spectrum view
 
@@ -495,6 +499,57 @@ all, for every interface, a paired device's included: each waits for a
 second press within 5 s. The other interfaces show the change when they
 next ask.
 
+## Recording
+
+The Record panel records the audio that the VFO plays: Record audio starts a
+recording and Stop ends it, from any interface, a paired device's included,
+and every interface shows the recording that runs, with a dot on its Record
+button and in its status line. A recording goes on without any interface,
+like a scan, until an interface stops it. It never starts at start, and
+whether one runs is not saved. The simulated band is not recorded: choosing
+it ends a recording, which another receiver does not.
+
+Each recording is a WAV file, 16-bit mono at the audio rate: 12 kHz, about
+82 MiB per hour, or 32 kHz in WFM, about 220 MiB per hour. A new audio
+rate, into or out of WFM, ends the recording; a retune, another mode at the
+same rate or a squelch that closes does not, and the squelch's silences are
+recorded. A file is named after its start in UTC, the VFO's frequency and
+its mode, such as `2026-11-14_15-30-45Z_145.500000MHz_NFM.wav`, with `-2`,
+`-3` and so on when the name is taken. Its header follows the audio, so that
+a crash leaves a file that plays. A recording stopped before any audio came
+leaves no file.
+
+The recordings go to `~/.local/share/radiolack/recordings`
+(`$XDG_DATA_HOME/radiolack/recordings` when that variable is set), which
+Radiolack makes when needed; the folder and the files are readable by the
+user only. Settings > Recordings, on this computer only, chooses another
+folder, which must exist and which Radiolack must be able to write into;
+`~` stands for the home folder. The folder changes only while nothing
+records, and the recordings made before stay where they are: the list, the
+downloads and the deletions follow the new folder. An empty field, or
+Default folder, comes back to the default one.
+
+The panel lists the folder's latest 500 recordings, the newest first, with
+their start, length and size, and the space left on its disk; it asks the
+engine for them again every 30 s while it shows. Download fetches a
+recording from the computer that records: the desktop window saves it in
+the Downloads folder (`~/Downloads`, or the folder that xdg-user-dirs names
+in the system's language) without asking, adding `(2)`, `(3)` and so on
+to a name already there, and the panel says where it went; a browser, a
+paired device's included, saves it as it saves any download. Delete removes
+a recording, for every interface, once pressed again within 5 s. Download
+and Delete take only the files that the list shows, and neither the
+recording that runs.
+
+A recording stops by itself when less than 2 GiB stays free on its disk,
+when its file reaches the WAV format's limit of 4 GiB (about 49 hours, or
+18 in WFM), and on a disk error, such as a disk too slow for it. The panel
+and the status line then say why, as does Radiolack's output.
+
+**Law.** Local law may forbid recording what some radio services carry,
+such as air traffic, emergency services or private networks, or disclosing
+it: check the rules where you listen before you record.
+
 ## Settings and bookmarks
 
 Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
@@ -511,7 +566,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
-  ([Updates](#updates)).
+  ([Updates](#updates)) and the recordings folder chosen in Settings
+  ([Recording](#recording)).
 - `bookmarks.json` holds the bookmarks.
 - `observations.json` holds the channels of the History
   ([Scanners](#scanners)). It reaches the disk at most every 10 minutes, a
@@ -742,8 +798,19 @@ only the devices, address families and system calls that Radiolack and
 rtl_tcp need, so that a flaw in remote access reaches neither a user's
 account nor the system; `systemd-analyze security radiolack` details it.
 Its settings, bookmarks and History live in its state directory,
-`/var/lib/radiolack`, which only the service and root read;
-`sudo apt purge radiolack` removes it.
+`/var/lib/radiolack`, which only the service and root read, and its
+recordings in `/var/lib/radiolack/recordings`; `sudo apt purge radiolack`
+removes them. The sandbox lets the service write nowhere else: to record
+into another folder, such as a disk mounted on `/media/radio`, make it
+writable by the plugdev group, open it to the service with
+`sudo systemctl edit radiolack`, restart the service, then choose the folder
+in Settings > Recordings, through the SSH tunnel above. The files stay
+readable by the service only.
+
+```ini
+[Service]
+ReadWritePaths=/media/radio
+```
 
 Its interface on 127.0.0.1:8080 answers every account and program on that
 computer, as Radiolack's interface does on any computer: give that
@@ -813,7 +880,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 
 The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
-they use a temporary settings folder and GnuPG home, never yours. Where
+they use a temporary settings folder, recordings folder and GnuPG home,
+never yours; they record only the fake rtl_tcp and synthetic signals. Where
 dpkg-deb is installed, they also build the Debian package twice in a
 temporary folder, compare the builds and run the package's command, check
 its service with systemd-analyze where it is installed, and run its
@@ -842,8 +910,9 @@ WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the Source
 panel and its Receiver list, a change made in one interface showing in
 another, the bookmarks, the signals found, the memory scan, in the span and
-across windows, the sweep, the History, the view past the span and tuning
-outside it, and the saved interface settings. They
+across windows, the sweep, the History, the recordings, their downloads and
+their folder, the view past the span and tuning outside it, and the saved
+interface settings. They
 launch browsers, so they run only when
 `RADIOLACK_BROWSER_TESTS=1` is set. They need the `browser` extra, which
 pins Playwright's version, in the virtual environment of
@@ -877,7 +946,7 @@ pulseaudio --start --exit-idle-time=-1 -n --load=module-native-protocol-unix --l
 ```
 
 `packaging/smoke_test.py` checks a Radiolack from the outside: it starts it
-on the simulated band, in a settings folder of its own and on a free port,
+on the simulated band, in settings and data folders of its own and on a free port,
 then checks that it listens on 127.0.0.1 only, refuses requests addressed to
 other hosts and streams from other origins, serves the interface with its
 Content-Security-Policy and every file the interface loads, streams the
@@ -1060,13 +1129,17 @@ untouched (see [data/README.md](data/README.md)).
 ```text
 src/radiolack/
   cli.py        command line
-  server.py     local web server (aiohttp): interface files and the stream,
-                and remote access's HTTPS listener
+  server.py     local web server (aiohttp): interface files, the stream and
+                the recordings' downloads, and remote access's HTTPS
+                listener
   engine.py     reads a source, removes its DC offset, shares spectrum
                 frames, the demodulation settings, the bookmarks, the
-                signals found and the update check's findings with the
-                interfaces, sends audio to those that ask, and saves the
-                settings and the observations
+                signals found, the recording state and the update check's
+                findings with the interfaces, sends audio to those that
+                ask, records it, and saves the settings and the
+                observations
+  recordings.py the audio's WAV files, written by a thread of their own,
+                their folder and its list
   scanners.py   detection: the signals in the receiver's span, their list
                 and the ignored frequencies; the memory scan, its windows
                 and its visits; the sweep's windows and progress
@@ -1086,7 +1159,7 @@ src/radiolack/
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
   updates.py    update check: asks the APT repository for a newer version
-  window.py     desktop window (GTK 3 and WebKitGTK)
+  window.py     desktop window (GTK 3 and WebKitGTK), which saves downloads
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents

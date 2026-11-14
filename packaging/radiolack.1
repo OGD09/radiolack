@@ -45,8 +45,17 @@ A device installs the certificate of Radiolack's local authority, whose
 SHA\-256 fingerprint Settings shows, and enters the access code that
 Settings shows, once: \fB\-\-remote\fR prints both.
 A paired device shares the receiver, but cannot change remote access, the
-update check or the rtl_tcp server's address.
+update check, the recordings folder or the rtl_tcp server's address.
 Never make remote access's port reachable from the Internet.
+.PP
+Any interface, a paired device's included, records the audio that
+Radiolack plays into WAV files, only when asked, never at start and never
+on the simulated band, and lists, downloads and deletes the recordings.
+A recording goes on without any interface until one stops it, and stops
+by itself with a new audio rate, into or out of WFM, with less than
+2\ GiB free on its disk or at the WAV limit of 4\ GiB.
+Local law may forbid recording what some radio services carry, or
+disclosing it.
 .PP
 At each start, unless Settings turns the check off, Radiolack asks its APT
 repository whether a newer version is out, and says so in its interface:
@@ -123,7 +132,8 @@ Print a summary of the options and exit.
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/settings.json\fR
 The settings of each receiver, the scanners' settings, the preferences of
-this computer's interfaces and whether to check for updates at start.
+this computer's interfaces, whether to check for updates at start and the
+recordings folder chosen in Settings.
 .TP
 \fI$XDG_CONFIG_HOME/radiolack/bookmarks.json\fR
 The bookmarks.
@@ -139,6 +149,11 @@ with their interface preferences, and its local authority.
 Remote access is off at each start all the same, unless
 \fB\-\-remote\fR turns it on.
 .TP
+\fI$XDG_DATA_HOME/radiolack/recordings\fR
+The recordings, unless Settings chooses another folder, readable by the
+user only.
+Each is named after its start in UTC, its frequency and its mode.
+.TP
 \fI/etc/apt/sources.list.d/radiolack.sources\fR
 Radiolack's APT source, which the package adds with the repository's key,
 \fI/etc/apt/keyrings/radiolack\-archive\-keyring.gpg\fR.
@@ -150,11 +165,13 @@ The service, which the package never enables or starts.
 .TP
 \fI/var/lib/radiolack\fR
 The service's settings folder, in place of \fI$XDG_CONFIG_HOME/radiolack\fR,
-which only the service and root read, and which purging the package
-removes.
+with its recordings in \fI/var/lib/radiolack/recordings\fR, which only the
+service and root read, and which purging the package removes.
 .PP
 Without \fBXDG_CONFIG_HOME\fR, or when it is not an absolute path, the
-folder is \fI~/.config/radiolack\fR.
+folder is \fI~/.config/radiolack\fR; without \fBXDG_DATA_HOME\fR, or
+when it is not an absolute path, the recordings go to
+\fI~/.local/share/radiolack/recordings\fR.
 A file that Radiolack cannot read is renamed aside, never overwritten, and
 Radiolack starts from its defaults.
 .SH EXIT STATUS

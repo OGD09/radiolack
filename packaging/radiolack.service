@@ -15,10 +15,11 @@ ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080
 # Again 10 s after a failure, such as remote access without an address yet.
 Restart=on-failure
 RestartSec=10
-# Its settings, bookmarks and History, in /var/lib/radiolack.
+# Its settings, bookmarks and History in /var/lib/radiolack, and its
+# recordings in /var/lib/radiolack/recordings.
 StateDirectory=radiolack
 StateDirectoryMode=0700
-Environment=XDG_CONFIG_HOME=%S PYTHONUNBUFFERED=1
+Environment=XDG_CONFIG_HOME=%S XDG_DATA_HOME=%S PYTHONUNBUFFERED=1
 UMask=0077
 # A user of its own, made at each start, in the group that may open the
 # receivers (their device rules give it to plugdev).

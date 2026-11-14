@@ -20,12 +20,13 @@ import aiohttp
 from aiohttp.abc import AbstractResolver
 
 from radiolack.engine import REMOTE_BINS
+from radiolack.recordings import wav_header
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE
 from radiolack.server import CLOSE_MOVING, CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer, _limit_unsent
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import Store
 from tests.fakes import LOOPBACK, FakeSource, free_port
-from tests.test_server import next_text, read_start
+from tests.test_server import RECORDING_NAME, next_text, read_start
 
 HOST = "radiolack-test"
 IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 "
@@ -81,7 +82,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
 
     def serve(self) -> LocalServer:
         server = LocalServer(source=FakeSource(), store=Store(self.directory),
-                             remote_addresses=lambda: list(self.addresses), host=HOST)
+                             remote_addresses=lambda: list(self.addresses), host=HOST,
+                             recordings=self.directory.parent / "recordings")
         server.start()
         self.addCleanup(server.stop)
         return server
@@ -273,9 +275,9 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "remote": True,
-                          "scanners": ["peaks", "memory", "history", "sweep"]})
-        kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(6)]
-        self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences"])
+                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio"]})
+        kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
+        self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
         await ws.close()
         await self.next_remote(lambda state: not state["devices"][0]["connected"])
@@ -360,6 +362,34 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         while (message := await next_text(ws))["type"] != "demod":
             self.assertNotIn(message["type"], ("storage", "update", "remote"))
         self.assertEqual(message["frequency_hz"], 145_020_000)
+
+    async def test_a_paired_device_records_and_downloads_but_does_not_choose_the_folder(self):
+        await self.turn_on()
+        folder = self.directory.parent / "recordings"
+        folder.mkdir()
+        (folder / RECORDING_NAME).write_bytes(wav_header(12_000, 2_400) + bytes(2_400))
+        self.assertEqual((await self.get(self.device(), f"recordings/{RECORDING_NAME}"))[0], 403)   # not paired
+        device = self.device()
+        await self.pair(device)
+        status, headers, body = await self.get(device, f"recordings/{RECORDING_NAME}")
+        self.assertEqual((status, body), (200, (folder / RECORDING_NAME).read_bytes()))
+        self.assertEqual((headers["Content-Disposition"], headers["Cache-Control"]),
+                         (f'attachment; filename="{RECORDING_NAME}"', "no-store"))
+        ws = await self.remote_stream(device)
+        await ws.send_json({"type": "recording", "folder": str(folder.parent)})
+        self.assertEqual(await self.next_error(ws), {"type": "error", "command": "recording", "message": REFUSED})
+        await ws.send_json({"type": "recordings"})
+        while (message := await next_text(ws))["type"] != "recordings":
+            self.assertNotEqual(message["type"], "error")
+        self.assertEqual([entry["name"] for entry in message["files"]], [RECORDING_NAME])
+        await ws.send_json({"type": "recording", "audio": True})
+        while (message := await next_text(ws))["type"] != "recording" or message["audio"] is None:
+            self.assertNotEqual(message["type"], "error")
+        self.assertNotIn("folder", message)    # this computer's own
+        await ws.send_json({"type": "recording", "audio": False})
+        while (message := await next_text(self.local))["type"] != "recording" or message["audio"] is not None:
+            continue
+        self.assertEqual(message["folder"], str(folder))
 
     async def test_a_device_keeps_its_own_preferences_until_forgotten(self):
         await self.local.send_json({"type": "preferences", "values": {"palette": "ice"}})

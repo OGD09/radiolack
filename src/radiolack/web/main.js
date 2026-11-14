@@ -59,8 +59,8 @@ const PALETTES = {
 };
 const BAND_PLAN_URL = 'bandplan-europe.json';
 const DEFAULT_STEP = 100;           // tuning step where the band plan gives none, Hz
-const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', settings: 'Settings' };
-const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'settings'];
+const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', record: 'Recording', settings: 'Settings' };
+const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'record', 'settings'];
 
 // ------------------------------------------------------------------ DOM
 const appEl = $('#app');
@@ -203,6 +203,7 @@ let demodError = '';        // why the engine refused this interface's last demo
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
 let scannerNote = '';       // why this interface's last scanner change did not happen
+let recording = null;       // the engine's recordings (stream.js RecordingState), once received
 let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
 let update = null;          // what the engine's update check found (stream.js UpdateState), once received
 let updateNote = '';        // why this interface's last update request did not reach the engine
@@ -291,6 +292,7 @@ const stream = new EngineStream({
     syncSource();
     syncSweep();          // whether the receiver tunes, as the sweep needs,
     syncMem();            // and as the memory scan's list tells
+    syncRecording();      // the simulated band is not recorded
     updateStatus();
     if (historyShown()) syncHistorySummary();
   },
@@ -322,6 +324,22 @@ const stream = new EngineStream({
     if (historyShown()) renderHistory();
   },
   onPreferences: applyPreferences,
+  onRecording: (state) => {
+    const status = recordingStatus();
+    if (recording && recording.folder !== state.folder) folderNote = '';     // another folder took the refused one's place
+    recording = state;
+    syncRecording();
+    if (recordingStatus() !== status) updateStatus();
+    // A file that came or went, or another folder: the list changed.
+    if (recordShown() && recordingKeyNow() !== recordingsKey) askRecordings();
+  },
+  onRecordings: (list) => {
+    recordingList = list;
+    recordingsStale = false;
+    // A recording that went, deleted by another interface, has nothing left to confirm.
+    if (recArmed !== null && !list.files.some((f) => f.name === recArmed)) recArmed = null;
+    if (recordShown()) renderRecordings();
+  },
   onStorage: (state) => {
     storage = state;
     syncStorage();
@@ -362,6 +380,15 @@ const stream = new EngineStream({
       console.error('Radiolack: the engine did not keep the preferences:', message);
       return;
     }
+    if (command === 'recording' && recordingAsk === 'folder') {
+      folderNote = `Refused: ${message}.`;
+      syncRecordingFolder();
+      return;
+    }
+    if (command === 'recording' || command === 'recordings') {
+      setRecordNote(`Refused: ${message}.`);
+      return;
+    }
     if (command === 'update') {
       updateNote = `Refused: ${message}.`;
       syncUpdate();
@@ -390,8 +417,10 @@ const stream = new EngineStream({
     if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
     syncSource();
     syncScanner();
+    syncRecording();
     updateStatus();
     if (state === 'open' && historyShown()) askHistory();
+    if (state === 'open' && recordShown()) askRecordings();
   },
 });
 function syncStream() { if (document.hidden && !audioWanted) stream.stop(); else stream.start(); }
@@ -1049,6 +1078,7 @@ function updateStatus() {
   }
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
   if (streamState === 'open' && sweepRuns()) text += ' · sweep';
+  if (streamState === 'open') text += recordingStatus();
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
   $('#status').textContent = `${text}${remoteState?.on ? ' · remote access on' : ''}`;
@@ -1613,6 +1643,7 @@ function openPanel(name) {
   document.body.classList.remove('idle');
   if (name === 'bands') renderBookmarks();
   if (name === 'scanners') syncScanTabs();
+  if (name === 'record') { renderRecordings(); askRecordings(); }
   liveUi();
 }
 function closePanel() {
@@ -2029,7 +2060,7 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'edit', 'del', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
+  const name = ['id', 'edit', 'del', 'get', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -2132,6 +2163,197 @@ for (const el of [swFrom, swTo]) {
 swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow.value} s`; });
 swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
 swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
+
+// Recording: the engine records the VFO's audio when an interface asks, the
+// same for every interface, into WAV files in its recordings folder, and
+// goes on without any interface. It lists the folder's recordings to the
+// interface that asks: this one asks when its Record panel opens, when a
+// recording's file comes or goes, when the folder changes, and every
+// RECORDINGS_REFRESH_MS while the panel shows. Download fetches a file from
+// the engine's computer; Delete waits for a second press of the same button,
+// within RECORDINGS_CONFIRM_MS. Only this computer's interfaces see the
+// folder, and change it in Settings.
+const RECORDINGS_REFRESH_MS = 30000;
+const RECORDINGS_CONFIRM_MS = 5000;
+// Why a recording stopped by itself, as the engine's output says it.
+const REC_STOPPED = {
+  rate: 'the audio rate changed, into or out of WFM',
+  source: 'the simulated band was chosen',
+  space: 'less than 2 GiB is free on its disk',
+  full: 'its file reached the WAV limit of 4 GiB',
+  disk: 'a disk error',
+};
+const recAudio = $('#rec-audio'), recFolderEl = $('#st-rec-folder');
+let recordingList = null;   // the folder's recordings (stream.js RecordingList), once received
+let recordingsStale = false; // the latest request for them did not reach the engine
+let recordNote = '';        // what this interface's last recording request or download did, or why not
+let folderNote = '';        // why this interface's last folder change did not happen
+let recordingAsk = '';      // what this interface's last recording command changed: 'audio' or 'folder'
+let recArmed = null;        // the recording whose Delete awaits its second press, by file, or null
+let recArmTimer = 0;
+let recordingsHtml = '';    // the list's items, as last written
+let recordingsKey = null;   // recordingKeyNow() when the list was last asked for
+const recordingKnown = () => recording !== null && stream.recordings.includes('audio');
+const recordingRuns = () => recordingKnown() && recording.audio !== null;
+const recordShown = () => openName === 'record';
+// The running recording's file and the folder: when either changes, so does the list.
+const recordingKeyNow = () => (recording ? `${(recording.audio && recording.audio.file) || ''}\n${recording.folder ?? ''}` : '');
+// A length in seconds as m:ss, or h:mm:ss from an hour on.
+function fmtLength(seconds) {
+  const s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${pad2(m)}:${pad2(s % 60)}` : `${m}:${pad2(s % 60)}`;
+}
+// A size in the binary units of the recordings' limits: 2 GiB free, 4 GiB per file.
+function fmtBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes / 1024, unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+// Why the latest recording stopped by itself, with what went wrong with the disk.
+function recordingStop() {
+  const stop = recording.stopped;
+  const reason = REC_STOPPED[stop.reason] || 'an unknown reason';
+  return stop.detail ? `${reason} (${stop.detail})` : reason;
+}
+// What the status line says of the recordings: one that runs, or why the latest stopped by itself.
+function recordingStatus() {
+  if (!recordingKnown()) return '';
+  if (recording.audio) return ' · recording audio';
+  return recording.stopped ? ` · recording stopped: ${recordingStop()}` : '';
+}
+function syncRecording() {
+  const known = recordingKnown(), runs = recordingRuns(), a = runs ? recording.audio : null;
+  const simulated = source !== null && source.kind === 'synthetic';
+  // A recording's state comes every second: an unchanged text is not rewritten.
+  const label = runs ? 'Stop' : 'Record audio';
+  if (recAudio.textContent !== label) recAudio.textContent = label;
+  const disabled = !known || (!runs && simulated);
+  if (recAudio.disabled !== disabled) recAudio.disabled = disabled;
+  let text = '';
+  if (runs) {
+    text = `${fmtEdge(a.frequencyHz)} MHz ${a.mode} · ${a.file ? `${fmtLength(a.seconds)} · ${fmtBytes(a.bytes)}` : 'starting'}`;
+  } else if (known && simulated) {
+    text = 'The simulated band is not recorded.';
+  } else if (known && recording.stopped) {
+    text = `Stopped: ${recordingStop()}.`;
+  }
+  const el = $('#rec-state');
+  if (el.textContent !== text) el.textContent = text;
+  const button = $('#toolbar button[data-panel="record"]');
+  if (button.classList.contains('recording') !== runs) button.classList.toggle('recording', runs);
+  syncRecordingLive();
+  syncRecordingFolder();
+}
+function setRecordNote(note) {
+  recordNote = note;
+  syncRecordNote();
+}
+function syncRecordNote() {
+  const parts = [recordNote];
+  if (recordingsStale) parts.push(notConnected('the recordings are not up to date'));
+  if (recordingList && recordingList.problem) parts.push(recordingList.problem);
+  if (streamState === 'open' && !stream.recordings.includes('audio')) {
+    parts.push('The engine that runs does not record: restart Radiolack after its update.');
+  }
+  const note = parts.filter(Boolean).join(' ');
+  const el = $('#rec-note');
+  if (el.textContent !== note) el.textContent = note;
+  el.hidden = !note;
+}
+function askRecordings() {
+  if (!stream.recordings.includes('audio')) return;
+  recordingsKey = recordingKeyNow();
+  recordingsStale = !stream.askRecordings();
+  syncRecordNote();
+}
+function recordingItem(f) {
+  const name = escapeHtml(f.name);
+  let facts = fmtDate(f.startedS), acts;
+  if (f.running) {
+    facts += ` · <span data-live="${name}"></span>`;     // the state's, every second
+    acts = '<span class="num">Recording</span>';
+  } else {
+    if (f.seconds !== null) facts += ` · ${fmtLength(f.seconds)}`;
+    if (f.bytes !== null) facts += ` · ${fmtBytes(f.bytes)}`;
+    const armed = recArmed === f.name;
+    acts = `<a class="link" href="recordings/${encodeURIComponent(f.name)}" download="${name}" data-get="${name}">Download</a>`
+      + `<button type="button" class="link" data-del="${name}"${armed ? ` aria-label="Confirm deleting ${name}"` : ''}>`
+      + `${armed ? 'Confirm' : 'Delete'}</button>`;
+  }
+  return `<li class="rec" title="${name}"><span class="name">${fmtEdge(f.frequencyHz)} MHz ${escapeHtml(f.mode)}`
+    + `<span class="facts">${facts}</span></span>${acts}</li>`;
+}
+function renderRecordings() {
+  const list = $('#rec-list'), refocus = focusedIn(list);
+  const files = recordingList ? recordingList.files : [];
+  const html = files.map(recordingItem).join('')
+    || `<li class="empty">${recordingList === null ? 'Not received yet' : 'No recording yet'}</li>`;
+  if (html !== recordingsHtml) {
+    list.innerHTML = html;
+    recordingsHtml = html;
+    focusAgain(list, refocus);
+  }
+  syncRecordingLive();
+  syncRecordingSummary();
+  syncRecordNote();
+}
+// The running recording's length and size, which its state brings every second.
+function syncRecordingLive() {
+  const el = $('#rec-list [data-live]');
+  if (!el) return;
+  const a = recordingRuns() ? recording.audio : null;
+  const text = a && a.file === el.dataset.live ? `${fmtLength(a.seconds)} · ${fmtBytes(a.bytes)}` : '';
+  if (el.textContent !== text) el.textContent = text;
+}
+// Where the recordings are, on this computer, the space left, and the older ones the list leaves out.
+function syncRecordingSummary() {
+  const l = recordingList, folder = recording && recording.folder;
+  let text = '';
+  if (l) {
+    const free = l.freeBytes === null ? '' : `${fmtBytes(l.freeBytes)} free${folder ? '' : " on the computer's disk"}`;
+    text = [folder ? `In ${folder}` : '', free].filter(Boolean).join(', ');
+    if (text) text += '.';
+    if (l.more) text += ` ${l.more} older ${l.more === 1 ? 'recording is' : 'recordings are'} not listed.`;
+  }
+  const el = $('#rec-summary');
+  if (el.textContent !== text.trim()) el.textContent = text.trim();
+}
+// A first press arms Delete; a second one, within RECORDINGS_CONFIRM_MS, sends it.
+function armRecording(name) {
+  clearTimeout(recArmTimer);
+  recArmed = name;
+  recArmTimer = setTimeout(disarmRecording, RECORDINGS_CONFIRM_MS);
+  renderRecordings();
+}
+function disarmRecording() {
+  clearTimeout(recArmTimer);
+  recArmed = null;
+  if (recordShown()) renderRecordings();
+}
+recAudio.addEventListener('click', () => {
+  const on = !recordingRuns();
+  recordingAsk = 'audio';
+  setRecordNote(stream.setRecording(on) ? '' : notConnected(on ? 'nothing is recorded' : 'the recording goes on'));
+});
+$('#rec-list').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-del]');
+  if (!b) return;
+  const name = b.dataset.del;
+  if (recArmed !== name) { armRecording(name); return; }
+  disarmRecording();
+  setRecordNote(stream.deleteRecording(name) ? '' : notConnected('nothing was deleted'));
+});
+setInterval(() => { if (recordShown() && streamState === 'open' && !document.hidden) askRecordings(); }, RECORDINGS_REFRESH_MS);
+// The desktop window saves what the interface downloads in the Downloads
+// folder without asking, then tells where (window.py).
+window.addEventListener('radiolack-download', (e) => {
+  const d = e.detail;
+  if (!d || typeof d.name !== 'string') return;
+  if (typeof d.error === 'string' && d.error) setRecordNote(`${d.name} was not saved: ${d.error}.`);
+  else setRecordNote(typeof d.path === 'string' ? `Saved as ${d.path}.` : `${d.name} was saved.`);
+});
 
 // Settings
 bindCheck('st-autohide', 'autoHide', poke);
@@ -2253,6 +2475,37 @@ function syncRemote() {
   $('#st-remote-fp-field').hidden = !r.fingerprint;
   $('#st-remote-fingerprint').textContent = r.fingerprint ?? '';
 }
+
+// The recordings folder, which this computer's interfaces alone receive and
+// change, while nothing records: the engine checks it, then every one of
+// them receives it, or this one learns why not.
+function syncRecordingFolder() {
+  const r = recording, local = r !== null && r.defaultFolder !== null;
+  const section = $('#st-rec-section');
+  if (section.hidden === local) section.hidden = !local;
+  if (!local) return;
+  const runs = r.audio !== null, value = r.folder ?? '';
+  if (!typingIn.has(recFolderEl) && recFolderEl.value !== value) recFolderEl.value = value;
+  if (recFolderEl.disabled !== runs) recFolderEl.disabled = runs;
+  const fixed = runs || r.folder === r.defaultFolder, use = $('#st-rec-default');
+  if (use.disabled !== fixed) use.disabled = fixed;
+  const text = folderNote || (runs ? 'A recording runs: stop it to change the folder.' : '');
+  const el = $('#st-rec-msg');
+  if (el.textContent !== text) el.textContent = text;
+}
+function sendFolder(folder) {
+  recordingAsk = 'folder';
+  folderNote = stream.setRecordingFolder(folder) ? '' : notConnected('the folder did not change');
+  syncRecordingFolder();
+}
+recFolderEl.addEventListener('input', () => typingIn.add(recFolderEl));
+recFolderEl.addEventListener('blur', () => { if (typingIn.delete(recFolderEl)) syncRecordingFolder(); });
+recFolderEl.addEventListener('change', () => {
+  typingIn.delete(recFolderEl);
+  const folder = recFolderEl.value.trim();
+  sendFolder(folder || null);       // an empty field: the default folder
+});
+$('#st-rec-default').addEventListener('click', () => sendFolder(null));
 
 // Where the engine saves the settings, bookmarks and history, and what went wrong with its files.
 function syncStorage() {
@@ -2626,7 +2879,7 @@ window.addEventListener('keydown', (e) => {
     case '0': setView(fStart(), fEnd()); break;
     case 'm': case 'M': setMode(MODE_ORDER[(MODE_ORDER.indexOf(S.mode) + 1) % MODE_ORDER.length]); break;
     default:
-      if (e.key >= '1' && e.key <= '6') togglePanel(PANEL_ORDER[Number(e.key) - 1]);
+      if (e.key >= '1' && e.key <= '7') togglePanel(PANEL_ORDER[Number(e.key) - 1]);
       else return;
   }
   e.preventDefault();
@@ -2643,7 +2896,7 @@ window.addEventListener('pointerdown', poke, { passive: true });   // a tap wake
 window.addEventListener('resize', () => { layoutPending = true; });
 
 const HINTS = {
-  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 6: panels',
+  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 7: panels',
   touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
 };
 function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }

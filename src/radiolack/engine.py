@@ -57,10 +57,21 @@ the rtl_tcp server's address. Their links may be slower than this computer's
 own: they get one display frame for every two blocks, the mean power of
 both, in fewer bins.
 
+With a recordings folder (recordings.py), any client may record what the
+VFO plays: a recording keeps the engine reading without any client, like a
+scan, and goes on when the VFO moves, a scan included, or another receiver
+replaces this one, until a client stops it. It stops by itself once the
+audio rate changes, into or out of WFM, on the simulated band, which is
+never recorded, and when its disk falls short of space, its file is full or
+the disk fails; every client then learns why. It never starts by itself and
+is never saved. The clients receive the recording state, and the list of
+the recordings when they ask, and may delete one; this computer's
+interfaces may also choose another folder, which is saved.
+
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
 bookmarks, the preferences, whether to check for updates at start, what
-remote access keeps and the observations. It saves them a moment after they
+remote access keeps, the recordings folder chosen and the observations. It saves them a moment after they
 change, as changes come in bursts, and when it stops; the observations,
 which change with every signal found, at most every 10 minutes, unless a
 client cleared some, and when it stops. A saved setting that the receiver
@@ -78,7 +89,8 @@ import logging
 import math
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -89,6 +101,8 @@ from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, D
                     noise_clearance_hz)
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
+from .recordings import (WAV_HEADER, AudioRecording, check_folder, chosen_folder, delete_recording,
+                         is_recording_name, list_recordings)
 from .remote import REMOTE_FILE, RemoteAccess
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
                        MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal,
@@ -96,7 +110,7 @@ from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB,
                        checked_threshold, checked_window, memory_window, memory_windows, search_blocks, sweep_windows,
                        watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
-from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
+from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
 from .updates import UpdateResult
 
 FRAME_RATE = 30.0       # display frames per second
@@ -107,13 +121,20 @@ CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
 OBSERVATIONS_SAVE_S = 600.0     # the observations are written at most this often, and when the engine stops
-UNRECORDED_KINDS = ("synthetic",)   # sources whose signals are not observations: the simulated band
+UNRECORDED_KINDS = ("synthetic",)   # sources neither observed nor recorded: the simulated band
 PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
 SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "sweep_low_hz", "sweep_high_hz", "sweep_window_s",
                     "ignore", "restore", "scan")
 OBSERVATIONS_FIELDS = ("clear", "clear_all")
+RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the clients this often
+RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
+LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this computer's interfaces may change
+# Why a recording stopped by itself, as the output tells it.
+_RECORDING_STOPS = {"rate": "the audio rate changed, into or out of WFM", "source": "the simulated band was chosen",
+                    "space": "less than 2 GiB is free on its disk", "full": "its file reached the WAV limit of 4 GiB",
+                    "disk": "a disk error"}
 
 log = logging.getLogger(__name__)
 
@@ -313,11 +334,13 @@ class Engine:
     The engine reads ``source``, or without one the source that ``sources``
     opened last, and switches between the kinds of ``sources`` when a client
     asks. It checks for updates with ``updates``; without it, it never
-    does. With ``remote``, it shares and saves remote access's state."""
+    does. With ``remote``, it shares and saves remote access's state. It
+    records into ``recordings``, unless the user chose another folder;
+    without it, it never does."""
 
     def __init__(self, source: Source | None = None, *, sources: SourceOpener | None = None,
                  store: Store | None = None, updates: UpdateChecker | None = None,
-                 remote: RemoteAccess | None = None,
+                 remote: RemoteAccess | None = None, recordings: Path | None = None,
                  frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
                  queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S,
                  observations_save_s: float = OBSERVATIONS_SAVE_S) -> None:
@@ -347,6 +370,7 @@ class Engine:
             "scanner": lambda _: self.scanner_state(),
             "peaks": lambda _: self.peaks_state(),
             "preferences": lambda subscription: self.preferences_state(subscription.device),
+            "recording": lambda subscription: self.recording_state(subscription.remote),
             "storage": lambda _: self.storage_state(),
             "update": lambda _: self.update_state(),
         }
@@ -419,6 +443,20 @@ class Engine:
         self._restore_scanner(settings.get("scanner"))
         self._peaks_sent_s = -math.inf      # when the clients were last told of the signals
         self._peaks_timer: asyncio.TimerHandle | None = None
+        # Recording: the default folder and the one chosen, if any; the
+        # recording that runs, the rate of its audio once it came, how many
+        # samples it was given and why the latest stopped by itself; the
+        # recordings whose thread may still write, and the clients' requests
+        # that wait for the disk.
+        self._default_recordings = recordings
+        self._chosen_recordings = _saved_recordings_folder(settings.get("recordings"))
+        self._recording: AudioRecording | None = None
+        self._recording_rate: float | None = None
+        self._recorded_samples = 0
+        self._recording_stopped: dict[str, str] | None = None
+        self._progress_timer: asyncio.TimerHandle | None = None
+        self._unfinished: set[AudioRecording] = set()
+        self._requests: set[asyncio.Future] = set()
         self._adopt()
         self._watch_bookmarks()
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
@@ -441,7 +479,7 @@ class Engine:
     def subscribe(self, device: str | None = None) -> Subscription:
         """The messages for a new client, starting with the source state, the
         demodulation settings, the bookmarks, the scanner state, the signals
-        found and the preferences, then, unless
+        found, the preferences and the recording state, then, unless
         it is a paired ``device`` that remote access serves, named by its id,
         the storage state, the update state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
@@ -456,7 +494,7 @@ class Engine:
 
     def unsubscribe(self, subscription: Subscription) -> None:
         self._clients.discard(subscription)
-        if not self._clients and not self._scanning() and not self._closed:
+        if self._idle():
             self._wanted.clear()
 
     def state(self, remote: bool = False) -> dict[str, Any]:
@@ -730,15 +768,101 @@ class Engine:
             raise RuntimeError("this engine has no remote access")
         return {"type": "remote", **self._remote.describe()}
 
+    def recording_state(self, remote: bool = False) -> dict[str, Any]:
+        """The recording state message (docs/design/protocol.md): the audio
+        recording that runs, if one does, and why the latest stopped by
+        itself; unless for a ``remote`` client, the recordings folder too."""
+        recording = self._recording
+        audio = None
+        if recording is not None:
+            rate, samples = self._recording_rate, self._recorded_samples
+            audio = {"file": recording.file, "started": round(recording.started),
+                     "frequency_hz": recording.frequency_hz, "mode": recording.mode,
+                     "rate_hz": None if rate is None else round(rate),
+                     "seconds": round(samples / rate, 1) if rate else 0.0,
+                     "bytes": WAV_HEADER.size + 2 * samples if recording.file is not None else 0}
+        state: dict[str, Any] = {"type": "recording", "audio": audio,
+                                 "stopped": None if self._recording_stopped is None else dict(self._recording_stopped)}
+        if not remote:
+            folder, default = self._recordings_folder(), self._default_recordings
+            state["folder"] = None if folder is None else shown_path(folder)
+            state["default_folder"] = None if default is None else shown_path(default)
+        return state
+
+    def configure_recording(self, changes: Mapping[str, object], subscription: Subscription | None = None) -> None:
+        """Start (``audio``: true) or stop (false) recording the audio; or
+        choose the recordings ``folder``, a full path, or null for the
+        default, which this computer's interfaces alone may change: once
+        checked, as the disk may be slow, it applies, or ``subscription``
+        learns why not. Each comes alone in its message. Raises ValueError,
+        changing nothing, when refused."""
+        if len(changes) != 1:
+            raise ValueError("a recording message changes one setting at a time")
+        [(name, value)] = changes.items()
+        if name == "audio":
+            if not isinstance(value, bool):
+                raise ValueError("the audio is recorded or not: true or false")
+            if value:
+                self._start_recording()
+            else:
+                self._stop_recording(None)
+        elif name == "folder":
+            self._check_recordings()
+            folder = chosen_folder(value)
+            if self._recording is not None:
+                raise ValueError("a recording runs: stop it before choosing another folder")
+            self._request(self._choose_folder(folder, subscription))
+        else:
+            raise ValueError(f"unknown recording setting: {str(name)[:40]}")
+
+    def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Answer a client's recordings message, which without any field asks
+        for the list of the recordings; ``delete``, a recording's file, which
+        must not be the one that runs, deletes it first. Once the disk
+        answered, the client receives the list, or an error when the
+        recording could not be deleted. Raises ValueError, changing nothing,
+        when refused."""
+        for name in changes:
+            if name != "delete":
+                raise ValueError(f"unknown recordings field: {str(name)[:40]}")
+        self._check_recordings()
+        delete = changes.get("delete")
+        if "delete" in changes:
+            if not is_recording_name(delete):
+                raise ValueError("delete takes the file of a recording")
+            if self._recording is not None and delete == self._recording.file:
+                raise ValueError("this recording runs: stop it before deleting it")
+        self._request(self._answer_recordings(self._recordings_folder(), delete, subscription))
+
+    def download_folder(self, name: str) -> Path | None:
+        """The folder of the recording whose file is ``name``, to download
+        it; None unless the name is a recording's, or for the recording that
+        runs."""
+        folder = self._recordings_folder()
+        if folder is None or not is_recording_name(name):
+            return None
+        if self._recording is not None and name == self._recording.file:
+            return None
+        return folder
+
     def close(self) -> None:
         """Stop for good: every client's messages end with ``None``, the
-        source is closed and a running update check stops. Safe to repeat."""
+        source is closed, a recording that runs stops and a running update
+        check stops. Safe to repeat."""
         self._closed = True
         for subscription in self._clients:
             subscription.end()
         self._clients.clear()
         self._wanted.set()
         self.source.close()
+        if self._recording is not None:
+            self._recording.stop()      # its thread writes what came, then closes the file
+            self._recording = None
+        if self._progress_timer is not None:
+            self._progress_timer.cancel()
+            self._progress_timer = None
+        for request in self._requests:
+            request.cancel()
         if self._checking is not None:
             self._checking.cancel()
         if self._peaks_timer is not None:
@@ -751,12 +875,16 @@ class Engine:
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
         like those switched away from, the update check has stopped its
-        programs, and the latest changes are saved."""
+        programs, the recordings have reached the disk, or RECORDING_CLOSE_S
+        has passed for each, and the latest changes are saved."""
         if self._checking is not None:
             await asyncio.gather(self._checking, return_exceptions=True)
         await self.source.wait_closed()
         if self._closing:
             await asyncio.wait(set(self._closing))
+        for recording in list(self._unfinished):
+            if not await asyncio.to_thread(recording.join, RECORDING_CLOSE_S):
+                log.warning("the recording %s did not reach the disk in time", recording.file or "just started")
         if self._store is None:
             return
         self._save_now.set()
@@ -794,7 +922,7 @@ class Engine:
                     self._capture = capture
                     self._keep_vfo_in(*capture)
                     self._watch_bookmarks()     # in case the source retuned by itself, as when it connects
-                audio = any(subscription.audio for subscription in self._clients)
+                audio = self._recording is not None or any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
                 # The memory scan's channels are those of the span asked of the
                 # receiver: none while the samples still come from another.
@@ -806,6 +934,8 @@ class Engine:
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
                     None if channels is None else self._bands)
                 self._publish(capture, power, codes, meter, pcm)
+                if self._recording is not None and pcm is not None and len(pcm):
+                    self._record_audio(pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
                 if detections is not None and self._detection and source is self.source:
                     found = self._signals.update(detections, time.monotonic())
@@ -902,6 +1032,164 @@ class Engine:
         self._observations_due = True
         self._settings_changed()
 
+    def _recordings_folder(self) -> Path | None:
+        """Where recordings go: the folder chosen, or the default; None for
+        an engine that records nothing."""
+        if self._default_recordings is None:
+            return None
+        return self._chosen_recordings if self._chosen_recordings is not None else self._default_recordings
+
+    def _check_recordings(self) -> None:
+        if self._recordings_folder() is None:
+            raise ValueError("this Radiolack does not record")
+
+    def _recording_changed(self) -> None:
+        for subscription in self._clients:
+            subscription.changed("recording")
+
+    def _start_recording(self) -> None:
+        """Start recording the audio, unless a recording runs: from the next
+        block, which also gives the audio rate, into a file that its thread
+        makes. Raises ValueError, starting nothing, without a recordings
+        folder and on the simulated band."""
+        if self._recording is not None or self._closed:
+            return
+        self._check_recordings()
+        folder = self._recordings_folder()
+        if self.source.kind in UNRECORDED_KINDS:
+            raise ValueError("the simulated band is not recorded")
+        loop = asyncio.get_running_loop()
+
+        def report(recording: AudioRecording, event: str, value: Any) -> None:
+            with contextlib.suppress(RuntimeError):     # the loop closed meanwhile
+                loop.call_soon_threadsafe(self._recording_event, recording, event, value)
+
+        recording = AudioRecording(folder, time.time(), self._demod.frequency_hz, self._demod.mode,
+                                   make_folder=folder == self._default_recordings, report=report)
+        self._recording, self._recording_rate, self._recorded_samples = recording, None, 0
+        self._recording_stopped = None
+        self._unfinished.add(recording)
+        recording.start()
+        self._wanted.set()          # the recording goes on without any client
+        self._progress_timer = loop.call_later(RECORDING_PROGRESS_S, self._recording_progress)
+        self._recording_changed()
+
+    def _stop_recording(self, reason: str | None, detail: str = "") -> None:
+        """Stop the recording that runs, if one does, for ``reason``: "rate",
+        "source", "space", "full" or "disk", with ``detail`` for the last, or
+        None when a client asked. Its thread writes what came, then closes
+        the file. Without any client and scan, the engine stops reading. The
+        output tells of a stop by itself, as no interface may be open to
+        show it."""
+        recording = self._recording
+        if recording is None:
+            return
+        self._recording = None
+        recording.stop()
+        if self._progress_timer is not None:
+            self._progress_timer.cancel()
+            self._progress_timer = None
+        self._recording_stopped = None if reason is None else {"kind": recording.kind, "reason": reason,
+                                                               "detail": detail}
+        if reason is not None:
+            log.warning("the recording %s stopped: %s%s", recording.file or "just started",
+                        _RECORDING_STOPS.get(reason, reason), f" ({detail})" if detail else "")
+        self._recording_changed()
+        if self._idle():
+            self._wanted.clear()
+
+    def _recording_event(self, recording: AudioRecording, event: str, value: Any) -> None:
+        """What a recording's thread told: its file was made ("opened", its
+        name), or it stopped ("stopped", the reason and its detail)."""
+        if event == "opened":
+            recording.file = value
+            if recording is self._recording:
+                self._recording_changed()
+            return
+        self._unfinished.discard(recording)
+        reason, detail = value
+        if recording is self._recording:        # by itself
+            self._stop_recording(reason or "disk", detail)
+        elif reason is not None:                # while closing its file, once stopped
+            log.warning("the recording %s may be incomplete: %s%s", recording.file or "just started",
+                        _RECORDING_STOPS.get(reason, reason), f" ({detail})" if detail else "")
+
+    def _recording_progress(self) -> None:
+        """Every RECORDING_PROGRESS_S while a recording runs, the clients
+        learn its length and size."""
+        self._progress_timer = None
+        if self._recording is None or self._closed:
+            return
+        self._recording_changed()
+        self._progress_timer = asyncio.get_running_loop().call_later(RECORDING_PROGRESS_S,
+                                                                     self._recording_progress)
+
+    def _record_audio(self, pcm: np.ndarray) -> None:
+        """Hand a block's audio to the recording that runs: the first sets
+        its rate, and another rate stops it, as does a disk that does not
+        keep up."""
+        recording = self._recording
+        rate = self._demodulator.audio_rate_hz
+        if self._recording_rate is None:
+            self._recording_rate = rate
+        elif rate != self._recording_rate:
+            self._stop_recording("rate")
+            return
+        if not recording.write(pcm.tobytes(), round(rate)):
+            self._stop_recording("disk", "the disk did not keep up")
+            return
+        self._recorded_samples += len(pcm)
+
+    async def _choose_folder(self, folder: Path | None, subscription: Subscription | None) -> None:
+        """Record into ``folder``, or into the default one (None), once
+        checked: unless it is no folder that Radiolack may write into, or a
+        recording started meanwhile, which ``subscription`` then learns."""
+        try:
+            if folder is not None:
+                await asyncio.to_thread(check_folder, folder)
+            if self._recording is not None:
+                raise ValueError("a recording runs: stop it before choosing another folder")
+        except ValueError as error:
+            if subscription is not None:
+                subscription.reply({"type": "error", "command": "recording", "message": str(error)})
+            return
+        if folder != self._chosen_recordings:
+            self._chosen_recordings = folder
+            self._recording_changed()
+            self._settings_changed()
+
+    async def _answer_recordings(self, folder: Path, delete: str | None, subscription: Subscription) -> None:
+        """Delete the recording ``delete``, if given, then send the list of
+        the recordings to ``subscription``, or an error when the recording
+        could not be deleted. The disk is read in a worker thread."""
+        if delete is not None:
+            try:
+                await asyncio.to_thread(delete_recording, folder, delete)
+            except FileNotFoundError:
+                pass        # deleted meanwhile
+            except (OSError, ValueError) as error:
+                reason = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
+                subscription.reply({"type": "error", "command": "recordings",
+                                    "message": f"{delete} cannot be deleted: {reason}"})
+        running = self._recording.file if self._recording is not None else None
+        listed = await asyncio.to_thread(list_recordings, folder, running)
+        subscription.reply({"type": "recordings", **listed})
+
+    def _request(self, work: Coroutine[Any, Any, None]) -> None:
+        """Run a client's request that waits for the disk, unless closed: the
+        engine stops it when it closes."""
+        if self._closed:
+            work.close()
+            return
+        request = asyncio.ensure_future(work)
+        self._requests.add(request)
+        request.add_done_callback(self._request_done)
+
+    def _request_done(self, request: asyncio.Future) -> None:
+        self._requests.discard(request)
+        if not request.cancelled() and request.exception() is not None:
+            log.error("a request from an interface failed", exc_info=request.exception())
+
     def _start_scan(self, scan: object) -> None:
         """Start a scan, "memory" or "sweep", unless it runs, stopping the
         other, or stop the scan that runs (None). Raises ValueError, changing
@@ -979,6 +1267,11 @@ class Engine:
     def _scanning(self) -> bool:
         return self._memory is not None or self._sweep is not None
 
+    def _idle(self) -> bool:
+        """Whether nothing needs the source's samples: no client, no scan and
+        no recording, while the engine runs."""
+        return not self._clients and not self._scanning() and self._recording is None and not self._closed
+
     def _stop_scan(self, reason: str | None) -> None:
         """Stop the scan that runs, if one does, for ``reason``: "tuned",
         "source", "bookmarks" or "range", or None when a client asked. Unless
@@ -1002,7 +1295,7 @@ class Engine:
                 self._go_home(*home)
             self._watch_bookmarks()     # from the span where the receiver stays
         self._scanner_changed()
-        if not self._clients and not self._closed:
+        if self._idle():
             self._wanted.clear()
 
     def _go_home(self, centre_hz: float, vfo_hz: float) -> None:
@@ -1144,6 +1437,8 @@ class Engine:
             # Saved before the scan stops: those of the scan's start.
             self._receivers[old.settings_key] = self._receiver_settings()
             self._stop_scan("source")
+            if kind in UNRECORDED_KINDS:
+                self._stop_recording("source")
             old.on_change = None
             old.close()
             self._closing.add(asyncio.ensure_future(self._release(old)))
@@ -1275,6 +1570,8 @@ class Engine:
                                "ignored_hz": self._signals.ignored}
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
+        chosen = self._chosen_recordings
+        settings["recordings"] = {"folder": None if chosen is None else str(chosen)}
         contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
         if self._remote is not None:
             contents[REMOTE_FILE] = self._remote.stored()
@@ -1384,6 +1681,19 @@ def _given_differ(state: Mapping[str, Any], saved: object, given: frozenset[str]
     """Whether a setting the source was given differs from the saved one."""
     saved_values = saved if isinstance(saved, dict) else {}
     return any(name in state["settable"] and saved_values.get(name) != state[name] for name in given)
+
+
+def _saved_recordings_folder(saved: object) -> Path | None:
+    """The recordings folder chosen, as saved: None for the default."""
+    if saved is None:
+        return None
+    try:
+        if not isinstance(saved, dict):
+            raise ValueError("not an object")
+        return chosen_folder(saved.get("folder"))
+    except ValueError:
+        log.warning("the saved recordings folder is not used")
+        return None
 
 
 def _saved_check_at_start(saved: object) -> bool:

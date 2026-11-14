@@ -21,7 +21,8 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history", "sweep"]}
+   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history", "sweep"],
+    "recording": ["audio"]}
    ```
 
    `remote` is true for a remote client. `scanners` lists the scanners that
@@ -32,6 +33,9 @@ preferences apart from this computer's.
    and `sweep`, the sweep (the scanner state's `sweep_low_hz`,
    `sweep_high_hz`, `sweep_window_s`, `stopped_scan` and `sweep`, below).
    An engine older than the scanners sends no `scanners`: it runs none.
+   `recording` lists what the engine records: `audio`, the audio of the
+   VFO (the recording state and the recordings, below). An engine older
+   than the recordings sends no `recording`: it records nothing.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -254,7 +258,45 @@ preferences apart from this computer's.
    {"type": "preferences", "values": {"palette": "gray", "volume": 70, "showPlan": true}}
    ```
 
-8. Then, to this computer's interfaces only, the storage state, a JSON text
+8. Then the recording state, a JSON text message, sent again whenever it
+   changes, and every second while a recording runs:
+
+   ```json
+   {"type": "recording",
+    "audio": {"file": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav", "started": 1794670245,
+              "frequency_hz": 145500000, "mode": "NFM", "rate_hz": 12000, "seconds": 61.4, "bytes": 2947244},
+    "stopped": null,
+    "folder": "~/.local/share/radiolack/recordings", "default_folder": "~/.local/share/radiolack/recordings"}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `audio` | The audio recording that runs, or null. `file` is its file's name, null until the first audio makes the file; `started` its start, in Unix time, to the second; `frequency_hz` and `mode` the VFO's when it started, which name the file; `rate_hz` the audio rate, null until the first audio; `seconds` its length, to the tenth; `bytes` its file's size, 0 until the file is made. |
+   | `stopped` | Why the latest recording stopped by itself, until the next one starts: `kind` (`audio`), `reason` and `detail`, a sentence for the user with `disk`, otherwise empty. Null when an interface stopped it, or none ran since the engine started. |
+   | `folder` | To this computer's interfaces only: the folder the recordings go to, `~` standing for the home folder, or null when the engine does not record (a server started without a recordings folder, as in tests). |
+   | `default_folder` | To this computer's interfaces only: the folder they go to unless another was chosen, `$XDG_DATA_HOME/radiolack/recordings`, or null as `folder`. |
+
+   A recording stops by itself for one of these `reason`s:
+
+   | Reason | When |
+   | --- | --- |
+   | `rate` | The audio rate changed, into or out of WFM. |
+   | `source` | The simulated band was chosen; another receiver goes on recording. |
+   | `space` | Less than 2 GiB is free on its disk, at its start or later. |
+   | `full` | Its file reached the WAV format's limit of 4 GiB. |
+   | `disk` | A disk error, such as a folder that went, or a disk too slow for the recording: `detail` says which. |
+
+   A recording writes 16-bit mono WAV at the audio rate, from the block
+   after it started, squelched silences included: the file is made with
+   the first audio, readable by its owner only, and named after the start
+   in UTC, the frequency and the mode, such as
+   `2026-11-14_15-30-45Z_145.500000MHz_NFM.wav`, with `-2` to `-999`
+   before `.wav` when the name is taken. Its header follows each write, so
+   that a crash leaves a file that plays. A recording stopped before any
+   audio leaves no file. It goes on without any client, like a scan, and
+   never starts at start: whether one runs is not saved.
+
+9. Then, to this computer's interfaces only, the storage state, a JSON text
    message, sent again whenever it changes:
 
    ```json
@@ -267,22 +309,22 @@ preferences apart from this computer's.
    | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
    | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-9. Then, to this computer's interfaces only, the update state, a JSON text
-   message, sent again whenever it changes:
+10. Then, to this computer's interfaces only, the update state, a JSON text
+    message, sent again whenever it changes:
 
-   ```json
-   {"type": "update", "status": "available", "version": "0.3.0", "latest": "0.4.0", "detail": "", "check_at_start": true}
-   ```
+    ```json
+    {"type": "update", "status": "available", "version": "0.3.0", "latest": "0.4.0", "detail": "", "check_at_start": true}
+    ```
 
-   | Field | Meaning |
-   | --- | --- |
-   | `status` | What the latest check for a newer Radiolack found: `idle` (no check yet), `checking`, `current` (the latest version is installed, and runs), `available` (a newer version is in the APT repository), `installed` (a newer version was installed since Radiolack started, and runs once it restarts), `failed`, or `unavailable` (no check can run, such as for a Radiolack that does not run from its Debian package). |
-   | `version` | The version of the Radiolack that runs. |
-   | `latest` | The newer version with `available` and `installed`; otherwise null. |
-   | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
-   | `check_at_start` | Whether the engine checks when it starts. |
+    | Field | Meaning |
+    | --- | --- |
+    | `status` | What the latest check for a newer Radiolack found: `idle` (no check yet), `checking`, `current` (the latest version is installed, and runs), `available` (a newer version is in the APT repository), `installed` (a newer version was installed since Radiolack started, and runs once it restarts), `failed`, or `unavailable` (no check can run, such as for a Radiolack that does not run from its Debian package). |
+    | `version` | The version of the Radiolack that runs. |
+    | `latest` | The newer version with `available` and `installed`; otherwise null. |
+    | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
+    | `check_at_start` | Whether the engine checks when it starts. |
 
-10. Then, to this computer's interfaces only, remote access's state, a JSON
+11. Then, to this computer's interfaces only, remote access's state, a JSON
     text message, sent again whenever it changes:
 
     ```json
@@ -307,7 +349,7 @@ preferences apart from this computer's.
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
     | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
-11. Binary spectrum frames, about 30 per second while the source streams.
+12. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
     bin:
 
@@ -348,7 +390,7 @@ preferences apart from this computer's.
     the automatic one, which is NaN while the engine has no noise estimate
     (the VFO outside the span); the squelch then stays closed.
 
-12. Binary audio frames, about 30 per second, only to an interface that asked
+13. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -386,7 +428,7 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM and
     WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-13. The observations, a JSON text message, to one interface only, when it
+14. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -416,7 +458,25 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-14. An error, to one interface only, when the engine refuses a message from
+15. The recordings, a JSON text message, to one interface only, when it
+    asks for them or deleted one (`recordings` message): the latest 500
+    recordings of the recordings folder, the newest first.
+
+    ```json
+    {"type": "recordings", "files": [
+      {"name": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav", "kind": "audio", "started": 1794670245,
+       "frequency_hz": 145500000, "mode": "NFM", "bytes": 2947244, "seconds": 61.4, "running": false}],
+     "more": 0, "free_bytes": 52613349376, "problem": ""}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `files` | The regular files of the folder named as the engine names its recordings, links excluded. Each gives its `name`, its `kind` (`audio`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them, its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV. `running` is true for the recording that runs. |
+    | `more` | How many older recordings the folder holds besides. |
+    | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
+    | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
+
+16. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -426,14 +486,14 @@ preferences apart from this computer's.
 
 What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
-found, the storage state, the update state and remote access's state, each
-when it changed (and the preferences at the start), then the observations
-and errors, in the order of the messages they answer, then audio frames,
-then spectrum frames. A client that reads too
-slowly loses its oldest frames: the engine keeps the latest four spectrum
-frames and fifteen audio frames (half a second) for it and never slows down
-for one client; it keeps its latest states, and up to eight observations
-and errors together. When
+found, the recording state, the storage state, the update state and remote
+access's state, each when it changed (and the preferences at the start),
+then the observations, the recordings and errors, in the order of the
+messages they answer, then audio frames, then spectrum frames. A client
+that reads too slowly loses its oldest frames: the engine keeps the latest
+four spectrum frames and fifteen audio frames (half a second) for it and
+never slows down for one client; it keeps its latest states, and up to
+eight observations, recordings and errors together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -562,6 +622,55 @@ the whole message, changing nothing, when it has an unknown or invalid
 field. Otherwise it answers the sender alone with the observations, after
 the change if any: the other interfaces see it when they next ask.
 
+A `recording` message starts or stops a recording, the same for every
+interface, or chooses the recordings folder, one setting at a time:
+
+```json
+{"type": "recording", "audio": true}
+{"type": "recording", "audio": false}
+{"type": "recording", "folder": "~/Music/Radiolack"}
+{"type": "recording", "folder": null}
+```
+
+| Field | Value |
+| --- | --- |
+| `audio` | `true` starts recording the audio, unless a recording runs; `false` stops the recording that runs, if any: its file is complete a moment later. |
+| `folder` | The folder that the recordings go to from now on, a full path, `~` standing for the home folder, up to 4096 characters; null or an empty text for the default folder. Only while nothing records. The engine checks, in the background, that the folder exists and that it may write into it, then saves it with its settings: this computer's interfaces receive the recording state, or the sender an error. Recordings made before stay where they are. |
+
+The engine refuses a message without a setting or with more than one, an
+unknown or invalid setting, a recording on the simulated band ("the
+simulated band is not recorded"), a recording or a folder when it has no
+recordings folder ("this Radiolack does not record"), and a folder while a
+recording runs; it answers the sender with an error. A recording that
+cannot go on, such as with less than 2 GiB free, starts and stops at once:
+the recording state's `stopped` says why.
+
+A `recordings` message asks for the recordings, or deletes one:
+
+```json
+{"type": "recordings"}
+{"type": "recordings", "delete": "2026-11-14_15-30-45Z_145.500000MHz_NFM.wav"}
+```
+
+`delete` takes a recording's file, named as the engine names them, but not
+the recording that runs. The engine refuses the whole message, changing
+nothing, when it has an unknown or invalid field. Otherwise it deletes the
+file in the background, when it is a regular file, and answers the sender
+alone with the recordings, after the deletion: an error comes first when the
+file could not be deleted, and a file already gone is no error. The other
+interfaces see the change when they next ask.
+
+Recordings are downloaded by HTTP, on the loopback server and on remote
+access's: `GET /recordings/<file>` answers a recording of the list, which
+the engine names so, a regular file that is not the recording that runs,
+as an attachment of type `audio/wav` with its length, and
+`Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer`. It answers 404 for any other name, a link
+included, 403 for a recording that cannot be read, and 405 for `HEAD`.
+The loopback server answers requests addressed to it alone (`Host`), as for
+the interface's files; remote access, paired devices alone: 403 for the
+others.
+
 A `preferences` message gives the engine this interface's preferences,
 which replace the ones it kept for this computer's interfaces, or for the
 remote client's device:
@@ -610,11 +719,13 @@ sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
-`observations`, `preferences` and `audio` messages, but neither `update` nor `remote` messages, nor a
-`source` message that names `address`: the engine refuses them with the
-error "only Radiolack's interface on the computer may change this". Its
-`preferences` are its device's own: they change neither this computer's
-nor another device's.
+`observations`, `preferences`, `recording`, `recordings` and `audio`
+messages, but neither `update` nor `remote` messages, nor a `source`
+message that names `address`, nor a `recording` message that names
+`folder`: the engine refuses them with the error "only Radiolack's
+interface on the computer may change this". Its `preferences` are its
+device's own: they change neither this computer's nor another device's.
+Its recording state comes without `folder` and `default_folder`.
 
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
@@ -650,6 +761,7 @@ and `Referrer-Policy: no-referrer`.
 | `GET /<file>` | An interface file, as on the loopback server. Before pairing, only `pair.js`, `pair.css` and `style.css`: 403 for the others. |
 | `POST /pair` | Checks an access code, below. |
 | `GET /stream` | The stream, to a paired device. |
+| `GET /recordings/<file>` | A recording, to a paired device, as on the loopback server ([From the interface](#from-the-interface)); 403 to any other. |
 
 A device is paired while it sends the `__Host-radiolack` cookie that the
 right code gave it. The engine keeps only the cookie's SHA-256, forgets a
@@ -695,8 +807,8 @@ and later.
 
 ## Connection life
 
-- The engine computes frames only while at least one client listens or a
-  scan runs. The `rtl_sdr` and `rtl_tcp` sources connect at the first read
+- The engine computes frames only while at least one client listens, a
+  scan runs or a recording does. The `rtl_sdr` and `rtl_tcp` sources connect at the first read
   and hang up 2 s after the last one; the `rtl_sdr` source starts rtl_tcp
   before connecting and stops it on hanging up.
 - A source that waits sends no frames, but the stream stays open: the source
@@ -708,9 +820,10 @@ and later.
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
   number. It ignores a source state, demodulation settings, bookmarks, a
-  scanner state, a list of signals found, observations, a storage state, an
-  update state or a remote access state with a missing or malformed field,
-  and leaves
+  scanner state, a list of signals found, observations, a recording state,
+  recordings, a storage state, an update state or a remote access state
+  with a missing or malformed field, apart from the recording state's
+  folders, which it reads as null, and leaves
   out source settings it does not know and preferences that are not
   numbers, true or false, texts or null.
 - An interface whose hello does not list `peaks` among its `scanners`, as
@@ -723,6 +836,13 @@ and later.
   sweep.
 - The interface asks for the observations when its History shows, then
   every 30 s while it shows and its page is visible.
+- An interface whose hello does not list `audio` in its `recording`, as an
+  older engine's, shows that recording needs Radiolack to restart, and
+  asks for no recordings. The interface asks for the recordings when its
+  Record panel shows, when the recording that runs makes its file or
+  stops, when the folder changes, and every 30 s while the panel shows and
+  its page is visible; a recording that runs takes its length and size
+  from the recording state.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -794,7 +914,10 @@ and later.
   remote access that follows the computer's addresses: close code 1012,
   which an older interface takes for a drop, and a remote access state
   that is on with empty `urls` and a `problem`, which an older interface
-  shows as on, with an empty address.
+  shows as on, with an empty address. Later that day, the recordings: the
+  hello's `recording`, the recording state, the recordings, the
+  `recording` and `recordings` messages and the downloads, which an older
+  interface ignores, as it does any message of an unknown type.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

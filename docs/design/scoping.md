@@ -77,6 +77,7 @@ radio program, only on receiver drivers.
 | 2026-11-14 | Wide FM, answering open question 2, as the owner chose: a WFM mode, mono, for FM broadcast, with a 50 µs de-emphasis, the European value (the Americas' 75 µs comes with their band plans), filter widths of its own (180 kHz by default, up to 250 kHz) and audio at 32 kHz in that mode only, which holds broadcast's 15 kHz of audio; the other modes keep 12 kHz. Audio frames already carry their rate, and an older page ignores a mode it does not know, so the protocol stays at version 6: `modes` and `audio_modes` gain WFM. In WFM a device's stream grows to about 0.65 Mbit/s, 0.5 Mbit/s of it PCM, which the home Wi-Fi and a VPN carry. The band plan gives FM broadcast the WFM mode. Set aside: stereo and RDS, which may come if a need shows up, and Opus, still kept for mobile links that drop out. |
 | 2026-11-14 | Recording, answering open question 1, as the owner chose: Radiolack records the audio it plays and the receiver's raw I/Q, each started and stopped by a button on every interface, paired devices included, as they start scans. Both may run at once; neither runs at start, and whether one runs is never saved. Audio goes to WAV files, 16-bit mono at the audio rate. I/Q goes to SigMF recordings: a `.sigmf-data` file of the receiver's 8-bit samples as they come, before the DC removal, and a `.sigmf-meta` file with the sample rate, the centre frequency, the start time and the receiver, which other programs read (GNU Radio, Inspectrum, SDRangel) and which has no size limit, whereas WAV stops at 4 GiB, 15 minutes of I/Q at 2.4 MS/s. A retune adds a capture to the I/Q recording's metadata; a new sample rate or another source ends that recording, and a new audio rate, into or out of WFM, ends the audio's. The files, named after their start time (UTC), frequency and mode, go to the `recordings` folder of `$XDG_DATA_HOME/radiolack` (by default `~/.local/share/radiolack`), readable by the user only, never to the settings folder, which stays small. A Recordings list on every interface gives each file's length and size, with Download, which serves only the files it lists, and Delete, which waits for a second press. A recording stops when its disk's free space falls under 2 GiB, as the status line then says: raw I/Q fills 17 GB per hour at 2.4 MS/s. The simulated band is never recorded, as for the observations. This replaces the repository's rule against recording audio and raw I/Q; transcriptions stay out of scope. With the recordings, README.md warns that local law may forbid recording or disclosing what some services carry. Set aside: recording only while the squelch is open, a recording started at start, and an I/Q recording played as a source, which may come later. |
 | 2026-11-14 | v3's order, each pull request with its documentation and tests: this design; WFM; `--scan`; remote access that follows the addresses; the service's unit and the package's scripts; recording audio, with the Recordings list; recording I/Q. The tests need no receiver: WFM on synthetic signals, `--scan` on the simulated band and against the fake rtl_tcp, the addresses through a stand-in for the list of addresses, the recordings from the fake rtl_tcp into temporary folders, and the unit through `systemd-analyze verify` and lintian in CI. The sandbox, the start at boot and the restart after an upgrade are checked on the owner's computer. |
+| 2026-11-14 | Recording the audio, v3's fifth pull request, as the owner chose: a Record panel of its own, between Scanners and Settings, with Record audio and the Recordings list, and a dot on its toolbar button while a recording runs. A recording goes on without any interface, like a scan, until an interface stops it, and stops at the WAV limit of 4 GiB, about 49 hours at 12 kHz, rather than going on in a second file. Settings > Recordings, on this computer's interfaces only, as Storage, chooses the folder that the recordings go to, in a text field, as a browser does not give the path of a folder chosen in its dialog: the folder must exist and Radiolack must be able to write into it, it changes only while nothing records, the recordings made before stay where they are, and the list, Download and Delete follow the folder in use, which is saved with the settings. In the desktop window, Download saves the file in the user's Downloads folder (xdg-user-dirs) without asking, adding " (2)" and so on to a name already there, as browsers do, and the panel says where it went; a browser, a paired device's included, saves it as any download. Set aside: a dialog that asks where each download goes, which the window would have to draw itself, and a recording that goes on in a second file past 4 GiB, which may come if 49 hours fall short. |
 
 ## Scope
 
@@ -188,8 +189,8 @@ flowchart LR
 - The engine sends audio only to clients that turned it on, and encodes each
   format once whatever the number of clients.
 - Settings live in the engine. Security settings (remote access, access code)
-  can only be changed from this computer's interfaces: the window, or a
-  browser on 127.0.0.1.
+  and the recordings folder can only be changed from this computer's
+  interfaces: the window, or a browser on 127.0.0.1.
 - Remote access, scans and recordings are off at each start: they run only
   once an interface starts them, this computer's alone for remote access,
   or an option given at start does (`--remote` or `--scan`), and whether
@@ -950,14 +951,54 @@ Decisions).
   enabling and state kept by the removal and removed by the purge. The
   owner checks the sandbox with the receiver, the start at boot and the
   restart after an upgrade.
+- Recording the audio, 2026-11-14, v3's fifth pull request:
+  `recordings.py` writes each recording from a thread of its own, so that a
+  slow disk never holds up the receiver. The engine hands it each block's
+  audio, from the block after the start; the thread writes what came every
+  0.5 s, then rewrites the WAV header with `pwrite`, so that a crash leaves
+  a file that plays, and checks the free space every second with
+  `fstatvfs`. More than 16 MiB of audio waiting for the disk, about 11
+  minutes at 12 kHz, stops the recording as a disk too slow for it. The
+  file is made with the first audio (`O_EXCL`, `O_NOFOLLOW`, mode 0600), so
+  that a recording stopped before any audio leaves none, and the first
+  block's rate is the recording's: another one stops it. A recording keeps
+  the engine reading without any client, as a scan does, and its state
+  reaches every client each second while it runs, with its length and
+  size. The engine tells the output why a recording stopped by itself, as
+  no interface may be open to show it. The default folder is made when
+  needed, 0700; a chosen folder must exist. The protocol stays at version
+  6: the hello's `recording`, the recording state, the recordings and the
+  `recording` and `recordings` messages are new, and an older interface
+  ignores them. The list reads the folder in a worker thread: the latest
+  500 regular files named as recordings, links left out, with their start,
+  frequency and mode from their names, which must hold a real date, and
+  their length from their headers. Downloads (`GET /recordings/<file>`,
+  on the loopback server and, for paired devices, on remote access's)
+  open the file without following a link and serve only a regular file
+  named as a recording, never the one that runs. The window saves a
+  download through WebKitGTK's `decide-destination`, as WebKit's own
+  default fails on a name already taken, then tells the page with a
+  `radiolack-download` event. The interface shows sizes in binary units,
+  as the limits are (2 GiB, 4 GiB), and the status line keeps the reason
+  of a recording that stopped by itself until the next one starts. The
+  unit gets `XDG_DATA_HOME=%S`, so that the service's recordings go to
+  `/var/lib/radiolack/recordings`, which the purge already removes; a
+  folder elsewhere needs `ReadWritePaths=` in the unit, which README.md
+  shows. The tests record the fake rtl_tcp and synthetic sources into
+  temporary folders: the file and its header after each write, the stops
+  (a client, the simulated band, a new rate, the space, the WAV limit, a
+  disk error, a disk too slow), the recording without clients, the close,
+  the list and its limits, the deletion, the downloads and their
+  refusals, the folder's choice, checks and saving, a paired device that
+  records and downloads but does not choose the folder, the window's
+  downloads through stand-ins, and in browsers, the panel, the list,
+  Download, Delete and the folder.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3's next pull requests, from the audio's
-  recording, in the order of its decisions. That pull request also gives
-  the unit `XDG_DATA_HOME=%S`, so that the service's recordings go to
-  `/var/lib/radiolack/recordings`, which the purge already removes.
+  receiver (see Milestones), and v3's last pull request, the raw I/Q's
+  recording (SigMF), which joins the Record panel and its list.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

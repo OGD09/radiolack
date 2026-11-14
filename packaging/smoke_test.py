@@ -342,7 +342,7 @@ async def check_remote_option(command: list[str]) -> None:
     with tempfile.TemporaryDirectory(prefix="radiolack-smoke-") as settings:
         process = await asyncio.create_subprocess_exec(
             *command, "--ui", "none", "--remote", str(port), stdin=DEVNULL, stdout=PIPE, stderr=PIPE,
-            env={**os.environ, "XDG_CONFIG_HOME": settings})
+            env={**os.environ, "XDG_CONFIG_HOME": settings, "XDG_DATA_HOME": settings})
         errors = asyncio.ensure_future(process.stderr.read())
         try:
             _, lines = await within(START_TIMEOUT_S, started(process), "Radiolack printed no address with --remote")
@@ -399,7 +399,7 @@ async def run(command: list[str], window: bool, reach: bool, remote: bool) -> No
     with tempfile.TemporaryDirectory(prefix="radiolack-smoke-") as settings:
         process = await asyncio.create_subprocess_exec(
             *command, "--ui", "none", stdin=DEVNULL, stdout=PIPE, stderr=PIPE,
-            env={**os.environ, "XDG_CONFIG_HOME": settings})
+            env={**os.environ, "XDG_CONFIG_HOME": settings, "XDG_DATA_HOME": settings})
         errors = asyncio.ensure_future(process.stderr.read())
         try:
             url, _ = await within(START_TIMEOUT_S, started(process), "Radiolack printed no address")

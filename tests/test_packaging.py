@@ -314,9 +314,9 @@ class PackageTest(unittest.TestCase):
             "Unit.Wants": ["network-online.target"], "Unit.After": ["network-online.target"],
             "Service.Restart": ["on-failure"], "Service.RestartSec": ["10"],
             "Install.WantedBy": ["multi-user.target"],
-            # Its settings, bookmarks and History in its state directory, which only it reads.
+            # Its settings, bookmarks, History and recordings in its state directory, which only it reads.
             "Service.StateDirectory": ["radiolack"], "Service.StateDirectoryMode": ["0700"],
-            "Service.Environment": ["XDG_CONFIG_HOME=%S PYTHONUNBUFFERED=1"],
+            "Service.Environment": ["XDG_CONFIG_HOME=%S XDG_DATA_HOME=%S PYTHONUNBUFFERED=1"],
             # A user of its own, in the group that opens the receivers, without any privilege, in a sandbox.
             "Service.DynamicUser": ["yes"], "Service.SupplementaryGroups": ["plugdev"],
             "Service.CapabilityBoundingSet": [""], "Service.NoNewPrivileges": ["yes"],

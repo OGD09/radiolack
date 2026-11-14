@@ -15,7 +15,8 @@ the history under the tag `v0.1.0`.
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
   `--scan`, `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1,
   own event loop in a background thread; interface files, read once at
-  start, and the `/stream` WebSocket; starts the scan given at start;
+  start, the `/stream` WebSocket and the recordings' downloads
+  (`/recordings/<file>`); starts the scan given at start;
   remote access's HTTPS listener, a second application with a runner of
   its own, in the same loop, which follows the computer's addresses while
   on), `remote` (remote access: the
@@ -24,8 +25,9 @@ the history under the tag `v0.1.0`.
   addresses to listen on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks, the scanner state, the
-  signals found and the update check's findings with clients, sends audio
-  to those that ask, passes their changes on, switches between kinds of
+  signals found, the recording state and the update check's findings with
+  clients, sends audio to those that ask, passes their changes on,
+  switches between kinds of
   sources, restores and saves the settings and the source in use; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
@@ -35,9 +37,19 @@ the history under the tag `v0.1.0`.
   receiver's settings of its start and bringing the receiver back once
   stopped;
   keeps the observations, the simulated band's excepted, and
-  sends them to the client that asks; idle without clients unless a scan
-  runs; remote clients get neither the storage, update nor remote access
-  states, and lighter spectrum frames),
+  sends them to the client that asks; records the VFO's audio when a
+  client asks, never on the simulated band, until a client stops it or a
+  new audio rate, the disk or the WAV limit does, lists the recordings
+  folder and deletes from it for the client that asks; idle without
+  clients unless a scan or a recording runs; remote clients get neither
+  the storage, update nor remote access states, nor the recordings
+  folder, which they may not change, and lighter spectrum frames),
+  `recordings` (the audio's WAV files, written by a thread of their own
+  that checks the free space and the WAV limit, named after their start,
+  frequency and mode; the recordings folder, `$XDG_DATA_HOME/radiolack/recordings`
+  unless the user chose another, its checks and its list; opening a
+  recording to download it, and deleting it, only for the files named as
+  recordings),
   `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
@@ -63,7 +75,9 @@ the history under the tag `v0.1.0`.
   waiting state), `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
-  runs GTK; an ephemeral WebKit context writes nothing to disk).
+  runs GTK; an ephemeral WebKit context writes nothing to disk; downloads
+  go to the user's Downloads folder without asking, under a name not taken
+  there, and a `radiolack-download` event tells the page where).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
@@ -111,8 +125,9 @@ the history under the tag `v0.1.0`.
   version for any incompatible change.
 - `tests/`: unittest tests without hardware; pytest runs them too.
   `test_browser.py` drives the interface in headless browsers, on request.
-  `tests/__init__.py` points `XDG_CONFIG_HOME` at a temporary folder for the
-  whole run, and `GNUPGHOME` at an empty GnuPG home in it, which the
+  `tests/__init__.py` points `XDG_CONFIG_HOME` and `XDG_DATA_HOME` (the
+  recordings) at a temporary folder for the whole run, and `GNUPGHOME` at
+  an empty GnuPG home in it, which the
   programs the tests start inherit; those that import the package too keep
   it rather than make their own, and the run removes it at its end.
 
@@ -234,8 +249,10 @@ the history under the tag `v0.1.0`.
   `data/airband-peaks.json`. `profiles/` holds personal files: leave them
   untouched and untracked.
 - `~/.config/radiolack` (or `$XDG_CONFIG_HOME/radiolack`) holds the owner's
-  settings and bookmarks: never read, write or delete it. A check that runs
-  Radiolack sets `XDG_CONFIG_HOME` to a temporary folder.
+  settings and bookmarks, and `~/.local/share/radiolack` (or
+  `$XDG_DATA_HOME/radiolack`) the owner's recordings: never read, write or
+  delete them. A check that runs Radiolack sets `XDG_CONFIG_HOME` and
+  `XDG_DATA_HOME` to temporary folders.
 - Never modify or delete anything in `~/code/pc_repair`.
 - Recording (scoping.md, 2026-11-14, for v3): the audio and the raw I/Q
   only when a user starts it, never at start and never on the simulated
