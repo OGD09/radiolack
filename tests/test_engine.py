@@ -1552,6 +1552,11 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
     async def test_refuses_a_range_beyond_the_receiver_and_stops_once_it_refuses_a_window(self):
         source = TuningSource({}, centre_hz=145_050_000)
         engine = self.engine(source)
+        # The VFO within the receiver's span, where the engine keeps it, but outside the second window's:
+        # the sweep moves it, and the stop brings it back, where the receiver's next samples leave it.
+        vfo_hz = 144_940_000.0
+        self.assertTrue(abs(vfo_hz - source.centre_hz) <= FAKE_RATE_HZ / 2 < abs(vfo_hz - SWEEP_WINDOWS.centre(1)))
+        engine.configure_demod({"frequency_hz": vfo_hz})
         subscription = engine.subscribe()
         engine.configure_scanner({"sweep_low_hz": 20e6, "sweep_high_hz": 30e6})
         with self.assertRaisesRegex(ValueError, "it tunes from 24 to 1766 MHz"):
@@ -1567,7 +1572,7 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("radiolack.engine", "WARNING"):
             state = await next_scanner(subscription, until=lambda message: message["scan"] is None)
         self.assertEqual((state["stopped"], state["stopped_scan"], source.centre_hz), ("range", "sweep", 145_050_000))
-        self.assertEqual(engine.demod_state()["frequency_hz"], HOME_VFO_HZ)
+        self.assertEqual(engine.demod_state()["frequency_hz"], vfo_hz)
 
     async def test_a_new_range_starts_it_again_from_its_first_window(self):
         source = TuningSource({})
