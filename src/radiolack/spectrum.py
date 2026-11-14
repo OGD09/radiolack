@@ -85,22 +85,38 @@ class SpectrumAnalyzer:
         return np.clip(np.rint((db - self.db_min) / self.db_step), 0, 255).astype(np.uint8)
 
     def noise_density(self, power: np.ndarray, samples: int, offset_hz: float,
-                      rate_hz: float) -> float | None:
+                      rate_hz: float, clearance_hz: float = 0.0) -> float | None:
         """Noise power per hertz ``offset_hz`` from the centre frequency,
         estimated from ``power``, the bins that ``power`` computed from
         ``samples`` samples: the median of the bins within
         ``NOISE_SPAN_HZ / 2``, which the signals among them barely move.
-        None when too few of these bins lie in the span."""
-        bin_hz = rate_hz / self.fft_size
-        middle = self.fft_size / 2 + offset_hz / bin_hz
+        With ``clearance_hz``, for a channel wide enough to fill those bins,
+        the median of the bins from ``clearance_hz`` to ``clearance_hz +
+        NOISE_SPAN_HZ / 2`` on the quieter side instead: the channel's
+        neighbours may fill the other one. None when too few of these bins
+        lie in the span."""
+        size = self.fft_size
+        bin_hz = rate_hz / size
+        middle = size / 2 + offset_hz / bin_hz
         half = NOISE_SPAN_HZ / 2 / bin_hz
-        low, high = max(0, math.floor(middle - half)), min(self.fft_size, math.ceil(middle + half) + 1)
-        if high - low < MIN_NOISE_BINS:
+
+        def bins(first: int, last: int) -> np.ndarray:
+            # From bin ``first`` to bin ``last``, both included, those of the span.
+            return power[min(size, max(0, first)):min(size, max(0, last + 1))]
+
+        if clearance_hz > 0:
+            inner = clearance_hz / bin_hz
+            sides = (bins(math.floor(middle - inner - half), math.floor(middle - inner)),
+                     bins(math.ceil(middle + inner), math.ceil(middle + inner + half)))
+        else:
+            sides = (bins(math.floor(middle - half), math.ceil(middle + half)),)
+        medians = [float(np.median(side)) for side in sides if len(side) >= MIN_NOISE_BINS]
+        if not medians:
             return None
         averaged = max(1, min(samples // self.fft_size, self.ffts_per_frame))
         # The median of K averaged periodograms of noise lies below their mean
         # (Wilson-Hilferty approximation of the chi-squared median).
-        mean = float(np.median(power[low:high])) / (1 - 1 / (9 * averaged)) ** 3
+        mean = min(medians) / (1 - 1 / (9 * averaged)) ** 3
         return mean * self.fft_size / (self.enbw * rate_hz)
 
 

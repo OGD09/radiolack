@@ -44,7 +44,7 @@ class BookmarksTest(unittest.TestCase):
             ({"action": "add", **CALLING, "colour": "red"}, "unknown bookmark field: colour"),
             ({"action": "add", **CALLING, "frequency_hz": 0}, "frequency must be a number"),
             ({"action": "add", **CALLING, "frequency_hz": True}, "frequency must be a number"),
-            ({"action": "add", **CALLING, "mode": "WFM"}, "mode must be one of"),
+            ({"action": "add", **CALLING, "mode": "DSB"}, "mode must be one of"),
             ({"action": "add", **CALLING, "scan": "yes"}, "scan setting must be true or false"),
             ({"action": "add", **CALLING, "name": " \n "}, "cannot be empty"),
             ({"action": "add", **CALLING, "name": "x" * (MAX_NAME_CHARS + 1)}, "at most"),

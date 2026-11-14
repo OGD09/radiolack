@@ -7,7 +7,7 @@ import unittest
 from radiolack.server import WEB_DIR
 
 # The interface's demodulators (MODES in main.js).
-MODES = {"NFM", "AM", "USB", "LSB", "CW"}
+MODES = {"NFM", "AM", "USB", "LSB", "CW", "WFM"}
 COLOUR = re.compile(r"#[0-9a-f]{6}")
 REQUIRED_KEYS = {"from", "to", "name", "type"}
 BAND_KEYS = REQUIRED_KEYS | {"short", "mode", "step", "segments"}

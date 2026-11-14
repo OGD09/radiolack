@@ -291,7 +291,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 state = await next_text(ws)
                 self.assertEqual((state["type"], state["frequency_hz"], state["acknowledged"]),
                                  ("demod", 145_010_000.0, acknowledged))
-            await sender.send_json({"type": "demod", "id": 6, "mode": "WFM"})
+            await sender.send_json({"type": "demod", "id": 6, "mode": "DSB"})
             state = await next_text(sender)
             self.assertEqual((state["type"], state["mode"], state["acknowledged"]), ("demod", "NFM", 6))
             error = await next_text(sender)

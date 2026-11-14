@@ -17,8 +17,9 @@ simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
-demodulates NFM, AM, USB, LSB and CW, and the interface plays the audio; the
-Demod panel's CTCSS and processing settings do nothing yet. The engine also
+demodulates NFM, AM, USB, LSB, CW and WFM, broadcast FM in mono, and the
+interface plays the audio; the Demod panel's CTCSS and processing settings
+do nothing yet. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)). Levels are in
@@ -299,9 +300,18 @@ signals to the same level: it takes the gain down as soon as a signal
 arrives and lets it come back at 10 dB per second. AM, SSB and CW audio runs
 from 100 Hz to 5 kHz.
 
+WFM plays broadcast FM in mono, through a filter 180 kHz wide by default,
+from 50 to 250 kHz. Its audio has the European 50 µs de-emphasis and runs
+from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
+the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
+WFM, so tuning into 87.5 to 108 MHz selects it, with Demod > "Mode and step
+from the band plan".
+
 The squelch is automatic by default: it opens 8 dB above the noise around
 the VFO, which the engine estimates from the spectrum, and closes 3 dB
-lower. Unticking "Automatic" sets the threshold by hand, starting from where
+lower. In WFM, whose station fills the spectrum around the VFO, the engine
+reads the noise beyond the channel's edges, on the side that a neighbouring
+station leaves quieter. Unticking "Automatic" sets the threshold by hand, starting from where
 the automatic one stood. The S-meter shows the channel's level in dBFS and
 the threshold, and its bar changes colour while the squelch is open. In
 SSB, whose level follows the voice, the squelch closes between words: a
@@ -380,7 +390,8 @@ The Bookmarks tab's memory scan runs in the engine, the same for every
 interface. It watches every ticked bookmark of the receiver's span at once,
 in the part that detection searches. A bookmark is active when the power
 in its mode's filter would open the squelch, with the squelch's settings:
-8 dB above the noise around it with the automatic squelch. The scan tunes
+8 dB above the noise around it with the automatic squelch, or beyond its
+edges for a WFM bookmark. The scan tunes
 the VFO to the active bookmark furthest above its noise, with the
 bookmark's mode and that mode's usual filter width, and stays while the
 squelch opens within a quarter of a second and stays open. Once the squelch
@@ -600,7 +611,8 @@ lighter spectrum: about 15 frames a second instead of 30, in at most 2048
 bins, each showing the strongest of the bins it groups, so that narrow
 signals stay visible; its waterfall keeps its speed. The stream is also
 compressed, as every current browser offers. With the audio, a device
-receives about 0.3 Mbit/s instead of about 2.2 Mbit/s. Its finest zoom is
+receives about 0.3 Mbit/s instead of about 2.2 Mbit/s; in WFM, about
+0.65 Mbit/s, as its 32 kHz audio takes 0.5 Mbit/s. Its finest zoom is
 coarser: 18.75 kHz wide at 2.4 MS/s, instead of 4.7 kHz. On a slower link,
 the spectrum comes less often and the sound arrives late, by about 5 s at
 0.25 Mbit/s, but no later: Radiolack drops what the link cannot carry.

@@ -191,7 +191,7 @@
     {"from": 70500000, "to": 74800000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
     {"from": 74800000, "to": 75200000, "name": "Marker beacons", "type": "navigation", "mode": "AM"},
     {"from": 75200000, "to": 87500000, "name": "Fixed and mobile", "type": "fixed", "mode": "NFM", "step": 12500},
-    {"from": 87500000, "to": 108000000, "name": "FM broadcast", "short": "FM", "type": "broadcast", "step": 50000},
+    {"from": 87500000, "to": 108000000, "name": "FM broadcast", "short": "FM", "type": "broadcast", "mode": "WFM", "step": 50000},
     {"from": 108000000, "to": 117975000, "name": "Aeronautical navigation (VOR, ILS)", "short": "VOR, ILS", "type": "navigation", "mode": "AM", "step": 50000},
     {"from": 117975000, "to": 137000000, "name": "Airband", "type": "aeronautical", "mode": "AM", "step": 8333.333333333334},
     {"from": 137000000, "to": 138000000, "name": "Weather and other satellites", "short": "Satellites", "type": "satellite"},

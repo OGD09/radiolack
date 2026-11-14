@@ -21,7 +21,9 @@ signals found in each search are what the engine records as observations
 The memory scan watches the ticked bookmarks within the part of the span
 that detection searches (``watched_channels``), all at once, in every block:
 ``ChannelWatch`` gives each one's power, in the passband of its mode's
-filter, and the local noise there, from the same bin powers. ``MemoryScan``
+filter, and the local noise there, from the same bin powers; for a WFM
+channel, which fills the bins around it, the local noise beyond its edges,
+as the squelch reads it. ``MemoryScan``
 follows the scan: it tunes to the strongest channel that would open the
 squelch, checks that the squelch opens there, listens while it stays open,
 waits the resume time once it closes, then watches them all again. With a
@@ -54,7 +56,7 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
 from .bookmarks import Bookmark
-from .demod import MODE_BANDWIDTHS_HZ, passband_hz
+from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
 SCANNERS = ("peaks", "memory", "history", "sweep")   # what the engine runs, as the hello lists it
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
@@ -320,13 +322,15 @@ class Signals:
 @dataclasses.dataclass(frozen=True)
 class Channel:
     """A ticked bookmark that the memory scan watches, with the passband of
-    its mode's filter, in Hz."""
+    its mode's filter and how far from its frequency its noise is read
+    (``demod.noise_clearance_hz``), in Hz."""
 
     bookmark_id: int
     frequency_hz: float
     mode: str
     low_hz: float
     high_hz: float
+    clearance_hz: float
 
 
 def watched_channels(ticked: Iterable[tuple[int, Bookmark]], centre_hz: float,
@@ -338,9 +342,11 @@ def watched_channels(ticked: Iterable[tuple[int, Bookmark]], centre_hz: float,
     channels = []
     for bookmark_id, bookmark in ticked:
         if DC_GAP_HZ < abs(bookmark.frequency_hz - centre_hz) <= USABLE_FRACTION * rate_hz:
-            low, high = passband_hz(bookmark.mode, MODE_BANDWIDTHS_HZ[bookmark.mode])
+            width = MODE_BANDWIDTHS_HZ[bookmark.mode]
+            low, high = passband_hz(bookmark.mode, width)
             channels.append(Channel(bookmark_id, bookmark.frequency_hz, bookmark.mode,
-                                    bookmark.frequency_hz + low, bookmark.frequency_hz + high))
+                                    bookmark.frequency_hz + low, bookmark.frequency_hz + high,
+                                    noise_clearance_hz(bookmark.mode, width)))
     return tuple(channels)
 
 
@@ -349,7 +355,10 @@ class ChannelWatch:
     block's power in each channel's passband, so that a channel shows as
     soon as it becomes active, and the local noise in the passband, as
     detection finds it, in the bin powers averaged over ``blocks`` blocks of
-    one capture. One thread at a time uses it."""
+    one capture; for a channel whose noise is read beyond a clearance, the
+    local noise NOISE_SPAN_HZ / 2 past it on the quieter side, as the
+    squelch reads it (``SpectrumAnalyzer.noise_density``), over as many
+    bins as its passband. One thread at a time uses it."""
 
     def __init__(self, blocks: int = DETECTION_BLOCKS) -> None:
         if blocks < 1:
@@ -358,20 +367,23 @@ class ChannelWatch:
         self._sum: np.ndarray | None = None
         self._count = 0
         self._capture: tuple[float, float, int] | None = None
-        self._noise: np.ndarray | None = None     # running sums of the local noise's bin powers, from 0
+        self._local: np.ndarray | None = None     # the local noise's bin powers
+        self._noise: np.ndarray | None = None     # their running sums, from 0
 
     def reset(self) -> None:
         """Forget the blocks and the noise found so far."""
         self._sum = None
         self._count = 0
+        self._local = None
         self._noise = None
 
     def levels(self, power: np.ndarray, centre_hz: float, rate_hz: float, bands: np.ndarray,
                enbw: float) -> tuple[np.ndarray, np.ndarray] | None:
         """Each band's power and noise, in dBFS, in a block of bin powers:
-        ``bands`` holds one channel's lowest and highest frequency per row,
-        and ``enbw`` is the FFT window's noise bandwidth in bins. None until
-        the noise is known, ``blocks`` blocks after a new capture."""
+        ``bands`` holds one channel per row, its lowest and highest
+        frequency and the clearance of its noise (``Channel``), and
+        ``enbw`` is the FFT window's noise bandwidth in bins. None until the
+        noise is known, ``blocks`` blocks after a new capture."""
         size = len(power)
         capture = (centre_hz, rate_hz, size)
         if capture != self._capture:
@@ -381,11 +393,11 @@ class ChannelWatch:
         self._count += 1
         if self._count >= self._blocks:
             db = 10 * np.log10(np.maximum(self._sum / self._count, LEVEL_FLOOR))
-            noise = 10 ** (local_noise(db, rate_hz / size) / 10)
-            self._noise = np.concatenate(([0.0], np.cumsum(noise)))
+            self._local = 10 ** (local_noise(db, rate_hz / size) / 10)
+            self._noise = np.concatenate(([0.0], np.cumsum(self._local)))
             self._sum = None
             self._count = 0
-        if self._noise is None:
+        if self._local is None or self._noise is None:
             return None
         bin_hz = rate_hz / size
         first_hz = centre_hz - rate_hz / 2          # the first bin's centre
@@ -394,7 +406,20 @@ class ChannelWatch:
         high = np.clip(np.ceil((bands[:, 1] - first_hz) / bin_hz), low + 1, size).astype(np.intp)
         sums = np.concatenate(([0.0], np.cumsum(power, dtype=np.float64)))
         channel = np.maximum((sums[high] - sums[low]) / enbw, LEVEL_FLOOR)
-        noise = np.maximum((self._noise[high] - self._noise[low]) / enbw, LEVEL_FLOOR)
+        noise = (self._noise[high] - self._noise[low]) / enbw
+        clearance = bands[:, 2]
+        clear = clearance > 0
+        if clear.any():
+            # The local noise at a bin is the median of the NOISE_SPAN_HZ
+            # around it: this far from the middle, of the bins just past
+            # the clearance.
+            middle = (bands[clear, 0] + bands[clear, 1]) / 2
+            reach = clearance[clear] + NOISE_SPAN_HZ / 2
+            below = np.clip(np.rint((middle - reach - first_hz) / bin_hz), 0, size - 1).astype(np.intp)
+            above = np.clip(np.rint((middle + reach - first_hz) / bin_hz), 0, size - 1).astype(np.intp)
+            quieter = np.minimum(self._local[below], self._local[above])
+            noise[clear] = quieter * (high[clear] - low[clear]) / enbw
+        noise = np.maximum(noise, LEVEL_FLOOR)
         return 10 * np.log10(channel), 10 * np.log10(noise)
 
 

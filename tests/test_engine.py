@@ -26,7 +26,7 @@ from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECT
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
 from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, FakeRtlTcp, FakeSource, FakeUpdates,
-                         free_port)
+                         free_port, wide_signal)
 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
@@ -292,7 +292,7 @@ class DemodulationTest(unittest.IsolatedAsyncioTestCase):
         sender, other = self.engine.subscribe(), self.engine.subscribe()
         waiting(sender), waiting(other)
         with self.assertRaisesRegex(ValueError, "the mode must be one of"):
-            self.engine.configure_demod({"bandwidth_hz": 6_000, "mode": "WFM"}, sender, 3)
+            self.engine.configure_demod({"bandwidth_hz": 6_000, "mode": "DSB"}, sender, 3)
         state = sender.get_nowait()
         self.assertEqual((state["mode"], state["bandwidth_hz"], state["acknowledged"]), ("NFM", 10_000.0, 3))
         self.assertFalse(any(isinstance(message, dict) for message in waiting(other)))
@@ -543,7 +543,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
         self.write(SETTINGS_FILE, {"receivers": {"test": {
             "source": {"dc_removal": "no", "centre_hz": 433e6},    # the test source has no centre to set
-            "demod": {"frequency_hz": 145_010_000, "mode": "WFM", "squelch_db": None,
+            "demod": {"frequency_hz": 145_010_000, "mode": "DSB", "squelch_db": None,
                       "bandwidth_hz": 10 ** 400}}},     # a whole number too large for a float
             "interface": {"volume": 40, "nested": {"a": 1}, "": 1, "text": "x" * 101}})
         with self.assertLogs("radiolack", "WARNING") as logs:
@@ -1328,6 +1328,73 @@ class MemoryScanTest(unittest.IsolatedAsyncioTestCase):
         reads = source.reads
         await asyncio.sleep(0.1)
         self.assertLessEqual(source.reads, reads + 1)
+
+
+STATION_HZ = 250_000.0      # WideSource's station, from its centre frequency
+
+
+class WideSource(FakeSource):
+    """A fake source fast enough for WFM's 320 kHz channel, with a station
+    STATION_HZ above its centre frequency that fills 150 kHz, 20 dB above
+    white noise of -60 dBFS, as broadcast FM does."""
+
+    sample_rate_hz = 4 * FAKE_RATE_HZ
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rng = np.random.default_rng(6)
+
+    async def read(self, count: int) -> np.ndarray | None:
+        await asyncio.sleep(0.005)
+        self.reads += 1
+        noise = (self._rng.normal(size=count) + 1j * self._rng.normal(size=count)) * math.sqrt(1e-6 / 2)
+        station = wide_signal(count, self.sample_rate_hz, STATION_HZ, 100 * 1e-6 / self.sample_rate_hz, self._rng)
+        return (noise + station).astype(np.complex64)
+
+
+class WfmTest(unittest.IsolatedAsyncioTestCase):
+    """WFM in the engine: the automatic squelch and the memory scan read the
+    noise beyond a WFM channel, which a station fills."""
+
+    def engine(self) -> Engine:
+        engine = Engine(WideSource())
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def test_the_automatic_squelch_opens_on_a_station_and_not_on_the_noise(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        # 8 dB above the noise in the 180 kHz channel.
+        threshold = 10 * math.log10(1e-6 * 180_000 / WideSource.sample_rate_hz) + 8.0
+        for offset, station in ((STATION_HZ, True), (-STATION_HZ, False)):
+            with self.subTest(offset=offset):
+                engine.configure_demod({"frequency_hz": FAKE_CENTRE_HZ + offset, "mode": "WFM"})
+                for _ in range(30):     # frames computed before the change come first
+                    *_, level, squelch = FRAME_HEADER.unpack_from(await next_frame(subscription))
+                    if abs(squelch - threshold) < 1.0 and (level > threshold) == station:
+                        break
+                _, _, flags, *_, level, squelch = FRAME_HEADER.unpack_from(await next_frame(subscription))
+                self.assertAlmostEqual(squelch, threshold, delta=1.0)
+                self.assertEqual(level > threshold + 10.0, station)
+                self.assertEqual(bool(flags & FLAG_SQUELCH_OPEN), station)
+
+    async def test_the_memory_scan_stops_on_a_wfm_bookmark_with_a_station(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        station, _ = MemoryScanTest.bookmarks(engine, [(STATION_HZ, "WFM", True), (-STATION_HZ, "WFM", True)])
+        engine.configure_scanner({"scan": "memory"})
+        state = await asyncio.wait_for(next_scanner(subscription, until=in_state("listening")), timeout=10)
+        self.assertEqual(state["memory"]["bookmark_id"], station)
+        demod = engine.demod_state()
+        self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]),
+                         (FAKE_CENTRE_HZ + STATION_HZ, "WFM", 180_000.0))
 
 
 SWEEP_HZ = (145_000_000.0, 145_200_000.0)

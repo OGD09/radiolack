@@ -1,18 +1,20 @@
 """Demodulation of one channel: the VFO's signal, its level, the squelch and
-its audio at 12 kHz, in NFM, AM, USB, LSB and CW.
+its audio at 12 kHz, in NFM, AM, USB, LSB and CW, or at 32 kHz in WFM.
 
 The receiver's samples go through three FFT filters (dsp.FftFilter). The
 front filter brings the VFO's frequency to 0 Hz, or in CW to the CW pitch,
-and the rate down to 48 kHz; the channel filter keeps the mode's passband,
-whose power is the channel level; after the mode's detector, the audio
-filter keeps the audio band and brings the rate down to 12 kHz. NFM goes
-through the FM discriminator, then a de-emphasis and a high-pass filter
-against CTCSS tones; AM through an envelope detector that follows the
-carrier's level; USB, LSB and CW through the channel's real part, which is
-the sideband's audio, under an AGC. The squelch compares the channel level
-with a threshold, set by hand or, automatically, 8 dB above the noise that
-the spectrum shows around the VFO; it opens and closes in 5 ms fades, in
-step with the audio.
+and the rate down to 48 kHz, or to 320 kHz in WFM; the channel filter keeps
+the mode's passband, whose power is the channel level; after the mode's
+detector, the audio filter keeps the audio band and brings the rate down to
+12 kHz, or to 32 kHz in WFM. NFM goes through the FM discriminator, then a
+de-emphasis and a high-pass filter against CTCSS tones; WFM, broadcast FM
+in mono, through the same discriminator, then a 50 µs de-emphasis and a
+low-pass filter at 15 kHz, below the stereo pilot; AM through an envelope
+detector that follows the carrier's level; USB, LSB and CW through the
+channel's real part, which is the sideband's audio, under an AGC. The
+squelch compares the channel level with a threshold, set by hand or,
+automatically, 8 dB above the noise that the spectrum shows around the VFO;
+it opens and closes in 5 ms fades, in step with the audio.
 """
 
 from __future__ import annotations
@@ -28,13 +30,17 @@ import numpy as np
 
 from .dsp import FftFilter, lowpass, rate_ratio, shaped
 
-MODES = ("NFM", "AM", "USB", "LSB", "CW")
+MODES = ("NFM", "AM", "USB", "LSB", "CW", "WFM")
 AUDIO_MODES = MODES                 # every mode plays
 CHANNEL_RATE_HZ = 48_000.0
+WFM_CHANNEL_RATE_HZ = 320_000.0     # WFM: room for its widest channel
 AUDIO_DECIMATION = 4                # 12 kHz audio
+WFM_AUDIO_DECIMATION = 10           # WFM: 32 kHz audio, which holds broadcast's 15 kHz
 BANDWIDTH_RANGE_HZ = (100.0, 25_000.0)
+WFM_BANDWIDTH_RANGE_HZ = (50_000.0, 250_000.0)
 # Each mode's filter width once tuned to a bookmark, as the interface's (main.js MODES).
-MODE_BANDWIDTHS_HZ = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0}
+MODE_BANDWIDTHS_HZ = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0,
+                      "WFM": 180_000.0}
 SQUELCH_RANGE_DB = (-160.0, 0.0)
 SQUELCH_MARGIN_DB = 8.0             # automatic squelch: noise + 8 dB
 SQUELCH_HYSTERESIS_DB = 3.0         # closes this far below the threshold
@@ -45,12 +51,18 @@ DEEMPHASIS_S = 750e-6               # NFM de-emphasis, -6 dB per octave above 21
 DEEMPHASIS_REFERENCE_HZ = 1_000.0   # unit gain there
 NFM_HIGH_PASS_HZ = 280.0            # removes CTCSS tones (up to 250.3 Hz)
 NFM_LOW_PASS_HZ = 3_500.0
+WFM_MAX_DEVIATION_HZ = 75_000.0     # WFM: full-scale audio, broadcast's peak deviation
+WFM_DEEMPHASIS_S = 50e-6            # WFM de-emphasis in Europe, -6 dB per octave above 3.2 kHz
+WFM_HIGH_PASS_HZ = 40.0             # WFM: removes the offset of a station tuned beside its centre
+WFM_LOW_PASS_HZ = 15_000.0          # WFM: broadcast's audio, without the 19 kHz stereo pilot
 AUDIO_HIGH_PASS_HZ = 100.0          # AM, SSB and CW: no hum, nothing left of a carrier
 AUDIO_LOW_PASS_HZ = 5_000.0         # AM, SSB and CW: below the 6 kHz that 12 kHz audio holds
 AUDIO_TRANSITION_HZ = 60.0
 AUDIO_ATTENUATION_DB = 45.0
 FRONT_CUTOFF_HZ = 20_000.0          # flat to 16 kHz, -70 dB from 24 kHz
 FRONT_TRANSITION_HZ = 8_000.0
+WFM_FRONT_CUTOFF_HZ = 142_500.0     # WFM: flat to 125 kHz, -70 dB from 160 kHz
+WFM_FRONT_TRANSITION_HZ = 35_000.0
 CHANNEL_ATTENUATION_DB = 70.0
 CW_PITCH_HZ = 700.0                 # a carrier on the VFO sounds at this pitch in CW
 AM_WINDOW_S = 0.010                 # AM: the carrier's level, over the 10 ms before and after each sample
@@ -79,7 +91,12 @@ class DemodSettings:
 
     def changed(self, changes: Mapping[str, object]) -> DemodSettings:
         """These settings with ``changes`` applied; raises ValueError, naming
-        the first refused one, when any is."""
+        the first refused one, when any is. The filter width must suit the
+        mode that the changes leave: a mode that the current width does not
+        suit, into or out of WFM, takes its usual width unless the changes
+        give one."""
+        mode = changes.get("mode", self.mode)
+        width_range = bandwidth_range_hz(mode if isinstance(mode, str) and mode in MODES else self.mode)
         values: dict[str, Any] = {}
         for name, value in changes.items():
             if name == "frequency_hz":
@@ -89,7 +106,7 @@ class DemodSettings:
                     raise ValueError(f"the mode must be one of {', '.join(MODES)}")
                 values[name] = value
             elif name == "bandwidth_hz":
-                values[name] = _number(value, "the filter width", *BANDWIDTH_RANGE_HZ)
+                values[name] = _number(value, "the filter width", *width_range)
             elif name == "squelch_db":
                 values[name] = _number(value, "the squelch threshold", *SQUELCH_RANGE_DB)
             elif name == "squelch_auto":
@@ -98,12 +115,28 @@ class DemodSettings:
                 values[name] = value
             else:
                 raise ValueError(f"unknown demodulator setting: {name}")
+        low, high = width_range
+        if "bandwidth_hz" not in values and not low <= self.bandwidth_hz <= high:
+            values["bandwidth_hz"] = MODE_BANDWIDTHS_HZ[values.get("mode", self.mode)]
         return dataclasses.replace(self, **values)
 
     def describe(self) -> dict[str, Any]:
         return {"frequency_hz": self.frequency_hz, "mode": self.mode,
                 "bandwidth_hz": self.bandwidth_hz, "squelch_db": self.squelch_db,
                 "squelch_auto": self.squelch_auto}
+
+
+def bandwidth_range_hz(mode: str) -> tuple[float, float]:
+    """The filter widths that ``mode`` takes: WFM's are wider than the others'."""
+    return WFM_BANDWIDTH_RANGE_HZ if mode == "WFM" else BANDWIDTH_RANGE_HZ
+
+
+def noise_clearance_hz(mode: str, bandwidth_hz: float) -> float:
+    """How far from the VFO the automatic squelch's noise estimate starts: in
+    WFM beyond the channel's edges, since a station fills the bins around
+    the VFO; at the VFO in the other modes, whose channel barely moves the
+    median of the bins around it."""
+    return bandwidth_hz / 2 if mode == "WFM" else 0.0
 
 
 def _number(value: object, what: str, low: float, high: float) -> float:
@@ -154,14 +187,22 @@ def channel_taps(mode: str, bandwidth_hz: float, rate_hz: float) -> np.ndarray:
 
 def audio_taps(mode: str, rate_hz: float) -> np.ndarray:
     """The audio filter at the channel rate. NFM: de-emphasis with unit gain
-    at 1 kHz, high-pass at 280 Hz and low-pass at 3.5 kHz. The other modes:
-    high-pass at 100 Hz and low-pass at 5 kHz."""
+    at 1 kHz, high-pass at 280 Hz and low-pass at 3.5 kHz. WFM: de-emphasis
+    with unit gain at the lowest frequencies, as receivers apply it,
+    high-pass at 40 Hz and low-pass at 15 kHz. The other modes: high-pass at
+    100 Hz and low-pass at 5 kHz."""
     if mode == "NFM":
         corner = 1 / (2 * math.pi * DEEMPHASIS_S)
 
         def response(frequency: np.ndarray) -> np.ndarray:
             deemphasis = np.sqrt((1 + (DEEMPHASIS_REFERENCE_HZ / corner) ** 2) / (1 + (frequency / corner) ** 2))
             return deemphasis * ((frequency >= NFM_HIGH_PASS_HZ) & (frequency <= NFM_LOW_PASS_HZ))
+    elif mode == "WFM":
+        corner = 1 / (2 * math.pi * WFM_DEEMPHASIS_S)
+
+        def response(frequency: np.ndarray) -> np.ndarray:
+            deemphasis = 1 / np.sqrt(1 + (frequency / corner) ** 2)
+            return deemphasis * ((frequency >= WFM_HIGH_PASS_HZ) & (frequency <= WFM_LOW_PASS_HZ))
     else:
         def response(frequency: np.ndarray) -> np.ndarray:
             return ((frequency >= AUDIO_HIGH_PASS_HZ) & (frequency <= AUDIO_LOW_PASS_HZ)).astype(np.float64)
@@ -175,11 +216,13 @@ class Demodulator:
 
     def __init__(self) -> None:
         self._rate_hz: float | None = None
+        self._wide = False                  # in WFM, at its channel rate
         self._front: FftFilter | None = None
         self._channel: FftFilter | None = None
         self._channel_key: tuple[str, float, float] | None = None
         self._noise_bandwidth_hz = 0.0
         self.channel_rate_hz = CHANNEL_RATE_HZ
+        self._decimation = AUDIO_DECIMATION
         self._window = 1
         self._powers = np.zeros(0)          # the last channel powers, for the moving average
         self._open = False
@@ -188,7 +231,7 @@ class Demodulator:
 
     @property
     def audio_rate_hz(self) -> float:
-        return self.channel_rate_hz / AUDIO_DECIMATION
+        return self.channel_rate_hz / self._decimation
 
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool) -> tuple[Meter, np.ndarray | None]:
@@ -197,8 +240,9 @@ class Demodulator:
         the noise power per hertz around the VFO, for the automatic squelch.
         A VFO outside the received band reads nothing and stays silent; a
         receiver slower than the channel rate gives no meter and no audio."""
-        if rate_hz != self._rate_hz:
-            self._start(rate_hz)
+        wide = settings.mode == "WFM"
+        if rate_hz != self._rate_hz or wide != self._wide:
+            self._start(rate_hz, wide)
         if self._front is None or self._channel is None:
             return Meter(None, None, False), None       # too slow a receiver for a channel
         shift_hz = settings.frequency_hz - centre_hz
@@ -228,7 +272,7 @@ class Demodulator:
             self._audio = None
             return meter, None
         if self._audio is None or self._audio.mode != settings.mode:
-            self._audio = _AudioPath(settings.mode, self.channel_rate_hz)
+            self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation)
         sound = self._audio.process(channel, power, gate)
         pcm = np.clip(np.rint(sound * 32767), -32768, 32767).astype("<i2")
         return meter, pcm
@@ -239,18 +283,22 @@ class Demodulator:
         self.position = (self.position + len(pcm)) & 0xFFFFFFFF
         return frame + pcm.tobytes()
 
-    def _start(self, rate_hz: float) -> None:
-        """New receiver rate: a new front filter, and new channel and audio
-        filters if the channel rate changes with it. A receiver slower than
-        the channel rate gives no channel at all."""
-        self._rate_hz = rate_hz
-        if not rate_hz >= CHANNEL_RATE_HZ:
+    def _start(self, rate_hz: float, wide: bool) -> None:
+        """New receiver rate, or into or out of WFM: a new front filter, and
+        new channel and audio filters if the channel rate changes with it. A
+        receiver slower than the channel rate gives no channel at all."""
+        self._rate_hz, self._wide = rate_hz, wide
+        target_hz = WFM_CHANNEL_RATE_HZ if wide else CHANNEL_RATE_HZ
+        self._decimation = WFM_AUDIO_DECIMATION if wide else AUDIO_DECIMATION
+        if not rate_hz >= target_hz:
             self._front = None
             self._open = False
             self._audio = None
             return
-        up, down = rate_ratio(rate_hz, CHANNEL_RATE_HZ)
-        front = lowpass(FRONT_CUTOFF_HZ, FRONT_TRANSITION_HZ, rate_hz, CHANNEL_ATTENUATION_DB)
+        up, down = rate_ratio(rate_hz, target_hz)
+        cutoff_hz, transition_hz = ((WFM_FRONT_CUTOFF_HZ, WFM_FRONT_TRANSITION_HZ) if wide
+                                    else (FRONT_CUTOFF_HZ, FRONT_TRANSITION_HZ))
+        front = lowpass(cutoff_hz, transition_hz, rate_hz, CHANNEL_ATTENUATION_DB)
         self._front = FftFilter(front, rate_hz, up=up, down=down)
         channel_rate = self._front.output_rate_hz
         if self._channel is None or channel_rate != self.channel_rate_hz:
@@ -288,7 +336,7 @@ class Demodulator:
 
 class _AudioPath:
     """A mode's detector, the squelch gate and the audio filter: the channel
-    rate in, the audio rate out.
+    rate in, the audio rate, ``decimation`` times lower, out.
 
     The gate acts on the detector's output, before the audio filter, whose
     long response would otherwise spread the noise around a closing squelch.
@@ -298,19 +346,21 @@ class _AudioPath:
     fades out before the noise that follows a carrier. The AM detector and
     the AGC use that wait to look ahead too."""
 
-    def __init__(self, mode: str, channel_rate_hz: float) -> None:
+    def __init__(self, mode: str, channel_rate_hz: float, decimation: int) -> None:
         self.mode = mode
         window = max(1, round(SQUELCH_WINDOW_S * channel_rate_hz))
         self._fade = max(1, round(FADE_S * channel_rate_hz))
         self._span = window + self._fade
         self._detector: _FmDetector | _AmDetector | _SidebandDetector
         if mode == "NFM":
-            self._detector = _FmDetector(channel_rate_hz, self._span)
+            self._detector = _FmDetector(channel_rate_hz, self._span, MAX_DEVIATION_HZ)
+        elif mode == "WFM":
+            self._detector = _FmDetector(channel_rate_hz, self._span, WFM_MAX_DEVIATION_HZ)
         elif mode == "AM":
             self._detector = _AmDetector(channel_rate_hz, self._span)
         else:
             self._detector = _SidebandDetector(channel_rate_hz, self._span, window)
-        self._filter = FftFilter(audio_taps(mode, channel_rate_hz), channel_rate_hz, up=1, down=AUDIO_DECIMATION)
+        self._filter = FftFilter(audio_taps(mode, channel_rate_hz), channel_rate_hz, up=1, down=decimation)
         self._decisions = np.zeros(self._span)      # the squelch's last decisions
         self._passed = np.zeros(self._fade - 1)     # the gate's last values, for the fades
 
@@ -348,10 +398,10 @@ class _Delay:
 
 class _FmDetector:
     """FM discriminator: the phase step from one channel sample to the next,
-    full scale at 5 kHz of deviation, ``delay`` samples late."""
+    full scale at ``max_deviation_hz``, ``delay`` samples late."""
 
-    def __init__(self, channel_rate_hz: float, delay: int) -> None:
-        self._scale = channel_rate_hz / (2 * math.pi * MAX_DEVIATION_HZ)
+    def __init__(self, channel_rate_hz: float, delay: int, max_deviation_hz: float) -> None:
+        self._scale = channel_rate_hz / (2 * math.pi * max_deviation_hz)
         self._previous = np.complex64(0)
         self._delay = _Delay(delay)
 

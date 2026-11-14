@@ -71,19 +71,19 @@ preferences apart from this computer's.
 
    ```json
    {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
-    "squelch_db": -80.0, "squelch_auto": true, "modes": ["NFM", "AM", "USB", "LSB", "CW"],
-    "audio_modes": ["NFM", "AM", "USB", "LSB", "CW"], "acknowledged": 0}
+    "squelch_db": -80.0, "squelch_auto": true, "modes": ["NFM", "AM", "USB", "LSB", "CW", "WFM"],
+    "audio_modes": ["NFM", "AM", "USB", "LSB", "CW", "WFM"], "acknowledged": 0}
    ```
 
    | Field | Meaning |
    | --- | --- |
    | `frequency_hz` | The VFO, a whole number of Hz. It starts a quarter of the span above the centre frequency. When the span changes, a VFO left outside it moves to its nearest edge; a VFO set outside the span reads nothing and stays silent. |
    | `mode` | One of `modes`. |
-   | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM and CW, above it for USB, below it for LSB. |
+   | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM, CW and WFM, above it for USB, below it for LSB. |
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
-   | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. |
+   | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. In WFM, whose channel fills those bins, it takes the median of the bins from the channel's edge to 100 kHz beyond it, on the quieter side, as a neighbouring station may fill the other. |
    | `modes` | The modes the engine takes. |
-   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All five for now. |
+   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All six for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
 
 4. Then the bookmarks, a JSON text message, sent again whenever they
@@ -138,10 +138,12 @@ preferences apart from this computer's.
 
    The memory scan watches every ticked bookmark of the span at once, in
    every block of samples: the power in the passband of its mode's filter,
-   once tuned (NFM 10 kHz, AM 8 kHz, USB and LSB 2.7 kHz, CW 500 Hz; USB
-   above the frequency, LSB below it, the others around it), against the
-   local noise there, as detection finds it, which the engine knows 10
-   blocks after the scan starts or the span changes. A bookmark is active
+   once tuned (NFM 10 kHz, AM 8 kHz, USB and LSB 2.7 kHz, CW 500 Hz, WFM
+   180 kHz; USB above the frequency, LSB below it, the others around it),
+   against the local noise there, as detection finds it, or for WFM the
+   local noise beyond the passband's edges, on the quieter side, as the
+   automatic squelch reads it; the engine knows that noise 10 blocks after
+   the scan starts or the span changes. A bookmark is active
    when its power would open the
    squelch, with its settings: 8 dB above that noise with the automatic
    squelch, `squelch_db` otherwise. While watching, the engine tunes the
@@ -359,11 +361,12 @@ preferences apart from this computer's.
     | 8 | float64 | audio rate, Hz |
     | 16 | int16[] | mono samples, full scale 32767 |
 
-    The audio rate is 12 kHz for the usual receiver rates; at an unusual
-    sample rate it comes within 0.5% of it, such as 12026.2 Hz at
-    2345678 Hz. A frame follows the previous one when its position is the
-    previous position plus the previous number of samples; otherwise samples
-    are missing, such as frames the engine dropped for a slow client.
+    The audio rate is 12 kHz, or 32 kHz in WFM, for the usual receiver
+    rates; at an unusual sample rate it comes within 0.5% of it, such as
+    12026.2 Hz at 2345678 Hz. It changes as the mode goes into or out of
+    WFM. A frame follows the previous one when its position is the previous
+    position plus the previous number of samples; otherwise samples are
+    missing, such as frames the engine dropped for a slow client.
 
     In NFM the audio is the FM discriminator's output, full scale at 5 kHz of
     deviation, with a 750 µs de-emphasis (unit gain at 1 kHz), a high-pass
@@ -374,10 +377,14 @@ preferences apart from this computer's.
     with the VFO at 700 Hz in the channel, so that a carrier on the VFO
     sounds at 700 Hz; an AGC brings a steady signal to 0.4 of full scale and
     lets the gain come back at 10 dB per second. AM, USB, LSB and CW audio
-    runs from 100 Hz to 5 kHz. The audio is silent while the squelch is
-    closed, with 5 ms fades, and in the modes not in `audio_modes`. It lags
-    its samples by the filters' delay and the squelch's look-ahead: about
-    40 ms in NFM and AM, 45 ms in USB and LSB, 60 ms in CW.
+    runs from 100 Hz to 5 kHz. In WFM the audio is the FM discriminator's
+    output too, full scale at 75 kHz of deviation, broadcast's peak, with a
+    50 µs de-emphasis (unit gain at the lowest frequencies) and a band from
+    40 Hz to 15 kHz: mono, without the stereo pilot at 19 kHz or what lies
+    above it. The audio is silent while the squelch is closed, with 5 ms
+    fades, and in the modes not in `audio_modes`. It lags its samples by the
+    filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM and
+    WFM, 45 ms in USB and LSB, 60 ms in CW.
 
 13. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
@@ -466,7 +473,7 @@ A `demod` message changes the demodulation settings it names, the same way:
 | --- | --- |
 | `frequency_hz` | The VFO in Hz, from 1 Hz to 100 GHz, rounded to the Hz. Outside the span it reads nothing. |
 | `mode` | One of `modes`. |
-| `bandwidth_hz` | From 100 to 25000 Hz. |
+| `bandwidth_hz` | From 100 to 25000 Hz, or in WFM from 50000 to 250000 Hz: the range of the mode that the message leaves. A new mode that the width in use does not suit, into or out of WFM, takes its width once tuned to a bookmark (NFM 10 kHz, AM 8 kHz, USB and LSB 2.7 kHz, CW 500 Hz, WFM 180 kHz), unless the message gives one. |
 | `squelch_db` | From -160 to 0 dBFS. |
 | `squelch_auto` | `true` or `false`. |
 | `id` | Optional: a whole number from 1 to 2^53 - 1, which the engine returns in `acknowledged`. |
@@ -774,7 +781,11 @@ and later.
   the scanner state's `memory.windows` and `memory.window`, and `stopped`
   may be `range` for the memory scan: an older interface ignores the
   fields it does not know, shows no window, and marks the ticked bookmarks
-  beyond the receiver's reach as outside the span.
+  beyond the receiver's reach as outside the span. On 2026-11-14, the WFM
+  mode, without a new version either: `modes` and `audio_modes` gain WFM,
+  with its filter widths and its 32 kHz audio. An older interface ignores
+  the settings of a mode it does not know, keeping those it shows, and
+  plays the audio at the rate its frames give, as before.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
