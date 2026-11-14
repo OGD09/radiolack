@@ -14,12 +14,12 @@ the history under the tag `v0.1.0`.
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
   `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1, own event loop
-  in a background thread; interface files and the `/stream` WebSocket; remote
-  access's HTTPS listener, a second application with a runner of its own,
-  in the same loop), `remote` (remote access: the local certificate
-  authority, with `cryptography`, the access code, paired devices with
-  their sessions and interface preferences, the private addresses to listen
-  on), `engine`
+  in a background thread; interface files, read once at start, and the
+  `/stream` WebSocket; remote access's HTTPS listener, a second application
+  with a runner of its own, in the same loop), `remote` (remote access: the
+  local certificate authority, with `cryptography`, the access code, paired
+  devices with their sessions and interface preferences, the private
+  addresses to listen on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks, the scanner state, the
   signals found and the update check's findings with clients, sends audio
@@ -118,7 +118,8 @@ the history under the tag `v0.1.0`.
   with the `browser` extra (Playwright, pinned in pyproject.toml) and its
   browsers installed (README.md, Tests).
 - Run without installing: `PYTHONPATH=src python3 -m radiolack` (window) or
-  `--ui none` (address only).
+  `--ui none` (address only). The server reads `web/` at start: restart it
+  to see a change there.
 - Debian package: `python3 packaging/build_deb.py --maintainer "Name <address>"`
   writes `dist/radiolack_VERSION_all.deb` (needs dpkg-deb);
   `tests/test_packaging.py` builds one twice in a temporary folder, compares

@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from . import __version__, window
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
-from .server import LOOPBACK_HOST, LocalServer
+from .server import LOOPBACK_HOST, InterfaceUnreadable, LocalServer
 from .sources import Sources
 from .store import Store, settings_dir
 from .updates import UpdateCheck
@@ -109,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
                              updates=UpdateCheck(), remote_addresses=private_addresses)
+    except InterfaceUnreadable as error:
+        print(f"radiolack: {error}", file=sys.stderr)
+        return 1
     except OSError as error:
         print(f"radiolack: cannot listen on {LOOPBACK_HOST}:{args.port}: "
               f"{error.strerror or error}", file=sys.stderr)

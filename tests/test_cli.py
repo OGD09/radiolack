@@ -214,6 +214,13 @@ class MainTest(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertIn("cannot listen on 127.0.0.1:", err)
 
+    def test_unreadable_interface(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch("radiolack.server.WEB_DIR", Path(folder)):
+            code, out, err = run_main("--ui", "none")
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith(f"radiolack: cannot read the interface: {Path(folder) / 'index.html'}: "),
+                        err)
+
     def test_saves_in_the_settings_folder(self):
         with mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
             code, out, err = run_main("--ui", "none")

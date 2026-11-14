@@ -119,7 +119,9 @@ The `radiolack` command is then `.venv/bin/radiolack`. On Debian and Ubuntu,
 provides aiohttp, cryptography and NumPy from the system, and
 `.venv/bin/pip install --no-build-isolation -e .` then installs without
 downloading anything. To run without installing, use
-`PYTHONPATH=src python3 -m radiolack` from the repository.
+`PYTHONPATH=src python3 -m radiolack` from the repository. Radiolack reads
+its interface's files when it starts: restart it to see a change to
+`src/radiolack/web/`.
 
 ## Usage
 
@@ -653,9 +655,11 @@ Installed from its Debian package, Radiolack checks at each start whether
 its APT repository has a newer version, and then says so at the top of the
 waterfall until you close the notice: the system's software updates, or
 `sudo apt update && sudo apt upgrade`, install it, and it runs once
-Radiolack restarts. Settings > Updates shows what the latest check found,
-checks again on request, and turns the check at start off, a choice saved
-with the settings.
+Radiolack restarts. Until then, Radiolack keeps serving the interface it
+started with, so that a page reloaded meanwhile, in its window or on a
+remote device, still matches it. Settings > Updates shows what the latest
+check found, checks again on request, and turns the check at start off, a
+choice saved with the settings.
 
 The check needs no password and installs nothing. It runs apt as you, with
 Radiolack's APT source alone and none of the system's apt configuration, in

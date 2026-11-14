@@ -9,6 +9,11 @@ interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for an update check and for the observations.
 
+The server reads the interface's files once, when it is made, and serves
+them from memory: a running Radiolack keeps serving the interface it started
+with after a newer package replaced the files, so that a page and its engine
+always come from the same version.
+
 Remote access (remote.py), once this computer's interface or the command
 line turns it on, adds a second web application to the same loop, with a
 runner of its own: it serves the interface and the stream over HTTPS on
@@ -26,6 +31,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -87,14 +93,60 @@ CONTENT_SECURITY_POLICY = "; ".join((
 # Interface files served next to the page: flat lower-case names only, so a
 # request can never reach a file outside WEB_DIR.
 _FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
-_FILE_ROUTE = r"/{name:[a-z0-9][a-z0-9_-]*\.(?:css|js|json)}"
+_FILE_NAME = r"[a-z0-9][a-z0-9_-]*\.(?:css|js|json)"
+_FILE_ROUTE = rf"/{{name:{_FILE_NAME}}}"
+_PAGES = ("index.html", "pair.html")
 
 
-def create_app(port: int, engine: Engine, remote: RemoteListener) -> web.Application:
+class InterfaceUnreadable(Exception):
+    """The interface's files cannot be read: the message says which, to the user."""
+
+
+class InterfaceFiles:
+    """The interface's pages and the files served next to them, read from
+    ``folder`` once and served from memory. Raises InterfaceUnreadable when
+    one cannot be read."""
+
+    def __init__(self, folder: Path) -> None:
+        try:
+            self._pages = {name: (folder / name).read_bytes() for name in _PAGES}
+            self._files = {path.name: path.read_bytes() for path in folder.iterdir()
+                           if re.fullmatch(_FILE_NAME, path.name) and path.is_file()}
+        except OSError as error:
+            raise InterfaceUnreadable(f"cannot read the interface: {error.filename or folder}: "
+                                      f"{error.strerror or error}") from error
+
+    def page(self, name: str) -> web.Response:
+        """A page of the interface, under its Content-Security-Policy."""
+        return web.Response(
+            body=self._pages[name],
+            content_type="text/html",
+            charset="utf-8",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+            },
+        )
+
+    def file(self, name: str) -> web.Response:
+        """A file served next to the pages; HTTPNotFound for any other name."""
+        body = self._files.get(name)
+        if body is None:
+            raise web.HTTPNotFound()
+        return web.Response(
+            body=body,
+            content_type=_FILE_TYPES[Path(name).suffix],
+            charset="utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+def create_app(port: int, engine: Engine, remote: RemoteListener, interface: InterfaceFiles) -> web.Application:
     """Build the web application for a server listening on ``port``.
 
-    The application runs ``engine`` from its startup to its cleanup, and
-    passes the ``remote`` messages of its interfaces to ``remote``.
+    The application serves ``interface``, runs ``engine`` from its startup
+    to its cleanup, and passes the ``remote`` messages of its interfaces to
+    ``remote``.
     """
     names = (LOOPBACK_HOST, "localhost")
     allowed_hosts = {f"{name}:{port}" for name in names}
@@ -115,7 +167,10 @@ def create_app(port: int, engine: Engine, remote: RemoteListener) -> web.Applica
         return response
 
     async def index(_request: web.Request) -> web.Response:
-        return _page("index.html")
+        return interface.page("index.html")
+
+    async def interface_file(request: web.Request) -> web.Response:
+        return interface.file(request.match_info["name"])
 
     async def stream(request: web.Request) -> web.StreamResponse:
         # Any page may open a WebSocket to any address, but browsers always
@@ -142,7 +197,7 @@ def create_app(port: int, engine: Engine, remote: RemoteListener) -> web.Applica
     app = web.Application(middlewares=[check_host])
     app.router.add_get("/", index)
     app.router.add_get("/stream", stream)
-    app.router.add_get(_FILE_ROUTE, _interface_file)
+    app.router.add_get(_FILE_ROUTE, interface_file)
     app.on_shutdown.append(stop_streams)
     app.cleanup_ctx.append(run_engine)
     return app
@@ -249,35 +304,6 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
     return kind, None
 
 
-# Interface files are read at each request, so that a change shows on reload.
-
-def _page(name: str) -> web.Response:
-    """A page of the interface, under its Content-Security-Policy."""
-    return web.Response(
-        body=(WEB_DIR / name).read_bytes(),
-        content_type="text/html",
-        charset="utf-8",
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
-        },
-    )
-
-
-async def _interface_file(request: web.Request) -> web.Response:
-    path = WEB_DIR / request.match_info["name"]
-    try:
-        body = path.read_bytes()
-    except FileNotFoundError:
-        raise web.HTTPNotFound() from None
-    return web.Response(
-        body=body,
-        content_type=_FILE_TYPES[path.suffix],
-        charset="utf-8",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 def _bind(host: str, port: int) -> socket.socket:
     """Return a listening TCP socket on ``host``, an IPv4 address."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -308,14 +334,15 @@ class RemoteListener:
     off, it refuses every request at once, then closes the remote streams
     and stops listening. ``addresses`` gives the addresses to listen on at
     each turn-on; ``host`` is this computer's mDNS name, without ``.local``,
-    or "" for none."""
+    or "" for none. It serves ``interface``, the local server's."""
 
     def __init__(self, engine: Engine, access: RemoteAccess, addresses: Callable[[], Sequence[str]],
-                 host: str) -> None:
+                 host: str, interface: InterfaceFiles) -> None:
         self._engine = engine
         self._access = access
         self._addresses = addresses
         self._host = host
+        self._interface = interface
         self._runner: web.AppRunner | None = None
         self._sockets: list[socket.socket] = []
         self._serving = False       # on, and not turning off: requests are answered
@@ -483,12 +510,13 @@ class RemoteListener:
 
     async def _index(self, request: web.Request) -> web.Response:
         """The interface for a paired device, the pairing page for another."""
-        return _page("index.html" if self._device(request) is not None else "pair.html")
+        return self._interface.page("index.html" if self._device(request) is not None else "pair.html")
 
     async def _file(self, request: web.Request) -> web.Response:
-        if request.match_info["name"] not in _PAIRING_FILES and self._device(request) is None:
+        name = request.match_info["name"]
+        if name not in _PAIRING_FILES and self._device(request) is None:
             raise web.HTTPForbidden(text="This device is not paired.\n")
-        return await _interface_file(request)
+        return self._interface.file(name)
 
     async def _certificate(self, _request: web.Request) -> web.Response:
         """The local authority's root certificate, which a device installs."""
@@ -600,8 +628,10 @@ def _no_addresses() -> list[str]:
 class LocalServer:
     """Serve the interface on the loopback interface from a background thread.
 
-    The port is bound in the constructor, so a busy port raises ``OSError``
-    before anything starts. Use it as a context manager: entering starts the
+    The constructor reads the interface's files, then binds the port, so
+    that an unreadable file raises InterfaceUnreadable and a busy port
+    ``OSError`` before anything starts; the server serves the files as they
+    were read, until it stops. Use it as a context manager: entering starts the
     server, leaving stops it. The engine reads ``source``, or without one the
     source that ``sources`` opened last, and closes it when the server stops;
     with ``sources``, an interface may switch to another kind of source.
@@ -625,6 +655,7 @@ class LocalServer:
         self._updates = updates
         self._remote_addresses = remote_addresses if remote_addresses is not None else _no_addresses
         self._host = host_name() if host is None else host
+        self._interface = InterfaceFiles(WEB_DIR)
         self._sock = _bind(LOOPBACK_HOST, port)
         self.port: int = self._sock.getsockname()[1]
         self.url = f"http://{LOOPBACK_HOST}:{self.port}/"
@@ -704,9 +735,9 @@ class LocalServer:
         source = SyntheticBand() if self._source is None and self._sources is None else self._source
         access = RemoteAccess()
         engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access)
-        remote = RemoteListener(engine, access, self._remote_addresses, self._host)
+        remote = RemoteListener(engine, access, self._remote_addresses, self._host, self._interface)
         self._access, self._remote = access, remote
-        runner = web.AppRunner(create_app(self.port, engine, remote), handle_signals=False)
+        runner = web.AppRunner(create_app(self.port, engine, remote, self._interface), handle_signals=False)
         await runner.setup()
         try:
             await web.SockSite(runner, self._sock).start()
