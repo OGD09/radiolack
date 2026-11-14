@@ -55,6 +55,15 @@ The check runs apt as the current user, with Radiolack's APT source alone,
 in a temporary folder, and installs nothing.
 It is the only connection Radiolack makes besides the receiver and its
 interfaces, and it carries no identifier.
+.PP
+The Debian package also installs a systemd service, which it never enables
+or starts, for a computer without a display next to the receiver:
+\fBsystemctl enable \-\-now radiolack\fR runs
+\fBradiolack \-\-ui none \-\-rtl\-sdr \-\-remote \-\-port 8080\fR from boot,
+as a user of its own, within systemd's sandbox.
+Its output, the access code included, goes to the system's journal
+(\fBjournalctl \-u radiolack\fR), and \fBsystemctl edit radiolack\fR
+changes its command.
 .SH OPTIONS
 .TP
 \fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR
@@ -135,6 +144,14 @@ Radiolack's APT source, which the package adds with the repository's key,
 \fI/etc/apt/keyrings/radiolack\-archive\-keyring.gpg\fR.
 With \fBEnabled: no\fR, apt no longer uses the repository, and Radiolack no
 longer checks for updates.
+.TP
+\fI/usr/lib/systemd/system/radiolack.service\fR
+The service, which the package never enables or starts.
+.TP
+\fI/var/lib/radiolack\fR
+The service's settings folder, in place of \fI$XDG_CONFIG_HOME/radiolack\fR,
+which only the service and root read, and which purging the package
+removes.
 .PP
 Without \fBXDG_CONFIG_HOME\fR, or when it is not an absolute path, the
 folder is \fI~/.config/radiolack\fR.
@@ -146,4 +163,6 @@ Radiolack starts from its defaults.
 \fB\-\-remote\fR cannot turn remote access on;
 2 for an invalid option.
 .SH SEE ALSO
-.BR rtl_tcp (1)
+.BR rtl_tcp (1),
+.BR systemctl (1),
+.BR journalctl (1)

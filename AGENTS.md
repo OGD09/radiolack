@@ -97,7 +97,11 @@ the history under the tag `v0.1.0`.
   the package's key and pushes once the owner agrees), `radiolack.sources`
   and `radiolack-archive-keyring.gpg` (the APT source and the owner's public
   key, which the package installs as conffiles in /etc/apt; README.md gives
-  the key's fingerprint, which the tests check), `radiolack.desktop` (menu
+  the key's fingerprint, which the tests check), `radiolack.service` (the
+  systemd service, under a dynamic user in systemd's sandbox, which the
+  package installs in /usr/lib/systemd/system and never enables or starts;
+  `build_deb.py` writes the maintainer scripts that debhelper would, and
+  the tests pin the unit's sandbox), `radiolack.desktop` (menu
   entry), `radiolack.svg` (icon) and
   `copyright` (the package's licence notice). The window's program name,
   `window.PROGRAM`, matches the menu entry's and the icon's names: change
@@ -155,7 +159,9 @@ the history under the tag `v0.1.0`.
   there, checks that apt reads its APT source, runs it (`smoke_test.py
   --window --check-updates --remote` under Xvfb: its update check reads the
   published APT repository, and remote access listens on the container's
-  network), removes it (its source and key stay) and purges it
+  network), checks that it installs its service without enabling it,
+  removes it (its source and key, and the service's enabling and state,
+  stay) and purges it
   on Debian 12 and 13
   and Ubuntu 24.04 and 26.04, with lintian on Debian 13, when the package or
   packaging change; `workflows.yml` runs actionlint
@@ -193,6 +199,12 @@ the history under the tag `v0.1.0`.
   simulated band.
 - Never install, upgrade or remove the Debian package, or any system
   package: that needs sudo, which the owner runs.
+- Never enable, start, restart or edit `radiolack.service`, or any other
+  system service: that needs sudo, which the owner runs, and the service
+  opens the receiver and turns remote access on, on the owner's network.
+  The unit is checked with `systemd-analyze` and the tests, which run the
+  maintainer scripts on a copy of the package's files, with stand-ins for
+  the commands that act on this computer.
 - Never use, export or change the owner's GnuPG keys (`~/.gnupg`), never
   sign anything with them and never handle a passphrase: the owner signs
   the APT repository. Tests and checks sign with throwaway keys in a

@@ -62,9 +62,12 @@ class Store:
     def location(self) -> str:
         """The folder, as the interfaces show it."""
         try:
-            return f"~/{self.directory.relative_to(Path.home()).as_posix()}"
+            home = Path.home()
+            relative = self.directory.relative_to(home)
         except (ValueError, RuntimeError):     # outside the home folder, or no home folder
             return str(self.directory)
+        # A user without a home folder, such as the service's, has the root as its home.
+        return str(self.directory) if home == home.parent else f"~/{relative.as_posix()}"
 
     @property
     def saving(self) -> bool:

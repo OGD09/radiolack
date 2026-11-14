@@ -920,12 +920,44 @@ Decisions).
   busy port on a new address, tried again until free; nothing followed
   once off. A browser test shows Settings while remote access listens
   nowhere.
+- The service, 2026-11-14, v3's fourth pull request: the package installs
+  `packaging/radiolack.service` in /usr/lib/systemd/system, where lintian
+  on Debian 13 wants units, and `build_deb.py` writes out the maintainer
+  scripts that debhelper's `dh_installsystemd --no-enable --no-start`
+  would: postinst records the unit's links with deb-systemd-helper, enables
+  it again after an upgrade only when the administrator had, reloads
+  systemd and, after an upgrade, restarts it when it runs (`try-restart`);
+  prerm stops it before a removal; postrm reloads systemd after a removal
+  and, when purged, removes its links and its state directory, both
+  `/var/lib/private/radiolack` and the `/var/lib/radiolack` link that
+  `DynamicUser` makes. The sandbox needed one exception: setpriv, which
+  stops rtl_tcp with Radiolack, calls capset even for `--pdeathsig` alone,
+  which `~@privileged` refuses; capset is allowed again, harmless without
+  any capability (setpriv was checked with every capability set empty).
+  The whole test suite passes under the unit's sandbox in user mode
+  (`systemd-run --user`), apart from what user mode cannot give: the
+  dynamic user, plugdev, the device policy and the dropped capabilities;
+  `systemd-analyze security` rates it 1.7 (OK) on systemd 252. A user
+  without a home folder, as the service's, has / as its home, so that
+  Settings showed `~/var/lib/radiolack`: it now shows the whole folder.
+  README.md says that the interface on 127.0.0.1:8080 answers every
+  account of that computer, as Radiolack's does on any computer. The tests
+  check the unit's file and sandbox, run `systemd-analyze verify` where it
+  is, and run the maintainer scripts on a copy of the package's files: the
+  system's deb-systemd-helper with `DPKG_ROOT` for the links and the purge,
+  stand-ins for the commands that act on this computer for the restart and
+  the stop. package.yml checks the unit installed and not enabled, and the
+  enabling and state kept by the removal and removed by the purge. The
+  owner checks the sandbox with the receiver, the start at boot and the
+  restart after an upgrade.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3's next pull requests, from the
-  service's unit and the package's scripts, in the order of its decisions.
+  receiver (see Milestones), and v3's next pull requests, from the audio's
+  recording, in the order of its decisions. That pull request also gives
+  the unit `XDG_DATA_HOME=%S`, so that the service's recordings go to
+  `/var/lib/radiolack/recordings`, which the purge already removes.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

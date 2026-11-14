@@ -7,7 +7,8 @@ libraries (aiohttp, cryptography, NumPy, PyGObject, GTK 3 and WebKitGTK),
 with the ``radiolack`` command, its manual page, a menu entry, an icon, and
 the changelog and licence notice that Debian keeps in /usr/share/doc/radiolack.
 It also adds Radiolack's APT repository, its source and its key, so that apt
-keeps Radiolack up to date.
+keeps Radiolack up to date, and a systemd service, radiolack.service, which
+it never enables or starts: the administrator does.
 Building needs only Python and dpkg-deb, as found on Debian and Ubuntu:
 
     python3 packaging/build_deb.py --maintainer "Name <address>"
@@ -58,6 +59,9 @@ CONFFILES = {
     f"etc/apt/sources.list.d/{PACKAGE}.sources": f"{PACKAGE}.sources",
     f"etc/apt/keyrings/{KEYRING}": KEYRING,
 }
+# The service, from packaging/, where systemd reads the units of packages.
+SERVICE = f"{PACKAGE}.service"
+UNIT_FOLDER = "usr/lib/systemd/system"
 # Lintian flags every package that adds an APT source; this one adds its own.
 LINTIAN_OVERRIDES = f"""\
 # The package adds Radiolack's own APT repository, signed with Radiolack's own
@@ -80,10 +84,14 @@ RECOMMENDS = ("rtl-sdr",)      # rtl_tcp, for an RTL-SDR receiver plugged into t
 DESCRIPTION = """\
 Receive-only SDR receiver with band plans
  Radiolack shows the spectrum and the waterfall of an SDR receiver in a
- desktop window and plays NFM, AM, USB, LSB and CW. It reads an RTL-SDR
+ desktop window and plays NFM, AM, USB, LSB, CW and WFM. It reads an RTL-SDR
  receiver plugged into this computer, or one that rtl_tcp serves from
  another computer, and labels every frequency with a simplified European
  band plan, with the IARU Region 1 plans inside the amateur bands.
+ .
+ Phones, tablets and other computers on the local network use it through
+ remote access. A systemd service, which the package never enables, runs it
+ on a computer without a display, next to the receiver.
 """
 
 LAUNCHER = """\
@@ -97,21 +105,56 @@ from radiolack.cli import main
 sys.exit(main())
 """
 
-# Byte-compiled with the system's tools, as Debian's Python packages are.
+# Byte-compiled with the system's tools, as Debian's Python packages are. The
+# service is handled with the scripts that Debian's own packages get from
+# debhelper's dh_installsystemd --no-enable --no-start: the package never
+# enables or starts it; it keeps it enabled across upgrades when the
+# administrator enabled it, restarts it after an upgrade when it runs, stops it
+# before its removal and, when purged, forgets its enabling. The purge also
+# removes its state directory: under DynamicUser, systemd keeps it in
+# /var/lib/private/radiolack, which /var/lib/radiolack points to.
 POSTINST = f"""\
 #!/bin/sh
 set -e
 if command -v py3compile >/dev/null 2>&1; then
     py3compile -p {PACKAGE}
 fi
+if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigure ] || [ "$1" = abort-remove ]; then
+    if deb-systemd-helper debian-installed {SERVICE}; then
+        if deb-systemd-helper --quiet was-enabled {SERVICE}; then
+            deb-systemd-helper enable {SERVICE} >/dev/null || true
+        fi
+    fi
+    deb-systemd-helper update-state {SERVICE} >/dev/null || true
+    if [ -z "$DPKG_ROOT" ] && [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        if [ -n "$2" ]; then
+            deb-systemd-invoke try-restart {SERVICE} >/dev/null || true
+        fi
+    fi
+fi
 """
 PRERM = f"""\
 #!/bin/sh
 set -e
+if [ -z "$DPKG_ROOT" ] && [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    deb-systemd-invoke stop {SERVICE} >/dev/null || true
+fi
 if command -v py3clean >/dev/null 2>&1; then
     py3clean -p {PACKAGE}
 else
     find /{DIST_PACKAGES}/{PACKAGE} -depth -type d -name __pycache__ -exec rm -rf {{}} +
+fi
+"""
+POSTRM = f"""\
+#!/bin/sh
+set -e
+if [ -z "$DPKG_ROOT" ] && [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl --system daemon-reload >/dev/null || true
+fi
+if [ "$1" = purge ]; then
+    deb-systemd-helper purge {SERVICE} >/dev/null || true
+    rm -rf "$DPKG_ROOT/var/lib/{PACKAGE}" "$DPKG_ROOT/var/lib/private/{PACKAGE}"
 fi
 """
 
@@ -240,6 +283,7 @@ def stage(tree: Path, version: str, maintainer: str, epoch: int) -> None:
                          ("usr/share/icons/hicolor/scalable/apps", f"{PACKAGE}.svg"),
                          (f"usr/share/doc/{PACKAGE}", "copyright")):
         _write(tree / folder / name, (HERE / name).read_text(encoding="utf-8"))
+    _write(tree / UNIT_FOLDER / SERVICE, (HERE / SERVICE).read_text(encoding="utf-8"))
     _write(tree / f"usr/share/doc/{PACKAGE}/changelog.gz", _compress(changelog(version, maintainer, epoch)))
     _write(tree / f"usr/share/man/man1/{MANUAL_PAGE}.gz", _compress(manual_page(version, epoch)))
     for path, name in CONFFILES.items():
@@ -275,6 +319,7 @@ def stage(tree: Path, version: str, maintainer: str, epoch: int) -> None:
     _write(debian / "conffiles", "".join(f"/{path}\n" for path in sorted(CONFFILES)))
     _write(debian / "postinst", POSTINST, executable=True)
     _write(debian / "prerm", PRERM, executable=True)
+    _write(debian / "postrm", POSTRM, executable=True)
     debian.chmod(0o755)
     for path in (tree, *tree.rglob("*")):
         os.utime(path, (epoch, epoch))
