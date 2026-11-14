@@ -221,8 +221,11 @@ the history under the tag `v0.1.0`.
   settings and bookmarks: never read, write or delete it. A check that runs
   Radiolack sets `XDG_CONFIG_HOME` to a temporary folder.
 - Never modify or delete anything in `~/code/pc_repair`.
-- Do not record audio, transcriptions or raw I/Q (open question in
-  scoping.md; the rule holds until the user decides otherwise).
+- Recording (scoping.md, 2026-11-14, for v3): the audio and the raw I/Q
+  only when a user starts it, never at start and never on the simulated
+  band; never transcriptions. Tests and checks record only synthetic
+  signals or the fake rtl_tcp, into temporary folders, never a real
+  receiver.
 - Only stop processes that Radiolack started itself.
 - Versioned files stay generic: no personal frequencies, places, call signs
   or data.

@@ -3,7 +3,8 @@
 Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
 on the `rewrite` branch on 2026-11-08), and accepted by the owner the same
 day with one check left (see v0 below). v1, remote access, started on
-2026-11-11. v2, the scanners, was designed with the owner on 2026-11-12.
+2026-11-11. v2, the scanners, was designed with the owner on 2026-11-12,
+and v3, Radiolack next to the receiver, on 2026-11-14.
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
@@ -18,9 +19,10 @@ its receiver covers, with a ham-focused interface: a band plan strip names
 what each range is used for, with detailed plans inside the amateur bands. It
 reads I/Q samples from an SDR receiver, shows a full-screen spectrum and
 waterfall, demodulates and plays the signal, and scans the bands for
-activity. It runs as a desktop application and can let a phone, a tablet or
-another computer control it and listen to it over the local network. It
-depends on no other radio program, only on receiver drivers.
+activity. It runs as a desktop application, or as a service on a computer
+next to the receiver, and can let a phone, a tablet or another computer
+control it and listen to it over the local network. It depends on no other
+radio program, only on receiver drivers.
 
 ## Decisions
 
@@ -69,6 +71,12 @@ depends on no other radio program, only on receiver drivers.
 | 2026-11-13 | Navigation past the span, as the owner chose after a study of the conventions of eight SDR programs, intuitiveness first. With a receiver that tunes, the view goes past the span, out to ten spans wide with its centre within the receiver's reach; zooming out holds at the span's width before going past it, and the simulated band keeps the view within its span. Nothing is measured outside the span, and nothing there may look like a measurement: the span stands as a lit window whose light fades away from its edges into a darker background, where the grid goes on, blurred and fading too, and the band plan's colours rise as a faint glow from the strip; nothing stands where the trace would be, and the waterfall stays plain; beyond the receiver's reach, hatching. A first version held the trace's place with a flat blurred line at the span's noise level; after a try, the owner chose the fading light from captures of three other decors (nothing, the light, the trace dissolving within 40 px of the edge), as a flat line also reads as a quiet band. Every way of tuning outside the span follows one rule: the span moves so that the frequency sits a 32nd of the span above its centre (75 kHz at 2.4 MS/s), with the channel at least 5 kHz from the centre, clear of the DC residue; this replaces the quarter of the span used so far, so that the new span shows about as much on each side of the frequency. A click outside the span tunes there, beyond the receiver's reach to the nearest frequency. Before it, a mouse sees an outline of where the span would go and a tip, which warns when the click stops a scan; after it, the frequency shows at once, a dashed outline marks the span on its way and the old span's spectrum dims until frames come. A view that showed the whole span shows the new one; another stays where it is while it shows the VFO. A label at the spectrum's edge gives the VFO's frequency when it lies outside the view, and brings the view back to it. While the view does not frame the span, a small button with an icon (two bars, an arrow between them) at the bottom right of the spectrum frames it again, as the 0 key does; the owner asked for an icon rather than a word after a first try. The band strip shows a band's ranges while they average 12 px, else the whole band as one block, named in full, by a new optional `short` name or not at all, which a click frames. Pull requests, in this order: this one; moving the span (the jump at the edge for the wheel, the arrow keys and the step buttons, Shift and drag to move the span, Shift and click, Page Up and Page Down); the waterfall realigned when the span moves, with a blurred memory of the spectrum last seen outside the span if the owner wants it. Set aside: any activity shown outside the span that was not measured there (a measuring display must not invent signals), bumps or a noise texture in the decor, which would imitate a measurement, and History marks outside the span. |
 | 2026-11-13 | Moving the span, as the owner narrowed it after trying the first pull request: dragging the view, which never moves the VFO, and a click outside the span cover the rest. A step of the wheel, the arrow keys or the − and + buttons that would enter the outer tenth of the span, which the receiver's filter dims, moves the span by the rule above, as SDR++ does in its normal tuning mode: about every megahertz at 2.4 MS/s. One move at a time: steps made while the receiver settles add up from where the VFO shows, and apply once frames come from the new span, so that a fast wheel or a held button never sends a burst of changes. The simulated band's VFO still stops at its edge. The realigned waterfall comes forward into the same pull request, since each jump would otherwise clear it: when the same receiver's span moves by less than its width, at the same sample rate and FFT size, each line keeps its frequencies and shows within the span only, what left the span going and the new part starting empty; the peak hold moves the same way. A longer move, another rate or FFT size, or another receiver starts them again, and the sweep's overlapping windows now leave their lines in the waterfall. Kept in reserve: Shift and drag to move the span, Shift and click, and Page Up and Page Down. The blurred memory stays the owner's choice. |
 | 2026-11-14 | The server reads the interface's files once, when Radiolack starts, and serves them from memory, as the scanners' protocol decision of 2026-11-12 left for later: upgraded while it runs, Radiolack keeps serving the interface it started with, to its window and to remote devices, until it restarts. A page then always comes from its engine's version, and a new protocol version no longer stops a page loaded between a package's installation and Radiolack's restart, which could leave a device facing a computer without a window with no way to use Radiolack or restart it. A file that cannot be read stops Radiolack at start, with a message that names it, before it listens. A change to the interface's files shows after a restart, from the source tree too. |
+| 2026-11-14 | v3 becomes Radiolack next to the receiver, for the owner's own use, as the owner chose after v2: a computer beside the antenna runs Radiolack as a service, without a display, which devices use through remote access, at home and through a VPN, while the owner's laptop keeps its window and a receiver of its own. Each Radiolack keeps its own settings, bookmarks and History. v3 also answers the two open questions, wide FM and recording (below). SoapySDR devices, HF and the other regions' band plans, the former v3, wait until the public release is the goal again, before v4. Set aside: bookmarks shared between two Radiolacks, and a window that shows another computer's Radiolack, which may come later. |
+| 2026-11-14 | The service, as the owner chose: the Debian package installs a systemd unit, `radiolack.service`, and never enables or starts it; `systemctl enable --now radiolack` does, as the administrator's choice. It runs Radiolack under a dynamic user (`DynamicUser`) in the `plugdev` group, which the receivers' device rules let in, within systemd's sandbox: the users' homes hidden, the system's files read-only, no privilege, a private temporary folder, and only the address families, devices and system calls that Radiolack needs, so that a flaw in remote access reaches neither a user's account nor the system. Its settings, History and recordings live in its state directory, `/var/lib/radiolack`. The unit runs `radiolack --ui none --rtl-sdr --remote --port 8080`: enabling it is the administrator's choice of `--remote` given at start, so only this computer still turns remote access on, and no setting or saved state does. The fixed local port lets an SSH tunnel, with that port on both ends, reach this computer's interface: Settings, the update notice and the full spectrum. The access code lands in the system's journal, which only administrators read. The unit starts once the network is up and starts again 10 s after a failure, such as remote access without an address yet; the package restarts it after an upgrade when it runs, stops it before its removal, and removes its state directory, recordings included, when purged. `systemctl edit radiolack` changes its options. A receiver serves one program at a time: an rtl_tcp service or another Radiolack on the same receiver must stay stopped. Set aside: a user service, simpler but with every right of the user's account, which the package could not restart after an upgrade, and a package without the window's toolkit for computers without a display, which may come with arm64. |
+| 2026-11-14 | A computer that restarts alone, as the owner chose: `--scan memory` or `--scan sweep` starts that scan at each start, with its saved settings, so that after a power cut or an upgrade the computer goes on scanning and the History fills without any interface. Only this option starts a scan at start: whether one runs is still never saved. A scan that cannot start is reported in the output and in the scanner's state, and Radiolack runs on without it. Remote access follows this computer's addresses while it is on: within 30 s of a change, such as a VPN that comes up after the start or a new address from the router, it listens on the new set of private addresses, with a new certificate that names them, and the devices on an address that remains reconnect by themselves, as when remote access turns off and on. |
+| 2026-11-14 | Wide FM, answering open question 2, as the owner chose: a WFM mode, mono, for FM broadcast, with a 50 µs de-emphasis, the European value (the Americas' 75 µs comes with their band plans), filter widths of its own (180 kHz by default, up to 250 kHz) and audio at 32 kHz in that mode only, which holds broadcast's 15 kHz of audio; the other modes keep 12 kHz. Audio frames already carry their rate, and an older page ignores a mode it does not know, so the protocol stays at version 6: `modes` and `audio_modes` gain WFM. In WFM a device's stream grows to about 0.65 Mbit/s, 0.5 Mbit/s of it PCM, which the home Wi-Fi and a VPN carry. The band plan gives FM broadcast the WFM mode. Set aside: stereo and RDS, which may come if a need shows up, and Opus, still kept for mobile links that drop out. |
+| 2026-11-14 | Recording, answering open question 1, as the owner chose: Radiolack records the audio it plays and the receiver's raw I/Q, each started and stopped by a button on every interface, paired devices included, as they start scans. Both may run at once; neither runs at start, and whether one runs is never saved. Audio goes to WAV files, 16-bit mono at the audio rate. I/Q goes to SigMF recordings: a `.sigmf-data` file of the receiver's 8-bit samples as they come, before the DC removal, and a `.sigmf-meta` file with the sample rate, the centre frequency, the start time and the receiver, which other programs read (GNU Radio, Inspectrum, SDRangel) and which has no size limit, whereas WAV stops at 4 GiB, 15 minutes of I/Q at 2.4 MS/s. A retune adds a capture to the I/Q recording's metadata; a new sample rate or another source ends that recording, and a new audio rate, into or out of WFM, ends the audio's. The files, named after their start time (UTC), frequency and mode, go to the `recordings` folder of `$XDG_DATA_HOME/radiolack` (by default `~/.local/share/radiolack`), readable by the user only, never to the settings folder, which stays small. A Recordings list on every interface gives each file's length and size, with Download, which serves only the files it lists, and Delete, which waits for a second press. A recording stops when its disk's free space falls under 2 GiB, as the status line then says: raw I/Q fills 17 GB per hour at 2.4 MS/s. The simulated band is never recorded, as for the observations. This replaces the repository's rule against recording audio and raw I/Q; transcriptions stay out of scope. With the recordings, README.md warns that local law may forbid recording or disclosing what some services carry. Set aside: recording only while the squelch is open, a recording started at start, and an I/Q recording played as a source, which may come later. |
+| 2026-11-14 | v3's order, each pull request with its documentation and tests: this design; WFM; `--scan`; remote access that follows the addresses; the service's unit and the package's scripts; recording audio, with the Recordings list; recording I/Q. The tests need no receiver: WFM on synthetic signals, `--scan` on the simulated band and against the fake rtl_tcp, the addresses through a stand-in for the list of addresses, the recordings from the fake rtl_tcp into temporary folders, and the unit through `systemd-analyze verify` and lintian in CI. The sandbox, the start at boot and the restart after an upgrade are checked on the owner's computer. |
 
 ## Scope
 
@@ -80,20 +88,21 @@ In scope, across the milestones below:
 - Display: spectrum and waterfall with zoom and pan, past the receiver's span
   with a receiver that tunes, palettes, averaging, peak hold, a band plan
   strip and bookmarks on the spectrum.
-- Reception: one VFO (NFM, AM, USB, LSB, CW) with filter width, squelch and
-  AGC. More VFOs only if a later need shows up.
+- Reception: one VFO (NFM, AM, USB, LSB, CW, and WFM from v3) with filter
+  width, squelch and AGC. More VFOs only if a later need shows up.
 - Scanners: peak detection, sweep across several receiver windows, memory scan
   over bookmarks.
+- Recording, from v3: the audio and the receiver's raw I/Q, on demand.
 - Band plans: Europe first (ITU Region 1, with the IARU Region 1 amateur
   plans), then the other regions.
 - Remote access: control and audio over the local network.
+- A service on a computer next to the receiver, from v3.
 - Language: English only.
 
 Out of scope:
 
 - Transmitting, in any form.
-- Recording audio, transcriptions or raw I/Q (current repository rule; see the
-  open questions).
+- Transcribing what is heard.
 - Receivers attached to phones, and native mobile apps.
 - Opening a receiver to anyone on the internet (a public WebSDR).
 - Driving other radio programs.
@@ -107,7 +116,7 @@ in [`lessons.md`](lessons.md).
 
 | Area | Targets |
 | --- | --- |
-| Desktop app | Linux x86_64 first. Windows 10/11 and macOS (Apple silicon and Intel) for the public release. Proposed later: a headless mode on Linux arm64 (Raspberry Pi next to the antenna), used only through the web UI. |
+| Desktop app | Linux x86_64 first, as a desktop application or, from v3, as a service without a display next to the receiver, used only through the web UI. Windows 10/11 and macOS (Apple silicon and Intel) for the public release. Proposed later: the service on Linux arm64 (Raspberry Pi next to the antenna). |
 | Remote clients | Safari on iOS and iPadOS, Chrome, Edge and Firefox on desktop and Android, Safari on macOS: current and previous major versions. |
 | Receivers | RTL-SDR (R820T and R828D tuners, RTL-SDR Blog V3 and V4) first, then SoapySDR devices (Airspy, HackRF, SDRplay, LimeSDR, PlutoSDR). |
 | Language | English only, whatever the system language. |
@@ -121,7 +130,7 @@ flowchart LR
     dsp --> scan["Scanners"]
     dsp --> srv["Web server: HTTP and WebSocket"]
     scan --> srv
-    srv --- store[("Settings, bookmarks, observations")]
+    srv --- store[("Settings, bookmarks, observations, recordings")]
     srv --- win["Native window: web UI"]
   end
   rx[("SDR receiver")] --> src
@@ -137,12 +146,12 @@ flowchart LR
     memory for tests and demos (never recorded). The Source panel switches
     between them while Radiolack runs.
   - DSP: display FFT (window, averaging, peak hold), channel extraction (mix
-    and decimate), NFM, AM, USB, LSB and CW demodulators, squelch, AGC, audio
-    resampling.
+    and decimate), NFM, AM, USB, LSB, CW and, from v3, WFM demodulators,
+    squelch, AGC, audio resampling.
   - Scanners: peaks, sweep, memory.
   - Storage: settings, bookmarks, band plans and observations in the
     platform's directories (XDG on Linux, AppData on Windows, Application
-    Support on macOS).
+    Support on macOS), and from v3 the recordings, apart from the settings.
   - Server: aiohttp, for HTTP and WebSocket in one dependency. It serves the
     UI files and, per client, spectrum rows (uint8 dB values), audio, state
     updates (JSON) and commands.
@@ -160,9 +169,10 @@ flowchart LR
   browser.
 - **Packaging**: on Linux, a Debian package (`packaging/build_deb.py`) that
   installs the Python package for the system's Python 3, with the
-  `radiolack` command and its manual page, a menu entry, an icon, its
-  changelog and its licence notice, and depends on the system's aiohttp,
-  NumPy, PyGObject, GTK 3 and WebKitGTK. Its build is reproducible, and
+  `radiolack` command and its manual page, a menu entry, an icon, from v3
+  the service's systemd unit, which it never enables, its changelog and its
+  licence notice, and depends on the system's aiohttp, NumPy, PyGObject,
+  GTK 3 and WebKitGTK. Its build is reproducible, and
   GitHub Actions publishes it with each release (`release.yml`). The macOS
   and Windows installers come with their shells (spike 5).
 
@@ -180,6 +190,10 @@ flowchart LR
 - Settings live in the engine. Security settings (remote access, access code)
   can only be changed from this computer's interfaces: the window, or a
   browser on 127.0.0.1.
+- Remote access, scans and recordings are off at each start: they run only
+  once an interface starts them, this computer's alone for remote access,
+  or an option given at start does (`--remote`, and from v3 `--scan`), and
+  whether they run is never saved.
 
 ### Remote access
 
@@ -192,6 +206,8 @@ flowchart LR
   on request.
 - From outside the home: through a VPN (Tailscale, WireGuard). Radiolack never
   asks the user to forward a port on their router.
+- From v3, remote access follows the computer's private addresses while it
+  is on, such as those of a VPN that comes up after it.
 - Remote clients need HTTPS anyway: browsers allow AudioWorklet, the wake lock
   and app installation only on secure pages. Radiolack's own local
   certificate authority, installed once per device, provides it (spike 3,
@@ -207,6 +223,8 @@ flowchart LR
   32 kbit/s, decoded by WebCodecs or by a WebAssembly decoder where
   WebCodecs lacks Opus, comes only if a mobile link shows dropouts (decided
   on 2026-11-12).
+- v3: in WFM, 32 kHz PCM (512 kbit/s), which holds broadcast's 15 kHz of
+  audio; 12 kHz in the other modes.
 - iPhone with the screen locked: Safari may interrupt Web Audio when the
   screen locks or the page goes to the background. With Safari's "playback"
   audio session (`navigator.audioSession`), which iOS also plays with the
@@ -222,6 +240,8 @@ flowchart LR
   turn off, to its APT repository.
 - No browser data on disk: the window's WebKit context is ephemeral, and the
   engine saves what the interface needs with the settings.
+- Recordings, from v3, stay on the computer that receives, readable by its
+  user only, until an interface downloads or deletes them.
 - Nothing personal in the repository: no owner-specific frequencies, places or
   call signs in code, examples or tests.
 
@@ -302,10 +322,33 @@ bookmark and goes on with the iPhone locked, a sweep lists the channels
 active across a band and brings the receiver back, the History tab keeps
 what was detected across a restart, and every test passes in CI.
 
+### v3: next to the receiver
+
+Designed with the owner on 2026-11-14 (see Decisions).
+
+- WFM: mono, with a 50 µs de-emphasis and audio at 32 kHz.
+- `--scan memory|sweep`: a scan at each start, without any interface.
+- Remote access that follows the computer's addresses.
+- The service: a systemd unit that the Debian package installs and never
+  enables, under a dynamic user in systemd's sandbox, with remote access and
+  a fixed local port for SSH tunnels, restarted after an upgrade.
+- Recording on demand: the audio (WAV) and the raw I/Q (SigMF), with a
+  Recordings list, Download and Delete, on every interface.
+
+Done when, on a computer next to the receiver, without a display, Radiolack
+installed from its Debian package runs as the service from boot without
+anyone logged in; the owner's iPhone and laptop pair with it and listen at
+home and through the VPN, and the laptop reaches its Settings through an SSH
+tunnel; a scan given by `--scan` runs again after a restart; WFM plays a
+broadcast station cleanly; audio and I/Q recordings started from the iPhone
+download on the laptop, where the I/Q opens in another SDR program at the
+right frequency; and every test passes in CI.
+
 ### Later milestones
 
-- v3, receivers and bands: SoapySDR devices, HF (direct sampling, RTL-SDR Blog
-  V4), band plans for the other regions.
+- Receivers and bands, the former v3, once the public release is the goal
+  again: SoapySDR devices, HF (direct sampling, RTL-SDR Blog V4), band plans
+  for the other regions.
 - v4, public release: Windows and macOS builds and installers, code signing,
   updates on every system, user documentation, accessibility review.
 
@@ -382,11 +425,8 @@ These costs wait for v4:
 
 ## Open questions
 
-1. Recording: the repository forbids recording audio and raw I/Q today, while
-   most SDR programs offer it. Keep the rule, or allow recording on demand?
-2. Wide FM: the band plan shows FM broadcast (87.5 to 108 MHz), which needs a
-   WFM demodulator, but the scope lists NFM, AM, USB, LSB and CW only. Add WFM
-   to v0, or later?
+None for now: recording and wide FM were answered on 2026-11-14 (see
+Decisions).
 
 ## Repository plan
 
@@ -810,6 +850,7 @@ These costs wait for v4:
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones).
+  receiver (see Milestones), and v3, designed on 2026-11-14, in the order
+  of its decisions.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.
