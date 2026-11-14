@@ -1,7 +1,9 @@
-"""Test doubles shared by the engine, server and source tests."""
+"""Test doubles shared by the engine, server and source tests, and a wide
+signal for the tests of the noise estimates."""
 
 import asyncio
 import itertools
+import math
 import os
 import socket
 import struct
@@ -56,6 +58,16 @@ class FakeSource(FixedSource):
 
     def close(self) -> None:
         self.closed = True
+
+
+def wide_signal(count: int, rate_hz: float, offset_hz: float, density: float,
+                rng: np.random.Generator) -> np.ndarray:
+    """``count`` samples of a signal ``offset_hz`` from the centre frequency
+    that fills the 150 kHz around it, as broadcast FM fills its channel:
+    white noise of ``density``, full-scale power per hertz, there."""
+    spectrum = np.fft.fft(rng.standard_normal(count) + 1j * rng.standard_normal(count))
+    spectrum[np.abs(np.fft.fftfreq(count, 1 / rate_hz) - offset_hz) > 75_000.0] = 0
+    return (np.fft.ifft(spectrum) * math.sqrt(density * rate_hz / 2)).astype(np.complex64)
 
 
 class FakeUpdates:

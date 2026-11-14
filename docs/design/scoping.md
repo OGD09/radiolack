@@ -845,12 +845,41 @@ Decisions).
   browser against the fake rtl_tcp, with a carrier on a bookmark of
   another window: the scan stays on it, and a stop while it watches brings
   the receiver back; at a phone's width too.
+- WFM, 2026-11-14, v3's first pull request: `demod.py` adds the WFM mode.
+  Its front filter brings the rate to 320 kHz (2.4 MS/s by 2/15, 2.048 MS/s
+  by 5/32), flat to 125 kHz and 70 dB down from 160 kHz, so that nothing
+  folds into the widest channel; the discriminator is full scale at 75 kHz
+  of deviation, and the audio filter at 320 kHz applies the 50 µs
+  de-emphasis, with unit gain at the lowest frequencies, keeps 40 Hz to
+  15 kHz, below the stereo pilot, and brings the audio to 32 kHz. The
+  demodulator starts again with WFM's rates going into or out of WFM. WFM
+  takes filter widths of its own, 50 to 250 kHz; a mode that the width in
+  use does not suit takes its usual width unless the change gives one, so
+  that the settings saved in WFM come back. A station fills the spectrum
+  around the VFO where the automatic squelch read the noise, which then
+  never let it open: in WFM the noise is read beyond the channel's edges,
+  on the quieter side, as a neighbouring station may fill the other
+  (`spectrum.py`, `engine.py`), and the memory scan reads a WFM bookmark's
+  noise the same way (`scanners.py`). The interface gains the WFM button
+  and widths (`index.html`, `main.js`), and the band plan gives FM
+  broadcast WFM. Protocol version 6 stays: an older interface ignores the
+  settings of a mode it does not know and plays the audio at the rate its
+  frames give. On the owner's laptop (i7-7500U) the demodulator takes about
+  17% of one core in WFM at 2.4 MS/s with the audio, against 7% in NFM; its
+  audio filter, 13,765 taps at 320 kHz, about 6%. The audio lags its
+  samples by about 40 ms, as in NFM. The tests check a de-emphasized tone at
+  its deviation, the audio band without the pilot or its fold, the audio
+  rates through mode changes, the filters' passbands and rejection, the
+  widths, the noise read beyond a wide channel on the quieter side, and in
+  the engine, on a fake receiver with a wide signal, the automatic squelch
+  that opens on the station and not on the noise, and a memory scan that
+  stops on a WFM bookmark.
 - Next steps: with interface settings per device, v1's planned work is
   done, and Opus waits for a mobile link that shows dropouts (see
   Decisions, 2026-11-12). With the memory scan's visits to the ticked
   bookmarks outside the receiver's span, v2's planned pull requests are
   done too. Left: the owner's acceptance of v1, and of v2 with the
-  receiver (see Milestones), and v3, designed on 2026-11-14, in the order
-  of its decisions.
+  receiver (see Milestones), and v3's next pull requests, from `--scan`, in
+  the order of its decisions.
 - `data/` stays untracked and untouched; `data/airband-peaks.json` is never
   written, replaced or deleted.

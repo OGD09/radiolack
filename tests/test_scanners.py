@@ -21,6 +21,7 @@ from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_
                                 local_noise, memory_window, memory_windows, search_blocks, sweep_windows,
                                 watched_channels)
 from radiolack.spectrum import SpectrumAnalyzer
+from tests.fakes import wide_signal
 
 SIZE = 8192
 RATE_HZ = 2_400_000.0
@@ -291,13 +292,17 @@ class WatchedChannelsTest(unittest.TestCase):
                   (5, Bookmark(CENTRE_HZ + 600_000, "lower sideband", "LSB")),
                   (6, Bookmark(CENTRE_HZ + 700_000, "beacon", "CW")),
                   (7, Bookmark(CENTRE_HZ + 800_000, "airband", "AM")),
-                  (8, Bookmark(CENTRE_HZ + 2e6, "elsewhere", "NFM"))]
+                  (8, Bookmark(CENTRE_HZ + 2e6, "elsewhere", "NFM")),
+                  (9, Bookmark(CENTRE_HZ - 300_000, "broadcast", "WFM"))]
         channels = watched_channels(ticked, CENTRE_HZ, RATE_HZ)
         self.assertEqual([(channel.bookmark_id, channel.mode) for channel in channels],
-                         [(1, "NFM"), (4, "USB"), (5, "LSB"), (6, "CW"), (7, "AM")])
+                         [(1, "NFM"), (4, "USB"), (5, "LSB"), (6, "CW"), (7, "AM"), (9, "WFM")])
         self.assertEqual([(channel.low_hz - channel.frequency_hz, channel.high_hz - channel.frequency_hz)
                           for channel in channels],
-                         [(-5_000, 5_000), (0, 2_700), (-2_700, 0), (-250, 250), (-4_000, 4_000)])
+                         [(-5_000, 5_000), (0, 2_700), (-2_700, 0), (-250, 250), (-4_000, 4_000),
+                          (-90_000, 90_000)])
+        # Only a WFM channel's noise is read beyond its edges.
+        self.assertEqual([channel.clearance_hz for channel in channels], [0, 0, 0, 0, 0, 90_000])
         self.assertEqual(watched_channels([], CENTRE_HZ, RATE_HZ), ())
 
 
@@ -312,8 +317,8 @@ class ChannelWatchTest(unittest.TestCase):
         noise = (rng.normal(size=count) + 1j * rng.normal(size=count)) * math.sqrt(1e-4 / 2)
         tone = 0.1 * np.exp(2j * np.pi * 300_000 / RATE_HZ * np.arange(count))
         self.power = self.analyzer.power((tone + noise).astype(np.complex64))
-        self.bands = np.array([(CENTRE_HZ + 295_000, CENTRE_HZ + 305_000),     # the tone's channel
-                               (CENTRE_HZ - 405_000, CENTRE_HZ - 395_000)])    # a quiet one
+        self.bands = np.array([(CENTRE_HZ + 295_000, CENTRE_HZ + 305_000, 0.0),    # the tone's channel
+                               (CENTRE_HZ - 405_000, CENTRE_HZ - 395_000, 0.0)])   # a quiet one
 
     def levels(self, watch: ChannelWatch, centre_hz: float = CENTRE_HZ):
         return watch.levels(self.power, centre_hz, RATE_HZ, self.bands, self.analyzer.enbw)
@@ -337,6 +342,23 @@ class ChannelWatchTest(unittest.TestCase):
         watch.reset()
         self.assertIsNone(self.levels(watch, CENTRE_HZ + 1_000))
         self.assertIsNotNone(self.levels(watch, CENTRE_HZ + 1_000))
+
+    def test_reads_a_wide_channels_noise_beyond_its_edges_on_the_quieter_side(self):
+        # A broadcast station 300 kHz above the centre, 20 dB above the
+        # noise, and its neighbour 200 kHz above it, in a WFM channel.
+        rng = np.random.default_rng(4)
+        count = 4 * self.analyzer.fft_size
+        samples = (rng.normal(size=count) + 1j * rng.normal(size=count)) * math.sqrt(1e-4 / 2)
+        for offset in (300_000.0, 500_000.0):
+            samples = samples + wide_signal(count, RATE_HZ, offset, 100 * 1e-4 / RATE_HZ, rng)
+        power = self.analyzer.power(samples.astype(np.complex64))
+        channel = (CENTRE_HZ + 210_000, CENTRE_HZ + 390_000)
+        bands = np.array([(*channel, 90_000.0), (*channel, 0.0)])
+        power_db, noise_db = ChannelWatch(blocks=1).levels(power, CENTRE_HZ, RATE_HZ, bands, self.analyzer.enbw)
+        in_band_noise_db = 10 * math.log10(1e-4 * 180_000 / RATE_HZ)
+        self.assertAlmostEqual(noise_db[0], in_band_noise_db, delta=1.0)
+        self.assertGreater(noise_db[1], in_band_noise_db + 10.0)    # without the clearance, the station itself
+        self.assertGreater(power_db[0] - noise_db[0], 15.0)
 
 
 class MemoryScanTest(unittest.TestCase):

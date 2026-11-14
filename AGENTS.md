@@ -52,9 +52,10 @@ the history under the tag `v0.1.0`.
   where signals were found, for the History: how signals join a channel,
   its counters, the limits and the checks of the saved file),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
-  (display FFT with NumPy, noise estimate around the VFO), `dsp` (FIR design
-  and overlap-save FFT filters that shift and resample), `demod` (one VFO:
-  channel level, squelch, audio at 12 kHz in every mode), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  (display FFT with NumPy, noise estimate around the VFO, or beyond a WFM
+  channel), `dsp` (FIR design and overlap-save FFT filters that shift and
+  resample), `demod` (one VFO: channel level, squelch, audio at 12 kHz, or
+  32 kHz in WFM), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state), `sources` (opens each kind of source from its saved

@@ -47,6 +47,7 @@ const MODES = {
   USB: { bw: 2700, min: 1500, max: 4000, step: 100 },
   LSB: { bw: 2700, min: 1500, max: 4000, step: 100 },
   CW: { bw: 500, min: 100, max: 2000, step: 50 },
+  WFM: { bw: 180000, min: 50000, max: 250000, step: 10000 },
 };
 const MODE_ORDER = Object.keys(MODES);
 const PALETTES = {

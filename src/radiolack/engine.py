@@ -85,7 +85,8 @@ import numpy as np
 
 from . import __version__
 from .bookmarks import Bookmark, Bookmarks
-from .demod import AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter
+from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
+                    noise_clearance_hz)
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .remote import REMOTE_FILE, RemoteAccess
@@ -404,7 +405,7 @@ class Engine:
         self._memory_ids: tuple[int, ...] = ()      # the ticked bookmarks within reach, in frequency order
         self._windows: tuple[float, ...] = ()       # the centre frequencies of the windows they take
         self._watched: tuple[Channel, ...] = ()     # while the memory scan runs, the ticked bookmarks of the span
-        self._bands = np.empty((0, 2))      # their passbands, one row each
+        self._bands = np.empty((0, 3))      # their passbands and noise clearances, one row each
         self._sweep_low_hz, self._sweep_high_hz = DEFAULT_SWEEP_HZ
         self._sweep_window_s = DEFAULT_WINDOW_S
         self._memory: MemoryScan | None = None
@@ -1013,7 +1014,8 @@ class Engine:
         watched = watched_channels(ticked, centre_hz, rate_hz) if self._memory is not None else ()
         if watched != self._watched:
             self._watched = watched
-            self._bands = np.array([(channel.low_hz, channel.high_hz) for channel in watched]).reshape(-1, 2)
+            self._bands = np.array([(channel.low_hz, channel.high_hz, channel.clearance_hz)
+                                    for channel in watched]).reshape(-1, 3)
         if (windows, ids) == (self._windows, self._memory_ids):
             return
         self._windows, self._memory_ids = windows, ids
@@ -1386,12 +1388,13 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     noise of the memory scan's channels, of a block of samples, worked out in
     a worker thread. Detection is off without ``threshold_db``, and the
     memory scan's channels are not watched without ``bands``, their
-    passbands."""
+    passbands and noise clearances."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
     power = analyzer.power(samples)
-    noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz)
+    noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz,
+                                   noise_clearance_hz(settings.mode, settings.bandwidth_hz))
     meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio)
     if threshold_db is None:
         detector.reset()

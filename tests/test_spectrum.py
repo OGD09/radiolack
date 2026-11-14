@@ -1,5 +1,6 @@
 """Tests for the display spectrum: levels, frequencies, the noise level
-around the VFO, the frame format and frames in fewer bins."""
+around the VFO or beyond a wide channel, the frame format and frames in
+fewer bins."""
 
 import math
 import unittest
@@ -8,6 +9,7 @@ import numpy as np
 
 from radiolack.spectrum import (DB_MIN, DB_STEP, FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM,
                                 FRAME_VERSION, SpectrumAnalyzer, blackman_harris, encode_frame, fewer_bins)
+from tests.fakes import wide_signal
 
 RATE = 2_400_000.0
 SIZE = 1024
@@ -81,7 +83,51 @@ class NoiseDensityTest(unittest.TestCase):
                 self.assertAlmostEqual(10 * math.log10(estimate / self.density), 0.0, delta=0.3)
 
     def test_needs_bins_around_the_vfo(self):
-        self.assertIsNone(self.analyzer.noise_density(self.power, 4 * self.analyzer.fft_size, RATE, RATE))
+        for offset in (RATE, -RATE):        # above and below the span
+            with self.subTest(offset=offset):
+                self.assertIsNone(self.analyzer.noise_density(self.power, 4 * self.analyzer.fft_size, offset, RATE))
+
+
+class WideChannelNoiseTest(unittest.TestCase):
+    """Noise of -60 dBFS across the band and wide signals 20 dB above it,
+    150 kHz wide, as broadcast FM stations: in WFM, the noise is read beyond
+    the channel's edges, 90 kHz from the VFO with a 180 kHz filter."""
+
+    def setUp(self):
+        self.analyzer = SpectrumAnalyzer()
+        self.count = 4 * self.analyzer.fft_size
+        self.density = 1e-6 / RATE
+        self.rng = np.random.default_rng(9)
+
+    def power(self, *stations: float) -> np.ndarray:
+        """The bin powers of the noise and a station at each offset of ``stations``."""
+        samples = (self.rng.standard_normal(self.count) + 1j * self.rng.standard_normal(self.count)) * math.sqrt(1e-6 / 2)
+        for offset in stations:
+            samples = samples + wide_signal(self.count, RATE, offset, 100 * self.density, self.rng)
+        return self.analyzer.power(samples.astype(np.complex64))
+
+    def reading_db(self, power: np.ndarray, offset: float, clearance: float) -> float:
+        """The noise estimate at ``offset``, from the noise density, in dB."""
+        estimate = self.analyzer.noise_density(power, self.count, offset, RATE, clearance)
+        return 10 * math.log10(estimate / self.density)
+
+    def test_a_wide_channel_is_read_beyond_its_edges(self):
+        power = self.power(300_000.0)
+        self.assertGreater(self.reading_db(power, 300_000.0, 0.0), 10.0)    # the station itself
+        self.assertAlmostEqual(self.reading_db(power, 300_000.0, 90_000.0), 0.0, delta=0.5)
+
+    def test_on_the_quieter_side_when_a_neighbour_fills_the_other(self):
+        for neighbour in (500_000.0, 100_000.0):
+            with self.subTest(neighbour=neighbour):
+                power = self.power(300_000.0, neighbour)
+                self.assertAlmostEqual(self.reading_db(power, 300_000.0, 90_000.0), 0.0, delta=0.5)
+
+    def test_one_side_is_enough_and_none_is_too_few(self):
+        edge = RATE / 2 - 80_000.0              # the bins above the channel lie past the span
+        power = self.power(edge)
+        self.assertAlmostEqual(self.reading_db(power, edge, 90_000.0), 0.0, delta=0.5)
+        for offset in (RATE, -RATE):
+            self.assertIsNone(self.analyzer.noise_density(power, self.count, offset, RATE, 90_000.0))
 
 
 class FrameEncodingTest(unittest.TestCase):

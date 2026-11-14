@@ -91,6 +91,7 @@
           <button type="button" role="radio" data-mode="USB">USB</button>
           <button type="button" role="radio" data-mode="LSB">LSB</button>
           <button type="button" role="radio" data-mode="CW">CW</button>
+          <button type="button" role="radio" data-mode="WFM">WFM</button>
         </div>
       </div>
       <label class="check"><input id="dm-auto" type="checkbox"> Mode and step from the band plan</label>
@@ -131,7 +132,7 @@
       <label class="check"><input id="dm-nr" type="checkbox" disabled> Noise reduction</label>
       <label class="check"><input id="dm-notch" type="checkbox" disabled> Automatic notch</label>
       <label class="check"><input id="dm-nb" type="checkbox" disabled> Noise blanker</label>
-      <p class="note">AM follows its carrier's level, and USB, LSB and CW have a slow AGC. CTCSS and the other processing are not applied yet.</p>
+      <p class="note">AM follows its carrier's level, USB, LSB and CW have a slow AGC, and WFM plays broadcast FM in mono. CTCSS and the other processing are not applied yet.</p>
       <h3>Audio</h3>
       <div class="field"><label for="dm-vol">Volume <output id="dm-vol-v"></output></label><input id="dm-vol" type="range" min="0" max="100" step="1"></div>
       <p class="note" id="dm-audio-note" role="status" hidden></p>

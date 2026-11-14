@@ -6,14 +6,17 @@ import unittest
 
 import numpy as np
 
-from radiolack.demod import (AGC_LEVEL, AM_LEVEL, AUDIO_HEADER, AUDIO_VERSION, CW_PITCH_HZ, FRAME_KIND_AUDIO,
-                             DemodSettings, Demodulator, Meter, channel_taps)
+from radiolack.demod import (AGC_LEVEL, AM_LEVEL, AUDIO_HEADER, AUDIO_VERSION, CHANNEL_ATTENUATION_DB, CW_PITCH_HZ,
+                             FRAME_KIND_AUDIO, WFM_FRONT_CUTOFF_HZ, WFM_FRONT_TRANSITION_HZ, DemodSettings, Demodulator,
+                             Meter, channel_taps, noise_clearance_hz)
+from radiolack.dsp import lowpass
 
 RATE = 2_400_000.0
 CENTRE = 145_000_000.0
 OFFSET = 100_000.0          # the VFO, from the centre frequency
 BLOCK = 80_000              # 1/30 s, as the engine reads them
 AUDIO_RATE = 12_000.0
+WFM_AUDIO_RATE = 32_000.0
 RNG = np.random.default_rng(11)
 
 
@@ -60,8 +63,8 @@ def run(samples: np.ndarray, settings: DemodSettings, noise_density: float | Non
     return meters, sound
 
 
-def tone_amplitude(audio: np.ndarray, frequency_hz: float) -> float:
-    t = np.arange(len(audio)) / AUDIO_RATE
+def tone_amplitude(audio: np.ndarray, frequency_hz: float, rate: float = AUDIO_RATE) -> float:
+    t = np.arange(len(audio)) / rate
     return 2 * abs(np.mean(audio * np.exp(-2j * np.pi * frequency_hz * t)))
 
 
@@ -85,6 +88,15 @@ def open_in(mode: str) -> DemodSettings:
     """``mode`` at the interface's filter width, with the squelch always open."""
     return DemodSettings(frequency_hz=CENTRE + OFFSET, mode=mode, bandwidth_hz=WIDTHS[mode],
                          squelch_auto=False, squelch_db=-160.0)
+
+
+WFM = DemodSettings(frequency_hz=CENTRE + OFFSET, mode="WFM", bandwidth_hz=180_000.0, squelch_auto=False,
+                    squelch_db=-160.0)
+
+
+def deemphasis(frequency_hz: float) -> float:
+    """WFM's de-emphasis, 50 us with unit gain at the lowest frequencies."""
+    return 1 / math.sqrt(1 + (2 * math.pi * 50e-6 * frequency_hz) ** 2)
 
 
 class NfmTest(unittest.TestCase):
@@ -184,6 +196,59 @@ class ModeChangeTest(unittest.TestCase):
                 meters, sound = run(signal, open_in(mode), demodulator=demodulator)
                 self.assertEqual(len(np.concatenate(sound)), 0.2 * AUDIO_RATE)
                 self.assertTrue(meters[-1].open)
+
+
+class WfmTest(unittest.TestCase):
+    def test_a_tone_comes_out_at_its_deviation_after_the_de_emphasis(self):
+        meters, sound = run(fm(1.0, -40.0, [(1_000.0, 37_500.0)]) + noise(1.0, -60.0), WFM)
+        audio = np.concatenate(sound)
+        self.assertEqual(len(audio), 1.0 * WFM_AUDIO_RATE)
+        self.assertAlmostEqual(tone_amplitude(audio[8_000:], 1_000.0, WFM_AUDIO_RATE),
+                               0.5 * deemphasis(1_000.0), delta=0.005)   # 37.5 kHz of 75 kHz
+        self.assertAlmostEqual(meters[-1].level_db, -40.0, delta=0.05)
+        self.assertTrue(all(meter.open for meter in meters))
+
+    def test_keeps_broadcast_audio_and_leaves_out_the_stereo_pilot(self):
+        signal = fm(1.0, -40.0, [(10_000.0, 30_000.0), (19_000.0, 6_750.0)]) + noise(1.0, -60.0)
+        _, sound = run(signal, WFM)
+        steady = np.concatenate(sound)[8_000:]
+        kept = tone_amplitude(steady, 10_000.0, WFM_AUDIO_RATE)
+        self.assertAlmostEqual(kept, 0.4 * deemphasis(10_000.0), delta=0.005)
+        # 32 kHz audio would fold the pilot to 13 kHz.
+        self.assertLess(tone_amplitude(steady, WFM_AUDIO_RATE - 19_000.0, WFM_AUDIO_RATE), 1e-3 * kept)
+
+    def test_plays_at_32_khz_and_the_other_modes_at_12_khz(self):
+        demodulator = Demodulator()
+        for settings, rate in ((open_in("NFM"), AUDIO_RATE), (WFM, WFM_AUDIO_RATE), (open_in("AM"), AUDIO_RATE)):
+            with self.subTest(mode=settings.mode):
+                meters, sound = run(fm(0.3, -40.0, [(1_000.0, 2_000.0)]), settings, demodulator=demodulator)
+                self.assertEqual(demodulator.audio_rate_hz, rate)
+                self.assertEqual(len(np.concatenate(sound)), 0.3 * rate)
+                self.assertAlmostEqual(meters[-1].level_db, -40.0, delta=0.05)
+                frame = demodulator.encode_audio(np.zeros(4, "<i2"))
+                self.assertEqual(AUDIO_HEADER.unpack_from(frame)[4], rate)
+
+    def test_a_receiver_slower_than_its_channel_gives_nothing(self):
+        demodulator = Demodulator()
+        samples = np.ones(25_000, np.complex64)
+        self.assertEqual(demodulator.process(samples, CENTRE, 250_000.0, WFM, 1e-9, True),
+                         (Meter(None, None, False), None))
+        _, pcm = demodulator.process(samples, CENTRE, 250_000.0, open_in("NFM"), 1e-9, True)
+        self.assertEqual(len(pcm), 1_200)       # NFM still has its channel there
+
+    def test_the_filters_keep_the_widest_channel_and_nothing_that_folds_into_it(self):
+        front = lowpass(WFM_FRONT_CUTOFF_HZ, WFM_FRONT_TRANSITION_HZ, RATE, CHANNEL_ATTENUATION_DB)
+        self.assertAlmostEqual(response_db(front, 125_000.0, RATE), 0.0, delta=0.01)
+        for beyond in (160_000.0, 200_000.0, 400_000.0):      # 320 kHz holds up to 160 kHz
+            self.assertLess(response_db(front, beyond, RATE), -70.0)
+        taps = channel_taps("WFM", 180_000.0, 320_000.0)
+        self.assertAlmostEqual(response_db(taps, 85_000.0, 320_000.0), 0.0, delta=0.01)
+        self.assertLess(response_db(taps, 92_000.0, 320_000.0), -70.0)
+
+    def test_the_automatic_squelch_reads_the_noise_beyond_the_channel(self):
+        self.assertEqual(noise_clearance_hz("WFM", 180_000.0), 90_000.0)
+        for mode in ("NFM", "AM", "USB", "LSB", "CW"):
+            self.assertEqual(noise_clearance_hz(mode, WIDTHS[mode]), 0.0)
 
 
 class LevelTest(unittest.TestCase):
@@ -291,12 +356,27 @@ class SettingsTest(unittest.TestCase):
                                                "bandwidth_hz": 6_000.0, "squelch_db": -95.5,
                                                "squelch_auto": False})
 
+    def test_each_mode_takes_widths_of_its_own(self):
+        wide = VFO.changed({"mode": "WFM"})
+        self.assertEqual((wide.mode, wide.bandwidth_hz), ("WFM", 180_000.0))   # 10 kHz does not suit WFM
+        self.assertEqual(wide.changed({"bandwidth_hz": 250_000}).bandwidth_hz, 250_000.0)
+        self.assertEqual(wide.changed({"mode": "AM"}).bandwidth_hz, 8_000.0)
+        self.assertEqual(VFO.changed({"mode": "WFM", "bandwidth_hz": 200_000}).bandwidth_hz, 200_000.0)
+        self.assertEqual(VFO.changed({"mode": "AM"}).bandwidth_hz, 10_000.0)     # a width that suits stays
+        refused = ((wide, {"bandwidth_hz": 25_000}, "between 50000 and 250000"),
+                   (VFO, {"bandwidth_hz": 180_000}, "between 100 and 25000"),
+                   (VFO, {"mode": "WFM", "bandwidth_hz": 25_000}, "between 50000 and 250000"),
+                   (wide, {"mode": "NFM", "bandwidth_hz": 180_000}, "between 100 and 25000"))
+        for settings, changes, error in refused:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, error):
+                settings.changed(changes)
+
     def test_refused_changes(self):
         refused = (
             ({"frequency_hz": "145e6"}, "the VFO frequency must be a number"),
             ({"frequency_hz": 0}, "the VFO frequency must be between"),
             ({"frequency_hz": 10 ** 400}, "the VFO frequency must be between"),    # too large for a float
-            ({"mode": "WFM"}, "the mode must be one of NFM, AM, USB, LSB, CW"),
+            ({"mode": "DSB"}, "the mode must be one of NFM, AM, USB, LSB, CW, WFM"),
             ({"bandwidth_hz": 50}, "the filter width must be between 100 and 25000"),
             ({"bandwidth_hz": -10 ** 400}, "the filter width must be between 100 and 25000"),
             ({"bandwidth_hz": True}, "the filter width must be a number"),
