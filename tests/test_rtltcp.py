@@ -396,8 +396,16 @@ class ConnectionTest(SourceTest):
         statuses = []
         source.on_change = lambda: statuses.append((source.status, source.detail))
         self.fake.sending = False
+        # Samples on their way when the server fell silent may still come,
+        # the more so on a busy computer; once a read finds none, none come
+        # until the source leaves the server.
+        silent, deadline = False, time.monotonic() + 5.0
         while ("waiting", "no samples") not in statuses:
-            self.assertIsNone(await source.read(COUNT))
+            self.assertLess(time.monotonic(), deadline, f"still {source.status} ({source.detail})")
+            samples = await source.read(COUNT)
+            if silent:
+                self.assertIsNone(samples)
+            silent = samples is None
         self.fake.sending = True
         self.assert_labelled(source, await self.read(source))
         self.assertGreaterEqual(self.fake.connections, 2)
