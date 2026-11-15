@@ -91,6 +91,17 @@ WATERFALL_PROBE = """async () => {
   view.setOffsets(Float32Array.of(-2.5, 0, 0, 0));    // and by half a bin
   return [up, down, drawn()];
 }"""
+# The lengths antenna.js gives at a few frequencies (the wavelength, a
+# half-wave and a quarter-wave element), and how it writes lengths at the
+# edges of its units and lengths that are not positive numbers.
+ANTENNA_PROBE = """async () => {
+  const { antennaLengths, formatLength } = await import(new URL('antenna.js', document.baseURI).href);
+  const at = (hz) => { const l = antennaLengths(hz); return [l.wavelength, l.half, l.quarter].map(formatLength); };
+  return {
+    lengths: [9e3, 7.1e6, 100e6, 433.5e6, 6.425e9].map(at),
+    edges: [0, -1, NaN, Infinity, 0.99996, 999.96, 0.0004].map(formatLength),
+  };
+}"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
@@ -273,6 +284,76 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#dm-audio-note")).to_be_hidden()     # AM plays too
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
+
+    def test_the_icon_beside_the_frequency_opens_the_antenna_lengths(self):
+        # The lengths follow the VFO while they show, as when another
+        # interface tunes, and the dialog keeps the keys: nothing tunes behind
+        # it, and Escape closes it alone. A server for each browser, as the
+        # test moves the VFO.
+        for browser in BROWSERS:
+            url = self.serve()      # the VFO on 145.6 MHz
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                icon = first.get_by_role("button", name="Antenna length", exact=True)
+                expect(icon).to_have_attribute("title", "Antenna length for this frequency")
+                dialog = first.locator("#antenna-dialog")
+                expect(dialog).to_be_hidden()
+                icon.click()
+                expect(dialog).to_be_visible()
+                expect(first.locator("#antenna-for")).to_have_text(f"145.6000 MHz {DOT} 2 m amateur")
+                expect(first.locator(".lengths dd")).to_have_text(["2.06 m", "97.8 cm", "48.9 cm", "48.9 cm", "48.9 cm"])
+                first.keyboard.press("ArrowRight")
+                expect(first.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
+                second.keyboard.press("ArrowRight")     # a step of 12.5 kHz, from the other interface
+                expect(first.locator("#antenna-for")).to_have_text(f"145.6125 MHz {DOT} 2 m amateur")
+                first.keyboard.press("Escape")
+                expect(dialog).to_be_hidden()
+                expect(icon).to_be_focused()
+                expect(first.locator("#panel")).to_be_visible()     # the Source panel, open behind it
+                icon.click()
+                dialog.get_by_role("button", name="Close the antenna lengths").click()
+                expect(dialog).to_be_hidden()
+                icon.click()
+                first.mouse.click(4, 4)     # on the backdrop, away from the dialog
+                expect(dialog).to_be_hidden()
+                expect(icon).to_be_focused()
+                icon.dblclick()             # whose second click lands on the backdrop
+                expect(dialog).to_be_visible()
+                first.keyboard.press("Escape")
+                expect(dialog).to_be_hidden()
+
+    def test_antenna_lengths_take_the_unit_that_fits_them(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.assertEqual(page.evaluate(ANTENNA_PROBE), {
+                    "lengths": [
+                        ["33.3 km", "15.8 km", "7.91 km"],    # 9 kHz, where the band plan starts
+                        ["42.2 m", "20.1 m", "10.0 m"],       # 7.1 MHz
+                        ["3.00 m", "1.42 m", "71.2 cm"],      # 100 MHz
+                        ["69.2 cm", "32.8 cm", "16.4 cm"],    # 433.5 MHz
+                        ["4.67 cm", "2.22 cm", "1.11 cm"],    # 6.425 GHz, where it ends
+                    ],
+                    "edges": ["\N{EM DASH}"] * 4 + ["1.00 m", "1.00 km", "0.400 mm"],
+                })
+
+    def test_the_antenna_icon_takes_a_finger_beside_the_frequency(self):
+        # On a touch screen the icon's target is at least 40 px across and
+        # lies past the frequency, which a tap edits; the dialog fits a phone.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
+                icon = page.get_by_role("button", name="Antenna length", exact=True)
+                target, freq = icon.bounding_box(), page.locator("#freq").bounding_box()
+                self.assertGreaterEqual(min(target["width"], target["height"]), 40)
+                self.assertGreaterEqual(target["x"], freq["x"] + freq["width"] - 0.5)
+                icon.tap()
+                dialog = page.locator("#antenna-dialog")
+                expect(dialog).to_be_visible()
+                box = dialog.bounding_box()
+                self.assertGreaterEqual(box["x"], 0)
+                self.assertLessEqual(box["x"] + box["width"], PHONE["viewport"]["width"])
+                dialog.get_by_role("button", name="Close the antenna lengths").tap()
+                expect(dialog).to_be_hidden()
 
     def test_held_audio_shows_a_speaker_and_a_touch_asks_it_to_start(self):
         # A tap activates the page only once the finger leaves the screen, and

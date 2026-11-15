@@ -9,6 +9,7 @@ import { AudioOutput } from './audio.js';
 import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
+import { antennaLengths, formatLength } from './antenna.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -94,6 +95,8 @@ const hoverEl = $('#hoverinfo');
 const hintEl = $('#hint');
 const noticeEl = $('#notice');
 const readoutEl = $('#readout');
+const antennaEl = $('#antenna');
+const antennaDialog = $('#antenna-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
 
 // ------------------------------------------------------------------ state
@@ -945,6 +948,26 @@ function updateOverlays() {
   drawBandStrip();
   updateMeta();
   renderFreq();
+  syncAntenna();
+}
+
+// The lengths of an antenna for the frequency the VFO shows, while their
+// dialog is open: they follow the VFO, written only when they change.
+function syncAntenna() {
+  if (!antennaDialog.open) return;
+  const f = shownVfo(), band = bandAt(f), { wavelength, half, quarter } = antennaLengths(f);
+  const texts = [
+    ['#antenna-for', `${fmtMHz(f, 4)} MHz${band ? ` · ${band.name}` : ''}`],
+    ['#antenna-wave', formatLength(wavelength)],
+    ['#antenna-dipole', formatLength(half)],
+    ['#antenna-arm', formatLength(quarter)],
+    ['#antenna-vertical', formatLength(quarter)],
+    ['#antenna-radial', formatLength(quarter)],
+  ];
+  for (const [sel, text] of texts) {
+    const el = $(sel);
+    if (el.textContent !== text) el.textContent = text;
+  }
 }
 
 // An outline over the views around a range of frequencies, written to the
@@ -2860,6 +2883,24 @@ function editFreq() {
   });
   input.addEventListener('blur', () => finish(true));
 }
+// The icon beside the frequency opens the antenna lengths in a modal dialog,
+// which Escape, its close button or a press on the backdrop closes; the focus
+// then goes back to the icon.
+let antennaBackdropPress = false;
+antennaEl.addEventListener('click', () => {
+  antennaDialog.showModal();
+  syncAntenna();
+});
+antennaDialog.querySelector('.close').addEventListener('click', () => antennaDialog.close());
+// A press that starts in the dialog and ends on the backdrop, as when selecting text, keeps it open,
+// and so does the second click of a double click on the icon, which lands on the backdrop.
+antennaDialog.addEventListener('pointerdown', (e) => { antennaBackdropPress = e.target === antennaDialog; });
+antennaDialog.addEventListener('click', (e) => {
+  if (antennaBackdropPress && e.target === antennaDialog && e.detail < 2) antennaDialog.close();
+  antennaBackdropPress = false;
+});
+antennaDialog.addEventListener('close', () => antennaEl.focus());
+
 freqEl.addEventListener('dblclick', editFreq);
 freqEl.addEventListener('click', () => { if (coarseQuery.matches) editFreq(); });   // touch: one tap opens the keypad
 freqEl.addEventListener('wheel', (e) => {
@@ -2894,6 +2935,7 @@ bindStepButton($('#tune-up'), 1);
 
 window.addEventListener('keydown', (e) => {
   poke();
+  if (antennaDialog.open) return;     // the dialog keeps its keys: Escape closes it alone, and nothing tunes behind it
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
     else if (openName) { closePanel(); e.preventDefault(); }

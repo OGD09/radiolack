@@ -339,6 +339,15 @@ with the screen locked and with the ringer switch on silent. The Record
 panel records the audio and the receiver's raw I/Q
 ([Recording](#recording)).
 
+A faint λ beside the frequency opens the lengths of an antenna for it, in a
+dialog that follows the VFO while it shows: the wavelength, a half-wave
+dipole, end to end and for each arm, and a quarter-wave vertical, whose
+radials take the same length. They are lengths to cut, 5% shorter than the
+free-space wavelength gives (the classic 143/f metres for a dipole and
+71.3/f for a quarter wave, f in MHz), to 3 significant digits: cut a little
+longer, then trim. Listening needs no resonant antenna, though: below 30 MHz
+a long wire often does as well.
+
 ## Spectrum view
 
 The spectrum and the waterfall show the received span, or a part of it:

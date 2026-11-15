@@ -88,6 +88,32 @@ html, body {
 #freq .d.lo { color: #aab4c0; }
 #freq .sep { color: var(--muted); margin: 0 1px; }
 #freq .freq-input { width: 9em; font: inherit; font-size: 22px; text-align: center; color: var(--text); background: rgba(0, 0, 0, 0.6); border: 1px solid var(--accent); border-radius: 6px; padding: 0 6px; }
+/* Beside the frequency, off the line so that the digits stay centred: the antenna lengths for it. */
+.freq-line { position: relative; display: inline-block; }
+#antenna {
+  position: absolute; left: 100%; top: 50%; transform: translateY(-50%); margin-left: 3px;
+  width: 25px; height: 25px; padding: 0; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 5px; color: var(--faint); cursor: pointer; pointer-events: auto;
+  touch-action: manipulation; transition: opacity 0.4s;
+}
+#antenna svg {
+  width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1;
+  stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
+}
+/* The lengths themselves, in a modal dialog dressed as the panels. */
+#antenna-dialog {
+  width: 320px; max-width: calc(100% - 32px); padding: 0; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px; user-select: text; -webkit-user-select: text;
+}
+#antenna-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }   /* no custom properties: older engines do not pass them to ::backdrop */
+#antenna-dialog .dialog-body { padding: 10px 14px 12px; }        /* fills the dialog: a press on the dialog itself is on the backdrop */
+#antenna-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.dialog-sub { margin: 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lengths { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 6px 12px; margin: 12px 0; }
+.lengths dt { color: var(--muted); }
+.lengths dt.sub { padding-left: 12px; }
+.lengths dd { margin: 0; text-align: right; font-size: 14px; font-variant-numeric: tabular-nums; }
 #meta { font-size: 12px; color: var(--muted); }
 #meta b { color: var(--text); font-weight: 600; }
 #meta .dot { margin: 0 6px; opacity: 0.6; }
@@ -160,7 +186,7 @@ html, body {
 #sound .on, #sound[aria-pressed="true"] .off { display: none; }
 #sound[aria-pressed="true"] .on { display: block; }
 
-body.idle #brand, body.idle #toolbar, body.idle #status, body.idle #tunepad, body.idle #span-fit { opacity: 0.2; }
+body.idle #brand, body.idle #toolbar, body.idle #status, body.idle #tunepad, body.idle #span-fit, body.idle #antenna { opacity: 0.2; }
 body.idle #hoverinfo { opacity: 0; }
 
 #panel {
@@ -240,6 +266,7 @@ table.peaks tr.active .freq-link { color: var(--ok); }
 /* Hover feedback only where a real hover exists: on touch screens it would stay stuck after a tap. */
 @media (hover: hover) {
   #freq .d:hover { background: rgba(255, 255, 255, 0.1); }
+  #antenna:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
   #toolbar button:hover:not([aria-expanded="true"]) { color: var(--text); background: rgba(255, 255, 255, 0.07); }
   .mark:hover { border-color: rgba(89, 167, 255, 0.6); }
   .close:hover { color: var(--text); background: var(--control-hover); }
@@ -301,11 +328,12 @@ table.peaks tr.active .freq-link { color: var(--ok); }
   #ctx button { padding: 12px 14px; }
   .mark, #vfo-return { font-size: 12px; padding: 3px 8px; }
   #span-fit { width: 40px; height: 40px; border-radius: 8px; }
+  #antenna { width: 40px; height: 40px; margin-left: 0; justify-content: flex-start; padding-left: 7px; }   /* the target grows away from the digits */
   #status, #hoverinfo { display: none; }
   #tunepad { display: block; }
   #sound { display: flex; }
   #sound[hidden] { display: none; }
-  body.idle #brand, body.idle #toolbar, body.idle #tunepad, body.idle #sound, body.idle #span-fit { opacity: 0.45; }
+  body.idle #brand, body.idle #toolbar, body.idle #tunepad, body.idle #sound, body.idle #span-fit, body.idle #antenna { opacity: 0.45; }
 }
 @media (pointer: coarse) and (min-width: 761px) {
   #toolbar button { min-height: 40px; padding: 0 12px; font-size: 13px; }

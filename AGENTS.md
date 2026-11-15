@@ -86,8 +86,9 @@ the history under the tag `v0.1.0`.
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
-  `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views) and `bandplan.js`
-  (band plan loader) carry JSDoc types; `main.js` still holds the mockup's code under
+  `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
+  (band plan loader) and `antenna.js` (antenna lengths for the VFO's
+  frequency) carry JSDoc types; `main.js` still holds the mockup's code under
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
