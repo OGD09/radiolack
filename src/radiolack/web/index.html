@@ -34,7 +34,9 @@
   <h1 id="brand">Radiolack</h1>
 
   <div id="readout">
-    <div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div>
+    <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
+      <svg viewBox="0 0 15 15" aria-hidden="true"><path d="M3 1.5c1.7 0 2.7.8 3.4 2.4l5.1 9.6M7.5 6 3 13.5"/></svg>
+    </button></div>
     <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
     <div id="smeter" aria-hidden="true"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
   </div>
@@ -339,6 +341,22 @@
   <div id="hoverinfo"></div>
   <div id="hint"></div>
   <div id="notice" hidden><span id="notice-text" role="status"></span><button type="button" class="close" id="notice-close" aria-label="Dismiss the update notice">×</button></div>
+
+  <dialog id="antenna-dialog" aria-labelledby="antenna-title" aria-describedby="antenna-for">
+    <div class="dialog-body">
+      <div class="panel-head"><h2 id="antenna-title">Antenna length</h2><button type="button" class="close" aria-label="Close the antenna lengths">×</button></div>
+      <p class="dialog-sub" id="antenna-for"></p>
+      <dl class="lengths">
+        <dt>Wavelength (λ)</dt><dd id="antenna-wave"></dd>
+        <dt>Half-wave dipole</dt><dd id="antenna-dipole"></dd>
+        <dt class="sub">Each arm</dt><dd id="antenna-arm"></dd>
+        <dt>Quarter-wave vertical</dt><dd id="antenna-vertical"></dd>
+        <dt class="sub">Each radial</dt><dd id="antenna-radial"></dd>
+      </dl>
+      <p class="note">The dipole and the vertical include the usual 5% shortening: cut them a little longer, then trim.</p>
+      <p class="note">Listening needs no resonant antenna: below 30 MHz a long wire often does as well; above, a resonant one mostly helps weak signals.</p>
+    </div>
+  </dialog>
 </div>
 </body>
 </html>
