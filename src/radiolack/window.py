@@ -6,8 +6,13 @@ server, stays on that server, writes no browser data to disk, and returns
 when it is closed or when the process receives SIGINT or SIGTERM. It saves
 what the interface downloads, such as a recording, in the user's Downloads
 folder without asking, under a name not taken there, then tells the page
-where it went with a ``radiolack-download`` event. GitHub's page for a new
-issue, with a problem report (report.py), opens in the user's web browser.
+where it went with a ``radiolack-download`` event. When WebKit's web
+process, which draws the page, ends on its own, after a crash in WebKitGTK
+for instance, it loads the page again, at most once a minute: a page that
+ends again sooner gives way to a message with a button that reloads it.
+WebKit paints the page on the CPU, unless WEBKIT_SKIA_ENABLE_CPU_RENDERING
+is set already: see CPU_PAINTING. GitHub's page for a new issue, with a
+problem report (report.py), opens in the user's web browser.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import json
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -34,6 +40,15 @@ BACKGROUND = "#0a0c0f"
 _WEBKIT_API_VERSIONS = ("4.1", "4.0")
 DOWNLOAD_EVENT = "radiolack-download"   # tells the page where a download went
 _MAX_COPIES = 999                       # "name (2).wav" to "name (999).wav"
+# After the web process ends, the page loads again unless it ended less than
+# this long before already: the engine serves the page as it was meanwhile.
+RELOAD_SPACING_S = 60
+# WebKitGTK paints with Skia, on the GPU by default since 2.46. That painting
+# crashed WebKitGTK 2.50's web process, in Skia's GPU resource cache on its
+# compositing thread. On the CPU, Skia leaves its GPU code out, and costs no
+# more here: the spectrum and the waterfall draw with WebGL2 either way. A
+# value the user set, such as 0 for the GPU, stays.
+CPU_PAINTING = ("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1")
 
 
 class WindowUnavailable(Exception):
@@ -55,6 +70,7 @@ def show(url: str) -> None:
     Raises WindowUnavailable when the window cannot open.
     """
     Gdk, GLib, Gtk, WebKit2 = _load_toolkit()
+    os.environ.setdefault(*CPU_PAINTING)    # before the web process starts, which reads it
 
     # A desktop program plays sound without a click first. WebKitGTK allows
     # that only through a policy given when the view is created. The context
@@ -71,10 +87,26 @@ def show(url: str) -> None:
     view.set_background_color(background)
     view.connect("decide-policy", _stay_on_origin, _origin(url), WebKit2)
 
+    # The interface, or the message that it stopped: the first page shown
+    # is the first one visible when added.
+    pages = Gtk.Stack()
+    view.show()
+    pages.add_named(view, "interface")
+
+    def reload_page() -> None:
+        pages.set_visible_child(view)
+        view.load_uri(url)
+
+    stopped = _stopped_page(Gtk, reload_page)
+    stopped.show_all()
+    pages.add_named(stopped, "stopped")
+    view.connect("web-process-terminated", _web_process_terminated,
+                 _WebProcessEnds(RELOAD_SPACING_S), url, lambda: pages.set_visible_child(stopped))
+
     Gtk.Window.set_default_icon_name(PROGRAM)   # once installed with its icon; otherwise none
     window = Gtk.Window(title=TITLE)
     window.set_default_size(*DEFAULT_SIZE)
-    window.add(view)
+    window.add(pages)
     window.connect("destroy", Gtk.main_quit)
 
     def request_close(_signum, _frame):
@@ -170,6 +202,56 @@ def _open_outside(uri: str) -> None:
         Gio.AppInfo.launch_default_for_uri(uri, None)
     except GLib.Error as error:
         log.warning("no web browser opened %s: %s", urlsplit(uri)._replace(query="").geturl(), error.message)
+
+
+class _WebProcessEnds:
+    """The ends of the interface's web process: the page loads again after
+    one, unless the previous one came less than ``spacing_s`` before."""
+
+    def __init__(self, spacing_s: float, clock=time.monotonic) -> None:
+        self._spacing_s = spacing_s
+        self._clock = clock
+        self._last: float | None = None
+
+    def reload(self) -> bool:
+        """Note an end now and return whether the page loads again."""
+        now = self._clock()
+        again_soon = self._last is not None and now - self._last < self._spacing_s
+        self._last = now
+        return not again_soon
+
+
+def _web_process_terminated(view, reason, ends: _WebProcessEnds, url: str, show_stopped) -> None:
+    """Load the page again after WebKit's web process ended, unless it ended
+    a moment ago already: the window then says that the interface stopped.
+
+    Without this, the window would keep showing the page's last image.
+    """
+    why = getattr(reason, "value_nick", reason)
+    if ends.reload():
+        log.warning("the interface's web process ended (%s): loading the page again", why)
+        view.load_uri(url)
+    else:
+        log.warning("the interface's web process ended again (%s) within %d s: "
+                    "the window says that the interface stopped", why, RELOAD_SPACING_S)
+        show_stopped()
+
+
+def _stopped_page(Gtk, reload_page):
+    """The message shown in place of the interface once its web process
+    ended twice within RELOAD_SPACING_S, with a button that reloads it."""
+    label = Gtk.Label(label="The interface stopped: WebKit, which draws it, ended twice within a minute.")
+    label.set_line_wrap(True)
+    label.set_justify(Gtk.Justification.CENTER)
+    button = Gtk.Button(label="Reload")
+    button.set_halign(Gtk.Align.CENTER)
+    button.connect("clicked", lambda _button: reload_page())
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_halign(Gtk.Align.CENTER)
+    box.set_valign(Gtk.Align.CENTER)
+    box.pack_start(label, False, False, 0)
+    box.pack_start(button, False, False, 0)
+    return box
 
 
 def _save_download(_context, download, view, GLib) -> None:

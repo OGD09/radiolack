@@ -88,8 +88,13 @@ the history under the tag `v0.1.0`.
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK; an ephemeral WebKit context writes nothing to disk; downloads
   go to the user's Downloads folder without asking, under a name not taken
-  there, and a `radiolack-download` event tells the page where; GitHub's
-  page for a new issue, alone, opens in the user's web browser).
+  there, and a `radiolack-download` event tells the page where; when
+  WebKit's web process ends, after a crash in WebKitGTK for instance, the
+  page loads again, unless it ended less than a minute before: a message
+  with a Reload button then takes its place; WebKit paints on the CPU,
+  `WEBKIT_SKIA_ENABLE_CPU_RENDERING=1` unless the user set it, as Skia's
+  GPU painting crashed WebKitGTK 2.50's web process; GitHub's page for a
+  new issue, alone, opens in the user's web browser).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,

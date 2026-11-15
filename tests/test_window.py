@@ -1,6 +1,7 @@
 """Tests for the native window helpers that run without GTK or a display."""
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -89,6 +90,7 @@ class StayOnOriginTest(unittest.TestCase):
 class ShowTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(mock.patch.object(report, "_window", None))     # show() names its toolkit there
+        self.enterContext(mock.patch.dict(os.environ))     # show() sets CPU_PAINTING's variable
 
     def test_keeps_no_browser_data_on_disk(self):
         # A persistent context would fill ~/.local/share/radiolack and ~/.cache/radiolack at each start.
@@ -115,6 +117,107 @@ class ShowTest(unittest.TestCase):
             window.show("http://127.0.0.1:8000/")
         WebKit2.WebContext.new_ephemeral.return_value.connect.assert_called_once_with(
             "download-started", window._save_download, WebKit2.WebView.return_value, GLib)
+
+    def test_has_webkit_paint_on_the_cpu_unless_set_otherwise(self):
+        # Skia's GPU painting crashed WebKitGTK 2.50's web process; a value the user set stays.
+        name, value = window.CPU_PAINTING
+        for preset, expected in ((None, value), ("0", "0")):
+            with self.subTest(preset=preset), mock.patch.dict(os.environ):
+                os.environ.pop(name, None)
+                if preset is not None:
+                    os.environ[name] = preset
+                Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+                # What the web process would find, as the view's context comes before it.
+                seen = []
+                WebKit2.WebContext.new_ephemeral.side_effect = \
+                    lambda: seen.append(os.environ.get(name)) or mock.DEFAULT
+                with mock.patch.object(window, "_load_toolkit", return_value=(Gdk, GLib, Gtk, WebKit2)):
+                    window.show("http://127.0.0.1:8000/")
+                self.assertEqual(seen, [expected])
+
+    def test_follows_the_end_of_the_web_process(self):
+        Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+        stopped_page = mock.Mock()
+        with mock.patch.object(window, "_load_toolkit", return_value=(Gdk, GLib, Gtk, WebKit2)), \
+                mock.patch.object(window, "_stopped_page", stopped_page):
+            window.show("http://127.0.0.1:8000/")
+        view, pages, stopped = WebKit2.WebView.return_value, Gtk.Stack.return_value, stopped_page.return_value
+        Gtk.Window.return_value.add.assert_called_once_with(pages)
+        self.assertEqual(pages.add_named.call_args_list, [mock.call(view, "interface"), mock.call(stopped, "stopped")])
+        handlers = {call.args[0]: call.args[1:] for call in view.connect.call_args_list}
+        handler, ends, url, show_stopped = handlers["web-process-terminated"]
+        self.assertIs(handler, window._web_process_terminated)
+        self.assertIsInstance(ends, window._WebProcessEnds)
+        self.assertEqual(url, "http://127.0.0.1:8000/")
+        show_stopped()
+        pages.set_visible_child.assert_called_once_with(stopped)
+        # The message's button brings the interface back and loads it again.
+        reload_page = stopped_page.call_args.args[1]
+        reload_page()
+        pages.set_visible_child.assert_called_with(view)
+        self.assertEqual(view.load_uri.call_args_list, [mock.call("http://127.0.0.1:8000/")] * 2)
+
+
+class FakeClock:
+    """A monotonic clock that a test moves on."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class WebProcessEndTest(unittest.TestCase):
+    """When WebKit's web process ends, the page loads again, unless it ended
+    less than a minute before already: the window then says it stopped."""
+
+    URL = "http://127.0.0.1:8000/"
+
+    def setUp(self) -> None:
+        self.clock = FakeClock()
+        self.ends = window._WebProcessEnds(window.RELOAD_SPACING_S, clock=self.clock)
+        self.view = mock.Mock()
+        self.show_stopped = mock.Mock()
+
+    def end(self, reason="crashed") -> list[str]:
+        with self.assertLogs("radiolack.window", "WARNING") as logs:
+            window._web_process_terminated(self.view, SimpleNamespace(value_nick=reason), self.ends,
+                                           self.URL, self.show_stopped)
+        return logs.output
+
+    def test_loads_the_page_again(self):
+        output = self.end("crashed")
+        self.view.load_uri.assert_called_once_with(self.URL)
+        self.show_stopped.assert_not_called()
+        self.assertIn("ended (crashed): loading the page again", output[0])
+
+    def test_says_the_interface_stopped_when_it_ends_again_within_a_minute(self):
+        self.end()
+        self.clock.now += window.RELOAD_SPACING_S - 0.1
+        output = self.end("exceeded-memory-limit")
+        self.view.load_uri.assert_called_once_with(self.URL)
+        self.show_stopped.assert_called_once_with()
+        self.assertIn("ended again (exceeded-memory-limit) within 60 s", output[0])
+
+    def test_loads_the_page_again_a_minute_after_the_last_end(self):
+        self.end()
+        self.clock.now += window.RELOAD_SPACING_S - 0.1
+        self.end()
+        self.clock.now += window.RELOAD_SPACING_S
+        self.end()
+        self.assertEqual(self.view.load_uri.call_count, 2)
+        self.show_stopped.assert_called_once_with()
+
+    def test_the_message_has_a_button_that_reloads(self):
+        Gtk, reload_page = mock.Mock(), mock.Mock()
+        window._stopped_page(Gtk, reload_page)
+        button = Gtk.Button.return_value
+        Gtk.Button.assert_called_once_with(label="Reload")
+        signal_name, handler = button.connect.call_args.args
+        self.assertEqual(signal_name, "clicked")
+        handler(button)
+        reload_page.assert_called_once_with()
 
 
 class OpenOutsideTest(unittest.TestCase):
