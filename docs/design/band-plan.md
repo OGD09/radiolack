@@ -33,7 +33,7 @@ A JSON object, written with one band or segment per line:
 | Field | Meaning |
 | --- | --- |
 | `format` | `1`. |
-| `name` | Name of the plan, shown in the Bands panel. |
+| `name` | Name of the plan, shown in the Bookmarks menu. |
 | `types` | Colour of each type, as `#rrggbb`. Types are colour categories (broadcasting, aviation, amateur CW sections, ...), every one of them used. |
 | `bands` | The bands, in frequency order and contiguous. |
 

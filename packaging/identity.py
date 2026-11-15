@@ -5,8 +5,8 @@ The mark is the Peak: one spectrum trace rising out of the noise floor. In
 its tile, blue on the interface's ink, it makes the icons: the favicon, the
 iPhone's Home Screen icon, the menu and window icon, and GitHub's social
 preview. Beside the name it takes a single colour, light on a dark
-background and dark on a light one: in the interface's top bar, on the
-pairing page and in README.md's header. The name is Saira Italic at weight
+background and dark on a light one: on the pairing page and in
+README.md's header. The name is Saira Italic at weight
 600 and width 112.5, turned into outlines here once, so that neither the
 interface nor the package loads a font. Saira is Copyright 2020 The Saira
 Project Authors, under the SIL Open Font License 1.1.
@@ -22,9 +22,8 @@ git blob 91a7f41356b3e936d3a0b7a9df53ce7a1fef0e3a); it stays out of the
 repository. The script writes src/radiolack/web/favicon.svg and
 apple-touch-icon.png, packaging/radiolack.svg, and in docs/identity/ the
 README's radiolack-light.svg and radiolack-dark.svg and the social preview,
-social-preview.png. It then prints the single-colour lockup that index.html
-and pair.html inline: tests/test_identity.py checks that they match the
-README's.
+social-preview.png. It then prints the single-colour lockup that pair.html
+inlines: tests/test_identity.py checks that it matches the README's.
 
 It shapes the text as a browser does Latin text, which for Saira 1.101
 means kerning alone: it stops if one of the font's other default features
@@ -295,7 +294,7 @@ def lockup(word: Outline, colour: str) -> tuple[str, str]:
 
 
 def inline_lockup(word: Outline) -> str:
-    """The lockup the interface's pages inline: the text's colour, sized by the style sheet."""
+    """The lockup the pairing page inlines: the text's colour, sized by the style sheet."""
     body, view_box = lockup(word, "currentColor")
     return f'<svg role="img" aria-label="{NAME}" viewBox="{view_box}">{body}</svg>'
 

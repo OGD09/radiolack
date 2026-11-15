@@ -881,8 +881,8 @@ and later.
   asks for no recordings; one whose hello does not list `iq` offers no I/Q
   recording, and reads a recording state without `iq` as one without an
   I/Q recording. The interface asks for the recordings when its Record
-  panel shows, when a recording that runs makes its file or stops, when
-  the folder changes, and every 30 s while the panel shows and its page is
+  menu shows, when a recording that runs makes its file or stops, when
+  the folder changes, and every 30 s while the menu shows and its page is
   visible; a recording that runs takes its length and size from the
   recording state.
 - The interface applies the preferences of its page's first connection

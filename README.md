@@ -17,14 +17,14 @@ and listen to it over the local network.
 rtl_tcp, which it runs itself for a receiver plugged into this computer, or
 simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
-spectrum and the waterfall with WebGL2. The Source panel switches between the
+spectrum and the waterfall with WebGL2 and keeps every setting in one menu
+([The menu](#the-menu)). The Receiver menu switches between the
 simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, USB, LSB, CW and WFM, broadcast FM in mono, and the
-interface plays the audio; the Demod panel's CTCSS and processing settings
-do nothing yet. The engine also
+interface plays the audio. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)), from an
@@ -143,8 +143,8 @@ radiolack
 ```
 
 opens the interface in a desktop window, on the source used last: the
-simulated 2 m band the first time. The Source panel's Receiver list switches
-to a receiver ([RTL-SDR receivers](#rtl-sdr-receivers)). Closing the window
+simulated 2 m band the first time. The Receiver menu's list switches to a
+receiver ([RTL-SDR receivers](#rtl-sdr-receivers)). Closing the window
 stops Radiolack.
 
 | Option | Effect |
@@ -156,7 +156,7 @@ stops Radiolack.
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
-| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Source panel can change the address. Not with `--rtl-sdr`. |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -183,10 +183,41 @@ Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
 the port cannot be used, when `--rtl-sdr` finds no rtl_tcp installed or when
 `--remote` cannot turn remote access on, 2 for invalid options.
 
+### The menu
+
+The spectrum, the waterfall and the readout, the frequency with its mode
+and its S-meter, take the whole window. Everything else is in one menu,
+behind an icon: a small square at the top left with a mouse, a round button
+between the step buttons at the bottom on a touch screen. The menu lists
+seven menus beside the one it shows:
+
+- Radio: the mode, the band plan's mode and step, the squelch, the volume,
+  the filter width and the tuning step.
+- Bookmarks: the bookmarks, the band plan's ranges in the span and the
+  memory scan ([Settings and bookmarks](#settings-and-bookmarks)).
+- Scan: the signals found, the sweep and the History, in three tabs
+  ([Scanners](#scanners)).
+- Record: the recordings and, on this computer, their folder
+  ([Recording](#recording)).
+- Receiver: the source and its settings
+  ([RTL-SDR receivers](#rtl-sdr-receivers)).
+- Display: the spectrum's height, the spectrum, the waterfall, and the band
+  plan and bookmarks on the spectrum.
+- Settings: the interface's behaviour, the storage, the updates, remote
+  access, the gestures and keys, and the version that runs.
+
+The keys 1 to 7 open these menus in this order, or close the one that
+shows; in a field they type as usual, and with Ctrl, Alt or Meta they do
+nothing. Escape, a click outside the menu or its close button closes it,
+and the icon opens the last menu shown again. In a window 600 px wide or
+less, the list of menus comes first, and a menu takes its place with an
+arrow back to the list. A dot on the icon tells that a recording runs, in
+red, or that the memory scan or the sweep runs, in green.
+
 ## RTL-SDR receivers
 
-Radiolack reads RTL-SDR receivers through rtl_tcp. The Source panel's
-Receiver list switches between the simulated band ("Synthetic band (2 m)"),
+Radiolack reads RTL-SDR receivers through rtl_tcp. The Receiver menu's
+list switches between the simulated band ("Synthetic band (2 m)"),
 a receiver plugged into this computer ("RTL-SDR · this computer") and a
 receiver behind an rtl_tcp server ("RTL-SDR · rtl_tcp"), for every open
 interface; its other entries are not available yet. Each keeps its own
@@ -228,18 +259,18 @@ radiolack --rtl-tcp
 `--rtl-tcp PORT`, `--rtl-tcp HOST` and `--rtl-tcp HOST:PORT` read the
 rtl_tcp at that address, with an IPv6 address in brackets (`[::1]:1234`).
 `--rtl-tcp` alone reads the address used last, on the command line or in the
-Source panel, and rtl_tcp's default address, 127.0.0.1:1234, the first time.
+Receiver menu, and rtl_tcp's default address, 127.0.0.1:1234, the first time.
 rtl_tcp has no access control: anyone who reaches it can use the receiver,
 so keep it on 127.0.0.1, or on a network you trust when the receiver is on
 another computer.
 
-The Source panel's "Server address" field changes the address while
+The Receiver menu's "Server address" field changes the address while
 Radiolack runs, for instance when the receiver's computer answers at another
 address on another network: type HOST, PORT or HOST:PORT and press Enter.
 Radiolack hangs up and connects there with the same settings, and every open
 interface follows; the field shows the full address, HOST:1234 for a host
 alone. An address Radiolack cannot read is refused, with the reason in the
-panel, and the field shows the address in use again. When nobody answers
+menu, and the field shows the address in use again. When nobody answers
 there, the status line says why and Radiolack tries again by itself until
 you give another address.
 
@@ -252,7 +283,7 @@ With either option:
 - At each connection, Radiolack sends its own settings, since rtl_tcp keeps
   those of its previous client: 145 MHz, 2.4 MS/s, automatic gain and no
   frequency correction at first, then the latest ones.
-- The Source panel names the tuner and sets the centre frequency, the sample
+- The Receiver menu names the tuner and sets the centre frequency, the sample
   rate (1.024 to 2.88 MS/s), the gain and the frequency correction. "Tuner
   AGC" gives automatic gain; otherwise the gain is one of those the tuner
   offers. The frequency correction, in whole ppm from -100 to +100, makes up
@@ -262,7 +293,7 @@ With either option:
   interface. Once you press Enter or leave a field, it shows the setting in
   use: as the receiver took it, a whole ppm for instance, or the previous one
   when the change is refused, such as a frequency the tuner cannot reach,
-  with the reason in the panel.
+  with the reason in the menu.
 - "Remove the DC spike", on when Radiolack starts, takes the receiver's
   constant offset off the samples before the spectrum is computed; without
   it, the offset shows as a spike at the centre frequency. A signal exactly
@@ -270,7 +301,7 @@ With either option:
   setting, which the engine applies to any source.
 - Tuning outside the received span, with a click on the spectrum zoomed out
   past it ([Spectrum view](#spectrum-view)), a typed frequency, a bookmark,
-  the Peaks list, the History or the context menu, moves the span so that
+  the Signals list, the History or the context menu, moves the span so that
   the frequency sits a 32nd of the span above its centre, 75 kHz at
   2.4 MS/s, with the channel at least 5 kHz from the centre: clear of the
   receiver's DC spike. The frequency shows at once, and the VFO goes there
@@ -303,8 +334,8 @@ With either option:
 
 The engine demodulates one VFO, which every interface shows: a click on the
 spectrum, the wheel, the keyboard or a bookmark tunes it, and a change made
-in one interface shows in the others, the last change winning. The Demod
-panel sets the mode, the filter width and the squelch, and every mode
+in one interface shows in the others, the last change winning. The Radio
+menu sets the mode, the filter width and the squelch, and every mode
 plays. NFM audio is de-emphasized, its CTCSS tone is removed and its band
 stops at 3.5 kHz. AM audio follows the carrier's level: its loudness depends
 on the modulation, not on the signal's strength. USB and LSB keep their own
@@ -318,7 +349,7 @@ WFM plays broadcast FM in mono, through a filter 180 kHz wide by default,
 from 50 to 250 kHz. Its audio has the European 50 µs de-emphasis and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
 the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
-WFM, so tuning into 87.5 to 108 MHz selects it, with Demod > "Mode and step
+WFM, so tuning into 87.5 to 108 MHz selects it, with Radio > "Mode and step
 from the band plan".
 
 The squelch is automatic by default: it opens 8 dB above the noise around
@@ -327,7 +358,12 @@ lower. In WFM, whose station fills the spectrum around the VFO, the engine
 reads the noise beyond the channel's edges, on the side that a neighbouring
 station leaves quieter. Unticking "Automatic" sets the threshold by hand, starting from where
 the automatic one stood. The S-meter shows the channel's level in dBFS and
-the threshold, and its bar changes colour while the squelch is open. In
+the threshold, and its bar changes colour while the squelch is open. It
+sets the threshold too: a notch of the wheel over it moves the threshold
+1 dB, up raising it, and a click or a tap on its bar puts the threshold at
+that point of its scale, from -104 dB at the left end to -10 dB at the
+right, within the threshold's range of -130 to -20 dB. Either sets the
+threshold by hand, the wheel starting from the automatic one in use. In
 SSB, whose level follows the voice, the squelch closes between words: a
 threshold set by hand below the noise keeps it open.
 
@@ -335,13 +371,13 @@ Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
 click, tap or key press on the page, as Safari does on an iPhone each time
-the page loads; the Demod panel then says so. On a touch screen, a speaker
+the page loads; the Radio menu then says so. On a touch screen, a speaker
 at the top right shows whether the page plays sound: crossed out while the
 browser holds the audio or the volume is 0, with waves while it plays. A
 tap on it starts held audio, mutes playing audio by setting the volume to
 0, or brings the volume back. On an iPhone, Safari keeps playing the audio
 with the screen locked and with the ringer switch on silent. The Record
-panel records the audio and the receiver's raw I/Q
+menu records the audio and the receiver's raw I/Q
 ([Recording](#recording)).
 
 A faint λ beside the frequency opens the lengths of an antenna for it, in a
@@ -390,8 +426,8 @@ rate or FFT size, or another receiver starts them again.
 ## Scanners
 
 The engine looks for signals in the spectrum it computes, whatever each
-interface shows, and every interface lists the same ones: the Scanners
-panel's Peaks tab gives each signal's frequency, how far it rises above the
+interface shows, and every interface lists the same ones: the Scan menu's
+Signals tab gives each signal's frequency, how far it rises above the
 noise around it and when it was last found. A signal is found when it rises
 at least the threshold above that noise (12 dB by default, from 6 to 30 dB)
 over a third of a second, twice in a row, away from the outer tenth of the
@@ -410,8 +446,8 @@ for every interface, a paired device's included, and kept for the next
 start. "Mark on the spectrum" is each interface's own: it marks the signals
 found within the last 1.5 s on the spectrum.
 
-The Bookmarks tab's memory scan runs in the engine, the same for every
-interface. It watches every ticked bookmark of the receiver's span at once,
+The memory scan, at the foot of the Bookmarks menu, runs in the engine,
+the same for every interface. It watches every ticked bookmark of the receiver's span at once,
 in the part that detection searches. A bookmark is active when the power
 in its mode's filter would open the squelch, with the squelch's settings:
 8 dB above the noise around it with the automatic squelch, or beyond its
@@ -463,7 +499,7 @@ The Sweep tab's sweep runs in the engine too, the same for every interface,
 with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
 It steps the receiver across a range, 430 to 440 MHz by default, window
 after window, pass after pass, and detection searches each window as it
-does the span: the signals found there join the Peaks list and the History.
+does the span: the signals found there join the Signals list and the History.
 The windows lie a quarter of the sample rate apart at most, the first and
 the last a tenth of the rate inside the range, so that every frequency of
 the range lies in the part that detection searches of a window, even one at
@@ -517,11 +553,11 @@ next ask.
 
 ## Recording
 
-The Record panel records the audio that the VFO plays, and the receiver's
+The Record menu records the audio that the VFO plays, and the receiver's
 raw I/Q: Record audio and Record I/Q each start a recording and Stop ends
 it, from any interface, a paired device's included. Both may run at once,
-and every interface shows the recordings that run, with a dot on its Record
-button and in its status line. A recording goes on without any interface,
+and every interface shows the recordings that run, with a red dot on its
+menu's icon and in its status line. A recording goes on without any interface,
 like a scan, until an interface stops it. It never starts at start, and
 whether one runs is not saved. The simulated band is not recorded: choosing
 it ends an audio recording, which another receiver does not, while another
@@ -557,21 +593,21 @@ within 5 s, and at the end, so that a crash leaves files that read.
 The recordings go to `~/.local/share/radiolack/recordings`
 (`$XDG_DATA_HOME/radiolack/recordings` when that variable is set), which
 Radiolack makes when needed; the folder and the files are readable by the
-user only. Settings > Recordings, on this computer only, chooses another
+user only. Record > Folder, on this computer only, chooses another
 folder, which must exist and which Radiolack must be able to write into;
 `~` stands for the home folder. The folder changes only while nothing
 records, and the recordings made before stay where they are: the list, the
 downloads and the deletions follow the new folder. An empty field, or
 Default folder, comes back to the default one.
 
-The panel lists the folder's latest 500 recordings, the newest first, with
+The menu lists the folder's latest 500 recordings, the newest first, with
 their start, length and size, an I/Q recording's sample rate too, and the
 space left on its disk; it asks the engine for them again every 30 s while
 it shows. Download fetches a recording from the computer that records, as
 Data and Metadata fetch an I/Q recording's two files: the desktop window
 saves it in the Downloads folder (`~/Downloads`, or the folder that
 xdg-user-dirs names in the system's language) without asking, adding `(2)`,
-`(3)` and so on to a name already there, and the panel says where it went;
+`(3)` and so on to a name already there, and the menu says where it went;
 a browser, a paired device's included, saves it as it saves any download.
 Delete removes a recording, an I/Q recording's two files together, for every
 interface, once pressed again within 5 s. Download, Data, Metadata and
@@ -582,7 +618,7 @@ A recording stops by itself when less than 2 GiB stays free on its disk,
 an audio recording when its file reaches the WAV format's limit of 4 GiB
 (about 49 hours, or 18 in WFM), and either on a disk error, such as a disk
 too slow for it: an I/Q recording writes about 4.8 MB/s at 2.4 MS/s. The
-panel and the status line then say why, as does Radiolack's output.
+menu and the status line then say why, as does Radiolack's output.
 
 **Law.** Local law may forbid recording what some radio services carry,
 such as air traffic, emergency services or private networks, or disclosing
@@ -593,7 +629,7 @@ it: check the rules where you listen before you record.
 Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 (`$XDG_CONFIG_HOME/radiolack` when that variable is set):
 
-- `settings.json` holds each receiver's settings: the Source panel's and the
+- `settings.json` holds each receiver's settings: the Receiver menu's and the
   demodulation settings (VFO, mode, filter width, squelch). The simulated
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
@@ -626,9 +662,13 @@ device with its own ([Remote access](#remote-access)); changing them in one
 interface leaves the other open ones as they are. A change reaches the disk
 a few seconds later at most, and when Radiolack stops.
 
-The Bands panel adds a bookmark at the VFO, renames or removes one, and
-tunes to one with its mode; the spectrum's context menu adds one anywhere.
-The memory scan of the Scanners panel watches the bookmarks ticked there.
+The Bookmarks menu lists the bookmarks, which its filter narrows down. A
+click on one tunes to it with its mode, its box ticks it for the memory
+scan, which the menu starts at its foot ([Scanners](#scanners)), and Edit
+renames or removes it. "Add current frequency" adds one at the VFO, in its
+mode, and opens its name selected, ready to type over: Enter or leaving the
+row keeps the new name, and Escape the one it was given, Bookmark 1 or the
+next free number. The spectrum's context menu adds one anywhere.
 
 Settings > Storage says where the files are and what went wrong with them;
 the status line adds "changes not saved" while some changes do not reach
@@ -777,7 +817,7 @@ ssh -L 8080:127.0.0.1:8080 COMPUTER
 then open `http://127.0.0.1:8080/` on the computer that runs ssh.
 
 `--scan memory` or `--scan sweep` starts that scan at each start, with its
-saved settings, as Start does in the Scanners panel, so that after a power
+saved settings, as an interface starts it, so that after a power
 cut or an upgrade the computer goes on scanning, and the History fills,
 without any interface:
 
@@ -788,8 +828,8 @@ radiolack --ui none --rtl-sdr --scan memory
 The receiver then opens at start, not once an interface opens. When the
 scan cannot start, as the memory scan without a ticked bookmark within the
 receiver's reach or the sweep with a source that does not tune, Radiolack
-says why in its output and in the Scanners panel, and runs on without it:
-an interface can start it later. A receiver's range is known once it
+says why in its output and in the menu that starts that scan, and runs on
+without it: an interface can start it later. A receiver's range is known once it
 answers: the output also says when the memory scan then stops because no
 ticked bookmark lies within that range, and when a scan stops because the
 receiver refused a window. Without `--scan`, no scan runs at start.
@@ -846,7 +886,7 @@ into another folder, such as a disk mounted on `/media/radio`, which I/Q
 recordings, about 17 GB an hour, may well need, make it
 writable by the plugdev group, open it to the service with
 `sudo systemctl edit radiolack`, restart the service, then choose the folder
-in Settings > Recordings, through the SSH tunnel above. The files stay
+in Record > Folder, through the SSH tunnel above. The files stay
 readable by the service only.
 
 ```ini
@@ -900,10 +940,10 @@ follows the IARU Region 1 band plans, simplified. Hovering the strip names a
 range and its edges, and clicking it zooms to the range. Zoomed out, where a
 band's ranges would be too narrow to read, the band shows as one block of
 its colour, named in full, by a short name or not at all as room allows,
-and clicking it zooms to the band. With Demod > "Mode
+and clicking it zooms to the band. With Radio > "Mode
 and step from the band plan", tuning into a range selects its usual mode, and
-the Automatic tuning step follows the plan. The Bands panel lists the ranges
-of the received span. Display > "Band plan" hides the strip.
+the Automatic tuning step follows the plan. The Bookmarks menu lists the
+ranges of the received span. Display > "Band plan" hides the strip.
 
 The plan is a simplified table for Europe (ITU Region 1): a guide, not a legal
 reference. National tables differ and are the reference, and local law may
@@ -949,9 +989,11 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 
 The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
-program and rtl_tcp addresses where nothing listens: the stream, the Source
-panel and its Receiver list, a change made in one interface showing in
-another, the bookmarks, the signals found, the memory scan, in the span and
+program and rtl_tcp addresses where nothing listens: the stream, the menu,
+its keys and its layout from a phone to a computer, the Receiver menu and
+its list, a change made in one interface showing in another, the bookmarks,
+their names and a click that tunes, the S-meter's squelch, the signals
+found, the memory scan, in the span and
 across windows, the sweep, the History, the recordings, their downloads and
 their folder, the view past the span and tuning outside it, and the saved
 interface settings. They
@@ -1154,9 +1196,10 @@ Project Authors, SIL Open Font License 1.1), drawn as outlines: no font
 ships with Radiolack or loads in its interface. The icons show the Peak in
 the interface's blue on a dark tile: the favicon, the Home Screen icon of
 an iPhone or iPad, the menu entry's and the window's icon, and the social
-preview. Beside the name, the logo takes the text's colour: in the
-interface's top-left corner, on the pairing page and at the top of this
-README, in GitHub's light or dark theme.
+preview. Beside the name, the logo takes the text's colour: on the pairing
+page and at the top of this README, in GitHub's light or dark theme. The
+interface names Radiolack in its window's title alone, which leaves the
+frequency its room on a narrow screen.
 
 `packaging/identity.py` draws them all from the font, which stays out of
 the repository: its docstring names the file to download and the
@@ -1176,6 +1219,7 @@ preview.
   scope, sources and file format.
 - [docs/design/ui-mockup.html](docs/design/ui-mockup.html): the validated
   visual reference, with simulated data; it opens directly in a browser.
+  The menu has since replaced its toolbar and panels.
 - [docs/design/lessons.md](docs/design/lessons.md): what the rewrite reuses
   from the airband explorer.
 

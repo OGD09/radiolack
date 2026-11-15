@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 
+from radiolack import __version__
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
@@ -33,18 +34,28 @@ from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, fre
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 BROWSERS = ("chromium", "firefox", "webkit")
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
-SOURCE_PANEL = '#toolbar button[data-panel="source"]'
-DEMOD_PANEL = '#toolbar button[data-panel="demod"]'
-DISPLAY_PANEL = '#toolbar button[data-panel="display"]'
-BANDS_PANEL = '#toolbar button[data-panel="bands"]'
-SCANNERS_PANEL = '#toolbar button[data-panel="scanners"]'
-RECORD_PANEL = '#toolbar button[data-panel="record"]'
-SETTINGS_PANEL = '#toolbar button[data-panel="settings"]'
+MENU_BUTTON = "#menu-button"
+# The classes that show a dot on the menu's icon: red while a recording runs,
+# green while the memory scan or the sweep does.
+RECORDING = re.compile(r"(^|\s)recording(\s|$)")
+SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
+# The menus, in the order of the keys 1 to 7, with their titles (index.html).
+MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receiver",
+         "display": "Display", "settings": "Settings"}
+# The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md).
+REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-notch", "#dm-nb", '#src-device option[value="soapy"]',
+                    '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
+                    "#brand", "#toolbar", "#panel", "#mem-list")
+S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left end to its right end (main.js)
+SQUELCH_RANGE = (-130, -20)  # the squelch threshold's range, in dB (#dm-sql)
+MID_SCALE = re.compile(r"^-5[6-8]$")    # the threshold that a press halfway along the S-meter sets: -57 dB, to a pixel
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
 PHONE_ON_ITS_SIDE = {"viewport": {"width": 844, "height": 390}, "has_touch": True}    # the same, in landscape
+NARROW = {"viewport": {"width": 500, "height": 800}}       # a narrow window, with a mouse: the menu in one column
+NARROWEST = {"viewport": {"width": 390, "height": 800}}    # narrower: the frequency follows the menu's icon
 # An init script that keeps the audio held, as Safari does until a gesture:
 # the audio context reads suspended, whatever the browser does. Headless
 # browsers start it earlier, Firefox and WebKit at times without any gesture.
@@ -120,6 +131,15 @@ ICONS_PROBE = """async () => {
     image.src = link.href;
   }))));
 }"""
+# What is wider than the window, and which of the menu's parts that show are
+# wider than their place in it: none should be.
+MENU_OVERFLOW = """() => {
+  const wide = [document.documentElement, document.body].filter((el) => el.scrollWidth > innerWidth).map((el) => el.tagName);
+  for (const el of document.querySelectorAll('#menu nav, #menu .menu-head, #menu .menu-scroll, #menu .menu-dock')) {
+    if (el.offsetParent !== null && el.scrollWidth > el.clientWidth + 1) wide.push(el.className || el.tagName);
+  }
+  return wide;
+}"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
@@ -170,8 +190,8 @@ class BrowserTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def interfaces(self, browser: str, url: str, count: int, **options) -> Iterator[list[Page]]:
-        """``count`` interfaces at ``url``, each with the Source panel open:
-        a click, which lets the audio start. ``self.audio[page]`` counts the
+        """``count`` interfaces at ``url``, each with the Receiver menu open:
+        clicks, which let the audio start. ``self.audio[page]`` counts the
         audio frames each one receives, and ``self.sent[page]`` lists the
         messages each one sends, as text. ``options`` go to each browser
         context, such as a phone's viewport and touch input."""
@@ -194,10 +214,25 @@ class BrowserTest(unittest.TestCase):
 
                 page.on("websocket", watch)
                 page.goto(url)
-                page.locator(SOURCE_PANEL).click()
+                self.open_menu(page, "receiver")
                 pages.append(page)
             yield pages
         self.assertEqual(errors, [], "errors in the interface")
+
+    @staticmethod
+    def open_menu(page: Page, name: str) -> None:
+        """Show the menu ``name`` with the pointer: the icon opens the menu,
+        and in one column its arrow goes back to the list of menus. The
+        menu covers the views, the readout and the speaker until it closes:
+        Escape closes it."""
+        if page.locator("#menu").is_hidden():
+            page.locator(MENU_BUTTON).click()
+        back = page.get_by_role("button", name="Back to the menus", exact=True)
+        if back.is_visible():
+            back.click()
+        page.locator(f'#menu nav button[data-menu="{name}"]').click()
+        expect(page.locator(f'#menu section[data-menu="{name}"]')).to_be_visible()
+        expect(page.locator("#menu-title")).to_have_text(MENUS[name])
 
     @contextlib.contextmanager
     def remote_device(self, browser: str, allowed: tuple[str, ...] = ()) -> Iterator[Page]:
@@ -260,18 +295,49 @@ class BrowserTest(unittest.TestCase):
         self.assertEqual(logo.evaluate(LOGO_PAINT), [["none", colour], [colour, "none"]])   # the mark, the name
         return box
 
-    def test_the_logo_names_radiolack_in_the_corner_and_the_icons_load(self):
-        # In the corner's colour, clear of the readout and the toolbar, on a
-        # computer, on a phone and on a phone on its side.
+    def test_the_menu_leaves_the_frequency_clear_at_every_width_and_the_icons_load(self):
+        # The interface names Radiolack in its title alone, so that nothing
+        # pushes the frequency aside. Each menu, the menu's icon and the
+        # speaker stay clear of the readout, and nothing is wider than the
+        # window or than the menu, on a computer, in narrow windows, on a
+        # phone and on a phone on its side. On a touch screen the icon lies
+        # between the step buttons. The antenna icon's target, a finger's on
+        # a touch screen, stays below the window's top edge.
         url = self.serve()
+        readout = ("#freq", "#antenna", "#meta", "#smeter")
         for browser in BROWSERS:
-            for options in ({}, PHONE, PHONE_ON_ITS_SIDE):
+            for options in ({}, NARROW, NARROWEST, PHONE, PHONE_ON_ITS_SIDE):
                 with (self.subTest(browser=browser, viewport=options.get("viewport")),
                       self.interfaces(browser, url, 1, **options) as [page]):
-                    box = self.logo_box(page, 13)
-                    for neighbour in ("#freq", "#antenna", "#sound", "#toolbar"):
-                        other = page.locator(neighbour).bounding_box()     # None while hidden
-                        self.assertFalse(other is not None and overlap(box, other), neighbour)
+                    expect(page).to_have_title("Radiolack")
+                    expect(page.get_by_role("heading", name="Radiolack")).to_have_count(0)
+                    width = page.viewport_size["width"]
+                    for key, name in enumerate(MENUS, start=1):
+                        page.keyboard.press(str(key))
+                        expect(page.locator("#menu-title")).to_have_text(MENUS[name])
+                        menu = page.locator("#menu").bounding_box()
+                        self.assertTrue(menu["x"] >= 0 and menu["x"] + menu["width"] <= width, (name, menu))
+                        for part in readout:
+                            self.assertFalse(overlap(menu, page.locator(part).bounding_box()), (name, part))
+                        self.assertEqual(page.evaluate(MENU_OVERFLOW), [], name)
+                    page.keyboard.press("Escape")
+                    expect(page.locator("#menu")).to_be_hidden()
+                    self.assertEqual(page.evaluate(MENU_OVERFLOW), [])
+                    antenna = page.locator("#antenna").bounding_box()
+                    self.assertGreaterEqual(antenna["y"], -0.01, antenna)      # to within rounding
+                    for control in (MENU_BUTTON, "#sound", "#hint"):
+                        box = page.locator(control).bounding_box()      # None while hidden
+                        for part in readout:
+                            self.assertFalse(box is not None and overlap(box, page.locator(part).bounding_box()),
+                                             (control, part))
+                    icon = page.locator(MENU_BUTTON).bounding_box()
+                    if options.get("has_touch"):
+                        down, up = (page.locator(step).bounding_box() for step in ("#tune-down", "#tune-up"))
+                        self.assertTrue(down["x"] + down["width"] <= icon["x"] and icon["x"] + icon["width"] <= up["x"])
+                        self.assertGreaterEqual(min(icon["width"], icon["height"]), 44)
+                    else:       # in the top left corner, at every width
+                        for got, wanted in zip((icon["x"], icon["y"], icon["width"], icon["height"]), (10, 8, 34, 32)):
+                            self.assertAlmostEqual(got, wanted, delta=0.5)
                     if not options:
                         self.assertEqual(page.evaluate(ICONS_PROBE),
                                          {"favicon.svg": "loaded", "apple-touch-icon.png": [180, 180]})
@@ -284,11 +350,12 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
                     expect(page.locator("#notice-text")).to_have_text(text)
+                first.keyboard.press("Escape")      # the menu lies over the notice
                 first.locator("#notice-close").click()
                 expect(first.locator("#notice")).to_be_hidden()
                 expect(second.locator("#notice")).to_be_visible()       # closed on its own page only
                 for page in (first, second):
-                    page.locator(SETTINGS_PANEL).click()
+                    self.open_menu(page, "settings")
                     expect(page.locator("#st-update")).to_have_text(text)
                     expect(page.locator("#st-update-start")).to_be_checked()
                 first.locator("#st-update-start").uncheck()
@@ -331,7 +398,7 @@ class BrowserTest(unittest.TestCase):
                     self.wait_for_audio(page)
                     expect(page.locator("#m-mode")).to_have_text("NFM")
                     expect(page.locator("#sound")).to_be_hidden()      # the speaker is for touch input
-                first.locator(DEMOD_PANEL).click()
+                self.open_menu(first, "radio")
                 first.locator('#mode-group button[data-mode="AM"]').click()
                 for page in (first, second):
                     expect(page.locator("#m-mode")).to_have_text("AM")
@@ -354,7 +421,8 @@ class BrowserTest(unittest.TestCase):
                 expect(icon).to_have_attribute("title", "Antenna length for this frequency")
                 dialog = first.locator("#antenna-dialog")
                 expect(dialog).to_be_hidden()
-                icon.click()
+                icon.focus()        # from the keyboard, as the Receiver menu lies over the readout
+                first.keyboard.press("Enter")
                 expect(dialog).to_be_visible()
                 expect(first.locator("#antenna-for")).to_have_text(f"145.6000 MHz {DOT} 2 m amateur")
                 expect(first.locator(".lengths dd")).to_have_text(["2.06 m", "97.8 cm", "48.9 cm", "48.9 cm", "48.9 cm"])
@@ -365,7 +433,9 @@ class BrowserTest(unittest.TestCase):
                 first.keyboard.press("Escape")
                 expect(dialog).to_be_hidden()
                 expect(icon).to_be_focused()
-                expect(first.locator("#panel")).to_be_visible()     # the Source panel, open behind it
+                expect(first.locator("#menu")).to_be_visible()      # the Receiver menu, open behind it
+                first.keyboard.press("Escape")      # closes the menu in turn
+                expect(first.locator("#menu")).to_be_hidden()
                 icon.click()
                 dialog.get_by_role("button", name="Close the antenna lengths").click()
                 expect(dialog).to_be_hidden()
@@ -402,8 +472,10 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
                 icon = page.get_by_role("button", name="Antenna length", exact=True)
                 target, freq = icon.bounding_box(), page.locator("#freq").bounding_box()
-                self.assertGreaterEqual(min(target["width"], target["height"]), 40)
+                # 40 px, to within the rounding of edges that fall between pixels (Firefox: 40 - 2**-20)
+                self.assertGreaterEqual(min(target["width"], target["height"]), 40 - 0.01)
                 self.assertGreaterEqual(target["x"], freq["x"] + freq["width"] - 0.5)
+                page.keyboard.press("Escape")       # the menu lies over the readout
                 icon.tap()
                 dialog = page.locator("#antenna-dialog")
                 expect(dialog).to_be_visible()
@@ -419,7 +491,7 @@ class BrowserTest(unittest.TestCase):
         # only then does Safari on the iPhone let the audio start. The audio
         # stays held here, and the test counts the page's requests to start
         # it. On a touch screen, the speaker shows it held: nothing else does
-        # out of the Demod panel.
+        # out of the Radio menu.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser):
@@ -455,6 +527,7 @@ class BrowserTest(unittest.TestCase):
             url = self.serve()
             with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
                 self.wait_for_audio(page)
+                page.keyboard.press("Escape")       # the menu lies over the speaker
                 speaker = page.get_by_role("button", name="Audio")
                 expect(speaker).to_have_attribute("aria-pressed", "true")
                 speaker.tap()
@@ -490,32 +563,35 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(errors, [])
 
     def test_bookmarks_are_shared(self):
+        # Add opens the new bookmark's name in the interface that added it;
+        # Edit opens a bookmark's name again.
         for browser in BROWSERS:
             url = self.serve()      # no bookmark yet
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
-                first.locator(BANDS_PANEL).click()
+                self.open_menu(first, "bookmarks")
                 expect(first.locator("#bm-list .empty")).to_have_text("No bookmarks")
                 first.locator("#bm-add").click()
-                for page in (first, second):
-                    expect(page.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
-                first.locator("#bm-list button[data-edit]").click()
-                name = first.locator("#bm-list input")
+                expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
+                name = first.locator('#bm-list input[type="text"]')
                 expect(name).to_be_focused()
+                expect(name).to_have_value("Bookmark 1")
                 name.fill("Not kept")
-                name.press("Escape")        # cancels the new name, and leaves the panel open
+                name.press("Escape")        # cancels the new name, and leaves the menu open
                 expect(first.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
-                expect(first.locator("#panel")).to_be_visible()
-                expect(first.locator("#bm-list button[data-edit]")).to_be_focused()
-                first.locator("#bm-list button[data-edit]").click()
+                expect(first.locator("#menu")).to_be_visible()
+                edit = first.locator("#bm-list button[data-edit]")
+                expect(edit).to_be_focused()
+                edit.click()
+                expect(name).to_be_focused()
                 name.fill("  Calling ")
                 name.press("Enter")
                 for page in (first, second):
                     expect(page.locator("#bm-list .item .name")).to_have_text(["Calling"])
                     expect(page.locator("#marks .mark")).to_have_text(["Calling"])
-                expect(first.locator("#bm-list button[data-edit]")).to_be_focused()
-                second.locator(BANDS_PANEL).click()
+                expect(edit).to_be_focused()
+                self.open_menu(second, "bookmarks")
                 second.locator("#bm-list button[data-edit]").click()
-                second.locator("#bm-list input").fill("FM calling")
+                second.locator('#bm-list input[type="text"]').fill("FM calling")
                 second.locator("#bm-filter").click()       # leaving the row saves the name
                 for page in (first, second):
                     expect(page.locator("#bm-list .item .name")).to_have_text(["FM calling"])
@@ -526,16 +602,195 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#marks .mark")).to_have_count(0)
                 expect(first.locator("#bm-note")).to_be_hidden()
 
+    def test_a_bookmark_tunes_with_its_mode_and_a_new_one_opens_with_its_name_selected(self):
+        # A click on a bookmark tunes every interface there, in its mode, and
+        # its box ticks it for the memory scan. The engine sorts the bookmarks
+        # by frequency, then by name: the one that Add makes opens wherever it
+        # lands, here before another one at the same frequency.
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            Store(directory).save(BOOKMARKS_FILE, {"bookmarks": [
+                {"frequency_hz": 144_300_000, "name": "SSB calling", "mode": "USB", "scan": False},
+                {"frequency_hz": 145_500_000, "name": "FM calling", "mode": "NFM", "scan": True}]})
+            url = self.serve(store=Store(directory))    # the simulated band, the VFO on 145.6 MHz in NFM
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                self.open_menu(first, "bookmarks")
+                expect(first.locator("#bm-list .item .name")).to_have_text(["SSB calling", "FM calling"])
+                first.locator("#bm-list button.item", has_text="SSB calling").click()
+                for page in (first, second):    # the VFO is shared
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "144300000")
+                    expect(page.locator("#m-mode")).to_have_text("USB")
+                expect(first.locator("#menu")).to_be_visible()      # which stays open
+                tick = first.get_by_role("checkbox", name="Scan SSB calling", exact=True)
+                expect(tick).not_to_be_checked()
+                tick.check()
+                expect(second.locator('#bm-list input[aria-label="Scan SSB calling"]')).to_be_checked()
+                first.locator("#bm-add").click()        # at the VFO, in its mode
+                name = first.locator('#bm-list input[type="text"]')
+                expect(name).to_be_focused()
+                expect(name).to_have_value("Bookmark 1")
+                self.assertEqual(name.evaluate("(field) => [field.selectionStart, field.selectionEnd]"), [0, 10])
+                expect(first.locator("#bm-list li").first.locator('input[type="text"]')).to_have_count(1)
+                expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1", "SSB calling", "FM calling"])
+                expect(second.locator('#bm-list input[type="text"]')).to_have_count(0)     # open where added only
+                first.keyboard.type("Net")      # in place of the selected name
+                first.keyboard.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["Net", "SSB calling", "FM calling"])
+                    expect(page.locator("#bm-list .item .tag")).to_have_text(["USB", "USB", "NFM"])
+                expect(first.locator("#bm-list button[data-edit]").first).to_be_focused()
+
+    def test_the_s_meter_sets_the_squelch_with_the_wheel_a_click_or_a_tap(self):
+        # A notch of the wheel moves the threshold 1 dB, up raising it, and a
+        # click or a tap on the bar sets it at that point of the meter's
+        # scale, both within the threshold's range. Either turns the automatic
+        # threshold off, the wheel starting from it. The squelch is shared.
+        low, high = SQUELCH_RANGE
+        for browser in BROWSERS:
+            url = self.serve()      # a server for each browser, as the test changes the squelch
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                threshold, automatic = first.locator("#dm-sql"), first.locator("#dm-sql-auto")
+                self.open_menu(first, "radio")
+                expect(automatic).to_be_checked()
+                expect(first.locator("#dm-sql-v")).to_have_text(re.compile(r"^-\d+ dB"))    # from the frames
+                automatic.uncheck()
+                threshold.fill(str(low + 5))    # a threshold by hand, far below the automatic one
+                automatic.check()
+                first.keyboard.press("Escape")      # the menu lies over the readout
+                meter, bar = first.locator("#smeter"), first.locator("#smeter .bar")
+                expect(meter).to_have_attribute("title", "Squelch: wheel or click")
+                bar.hover()
+                # The automatic threshold in use, where the S-meter marks it: it follows the noise.
+                noise_based = S_ZERO + bar.locator(".sql").evaluate(
+                    "(mark) => parseFloat(mark.style.left)") / 100 * (S_TOP - S_ZERO)
+                first.mouse.wheel(0, -100)      # a notch up
+                expect(automatic).not_to_be_checked()
+                by_hand = int(threshold.input_value())
+                self.assertAlmostEqual(by_hand, noise_based + 1, delta=1.5)    # not from the threshold by hand
+                first.mouse.wheel(0, -100)
+                expect(threshold).to_have_value(str(by_hand + 1))
+                first.mouse.wheel(0, 100)       # a notch down
+                expect(threshold).to_have_value(str(by_hand))
+                self.open_menu(second, "radio")
+                expect(second.locator("#dm-sql-auto")).not_to_be_checked()
+                expect(second.locator("#dm-sql")).to_have_value(str(by_hand))
+                box = bar.bounding_box()
+                bar.click(position={"x": box["width"] - 1, "y": box["height"] / 2})     # past the range's top
+                expect(threshold).to_have_value(str(high))
+                first.mouse.wheel(0, -100)
+                first.mouse.wheel(0, 100)
+                expect(threshold).to_have_value(str(high - 1))      # the notch up went nowhere
+                bar.click(position={"x": box["width"] / 2, "y": box["height"] / 2})
+                expect(threshold).to_have_value(MID_SCALE)
+                self.open_menu(first, "radio")
+                threshold.fill(str(low + 1))
+                first.keyboard.press("Escape")
+                bar.hover()
+                first.mouse.wheel(0, 100)
+                first.mouse.wheel(0, 100)
+                first.mouse.wheel(0, -100)
+                expect(threshold).to_have_value(str(low + 1))       # the second notch down went nowhere
+                self.open_menu(first, "radio")
+                automatic.check()
+                first.keyboard.press("Escape")
+                bar.click(position={"x": 1, "y": box["height"] / 2})
+                expect(automatic).not_to_be_checked()
+                expect(threshold).to_have_value(re.compile(rf"^({S_ZERO}|{S_ZERO + 1})$"))     # the scale's start
+            with self.subTest(browser=browser, touch=True), self.interfaces(browser, url, 1, **PHONE) as [phone]:
+                phone.keyboard.press("Escape")      # the menu lies over the readout
+                bar = phone.locator("#smeter .bar")
+                box = bar.bounding_box()
+                bar.tap(position={"x": box["width"] / 2, "y": box["height"] / 2})
+                self.open_menu(phone, "radio")
+                expect(phone.locator("#dm-sql")).to_have_value(MID_SCALE)
+
+    def test_keys_open_and_close_each_menu_and_the_icon_opens_the_last_one(self):
+        # Keys 1 to 7 open the menus, in their order, or close the one that
+        # shows, except in a field or with Ctrl, Alt or Meta. Escape, a click
+        # outside the menu and its close button close it, and nothing behind
+        # it takes that click. The version that runs ends Settings.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                menu, title, icon = page.locator("#menu"), page.locator("#menu-title"), page.locator(MENU_BUTTON)
+                for selector in REMOVED_CONTROLS:
+                    expect(page.locator(selector)).to_have_count(0)
+                expect(title).to_have_text("Receiver")      # which interfaces() opened
+                expect(icon).to_have_attribute("aria-expanded", "true")
+                for key, name in enumerate(MENUS, start=1):
+                    page.keyboard.press(str(key))
+                    expect(title).to_have_text(MENUS[name])
+                    expect(page.locator("#menu section:not([hidden])")).to_have_attribute("data-menu", name)
+                    expect(page.locator('#menu nav button[aria-current="true"]')).to_have_attribute("data-menu", name)
+                expect(page.locator("#st-version")).to_have_text(f"Radiolack {__version__}")
+                expect(page.locator('#menu section[data-menu="settings"]')).to_contain_text("1 to 7")
+                page.keyboard.press("7")        # the menu that shows: closes it
+                expect(menu).to_be_hidden()
+                expect(icon).to_have_attribute("aria-expanded", "false")
+                for key in ("8", "9", "Control+2", "Alt+2", "Meta+2"):
+                    page.keyboard.press(key)
+                    expect(menu).to_be_hidden()
+                page.keyboard.press("2")
+                expect(title).to_have_text("Bookmarks")
+                page.locator("#bm-filter").click()
+                page.keyboard.type("3")         # into the field
+                expect(page.locator("#bm-filter")).to_have_value("3")
+                expect(title).to_have_text("Bookmarks")
+                page.keyboard.press("Escape")   # from the keyboard: the focus goes back to the icon
+                expect(menu).to_be_hidden()
+                expect(icon).to_be_focused()
+                icon.click()                    # the last menu shown
+                expect(title).to_have_text("Bookmarks")
+                page.get_by_role("button", name="Close the menu", exact=True).click()
+                expect(menu).to_be_hidden()
+                expect(icon).not_to_be_focused()
+                page.keyboard.press("3")
+                expect(title).to_have_text("Scan")
+                vfo = page.locator("#freq").get_attribute("aria-valuenow")
+                box = page.locator("#specwrap").bounding_box()
+                page.mouse.click(box["x"] + box["width"] * 0.9, box["y"] + box["height"] / 2)   # beside the menu
+                expect(menu).to_be_hidden()
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", vfo)     # nothing tuned there
+
+    def test_in_one_column_the_menu_shows_its_list_then_the_menu_chosen(self):
+        # In a narrow window the icon opens the list of menus, a menu takes
+        # the whole card, and its arrow goes back to the list.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1, **NARROW) as [page]:
+                nav, title = page.locator("#menu nav"), page.locator("#menu-title")
+                back = page.get_by_role("button", name="Back to the menus", exact=True)
+                expect(nav).to_be_hidden()      # the Receiver menu, alone
+                back.click()
+                expect(nav).to_be_visible()
+                expect(title).to_be_hidden()
+                expect(page.locator('#menu nav button[data-menu="receiver"]')).to_have_attribute("aria-current", "true")
+                page.locator('#menu nav button[data-menu="scan"]').click()
+                expect(nav).to_be_hidden()
+                expect(title).to_have_text("Scan")
+                page.keyboard.press("Escape")
+                page.locator(MENU_BUTTON).click()   # the list again
+                expect(nav).to_be_visible()
+                page.keyboard.press("4")            # a key opens its menu
+                expect(nav).to_be_hidden()
+                expect(title).to_have_text("Record")
+                back.click()
+                page.set_viewport_size({"width": 1280, "height": 800})     # two columns: the list beside the last menu
+                expect(nav).to_be_visible()
+                expect(title).to_be_visible()
+                expect(title).to_have_text("Record")
+                expect(back).to_be_hidden()
+
     def test_preferences_are_kept_for_the_next_interfaces(self):
         for browser in BROWSERS:
             directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
             url = self.serve(store=Store(directory))    # no preference yet
             with self.subTest(browser=browser):
                 with self.interfaces(browser, url, 1) as [page]:
-                    page.locator(SETTINGS_PANEL).click()
+                    self.open_menu(page, "settings")
                     expect(page.locator("#st-storage")).to_have_text(
                         f"Settings, bookmarks and history are saved in {Store(directory).location}.")
-                    page.locator(DISPLAY_PANEL).click()
+                    self.open_menu(page, "display")
                     page.locator("#wf-pal").select_option("gray")
                     page.locator("#ds-grid").uncheck()
                     page.wait_for_timeout(2 * PREFERENCES_SAVE_MS)
@@ -548,7 +803,9 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
-                    page.locator(SCANNERS_PANEL).click()
+                    self.open_menu(page, "scan")     # on its Signals tab
+                    expect(page.locator('#scan-tabs button[data-tab="signals"]')).to_have_attribute(
+                        "aria-pressed", "true")
                     expect(page.locator("#pk-on")).to_be_checked()
                     expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
                 frequency = first.locator("#pk-body button[data-tune]").first.get_attribute("data-tune")
@@ -578,21 +835,23 @@ class BrowserTest(unittest.TestCase):
             url = self.serve(store=Store(directory))
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
-                    page.locator(SCANNERS_PANEL).click()
-                    page.locator('#scan-tabs button[data-tab="memory"]').click()
-                    expect(page.locator("#mem-list li")).to_have_text(
+                    self.open_menu(page, "bookmarks")      # the scan watches the ticked ones
+                    expect(page.locator("#bm-list li")).to_have_text(
                         [re.compile(r"^Beacon"), re.compile(r"^Far away.*outside the span")])
                     expect(page.locator("#mem-state")).to_have_text("Stopped")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
                 first.locator("#mem-start").click()
                 for page in (first, second):
                     expect(page.locator("#mem-state")).to_have_text(re.compile(r"^(Listening|Waiting): Beacon$"))
-                    expect(page.locator("#mem-start")).to_have_text("Stop")
+                    expect(page.locator("#mem-start")).to_have_text("Stop the scan")
+                    expect(page.locator(MENU_BUTTON)).to_have_class(SCANNING)     # the icon's dot, green
                     expect(page.locator("#m-mode")).to_have_text("CW")
                     expect(page.locator("#status")).to_contain_text(f"{DOT} memory scan")
                 second.keyboard.press("ArrowRight")     # one step up: tuning by hand stops the scan
                 for page in (first, second):
                     expect(page.locator("#mem-state")).to_have_text("Stopped: the receiver was tuned by hand.")
-                    expect(page.locator("#mem-start")).to_have_text("Start")
+                    expect(page.locator("#mem-start")).to_have_text("Scan the ticked bookmarks")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
                     expect(page.locator("#status")).not_to_contain_text("memory scan")
                 expect(first.locator("#mem-note")).to_be_hidden()
 
@@ -610,20 +869,19 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 home = first.locator("#src-center").input_value()
                 for page in (first, second):
-                    page.locator(SCANNERS_PANEL).click()
-                    page.locator('#scan-tabs button[data-tab="memory"]').click()
-                    expect(page.locator("#mem-list li")).to_have_text(
+                    self.open_menu(page, "bookmarks")
+                    expect(page.locator("#bm-list li")).to_have_text(
                         [re.compile(r"^Low.*out of reach"), re.compile(r"^Near[^·]*$"), re.compile(r"^Far[^·]*$")])
                     expect(page.locator("#mem-state")).to_have_text("Stopped")
                 first.locator("#mem-start").click()
                 for page in (first, second):    # Near and Far take a window each
                     expect(page.locator("#mem-state")).to_have_text("Watching 2 bookmarks, window 2 of 2")
-                    expect(page.locator("#mem-start")).to_have_text("Stop")
+                    expect(page.locator("#mem-start")).to_have_text("Stop the scan")
                     expect(page.locator("#status")).to_contain_text(f"{DOT} memory scan")
                 second.locator("#mem-start").click()
                 for page in (first, second):
                     expect(page.locator("#mem-state")).to_have_text("Stopped")
-                    expect(page.locator("#mem-start")).to_have_text("Start")
+                    expect(page.locator("#mem-start")).to_have_text("Scan the ticked bookmarks")
                     expect(page.locator("#src-center")).to_have_value(home)     # the receiver came back
                 expect(first.locator("#mem-note")).to_be_hidden()
 
@@ -635,7 +893,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 home = first.locator("#src-center").input_value()
                 for page in (first, second):
-                    page.locator(SCANNERS_PANEL).click()
+                    self.open_menu(page, "scan")
                     page.locator('#scan-tabs button[data-tab="sweep"]').click()
                     expect(page.locator("#sw-to")).to_have_value("440.0000")
                     expect(page.locator("#sw-state")).to_have_text("Stopped")
@@ -652,11 +910,13 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):     # 17 windows of 2.4 MHz, a quarter of the rate apart at most
                     expect(page.locator("#sw-state")).to_have_text(re.compile(r"^Pass 1, window ([2-9]|1\d) of 17$"))
                     expect(page.locator("#sw-start")).to_have_text("Stop")
+                    expect(page.locator(MENU_BUTTON)).to_have_class(SCANNING)
                     expect(page.locator("#status")).to_contain_text(f"{DOT} sweep")
                 second.locator("#sw-start").click()
                 for page in (first, second):
                     expect(page.locator("#sw-state")).to_have_text("Stopped")
                     expect(page.locator("#sw-start")).to_have_text("Start")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
                     expect(page.locator("#status")).not_to_contain_text("sweep")
                     expect(page.locator("#src-center")).to_have_value(home)     # the receiver came back
                 expect(first.locator("#sw-note")).to_be_hidden()
@@ -670,7 +930,7 @@ class BrowserTest(unittest.TestCase):
             url = self.serve(store=Store(directory))    # the simulated band, which is not recorded
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
-                    page.locator(SCANNERS_PANEL).click()
+                    self.open_menu(page, "scan")
                     page.locator('#scan-tabs button[data-tab="history"]').click()
                     # The latest heard first.
                     expect(page.locator("#hist-body button[data-tune]")).to_have_text(["145.5000", "433.5000"])
@@ -693,7 +953,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#hist-body button[data-tune]")).to_have_text(["145.5000"])
                 expect(first.locator("#hist-note")).to_be_hidden()
                 # The other interface sees the change once it asks again, as when its tab shows.
-                second.locator('#scan-tabs button[data-tab="peaks"]').click()
+                second.locator('#scan-tabs button[data-tab="signals"]').click()
                 second.locator('#scan-tabs button[data-tab="history"]').click()
                 expect(second.locator("#hist-body button[data-tune]")).to_have_text(["145.5000"])
                 clear_all = second.locator("#hist-clear-all")
@@ -714,7 +974,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 for page in (first, second):
-                    page.locator(RECORD_PANEL).click()
+                    self.open_menu(page, "record")
                     expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
                     expect(page.locator("#rec-summary")).to_contain_text(f"In {shown_path(folder)}, ")
                 first.locator("#rec-audio").click()
@@ -722,13 +982,13 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#rec-state")).to_have_text(re.compile(
                         rf"^145\.600 MHz NFM {DOT} \d+:\d\d {DOT} [\d.]+ (B|KiB|MiB)$"))
                     expect(page.locator("#rec-audio")).to_have_text("Stop")
-                    expect(page.locator(RECORD_PANEL)).to_have_class("recording")
+                    expect(page.locator(MENU_BUTTON)).to_have_class(RECORDING)
                     expect(page.locator("#status")).to_contain_text(f"{DOT} recording audio")
                     expect(page.locator("#rec-list li.rec .num")).to_have_text("Recording")
                 second.locator("#rec-audio").click()
                 for page in (first, second):
                     expect(page.locator("#rec-audio")).to_have_text("Record audio")
-                    expect(page.locator(RECORD_PANEL)).not_to_have_class("recording")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(RECORDING)
                     expect(page.locator("#status")).not_to_contain_text("recording")
                     expect(page.locator("#rec-list li.rec .name")).to_contain_text(["145.600 MHz NFM"])
                     expect(page.locator("#rec-list a.link")).to_have_text(["Download"])
@@ -744,9 +1004,8 @@ class BrowserTest(unittest.TestCase):
                 delete.click()
                 expect(first.locator("#rec-list .empty")).to_have_text("No recording yet")
                 self.assertEqual(list(folder.iterdir()), [])
-                # This computer's interfaces choose the folder, which must exist.
-                first.locator(SETTINGS_PANEL).click()
-                field, default = first.locator("#st-rec-folder"), first.locator("#st-rec-default")
+                # This computer's interfaces choose the folder, which must exist, in the Record menu.
+                field, default = first.locator("#rec-folder"), first.locator("#rec-default")
                 expect(field).to_have_value(shown_path(folder))
                 expect(default).to_be_disabled()
                 other, missing = folder.parent / "other", folder.parent / "missing"
@@ -757,11 +1016,11 @@ class BrowserTest(unittest.TestCase):
                 expect(default).to_be_enabled()
                 field.fill(str(missing))
                 field.press("Enter")
-                expect(first.locator("#st-rec-msg")).to_have_text(f"Refused: {shown_path(missing)} does not exist.")
+                expect(first.locator("#rec-folder-msg")).to_have_text(f"Refused: {shown_path(missing)} does not exist.")
                 expect(field).to_have_value(shown_path(other))      # the folder in use
                 default.click()
                 expect(field).to_have_value(shown_path(folder))
-                expect(first.locator("#st-rec-msg")).to_be_empty()
+                expect(first.locator("#rec-folder-msg")).to_be_empty()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_every_interface_records_the_raw_iq_with_the_audio_and_downloads_its_two_files(self):
@@ -772,7 +1031,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 for page in (first, second):
-                    page.locator(RECORD_PANEL).click()
+                    self.open_menu(page, "record")
                     expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
                     expect(page.locator("#rec-iq-state")).to_be_empty()
                 first.locator("#rec-iq").click()
@@ -782,7 +1041,7 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#rec-iq")).to_have_text("Stop")
                     expect(page.locator("#rec-audio")).to_have_text("Record audio")
                     expect(page.locator("#rec-state")).to_be_empty()
-                    expect(page.locator(RECORD_PANEL)).to_have_class("recording")
+                    expect(page.locator(MENU_BUTTON)).to_have_class(RECORDING)
                     expect(page.locator("#status")).to_contain_text(f"{DOT} recording I/Q")
                     expect(page.locator("#rec-list li.rec .num")).to_have_text("Recording")
                 second.locator("#rec-audio").click()    # both at once
@@ -798,7 +1057,7 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#rec-iq")).to_have_text("Record I/Q")
                     expect(page.locator("#rec-iq-state")).to_be_empty()
-                    expect(page.locator(RECORD_PANEL)).not_to_have_class("recording")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(RECORDING)
                     expect(page.locator("#status")).not_to_contain_text("recording")
                     expect(page.locator("#rec-list li.rec", has_text="I/Q").locator(".name")).to_contain_text(
                         re.compile(rf"^145\.000 MHz I/Q.* {DOT} 2\.400 MS/s {DOT} "))
@@ -831,7 +1090,7 @@ class BrowserTest(unittest.TestCase):
         url = self.serve(recordings=folder)
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
-                page.locator(RECORD_PANEL).click()
+                self.open_menu(page, "record")
                 expect(page.locator("#rec-state")).to_have_text("The simulated band is not recorded.")
                 expect(page.locator("#rec-audio")).to_be_disabled()
                 expect(page.locator("#rec-iq")).to_be_disabled()
@@ -842,7 +1101,7 @@ class BrowserTest(unittest.TestCase):
         url = self.serve()      # which finds no address on a local network
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
-                page.locator(SETTINGS_PANEL).click()
+                self.open_menu(page, "settings")
                 expect(page.locator("#st-remote")).not_to_be_checked()
                 expect(page.locator("#st-remote-client")).to_be_hidden()
                 page.locator("#st-remote").click()
@@ -863,7 +1122,7 @@ class BrowserTest(unittest.TestCase):
             port = free_port()
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page], \
                     self.assertLogs("radiolack.server", "WARNING"):
-                page.locator(SETTINGS_PANEL).click()
+                self.open_menu(page, "settings")
                 page.locator("#st-remote-port").fill(str(port))
                 page.locator("#st-remote-port").blur()
                 page.locator("#st-remote").click()
@@ -885,7 +1144,7 @@ class BrowserTest(unittest.TestCase):
             url = self.serve(remote_addresses=lambda: [LOOPBACK], host="radiolack-test")
             port = free_port()
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [computer]:
-                computer.locator(SETTINGS_PANEL).click()
+                self.open_menu(computer, "settings")
                 computer.locator("#st-remote-port").fill(str(port))
                 computer.locator("#st-remote-port").blur()
                 computer.locator("#st-remote").click()
@@ -906,13 +1165,15 @@ class BrowserTest(unittest.TestCase):
                     device.locator("#pair-submit").click()
                     expect(device.locator("#status")).to_contain_text("MS/s")      # the interface, with frames
                     expect(device.locator("#status")).to_contain_text(REMOTE_FRAME_RATE)     # half the frames
-                    device.locator(SETTINGS_PANEL).click()
+                    self.open_menu(device, "settings")
                     expect(device.locator("#st-remote-client")).to_be_visible()
-                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section"):
+                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section", "#st-version"):
                         expect(device.locator(section)).to_be_hidden()
                     expect(device.locator("#status")).not_to_contain_text("remote access")
+                    self.open_menu(device, "record")      # the recordings, not their folder
+                    expect(device.locator("#rec-folder-section")).to_be_hidden()
                     # The device keeps its own settings when its page reloads, as Safari's often do.
-                    device.locator(DISPLAY_PANEL).click()
+                    self.open_menu(device, "display")
                     device.locator("#wf-pal").select_option("gray")
                     device.wait_for_timeout(2 * PREFERENCES_SAVE_MS)
                     device.reload()
@@ -980,7 +1241,6 @@ class BrowserTest(unittest.TestCase):
                 receiver = first.locator("#src-device")
                 expect(receiver).to_be_enabled()
                 expect(receiver).to_have_value("synthetic")
-                expect(first.locator('#src-device option[value="soapy"]')).to_be_disabled()
                 expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
                 receiver.select_option("rtl_sdr")
                 for page in (first, second):
@@ -996,7 +1256,7 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#src-device")).to_have_value("synthetic")
                     expect(page.locator("#src-address")).to_be_hidden()
 
-    def test_the_rtl_tcp_server_address_changes_in_the_source_panel(self):
+    def test_the_rtl_tcp_server_address_changes_in_the_receiver_menu(self):
         # Nothing listens on these ports: the source waits, refused.
         url = self.serve(RtlTcpSource(LOOPBACK, free_port()))
         for browser in BROWSERS:
@@ -1054,7 +1314,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
-                page.keyboard.press("Escape")       # the Source panel lies over the spectrum
+                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
                 (low, low_text), (high, high_text) = self.readout_at(page, 0), self.readout_at(page, 1)
                 self.assertAlmostEqual(low, 143.8, delta=0.01)
                 self.assertAlmostEqual(high, 146.2, delta=0.01)
@@ -1100,7 +1360,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Source panel lies over the spectrum
+                    page.keyboard.press("Escape")   # the Receiver menu lies over the spectrum
                 for _ in range(9):
                     first.keyboard.press("-")       # ten spans, from 127.6 to 151.6 MHz
                 view = self.view_edges(first)
@@ -1144,9 +1404,9 @@ class BrowserTest(unittest.TestCase):
             url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # each browser starts on 145 MHz, the VFO on 145.6
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
-                page.locator(DEMOD_PANEL).click()
+                self.open_menu(page, "radio")
                 page.locator("#dm-step").select_option("25000")
-                page.locator(DEMOD_PANEL).click()   # closes the panel, which lies over the spectrum
+                page.keyboard.press("Escape")       # closes the menu, which lies over the spectrum
                 deadline = time.monotonic() + TIMEOUT_MS / 1000
                 while " ago" not in self.waterfall_readout_at(page, 145.5, age):
                     self.assertLess(time.monotonic(), deadline, f"the waterfall has no line {age} lines down")
@@ -1184,9 +1444,9 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.locator(DEMOD_PANEL).click()
+                self.open_menu(page, "radio")
                 page.locator("#dm-step").select_option("25000")
-                page.locator(DEMOD_PANEL).click()   # closes the panel, which lies over the spectrum
+                page.keyboard.press("Escape")       # closes the menu, which lies over the spectrum
                 span = self.view_edges(page)
                 freq = page.locator("#freq")
                 freq.focus()
@@ -1201,7 +1461,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Source panel lies over the spectrum
+                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
                 fit = page.get_by_role("button", name="Show the whole span")
                 expect(fit).to_be_hidden()          # the view frames the span
                 span = self.view_edges(page)

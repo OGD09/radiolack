@@ -94,8 +94,10 @@ the history under the tag `v0.1.0`.
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`
   and the icons. `favicon.svg` and `apple-touch-icon.png` (the iPhone's
-  Home Screen) are the icons, and `index.html` and `pair.html` inline the
-  logo in the text's colour: `packaging/identity.py` draws them.
+  Home Screen) are the icons, and `pair.html` inlines the logo in the
+  text's colour: `packaging/identity.py` draws them. The interface names
+  Radiolack in its title only, and keeps its settings in one menu
+  (scoping.md, 2026-11-15).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
   Python package as it is; reproducible: every file carries the last
   commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose
@@ -162,8 +164,8 @@ the history under the tag `v0.1.0`.
   installed package: `python3 packaging/smoke_test.py`.
 - Logo and icons: `python3 packaging/identity.py --font PATH`, with the font
   file that its docstring names, fontTools, Inkscape and ImageMagick;
-  replace the inlined logo in `index.html` and `pair.html` with the one it
-  prints. `tests/test_identity.py` checks that every copy agrees.
+  replace the inlined logo in `pair.html` with the one it prints.
+  `tests/test_identity.py` checks that every copy agrees.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
   a `main` without changes and at the commit of `origin/main`. It commits
   the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes
@@ -226,7 +228,7 @@ the history under the tag `v0.1.0`.
   rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
   `tests/fake_rtl_tcp.py` instead. `radiolack` without either option
   reopens the source used last, which may be a receiver, read at start
-  with `--scan`, and choosing a receiver in the Source panel's list opens
+  with `--scan`, and choosing a receiver in the Receiver menu's list opens
   it: a check started with a temporary `XDG_CONFIG_HOME` begins on the
   simulated band.
 - Never install, upgrade or remove the Debian package, or any system

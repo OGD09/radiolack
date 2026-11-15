@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radiolack",
         description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it opens the "
-                    "receiver used last, the simulated 2 m band the first time; the Source panel "
+                    "receiver used last, the simulated 2 m band the first time; the Receiver menu "
                     "switches between them. Settings, bookmarks and history are saved in "
                     "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack), and recordings, "
                     "made only from the interface, in $XDG_DATA_HOME/radiolack/recordings (by default "
@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rtl-tcp", nargs="?", const=(), type=_rtl_tcp_address, metavar="ADDRESS",
         help="read an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS: HOST, "
              "PORT or HOST:PORT (default: the address used last, the first time "
-             f"{DEFAULT_ADDRESS[0]}:{DEFAULT_ADDRESS[1]}); the Source panel can change it",
+             f"{DEFAULT_ADDRESS[0]}:{DEFAULT_ADDRESS[1]}); the Receiver menu can change it",
     )
     return parser
 
