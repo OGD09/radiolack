@@ -44,6 +44,8 @@ FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml; charset=utf-8",
+    ".png": "image/png",
 }
 # The band plan file main.js loads.
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
@@ -60,6 +62,7 @@ class PageParser(html.parser.HTMLParser):
         super().__init__()
         self.scripts: list[tuple[str, str | None]] = []
         self.stylesheets: list[str] = []
+        self.icons: list[tuple[str, str]] = []
         self.inline: list[str] = []
 
     def handle_starttag(self, tag, attrs):
@@ -73,6 +76,8 @@ class PageParser(html.parser.HTMLParser):
             self.inline.append("<style>")
         elif tag == "link" and values.get("rel") == "stylesheet":
             self.stylesheets.append(values["href"])
+        elif tag == "link" and values.get("rel") in ("icon", "apple-touch-icon"):
+            self.icons.append((values["rel"], values["href"]))
         self.inline.extend(f"{tag} {name}=" for name, _ in attrs if name == "style" or name.startswith("on"))
 
 
@@ -122,14 +127,15 @@ class LocalServerTest(unittest.TestCase):
         page.feed(get(self.server)[2].decode("utf-8"))
         self.assertEqual(page.scripts, [("main.js", "module")])
         self.assertEqual(page.stylesheets, ["style.css"])
-        for name in [src for src, _ in page.scripts] + page.stylesheets:
+        self.assertEqual(page.icons, [("icon", "favicon.svg"), ("apple-touch-icon", "apple-touch-icon.png")])
+        for name in [src for src, _ in page.scripts] + page.stylesheets + [href for _, href in page.icons]:
             with self.subTest(name=name):
                 status, headers, body = get(self.server, f"/{name}")
                 self.assertEqual(status, 200)
                 self.assertEqual(headers["Content-Type"], FILE_TYPES[PurePosixPath(name).suffix])
                 self.assertEqual(headers["Cache-Control"], "no-store")
                 self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
-                self.assertTrue(body)
+                self.assertEqual(body, (WEB_DIR / name).read_bytes())
 
     def test_serves_every_module_the_interface_imports(self):
         pending, seen = ["main.js"], set()
@@ -164,7 +170,8 @@ class LocalServerTest(unittest.TestCase):
 
     def test_serves_nothing_outside_the_interface_files(self):
         paths = ("/server.py", "/../server.py", "/%2e%2e/server.py", "/..%2fserver.py",
-                 "/web/main.js", "/MAIN.JS", "/main.js.map", "/missing.js", "/missing.json", "/index.html")
+                 "/web/main.js", "/MAIN.JS", "/main.js.map", "/missing.js", "/missing.json", "/index.html",
+                 "/missing.svg", "/missing.png", "/favicon.ico", "/apple-touch-icon-precomposed.png")
         for path in paths:
             with self.subTest(path=path):
                 self.assertEqual(get(self.server, path)[0], 404)

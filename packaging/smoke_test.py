@@ -11,7 +11,7 @@ checks that Radiolack
 - prints its version, and its address on 127.0.0.1;
 - listens on 127.0.0.1 only, and answers only requests addressed to it;
 - serves the interface with its Content-Security-Policy, and every file the
-  interface loads, each with its type;
+  interface loads, its icons included, each with its type;
 - streams the simulated band's spectrum to the interface, and refuses the
   stream to pages from other origins;
 - ends its update check at start, which may be unavailable but must not
@@ -27,13 +27,13 @@ With --remote, it also turns remote access on, for a few seconds, on an
 ephemeral port of this computer's addresses on its local networks, as the
 interface's settings do, and checks it as a phone would by one of these
 addresses: the certificate that Radiolack gives verifies its HTTPS server;
-an unpaired device gets the pairing page only; a wrong code is refused and
-the right one pairs the device, which then gets the stream; turning remote
-access off releases the port. It then starts COMMAND again with --remote,
-on another ephemeral port: remote access must be on at start, at the
-addresses that Radiolack prints, with a certificate whose fingerprint is
-the one printed, and pair a device with the code printed. This needs an
-address on a local network.
+an unpaired device gets the pairing page and its icons only; a wrong code
+is refused and the right one pairs the device, which then gets the stream;
+turning remote access off releases the port. It then starts COMMAND again
+with --remote, on another ephemeral port: remote access must be on at
+start, at the addresses that Radiolack prints, with a certificate whose
+fingerprint is the one printed, and pair a device with the code printed.
+This needs an address on a local network.
 
 With --window, it also checks that the desktop window's toolkit, GTK 3 and
 WebKitGTK through PyGObject, loads for the radiolack that this Python
@@ -70,10 +70,13 @@ STEP_TIMEOUT_S = 30
 STOP_TIMEOUT_S = 20
 UPDATE_TIMEOUT_S = 60   # Radiolack's update check gives up after 30 s
 ADDRESS_LINE = re.compile(r"Radiolack is running at (http://127\.0\.0\.1:\d+/) ")
-# The files that an interface file names: the page's style sheet and script,
-# the modules they import, the audio worklet and the band plan.
-FILE_NAME = re.compile(r"""["'](?:\./)?([a-z0-9][a-z0-9_-]*\.(?:css|js|json))["']""")
-FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
+# The files that an interface file names: the page's style sheet, script and
+# icons, the modules they import, the audio worklet and the band plan.
+FILE_NAME = re.compile(r"""["'](?:\./)?([a-z0-9][a-z0-9_-]*\.(?:css|js|json|svg|png))["']""")
+FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".svg": "image/svg+xml",
+              ".png": "image/png"}
+ICONS = {"favicon.svg", "apple-touch-icon.png"}     # what the pages name as their icons
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 OTHER_SITE = "radiolack.example"
 
 
@@ -182,11 +185,15 @@ async def check_interface(session: aiohttp.ClientSession, url: str) -> None:
             continue
         names.add(name)
         async with session.get(url + name) as response:
-            body = await response.text()
+            body = await response.read()
             check(response.status == 200, f"GET /{name} answered {response.status}")
             expected = FILE_TYPES[os.path.splitext(name)[1]]
             check(response.content_type == expected, f"/{name} is served as {response.content_type}, "
                                                      f"not {expected}")
+        if name.endswith(".png"):
+            check(body.startswith(PNG_SIGNATURE), f"/{name} is not a PNG image")
+            continue
+        body = body.decode("utf-8")
         if name.endswith(".json"):
             try:
                 json.loads(body)
@@ -195,6 +202,7 @@ async def check_interface(session: aiohttp.ClientSession, url: str) -> None:
         else:
             queue.extend(FILE_NAME.findall(body))
     check({"main.js", "style.css"} <= names, f"the page loads neither main.js nor style.css: {sorted(names)}")
+    check(ICONS <= names, f"the page does not name its icons: {sorted(names)}")
     passed(f"serves the {len(names)} files the interface loads")
 
     async with session.get(url, headers={"Host": OTHER_SITE}) as response:
@@ -323,7 +331,10 @@ async def check_device(session: aiohttp.ClientSession, url: str, code: object) -
         check('id="pair-form"' in page, "an unpaired device does not get the pairing page")
         async with device.get(url + "main.js") as response:
             check(response.status == 403, f"an unpaired device's GET /main.js answered {response.status}")
-        passed("remote access's certificate verifies its HTTPS server, which gives the pairing page only")
+        for icon in sorted(ICONS):
+            async with device.get(url + icon) as response:
+                check(response.status == 200, f"an unpaired device's GET /{icon} answered {response.status}")
+        passed("remote access's certificate verifies its HTTPS server, which gives the pairing page and its icons only")
         async with device.post(url + "pair", json={"code": "WRONG-CODE"}, headers=origin) as response:
             check(response.status == 403, f"a wrong code answered {response.status}")
         async with device.post(url + "pair", json={"code": code}, headers=origin) as response:

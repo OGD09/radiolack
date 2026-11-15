@@ -92,7 +92,10 @@ the history under the tag `v0.1.0`.
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
-  remote access serves to a device that is not paired.
+  remote access serves to a device that is not paired, with `style.css`
+  and the icons. `favicon.svg` and `apple-touch-icon.png` (the iPhone's
+  Home Screen) are the icons, and `index.html` and `pair.html` inline the
+  logo in the text's colour: `packaging/identity.py` draws them.
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
   Python package as it is; reproducible: every file carries the last
   commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose
@@ -122,10 +125,14 @@ the history under the tag `v0.1.0`.
   package installs in /usr/lib/systemd/system and never enables or starts;
   `build_deb.py` writes the maintainer scripts that debhelper would, and
   the tests pin the unit's sandbox), `radiolack.desktop` (menu
-  entry), `radiolack.svg` (icon) and
+  entry), `radiolack.svg` (icon), `identity.py` (draws the logo and the
+  icons, run by hand: the name's outlines come from the font Saira
+  Italic, kept out of the repository; no font ships or loads) and
   `copyright` (the package's licence notice). The window's program name,
   `window.PROGRAM`, matches the menu entry's and the icon's names: change
   them together.
+- `docs/identity/`: README.md's logo, for GitHub's light and dark themes,
+  and the social preview, which the owner uploads in GitHub's settings.
 - `docs/design/protocol.md`: the stream between engine and interface. Change
   it with the engine, the server and `stream.js`, and raise the protocol
   version for any incompatible change.
@@ -153,6 +160,10 @@ the history under the tag `v0.1.0`.
   `tests/test_packaging.py` builds one twice in a temporary folder, compares
   them and runs `packaging/smoke_test.py` on the package's files. On an
   installed package: `python3 packaging/smoke_test.py`.
+- Logo and icons: `python3 packaging/identity.py --font PATH`, with the font
+  file that its docstring names, fontTools, Inkscape and ImageMagick;
+  replace the inlined logo in `index.html` and `pair.html` with the one it
+  prints. `tests/test_identity.py` checks that every copy agrees.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
   a `main` without changes and at the commit of `origin/main`. It commits
   the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes

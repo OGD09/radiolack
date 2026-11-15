@@ -74,10 +74,12 @@ html, body {
 }
 
 #brand {
-  position: absolute; top: calc(10px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); z-index: 5; margin: 0;
-  font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: rgba(215, 221, 229, 0.42);
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); z-index: 5; margin: 0;
+  color: rgba(215, 221, 229, 0.42);
   pointer-events: none; transition: opacity 0.4s;
 }
+/* The logo in the brand's colour, its name 13 px to the em (packaging/identity.py draws it). */
+#brand svg { display: block; width: auto; height: 10.13px; }
 
 #readout { position: absolute; top: calc(6px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 5; text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); pointer-events: none; }
 #freq {
@@ -287,7 +289,7 @@ table.peaks tr.active .freq-link { color: var(--ok); }
 
 /* Short viewports (phones in landscape): compact readout. */
 @media (max-height: 500px) {
-  #brand { top: calc(6px + env(safe-area-inset-top)); }
+  #brand { top: calc(8px + env(safe-area-inset-top)); }
   #readout { top: calc(22px + env(safe-area-inset-top)); }
   #freq { font-size: 20px; }
   #meta { font-size: 11px; }

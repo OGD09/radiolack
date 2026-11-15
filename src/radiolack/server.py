@@ -77,7 +77,8 @@ _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its s
 _REMOTE_KEEPALIVE_S = 15.0      # an idle HTTPS connection closes after this long
 _REMOTE_BODY_LIMIT = 4 * 1024   # a pairing request's body
 _WRONG_CODE_DELAY_S = 1.0       # a wrong code is answered this late, and codes are checked one at a time
-_PAIRING_FILES = frozenset({"pair.js", "pair.css", "style.css"})   # what a device loads before pairing
+# What a device loads before pairing: the pairing page's code, its styles and its icons.
+_PAIRING_FILES = frozenset({"pair.js", "pair.css", "style.css", "favicon.svg", "apple-touch-icon.png"})
 # How long stopping remote access waits for its requests: aiohttp 3.9 moved
 # that setting from the sites, where it now warns, to the runner, while
 # aiohttp 3.8 (Debian 12) takes it on the sites only.
@@ -102,9 +103,16 @@ CONTENT_SECURITY_POLICY = "; ".join((
 ))
 
 # Interface files served next to the page: flat lower-case names only, so a
-# request can never reach a file outside WEB_DIR.
-_FILE_TYPES = {".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
-_FILE_NAME = r"[a-z0-9][a-z0-9_-]*\.(?:css|js|json)"
+# request can never reach a file outside WEB_DIR. Each type, with the
+# charset of the text ones.
+_FILE_TYPES = {
+    ".css": ("text/css", "utf-8"),
+    ".js": ("text/javascript", "utf-8"),
+    ".json": ("application/json", "utf-8"),
+    ".svg": ("image/svg+xml", "utf-8"),
+    ".png": ("image/png", None),
+}
+_FILE_NAME = r"[a-z0-9][a-z0-9_-]*\.(?:css|js|json|svg|png)"
 _FILE_ROUTE = rf"/{{name:{_FILE_NAME}}}"
 # A recording to download: the engine checks the name.
 _RECORDING_ROUTE = r"/recordings/{name:[A-Za-z0-9._-]+}"
@@ -146,10 +154,11 @@ class InterfaceFiles:
         body = self._files.get(name)
         if body is None:
             raise web.HTTPNotFound()
+        content_type, charset = _FILE_TYPES[Path(name).suffix]
         return web.Response(
             body=body,
-            content_type=_FILE_TYPES[Path(name).suffix],
-            charset="utf-8",
+            content_type=content_type,
+            charset=charset,
             headers={"Cache-Control": "no-store"},
         )
 

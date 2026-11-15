@@ -44,6 +44,7 @@ PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its change
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
+PHONE_ON_ITS_SIDE = {"viewport": {"width": 844, "height": 390}, "has_touch": True}    # the same, in landscape
 # An init script that keeps the audio held, as Safari does until a gesture:
 # the audio context reads suspended, whatever the browser does. Headless
 # browsers start it earlier, Firefox and WebKit at times without any gesture.
@@ -102,9 +103,32 @@ ANTENNA_PROBE = """async () => {
     edges: [0, -1, NaN, Infinity, 0.99996, 999.96, 0.0004].map(formatLength),
   };
 }"""
+# The fill and the stroke of each path of a logo, its text's colour where
+# a browser gives the keyword currentcolor.
+LOGO_PAINT = """(logo) => [...logo.querySelectorAll('path')].map((path) => {
+  const style = getComputedStyle(path), paint = (value) => (/^currentcolor$/i.test(value) ? style.color : value);
+  return [paint(style.fill), paint(style.stroke)];
+})"""
+# Loads each icon that the page links: the PNG's size, or whether the SVG,
+# whose size each browser gives in its own way, loaded.
+ICONS_PROBE = """async () => {
+  const links = document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]');
+  return Object.fromEntries(await Promise.all([...links].map((link) => new Promise((resolve) => {
+    const image = new Image(), name = link.getAttribute('href');
+    image.onload = () => resolve([name, name.endsWith('.png') ? [image.naturalWidth, image.naturalHeight] : 'loaded']);
+    image.onerror = () => resolve([name, 'broken']);
+    image.src = link.href;
+  }))));
+}"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
     from playwright.sync_api import Page, expect, sync_playwright
+
+
+def overlap(first: dict, second: dict) -> bool:
+    """Whether two boxes, as Playwright gives them, cover a common area."""
+    return (first["x"] < second["x"] + second["width"] and second["x"] < first["x"] + first["width"]
+            and first["y"] < second["y"] + second["height"] and second["y"] < first["y"] + first["height"])
 
 
 def kept_channel(frequency_hz: int, last_s: float) -> dict:
@@ -220,6 +244,37 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator(receiver_setting)).to_be_disabled()
                 expect(page.locator("#src-dc")).to_be_checked()
                 expect(page.locator("#src-dc")).to_be_enabled()
+
+    def logo_box(self, page: Page, em_px: float) -> dict:
+        """Check the logo in the page's heading, which it names Radiolack:
+        the drawing's proportions, the name ``em_px`` pixels to the em, in
+        the heading's colour. Return its box."""
+        heading = page.get_by_role("heading", name="Radiolack", exact=True)
+        expect(heading).to_be_visible()
+        logo = heading.get_by_role("img", name="Radiolack", exact=True)
+        _, _, width, height = (float(value) for value in logo.get_attribute("viewBox").split())
+        box = logo.bounding_box()
+        self.assertAlmostEqual(box["height"], height * em_px / 1000, delta=0.05)
+        self.assertAlmostEqual(box["width"], box["height"] * width / height, delta=0.1)
+        colour = heading.evaluate("(heading) => getComputedStyle(heading).color")
+        self.assertEqual(logo.evaluate(LOGO_PAINT), [["none", colour], [colour, "none"]])   # the mark, the name
+        return box
+
+    def test_the_logo_names_radiolack_in_the_corner_and_the_icons_load(self):
+        # In the corner's colour, clear of the readout and the toolbar, on a
+        # computer, on a phone and on a phone on its side.
+        url = self.serve()
+        for browser in BROWSERS:
+            for options in ({}, PHONE, PHONE_ON_ITS_SIDE):
+                with (self.subTest(browser=browser, viewport=options.get("viewport")),
+                      self.interfaces(browser, url, 1, **options) as [page]):
+                    box = self.logo_box(page, 13)
+                    for neighbour in ("#freq", "#antenna", "#sound", "#toolbar"):
+                        other = page.locator(neighbour).bounding_box()     # None while hidden
+                        self.assertFalse(other is not None and overlap(box, other), neighbour)
+                    if not options:
+                        self.assertEqual(page.evaluate(ICONS_PROBE),
+                                         {"favicon.svg": "loaded", "apple-touch-icon.png": [180, 180]})
 
     def test_a_newer_version_shows_until_closed_and_settings_check_again(self):
         updates = FakeUpdates(UpdateResult("available", latest="9.9.9"))
@@ -839,6 +894,7 @@ class BrowserTest(unittest.TestCase):
                 with self.remote_device(browser, allowed=(WRONG_CODE_REFUSAL,)) as device:
                     device.goto(f"https://{LOOPBACK}:{port}/")
                     expect(device.locator('a[href="certificate"]')).to_be_visible()
+                    self.logo_box(device, 20)
                     device.locator("#pair-code").fill("ABCD-EFGH")
                     device.locator("#pair-submit").click()
                     expect(device.locator("#pair-msg")).to_have_text("Wrong code.")

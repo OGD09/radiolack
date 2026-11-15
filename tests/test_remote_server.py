@@ -241,7 +241,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("form-action 'none'", headers["Content-Security-Policy"])
         self.assertEqual((headers["Cache-Control"], headers["X-Content-Type-Options"], headers["Referrer-Policy"]),
                          ("no-store", "nosniff", "no-referrer"))
-        for name in ("pair.js", "pair.css", "style.css"):
+        for name in ("pair.js", "pair.css", "style.css", "favicon.svg", "apple-touch-icon.png"):
             with self.subTest(name=name):
                 self.assertEqual((await self.get(device, name))[0], 200)
         for name in ("main.js", "stream.js", "audio-worklet.js", "bandplan-europe.json"):

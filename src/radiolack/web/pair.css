@@ -6,7 +6,8 @@ html, body { height: auto; min-height: 100%; overflow: auto; }
   padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
     calc(28px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
 }
-.pair h1 { margin: 8px 0 4px; font-size: 20px; font-weight: 600; }
+.pair h1 { margin: 8px 0 12px; }
+.pair h1 svg { display: block; width: auto; height: 15.6px; }     /* the logo, its name 20 px to the em */
 .pair h2 { margin: 24px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .pair p { margin: 8px 0; }
 .pair .btn { display: inline-flex; align-items: center; min-height: 40px; padding: 8px 14px; font-size: 15px; text-decoration: none; }
