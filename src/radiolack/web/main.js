@@ -117,7 +117,7 @@ const S = {
   showPlan: true, showMarks: true, split: 0.4,
   sql: -80, sqlAuto: true, volume: 70,
   peakMarks: true,
-  autoHide: true, keepAwake: false,
+  autoHide: true,
 };
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [] };    // band plan, empty until loaded
@@ -2516,7 +2516,6 @@ window.addEventListener('radiolack-download', (e) => {
 
 // Settings
 bindCheck('st-autohide', 'autoHide', poke);
-bindCheck('st-wake', 'keepAwake');
 
 // Updates: the engine checks for a newer Radiolack at start, unless turned
 // off, and on request. The box and the notice follow the engine's state.
@@ -2686,8 +2685,7 @@ function syncStorage() {
 // the port: one set for this computer's interfaces, and one for each device
 // that remote access serves, which starts from this computer's until it
 // gives its own. They leave out the engine's settings (VFO, mode, filter,
-// squelch, receiver, remote access), the setting that has no effect yet
-// (keeping the screen on), and which menu shows.
+// squelch, receiver, remote access) and which menu shows.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
   'peakMarks', 'autoHide'];

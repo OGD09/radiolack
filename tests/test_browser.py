@@ -45,7 +45,7 @@ MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "
 # The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md).
 REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-notch", "#dm-nb", '#src-device option[value="soapy"]',
                     '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
-                    "#brand", "#toolbar", "#panel", "#mem-list")
+                    "#st-wake", "#brand", "#toolbar", "#panel", "#mem-list")
 S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left end to its right end (main.js)
 SQUELCH_RANGE = (-130, -20)  # the squelch threshold's range, in dB (#dm-sql)
 MID_SCALE = re.compile(r"^-5[6-8]$")    # the threshold that a press halfway along the S-meter sets: -57 dB, to a pixel
