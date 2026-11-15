@@ -15,6 +15,9 @@
   --ok: #3ccf9a;
   --warn: #f2b33d;
   --rec: #ff5f57;     /* a recording runs */
+  /* How far the readout, the bookmarks' marks and the menu move down, so that the antenna icon's touch
+     target stays on the screen: see the touch rules at the end. */
+  --antenna-room: 0px;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -76,7 +79,7 @@ html, body {
 
 /* Centred on the first line, clear of the menu's icon on its left and the speaker on its right. */
 #readout {
-  position: absolute; top: calc(6px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 5;
+  position: absolute; top: calc(6px + var(--antenna-room) + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 5;
   width: max-content; max-width: calc(100% - 128px); text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); pointer-events: none;
 }
 #freq {
@@ -146,7 +149,7 @@ html, body {
 #menu-button.recording .badge, #menu-button.scanning .badge { display: block; }
 #menu-button.scanning:not(.recording) .badge { background: var(--ok); }
 
-#marks { position: absolute; left: 0; right: 0; top: 70px; height: 0; z-index: 3; }
+#marks { position: absolute; left: 0; right: 0; top: calc(70px + var(--antenna-room)); height: 0; z-index: 3; }
 .mark {
   position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; cursor: pointer;
   font: 11px/1.5 system-ui, sans-serif; color: var(--text); background: rgba(14, 17, 22, 0.78);
@@ -209,7 +212,7 @@ body.idle #hoverinfo { opacity: 0; }
    every frame. */
 #menu-scrim { position: absolute; inset: 0; z-index: 8; touch-action: none; }
 #menu {
-  position: absolute; z-index: 9; top: calc(84px + env(safe-area-inset-top)); bottom: calc(10px + env(safe-area-inset-bottom));
+  position: absolute; z-index: 9; top: calc(84px + var(--antenna-room) + env(safe-area-inset-top)); bottom: calc(10px + env(safe-area-inset-bottom));
   left: calc(10px + env(safe-area-inset-left)); width: 640px;
   max-width: calc(100% - 20px - env(safe-area-inset-left) - env(safe-area-inset-right));
   display: grid; grid-template-columns: 196px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden;
@@ -327,12 +330,12 @@ table.peaks tr.active .freq-link { color: var(--ok); }
 
 /* Short viewports (phones in landscape): compact readout, and the menu under it. */
 @media (max-height: 500px) {
-  #readout { top: calc(4px + env(safe-area-inset-top)); }
+  #readout { top: calc(4px + var(--antenna-room) + env(safe-area-inset-top)); }
   #freq { font-size: 20px; }
   #meta { font-size: 11px; }
   #smeter { margin-top: 2px; }
-  #marks { top: 62px; }
-  #menu { top: calc(66px + env(safe-area-inset-top)); }
+  #marks { top: calc(62px + var(--antenna-room)); }
+  #menu { top: calc(66px + var(--antenna-room) + env(safe-area-inset-top)); }
 }
 
 /* Narrow windows: a smaller frequency, which stays centred on the first line with a mouse. */
@@ -402,12 +405,23 @@ table.peaks tr.active .freq-link { color: var(--ok); }
   }
   #smeter { justify-content: flex-start; }
   #menu {
-    top: calc(92px + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0; width: auto; max-width: none;
+    top: calc(92px + var(--antenna-room) + env(safe-area-inset-top)); left: 0; right: 0; bottom: 0; width: auto; max-width: none;
     border: 0; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
   }
   /* The sheet reaches the bottom edge: its last line stays above the home indicator. */
   #menu nav { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .menu-scroll { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .menu-dock { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+}
+/* The antenna icon's touch target, 40 px tall, is centred on the digits' line (1.15 times their size):
+   with 24 px digits 6 px from the top, it would reach 0.2 px past the screen's top edge, and with the
+   compact readout 4 px from the top, 4.4 px with 20 px digits, or 2.2 px with 24 px ones. The readout,
+   and the bookmarks' marks and the menu under it, move down 1 px in a narrow window and 5 px in a short
+   one. */
+@media (pointer: coarse) and (max-width: 760px) {
+  :root { --antenna-room: 1px; }
+}
+@media (pointer: coarse) and (max-height: 500px) {
+  :root { --antenna-room: 5px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

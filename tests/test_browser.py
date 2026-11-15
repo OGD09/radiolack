@@ -301,7 +301,8 @@ class BrowserTest(unittest.TestCase):
         # speaker stay clear of the readout, and nothing is wider than the
         # window or than the menu, on a computer, in narrow windows, on a
         # phone and on a phone on its side. On a touch screen the icon lies
-        # between the step buttons.
+        # between the step buttons. The antenna icon's target, a finger's on
+        # a touch screen, stays below the window's top edge.
         url = self.serve()
         readout = ("#freq", "#antenna", "#meta", "#smeter")
         for browser in BROWSERS:
@@ -322,6 +323,8 @@ class BrowserTest(unittest.TestCase):
                     page.keyboard.press("Escape")
                     expect(page.locator("#menu")).to_be_hidden()
                     self.assertEqual(page.evaluate(MENU_OVERFLOW), [])
+                    antenna = page.locator("#antenna").bounding_box()
+                    self.assertGreaterEqual(antenna["y"], -0.01, antenna)      # to within rounding
                     for control in (MENU_BUTTON, "#sound", "#hint"):
                         box = page.locator(control).bounding_box()      # None while hidden
                         for part in readout:
