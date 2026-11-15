@@ -2884,14 +2884,22 @@ function editFreq() {
   input.addEventListener('blur', () => finish(true));
 }
 // The icon beside the frequency opens the antenna lengths in a modal dialog,
-// which Escape, its close button or a press on the backdrop closes; the focus
-// then goes back to the icon.
+// which Escape, its close button or a press on the backdrop closes. Closed
+// from the keyboard, the dialog gives the focus back to the icon; closed with
+// a pointer, it leaves the icon unfocused: a focus there, even the dialog's own
+// restoring one, would ring it in WebKit.
 let antennaBackdropPress = false;
+let antennaKeyClose = false;
 antennaEl.addEventListener('click', () => {
+  antennaKeyClose = false;
   antennaDialog.showModal();
   syncAntenna();
 });
-antennaDialog.querySelector('.close').addEventListener('click', () => antennaDialog.close());
+antennaDialog.addEventListener('cancel', () => { antennaKeyClose = true; });     // Escape
+antennaDialog.querySelector('.close').addEventListener('click', (e) => {
+  antennaKeyClose = e.detail === 0;     // pressed from the keyboard
+  antennaDialog.close();
+});
 // A press that starts in the dialog and ends on the backdrop, as when selecting text, keeps it open,
 // and so does the second click of a double click on the icon, which lands on the backdrop.
 antennaDialog.addEventListener('pointerdown', (e) => { antennaBackdropPress = e.target === antennaDialog; });
@@ -2899,7 +2907,10 @@ antennaDialog.addEventListener('click', (e) => {
   if (antennaBackdropPress && e.target === antennaDialog && e.detail < 2) antennaDialog.close();
   antennaBackdropPress = false;
 });
-antennaDialog.addEventListener('close', () => antennaEl.focus());
+antennaDialog.addEventListener('close', () => {
+  if (antennaKeyClose) antennaEl.focus();
+  else antennaEl.blur();
+});
 
 freqEl.addEventListener('dblclick', editFreq);
 freqEl.addEventListener('click', () => { if (coarseQuery.matches) editFreq(); });   // touch: one tap opens the keypad
