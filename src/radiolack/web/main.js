@@ -1,8 +1,8 @@
 // @ts-nocheck -- code from the mockup; it gets JSDoc types as it is rewritten.
 /*
  * Radiolack web interface: spectrum and waterfall fed by the engine stream,
- * drawn with WebGL2, the VFO's audio, and the mockup's panels and
- * interactions around them.
+ * drawn with WebGL2, the VFO's audio, the menu, and the interactions around
+ * them.
  */
 import { EngineStream } from './stream.js';
 import { AudioOutput } from './audio.js';
@@ -21,6 +21,10 @@ const fmtBw = (hz) => (hz >= 1000 ? `${+(hz / 1000).toFixed(2)} kHz` : `${Math.r
 const fmtDb = (db) => `${Math.round(db)} dB`;
 const fmtAgo = (s) => (s < 60 ? `${Math.max(0, Math.round(s))} s` : `${Math.floor(s / 60)} min`);
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function onMediaChange(query, listener) {
+  if (query.addEventListener) query.addEventListener('change', listener);
+  else query.addListener(listener);   // Safari before 14
+}
 
 // ------------------------------------------------------------------ constants
 const HIST_DB_MIN = -160;           // waterfall history: levels from -160 dBFS in 0.625 dB steps, on 8 bits
@@ -60,8 +64,7 @@ const PALETTES = {
 };
 const BAND_PLAN_URL = 'bandplan-europe.json';
 const DEFAULT_STEP = 100;           // tuning step where the band plan gives none, Hz
-const PANEL_TITLES = { source: 'Source', demod: 'Demodulation and audio', display: 'Display', bands: 'Bands and bookmarks', scanners: 'Scanners', record: 'Recording', settings: 'Settings' };
-const PANEL_ORDER = ['source', 'demod', 'display', 'bands', 'scanners', 'record', 'settings'];
+const SQL_WHEEL_PX = 50;            // wheel travel over the S-meter that moves the squelch by 1 dB, as one notch does
 
 // ------------------------------------------------------------------ DOM
 const appEl = $('#app');
@@ -89,7 +92,12 @@ const marksEl = $('#marks');
 const freqEl = $('#freq');
 const meterFill = $('#smeter .fill');
 const meterSql = $('#smeter .sql');
-const panelEl = $('#panel');
+const meterBar = $('#smeter .bar');
+const menuEl = $('#menu');
+const menuButton = $('#menu-button');
+const menuScrim = $('#menu-scrim');
+// The menus, in the order of the keys 1 to 7.
+const MENUS = $$('#menu nav button[data-menu]').map((b) => b.dataset.menu);
 const ctxEl = $('#ctx');
 const hoverEl = $('#hoverinfo');
 const hintEl = $('#hint');
@@ -98,6 +106,7 @@ const readoutEl = $('#readout');
 const antennaEl = $('#antenna');
 const antennaDialog = $('#antenna-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
+const oneColumnQuery = window.matchMedia('(max-width: 600px)'); // the menu shows its list or a menu (style.css)
 
 // ------------------------------------------------------------------ state
 const S = {
@@ -106,7 +115,7 @@ const S = {
   avg: 0.6, fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
   showPlan: true, showMarks: true, split: 0.4,
-  sql: -80, sqlAuto: true, ctcss: 'detect', agc: 'slow', nr: false, notch: false, blanker: false, volume: 70,
+  sql: -80, sqlAuto: true, volume: 70,
   peakMarks: true,
   autoHide: true, keepAwake: false,
 };
@@ -114,6 +123,7 @@ const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
 let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan }
+let namingBookmark = null;  // { name, f, before }: the bookmark Add sent, until the engine's list brings it
 
 const fStart = () => S.fc - S.fs / 2;
 const fEnd = () => S.fc + S.fs / 2;
@@ -302,6 +312,7 @@ const stream = new EngineStream({
   onDemod: applyDemod,
   onBookmarks: (list) => {
     bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan }));
+    nameNewBookmark();
     bookmarksChanged();
   },
   onScanner: (state) => {
@@ -318,7 +329,7 @@ const stream = new EngineStream({
     peaks = list;
     peaksAt = performance.now();
     peaksVersion += 1;
-    if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+    if (signalsShown()) renderPeaks();
   },
   onObservations: (list) => {
     observations = list;
@@ -366,6 +377,7 @@ const stream = new EngineStream({
       return;
     }
     if (command === 'bookmark') {
+      namingBookmark = null;    // a refused bookmark never comes
       bookmarkNote = `Change refused: ${message}.`;
       syncBookmarkNote();
       return;
@@ -416,6 +428,7 @@ const stream = new EngineStream({
       rateSince = 0; frameRate = 0; audio.reset();
       // The engine's state after the next connection tells what became of a retune on its way.
       if (pendingTune) pendingTune.before = [];
+      namingBookmark = null;    // a bookmark added before comes back as any other
     }
     if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
     syncSource();
@@ -443,7 +456,7 @@ function syncAudio() {
 
 // The speaker, for touch input: crossed out while this interface plays no sound, because the
 // browser holds the audio until a tap (Safari, at each page load; a tap on the speaker is one,
-// audio.js) or the volume is 0. A tap mutes by setting the volume to 0, as the Demod panel's
+// audio.js) or the volume is 0. A tap mutes by setting the volume to 0, as the Radio menu's
 // slider would, so that the engine stops sending audio, and unmutes by bringing it back.
 const soundEl = $('#sound');
 const DEFAULT_VOLUME = S.volume;    // brought back when the speaker did not mute
@@ -1109,7 +1122,7 @@ function updateStatus() {
 
 // ------------------------------------------------------------------ layout and view
 const bandHeight = () => (coarseQuery.matches ? 26 : 18);   // the band strip doubles as a touch handle
-let labelTopCss = 40;               // dB labels start below this line, clear of the brand and the readout
+let labelTopCss = 40;               // dB labels start below this line, clear of the menu's icon and the readout
 let markBandCss = null;             // [top, bottom] of a bookmark label lying over the dB label column
 const DB_LABEL_COL = 40;            // width kept by the dB labels at the left edge, in CSS px (#spec-db in style.css)
 // Drawing-buffer scale of the GPU views: the device pixel ratio, lowered on
@@ -1145,9 +1158,11 @@ function layout() {
   noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
   vfoReturnEl.style.top = `${Math.round((specH - AXIS_H) / 2)}px`;
   spanFitEl.style.top = `${specH - AXIS_H - 6}px`;     // its bottom, just above the frequency scale
-  // On narrow screens the readout sits over the dB label column: start the labels below it.
-  const ro = readoutEl.getBoundingClientRect();
-  labelTopCss = ro.left < 60 ? Math.ceil(ro.bottom) + 8 : 40;
+  // The labels start below what lies over their column at the top: the menu's icon with a mouse, and
+  // the readout on a narrow touch screen. A label's text reaches 14 px above its line.
+  const ro = readoutEl.getBoundingClientRect(), icon = menuButton.getBoundingClientRect();
+  labelTopCss = Math.max(40, ro.left < DB_LABEL_COL ? Math.ceil(ro.bottom) + 8 : 0,
+    icon.left < DB_LABEL_COL && icon.top < specH ? Math.ceil(icon.bottom) + 16 : 0);
   rebuildStamps();
   viewChanged();
 }
@@ -1350,7 +1365,7 @@ function renderPeaks() {
         + `<td>+${Math.round(p.marginDb)} dB</td><td class="seen">${peakSeen(p, now)}</td>`
         + `<td class="acts"><button type="button" class="link" data-ignore="${f}">Ignore</button></td></tr>`;
     }).join('')
-    : `<tr><td colspan="4" class="empty">${scanner && !scanner.detection ? 'Detection is off' : 'No peak detected'}</td></tr>`;
+    : `<tr><td colspan="4" class="empty">${scanner && !scanner.detection ? 'Detection is off' : 'No signal detected'}</td></tr>`;
   focusAgain(list, refocus);
 }
 // Between lists, only the times since the inactive signals were found change.
@@ -1386,14 +1401,14 @@ function syncScanner() {
   }
   syncSweepSettings();
   syncScannerNote();
-  if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();
+  if (signalsShown()) renderPeaks();
   if (historyShown()) { syncHistorySummary(); syncHistoryNote(); }
   syncMem();
   syncSweep();
   updateStatus();       // it names the scan that runs
 }
-// The latest refusal shows in every tab; each tells when the engine that runs
-// lacks its scanner.
+// The latest refusal shows in every scan's place, Signals, Sweep and the
+// Bookmarks menu's dock; each tells when the engine that runs lacks its scanner.
 const SCANNER_NOTES = [
   ['#pk-note', 'peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
   ['#sw-note', 'sweep', 'The engine that runs does not sweep: restart Radiolack after its update.'],
@@ -1422,9 +1437,9 @@ function sendScanner(send) {
 // span, the same for every interface, and with a receiver that tunes visits
 // those outside the span too, window after window: this interface starts
 // and stops it, sets its resume time (syncScanner) and shows where it
-// stands. The list marks the ticked bookmarks that the scan leaves out:
-// beyond the receiver's reach, or outside the span when it does not visit
-// other windows.
+// stands, in the Bookmarks menu's dock. The bookmarks' list marks the ticked
+// ones that the scan leaves out: beyond the receiver's reach, or outside the
+// span when it does not visit other windows.
 const MEM_STATES = { checking: 'Checking', listening: 'Listening', waiting: 'Waiting' };
 const MEM_STOPPED = {
   tuned: 'Stopped: the receiver was tuned by hand.',
@@ -1445,14 +1460,14 @@ const memoryRuns = () => memoryKnown() && scanner.scan === 'memory';
 // Whether the engine's memory scan visits the bookmarks outside the span: an
 // older engine, which sends no windows, does not.
 const memoryVisits = () => memoryKnown() && scanner.memory.windows !== null && sourceTunes();
-// What the list shows of the scan: the bookmarks it watches, and why it leaves the others out.
-const memListKey = () => (memoryKnown() ? `${memoryVisits()}:${scanner.memory.watched.join(',')}` : '');
-let memListShown = '';      // memListKey() as the list shows it
+// What the bookmarks' list shows of the scan: the bookmarks it watches, and why it leaves the others out.
+const scanMarksKey = () => (memoryKnown() ? `${memoryVisits()}:${scanner.memory.watched.join(',')}` : '');
+let scanMarksShown = '';    // scanMarksKey() as the list shows it
 function syncMem() {
   const known = memoryKnown(), runs = memoryRuns(), memory = known ? scanner.memory : null;
   const watched = memory ? memory.watched.length : 0;
   // The scan's progress calls this several times a second: an unchanged text is not rewritten.
-  const label = runs ? 'Stop' : 'Start';
+  const label = runs ? 'Stop the scan' : 'Scan the ticked bookmarks';
   if (memStart.textContent !== label) memStart.textContent = label;
   memStart.disabled = !known || (!runs && watched === 0);
   let text = '';
@@ -1463,24 +1478,14 @@ function syncMem() {
     if (memory.windows > 1 && memory.window !== null) text += `, window ${memory.window + 1} of ${memory.windows}`;
   } else if (known) {
     // While the sweep runs, the span is the one it brings the receiver back to.
-    if (watched) text = sweepRuns() ? 'The sweep runs: Start stops it.' : stoppedText(MEM_STOPPED, 'memory');
+    if (watched) text = sweepRuns() ? 'The sweep runs: scanning stops it.' : stoppedText(MEM_STOPPED, 'memory');
     else if (!bookmarks.some((b) => b.scan)) text = 'Tick the bookmarks to scan.';
     else text = memoryVisits() ? "No ticked bookmark lies within the receiver's reach." : 'No ticked bookmark lies in the span.';
   }
   const el = $('#mem-state');
   if (el.textContent !== text) el.textContent = text;
-  if (memListKey() !== memListShown) renderMemList();
-}
-function renderMemList() {
-  const list = $('#mem-list'), refocus = focusedIn(list);
-  const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
-  const left = memoryVisits() ? 'out of reach · ' : 'outside the span · ';
-  memListShown = memListKey();
-  list.innerHTML = bookmarks.map((b) => `<li><label class="check"><input type="checkbox" data-id="${b.id}"${b.scan ? ' checked' : ''}>`
-    + `<span>${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}`
-    + `${fmtMHz(b.f)}</span></label></li>`).join('')
-    || '<li class="empty">No bookmarks</li>';
-  focusAgain(list, refocus);
+  if (scanMarksKey() !== scanMarksShown) renderBookmarks();
+  syncMenuBadge();
 }
 
 // The engine's sweep steps a receiver that tunes across a range, window after
@@ -1525,6 +1530,7 @@ function syncSweep() {
   }
   const el = $('#sw-state');
   if (el.textContent !== text) el.textContent = text;
+  syncMenuBadge();
 }
 // A new end of the range that would leave it empty moves the other end too,
 // keeping the range's width: the range moves.
@@ -1560,7 +1566,7 @@ let historyArmed = null;    // the Clear awaiting its second press: a channel's 
 let historyArmTimer = 0;
 let historyHtml = '';       // the table's rows, as last written
 const historyKnown = () => stream.scanners.includes('history');
-const historyShown = () => openName === 'scanners' && scanTab === 'history';
+const historyShown = () => openName === 'scan' && scanTab === 'history';
 const pad2 = (n) => String(n).padStart(2, '0');
 // A time.time() as this device's date and time, such as 2026-11-12 18:05.
 function fmtDate(seconds) {
@@ -1655,30 +1661,74 @@ function clearHistory(what) {
   setHistoryNote(sent ? '' : notConnected('nothing was cleared'));
 }
 
-// ------------------------------------------------------------------ panels
-let openName = null, scanTab = 'peaks';
-function openPanel(name) {
-  openName = name;
-  panelEl.hidden = false;
-  for (const s of $$('#panel section[data-panel]')) s.hidden = s.dataset.panel !== name;
-  $('#panel-title').textContent = PANEL_TITLES[name];
-  for (const b of $$('#toolbar button')) b.setAttribute('aria-expanded', String(b.dataset.panel === name));
+// ------------------------------------------------------------------ menu
+// Every menu behind one icon. The menu opens as a card under the readout,
+// the list of menus beside the chosen one; in one column (oneColumnQuery),
+// the list first, then the chosen menu with a back arrow. Escape, a press
+// outside it and its close button close it; the keys 1 to 7 open each menu,
+// or close it when it shows already. Which menu shows is this page's alone.
+let openName = null;        // the menu whose contents show, or null: the menu is closed or shows its list
+let lastMenu = MENUS[0];    // the menu that the icon opens again
+let scanTab = 'signals';
+const menuTitle = (name) => $(`#menu nav button[data-menu="${name}"] span`).textContent;
+const signalsShown = () => openName === 'scan' && scanTab === 'signals';
+function openMenuCard() {
+  if (!menuEl.hidden) return;
+  closeCtx();
+  menuEl.hidden = false;
+  menuScrim.hidden = false;
+  menuButton.setAttribute('aria-expanded', 'true');
   document.body.classList.remove('idle');
-  if (name === 'bands') renderBookmarks();
-  if (name === 'scanners') syncScanTabs();
+}
+// A name being edited is kept when its menu goes: its field takes no more keys.
+function leaveMenu() {
+  if (openName === 'bookmarks' && editing) finishEdit(true, false);
+}
+function showMenu(name) {
+  if (openName !== name) leaveMenu();
+  openName = name;
+  lastMenu = name;
+  menuEl.dataset.level = 'content';
+  for (const b of $$('#menu nav button[data-menu]')) b.setAttribute('aria-current', String(b.dataset.menu === name));
+  for (const s of $$('#menu section[data-menu]')) s.hidden = s.dataset.menu !== name;
+  $('#menu-title').textContent = menuTitle(name);
+  openMenuCard();
+  if (name === 'bookmarks') renderBookmarks();
+  if (name === 'scan') syncScanTabs();
   if (name === 'record') { renderRecordings(); askRecordings(); }
   liveUi();
 }
-function closePanel() {
-  if (!openName) return;
-  const btn = $(`#toolbar button[data-panel="${openName}"]`);
-  const hadFocus = panelEl.contains(document.activeElement);
+// One column: the list of menus, the last one shown marked as current.
+function showMenuList() {
+  leaveMenu();
   openName = null;
-  panelEl.hidden = true;
-  for (const b of $$('#toolbar button')) b.setAttribute('aria-expanded', 'false');
-  if (hadFocus && btn) btn.focus();
+  menuEl.dataset.level = 'nav';
+  openMenuCard();
 }
-function togglePanel(name) { if (openName === name) closePanel(); else openPanel(name); }
+// The icon reopens the last menu shown; in one column, the list of menus.
+function openMenu() {
+  if (oneColumnQuery.matches) showMenuList(); else showMenu(lastMenu);
+}
+// Closed from the keyboard, the focus that was in the menu returns to its icon.
+function closeMenu(keyboard = false) {
+  if (menuEl.hidden) return;
+  const focused = document.activeElement, hadFocus = menuEl.contains(focused);
+  leaveMenu();
+  openName = null;
+  menuEl.hidden = true;
+  menuScrim.hidden = true;
+  menuButton.setAttribute('aria-expanded', 'false');
+  if (hadFocus && keyboard) menuButton.focus();
+  else if (hadFocus) focused.blur();
+  poke();
+}
+function toggleMenu(name) { if (openName === name) closeMenu(true); else showMenu(name); }
+// The dot on the menu's icon: red while a recording runs, green while the memory scan or the sweep does.
+function syncMenuBadge() {
+  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns();
+  if (menuButton.classList.contains('recording') !== recordingNow) menuButton.classList.toggle('recording', recordingNow);
+  if (menuButton.classList.contains('scanning') !== scanningNow) menuButton.classList.toggle('scanning', scanningNow);
+}
 
 const syncers = [];
 const rangeInputs = new Map();      // key of S → the range input that sets it
@@ -1705,7 +1755,7 @@ function bindRange(id, key, fmt, after) {
 // back, to every interface. The Receiver list switches between the kinds of
 // source the engine opens, each with its own saved settings, and an rtl_tcp
 // source can move to another server address. DC removal is the engine's own
-// setting for any source, and antenna power comes with a later step.
+// setting for any source.
 let manualGainDb = null;    // the last manual gain, offered again when automatic gain is turned off
 const nearestIndex = (values, v) => values.reduce((best, x, i) => (Math.abs(x - v) < Math.abs(values[best] - v) ? i : best), 0);
 function sourceNote() {
@@ -1890,7 +1940,7 @@ function syncDemod() {
   syncSql();
 }
 // The threshold set by hand, or the automatic one in use. Also refreshed
-// while the panel is open: only what changed is written.
+// while the Radio menu shows: only what changed is written.
 function syncSql() {
   const autoEl = $('#dm-sql-auto'), out = $('#dm-sql-v');
   const db = S.sqlAuto ? meterSqlDb : S.sql;
@@ -1929,13 +1979,36 @@ sqlEl.addEventListener('input', () => {
   sendDemod(before);
   syncSql();
 });
-$('#dm-ctcss').value = S.ctcss;
-$('#dm-ctcss').addEventListener('change', (e) => { S.ctcss = e.target.value; });
-$('#dm-agc').value = S.agc;
-$('#dm-agc').addEventListener('change', (e) => { S.agc = e.target.value; });
-bindCheck('dm-nr', 'nr');
-bindCheck('dm-notch', 'notch');
-bindCheck('dm-nb', 'blanker');
+// The squelch on the S-meter: the wheel moves the threshold by 1 dB a notch,
+// up raising it, and a click or a tap on the bar sets it at that point of the
+// meter's scale, both within the Radio menu's range. Either sets it by hand,
+// starting from the automatic threshold in use, as unticking Automatic does.
+let sqlWheelAcc = 0;
+function setSquelchDb(db) {
+  const before = demodSnapshot();
+  S.sqlAuto = false;
+  S.sql = clamp(Math.round(db), Number(sqlEl.min), Number(sqlEl.max));
+  sendDemod(before);
+  syncSql();
+}
+function stepSquelch(dir) {
+  const from = S.sqlAuto && meterSqlDb !== null ? Math.round(meterSqlDb) : S.sql;
+  setSquelchDb(from + dir);
+}
+meterBar.addEventListener('click', (e) => {
+  const r = meterBar.getBoundingClientRect();
+  setSquelchDb(S_ZERO + clamp((e.clientX - r.left) / r.width, 0, 1) * (S_TOP - S_ZERO));
+});
+$('#smeter').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  poke();
+  if (e.ctrlKey || e.metaKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;    // a pinch or a sideways swipe
+  // A notch moves it 1 dB, as does each SQL_WHEEL_PX of a touchpad's smaller steps.
+  const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+  if (Math.abs(px) >= SQL_WHEEL_PX) { sqlWheelAcc = 0; stepSquelch(px < 0 ? 1 : -1); return; }
+  sqlWheelAcc += px;
+  if (Math.abs(sqlWheelAcc) >= SQL_WHEEL_PX) { stepSquelch(sqlWheelAcc < 0 ? 1 : -1); sqlWheelAcc = 0; }
+}, { passive: false });
 bindRange('dm-vol', 'volume', (v) => `${v}%`, () => {
   audio.setVolume(S.volume / 100);
   syncAudio();
@@ -1946,8 +2019,7 @@ const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` 
 function drawPalettePreview() { $('#wf-pal-preview').style.background = `linear-gradient(90deg, ${PALETTES[S.palette].join(', ')})`; }
 function syncDisplay() {
   for (const s of syncers) s();
-  $('#ds-fft').value = String(S.nb);
-  $('#ds-fft-note').textContent = `Resolution: ${Math.round(binHz())} Hz per bin. Size, window and rate are set by the engine for now.`;
+  $('#ds-resolution').textContent = `Resolution: ${Math.round(binHz())} Hz per bin.`;
   $('#wf-pal').value = S.palette;
   drawPalettePreview();
   syncAutoDisplay();
@@ -1985,7 +2057,7 @@ bindCheck('ov-plan', 'showPlan', drawBandStrip);
 bindCheck('ov-marks', 'showMarks', renderMarks);
 bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
 
-// Bands and bookmarks
+// Bookmarks and the band plan
 // The band plan list shows the ranges the engine captures, segments under their band.
 function renderPlanList() {
   const list = $('#plan-list'), note = $('#plan-note');
@@ -2021,39 +2093,47 @@ function loadPlan() {
     renderPlanList();
     lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
     updateOverlays();
-    if (openName === 'scanners' && scanTab === 'peaks') renderPeaks();     // signals show on their channels now
+    if (signalsShown()) renderPeaks();     // signals show on their channels now
   });
 }
 // Bookmarks belong to the engine: changes go to it, and every interface
-// shows them once the engine sends them back. Edit turns a bookmark's row
-// into a field for its name and a Remove link; leaving the row saves the name.
+// shows them once the engine sends them back. A click on a bookmark tunes
+// there with its mode, its box ticks it for the memory scan, and Edit turns
+// its row into a field for its name and a Remove link; leaving the row saves
+// the name. A bookmark that Add makes opens so, its name selected.
 const BOOKMARK_NAME_MAX = 60;       // as the engine's bookmarks.py
 let editing = null;                 // { id, text } while a bookmark is edited
 let editRow = null;                 // its row: one that a new list replaced changes nothing
 function renderBookmarks() {
   if (editing && !bookmarks.some((b) => b.id === editing.id)) editing = null;     // removed meanwhile
   const list = $('#bm-list'), refocus = focusedIn(list);
-  const oldField = editRow && editRow.querySelector('input');
+  const oldField = editRow && editRow.querySelector('input[type="text"]');
   editRow = null;
   const q = $('#bm-filter').value.trim().toLowerCase();
   const edited = (b) => editing !== null && b.id === editing.id;
   const items = bookmarks.filter((b) => edited(b) || !q || b.name.toLowerCase().includes(q) || fmtMHz(b.f).includes(q));
+  // The ticked bookmarks that the memory scan leaves out say why.
+  const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
+  const left = memoryVisits() ? 'out of reach · ' : 'outside the span · ';
+  scanMarksShown = scanMarksKey();
   list.innerHTML = items.length
     ? items.map((b) => (edited(b)
       ? `<li class="bm" data-editing><input type="text" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${fmtMHz(b.f)} MHz">`
         + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`
-      : `<li class="bm"><button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${fmtMHz(b.f)} MHz · ${b.mode}`)}">`
-        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${fmtMHz(b.f)}</span><span class="tag">${escapeHtml(b.mode)}</span></button>`
-        + `<button type="button" class="link" data-edit="${b.id}" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
+      : `<li class="bm"><input type="checkbox" data-scan="${b.id}"${b.scan ? ' checked' : ''} title="Scan this bookmark" aria-label="Scan ${escapeHtml(b.name)}">`
+        + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${fmtMHz(b.f)} MHz · ${b.mode}`)}">`
+        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}${fmtMHz(b.f)}</span>`
+        + `<span class="tag">${escapeHtml(b.mode)}</span></button>`
+        + `<button type="button" class="link" data-edit="${b.id}" title="Rename or remove" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
     : '<li class="empty">No bookmarks</li>';
   const row = list.querySelector('li[data-editing]');
-  const field = row && row.querySelector('input');
+  const field = row && row.querySelector('input[type="text"]');
   if (row) {
     editRow = row;
     field.value = editing.text;
     field.addEventListener('input', () => { if (row === editRow) editing.text = field.value; });
     field.addEventListener('keydown', (e) => {
-      e.stopPropagation();      // Escape cancels the new name, not the panel
+      e.stopPropagation();      // Escape cancels the new name, and leaves the menu open
       if (e.key === 'Enter') { e.preventDefault(); finishEdit(true, true); }
       else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false, true); }
     });
@@ -2083,7 +2163,7 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'edit', 'del', 'get', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
+  const name = ['id', 'scan', 'edit', 'del', 'get', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -2102,7 +2182,7 @@ function syncBookmarkNote() {
   el.textContent = bookmarkNote;
   el.hidden = !bookmarkNote;
 }
-function bookmarksChanged() { renderBookmarks(); renderMarks(); renderMemList(); syncMem(); }
+function bookmarksChanged() { renderBookmarks(); renderMarks(); syncMem(); }
 // A new bookmark is named "Bookmark" and the first number no other one
 // uses: the name, once sent, or null.
 function addBookmark(f, mode) {
@@ -2112,13 +2192,38 @@ function addBookmark(f, mode) {
   const name = `Bookmark ${n}`;
   return sendBookmark(() => stream.addBookmark({ frequencyHz: Math.round(f), name, mode })) ? name : null;
 }
+// The bookmark that Add made, once the engine's list brings it, opens with
+// its name selected, ready to type, while the Bookmarks menu shows and no
+// other name is being edited. The engine sorts the list by frequency, then
+// by name: the new bookmark is the one that was not there, with its name
+// and frequency.
+function nameNewBookmark() {
+  const n = namingBookmark;
+  const b = n && bookmarks.find((x) => !n.before.has(x.id) && x.name === n.name && x.f === n.f);
+  if (!b) return;     // not yet: this list came for another change
+  namingBookmark = null;
+  if (openName === 'bookmarks' && !editing) editing = { id: b.id, text: b.name };
+}
 $('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
 $('#bm-filter').addEventListener('input', renderBookmarks);
-$('#bm-add').addEventListener('click', () => addBookmark(S.vfo, S.mode));
-// While a bookmark is edited, pressing a button of the list leaves the focus
-// where it is: leaving the row would save the name and rebuild the list
-// under the pointer, and the click would be lost.
-$('#bm-list').addEventListener('mousedown', (e) => { if (editing && e.target.closest('button')) e.preventDefault(); });
+$('#bm-add').addEventListener('click', () => {
+  if (editing) finishEdit(true, false);
+  const f = Math.round(S.vfo), before = new Set(bookmarks.map((b) => b.id));
+  const name = addBookmark(f, S.mode);
+  namingBookmark = name ? { name, f, before } : null;
+});
+// While a bookmark is edited, pressing a button or a box of the list leaves
+// the focus where it is: leaving the row would save the name and rebuild the
+// list under the pointer, and the click would be lost.
+$('#bm-list').addEventListener('mousedown', (e) => {
+  if (editing && e.target.closest('button, input[type="checkbox"]')) e.preventDefault();
+});
+$('#bm-list').addEventListener('change', (e) => {
+  const box = e.target.closest('input[data-scan]');
+  const b = box && bookmarks.find((x) => String(x.id) === box.dataset.scan);
+  // Not sent: the box shows the bookmark's setting again.
+  if (b && !sendBookmark(() => stream.changeBookmark(b.id, { scan: box.checked }))) renderBookmarks();
+});
 $('#bm-list').addEventListener('click', (e) => {
   const button = e.target.closest('button');
   const id = button && (button.dataset.id || button.dataset.edit || button.dataset.del);
@@ -2128,7 +2233,7 @@ $('#bm-list').addEventListener('click', (e) => {
     editing = null;             // the new name goes with the bookmark
     renderBookmarks();
     sendBookmark(() => stream.removeBookmark(b.id));
-    if (e.detail === 0) $('#bm-add').focus();     // pressed from the keyboard: the focus stays in the panel
+    if (e.detail === 0) $('#bm-add').focus();     // pressed from the keyboard: the focus stays in the menu
     return;
   }
   if (editing) finishEdit(true, false);
@@ -2140,7 +2245,7 @@ $('#bm-list').addEventListener('click', (e) => {
 function syncScanTabs() {
   for (const b of $$('#scan-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.tab === scanTab));
   for (const p of $$('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== scanTab;
-  if (scanTab === 'peaks') renderPeaks();
+  if (scanTab === 'signals') renderPeaks();
   if (scanTab === 'history') { renderHistory(); askHistory(); }
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
@@ -2170,11 +2275,6 @@ $('#hist-body').addEventListener('click', (e) => {
 });
 $('#hist-clear-all').addEventListener('click', () => { if (historyArmed === 'all') clearHistory('all'); else armHistory('all'); });
 setInterval(() => { if (historyShown() && streamState === 'open' && !document.hidden) askHistory(); }, HISTORY_REFRESH_MS);
-$('#mem-list').addEventListener('change', (e) => {
-  const b = bookmarks.find((x) => String(x.id) === e.target.dataset.id);
-  // Not sent: the box shows the bookmark's setting again.
-  if (b && !sendBookmark(() => stream.changeBookmark(b.id, { scan: e.target.checked }))) renderMemList();
-});
 memStart.addEventListener('click', () => sendScanner(() => stream.setScan(memoryRuns() ? null : 'memory')));
 memResume.addEventListener('input', () => { memResumeOut.textContent = `${memResume.value} s`; });
 memResume.addEventListener('change', () => sendScanner(() => stream.setScanner({ resumeS: Number(memResume.value) })));
@@ -2191,12 +2291,12 @@ swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRu
 // I/Q, when an interface asks, the same for every interface, into WAV and
 // SigMF files in its recordings folder, and goes on without any interface.
 // It lists the folder's recordings to the interface that asks: this one asks
-// when its Record panel opens, when a recording's file comes or goes, when
-// the folder changes, and every RECORDINGS_REFRESH_MS while the panel shows.
+// when its Record menu shows, when a recording's file comes or goes, when
+// the folder changes, and every RECORDINGS_REFRESH_MS while the menu shows.
 // Download fetches a file from the engine's computer, as do Data and
 // Metadata for an I/Q recording's two files; Delete waits for a second press
 // of the same button, within RECORDINGS_CONFIRM_MS. Only this computer's
-// interfaces see the folder, and change it in Settings.
+// interfaces see the folder, and change it in the Record menu.
 const RECORDINGS_REFRESH_MS = 30000;
 const RECORDINGS_CONFIRM_MS = 5000;
 // Why a recording stopped by itself, as the engine's output says it.
@@ -2209,7 +2309,7 @@ const REC_STOPPED = {
   full: 'its file reached the WAV limit of 4 GiB',
   disk: 'a disk error',
 };
-const recAudio = $('#rec-audio'), recIq = $('#rec-iq'), recFolderEl = $('#st-rec-folder');
+const recAudio = $('#rec-audio'), recIq = $('#rec-iq'), recFolderEl = $('#rec-folder');
 let recordingList = null;   // the folder's recordings (stream.js RecordingList), once received
 let recordingsStale = false; // the latest request for them did not reach the engine
 let recordNote = '';        // what this interface's last recording request or download did, or why not
@@ -2288,8 +2388,7 @@ function syncRecording() {
   }
   const iqEl = $('#rec-iq-state');
   if (iqEl.textContent !== iqText) iqEl.textContent = iqText;
-  const button = $('#toolbar button[data-panel="record"]'), any = runs || iqGoes;
-  if (button.classList.contains('recording') !== any) button.classList.toggle('recording', any);
+  syncMenuBadge();
   syncRecordingLive();
   syncRecordingFolder();
 }
@@ -2458,6 +2557,10 @@ function syncUpdate() {
   const key = noticeKey();
   if (key) $('#notice-text').textContent = text;
   noticeEl.hidden = !key || key === noticeClosed;
+  // The version that runs closes Settings, on this computer's interfaces, which receive it.
+  const version = $('#st-version');
+  version.textContent = update ? `Radiolack ${update.version}` : '';
+  version.hidden = !update;
 }
 
 // Remote access: devices on the local network reach the engine over HTTPS
@@ -2541,16 +2644,16 @@ function syncRemote() {
 // them receives it, or this one learns why not.
 function syncRecordingFolder() {
   const r = recording, local = r !== null && r.defaultFolder !== null;
-  const section = $('#st-rec-section');
+  const section = $('#rec-folder-section');
   if (section.hidden === local) section.hidden = !local;
   if (!local) return;
   const runs = r.audio !== null || r.iq !== null, value = r.folder ?? '';
   if (!typingIn.has(recFolderEl) && recFolderEl.value !== value) recFolderEl.value = value;
   if (recFolderEl.disabled !== runs) recFolderEl.disabled = runs;
-  const fixed = runs || r.folder === r.defaultFolder, use = $('#st-rec-default');
+  const fixed = runs || r.folder === r.defaultFolder, use = $('#rec-default');
   if (use.disabled !== fixed) use.disabled = fixed;
   const text = folderNote || (runs ? 'A recording runs: stop it to change the folder.' : '');
-  const el = $('#st-rec-msg');
+  const el = $('#rec-folder-msg');
   if (el.textContent !== text) el.textContent = text;
 }
 function sendFolder(folder) {
@@ -2565,7 +2668,7 @@ recFolderEl.addEventListener('change', () => {
   const folder = recFolderEl.value.trim();
   sendFolder(folder || null);       // an empty field: the default folder
 });
-$('#st-rec-default').addEventListener('click', () => sendFolder(null));
+$('#rec-default').addEventListener('click', () => sendFolder(null));
 
 // Where the engine saves the settings, bookmarks and history, and what went wrong with its files.
 function syncStorage() {
@@ -2583,8 +2686,8 @@ function syncStorage() {
 // the port: one set for this computer's interfaces, and one for each device
 // that remote access serves, which starts from this computer's until it
 // gives its own. They leave out the engine's settings (VFO, mode, filter,
-// squelch, receiver, remote access) and the settings that have no effect
-// yet (CTCSS, AGC, noise reduction, notch, blanker, keeping the screen on).
+// squelch, receiver, remote access), the setting that has no effect yet
+// (keeping the screen on), and which menu shows.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
   'peakMarks', 'autoHide'];
@@ -2637,12 +2740,29 @@ function savePreferences() {
   if (json !== savedPreferences && stream.savePreferences(values)) savedPreferences = json;
 }
 
-for (const b of $$('#toolbar button')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
-$('#panel .close').addEventListener('click', closePanel);
+// A press from the keyboard (detail 0) moves the focus along when what it
+// pressed goes: in one column, between the list of menus and the menu.
+menuButton.addEventListener('click', (e) => { if (menuEl.hidden) openMenu(); else closeMenu(e.detail === 0); });
+$('#menu nav').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-menu]');
+  if (!b) return;
+  showMenu(b.dataset.menu);
+  if (e.detail === 0 && oneColumnQuery.matches) $('#menu .back').focus();
+});
+$('#menu .back').addEventListener('click', (e) => {
+  showMenuList();
+  if (e.detail === 0) $(`#menu nav button[data-menu="${lastMenu}"]`).focus();
+});
+$('#menu [data-close]').addEventListener('click', (e) => closeMenu(e.detail === 0));
+// A press outside the menu closes it, and does nothing else.
+menuScrim.addEventListener('click', () => closeMenu());
+menuScrim.addEventListener('contextmenu', (e) => { e.preventDefault(); closeMenu(); });
+// Widened to two columns while it shows the list of menus: the last menu shows beside it.
+onMediaChange(oneColumnQuery, () => { if (!menuEl.hidden && !oneColumnQuery.matches && openName === null) showMenu(lastMenu); });
 
 function liveUi() {
-  if (openName === 'scanners' && scanTab === 'peaks') updatePeakAges();
-  if (openName === 'demod') syncSql();
+  if (signalsShown()) updatePeakAges();
+  if (openName === 'radio') syncSql();
   if (openName === 'display') syncAutoDisplay();
 }
 
@@ -2949,7 +3069,7 @@ window.addEventListener('keydown', (e) => {
   if (antennaDialog.open) return;     // the dialog keeps its keys: Escape closes it alone, and nothing tunes behind it
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
-    else if (openName) { closePanel(); e.preventDefault(); }
+    else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }
     return;
   }
   const tag = e.target && e.target.tagName;
@@ -2969,7 +3089,7 @@ window.addEventListener('keydown', (e) => {
     case '0': setView(fStart(), fEnd()); break;
     case 'm': case 'M': setMode(MODE_ORDER[(MODE_ORDER.indexOf(S.mode) + 1) % MODE_ORDER.length]); break;
     default:
-      if (e.key >= '1' && e.key <= '7') togglePanel(PANEL_ORDER[Number(e.key) - 1]);
+      if (/^[1-9]$/.test(e.key) && Number(e.key) <= MENUS.length) toggleMenu(MENUS[Number(e.key) - 1]);
       else return;
   }
   e.preventDefault();
@@ -2979,20 +3099,18 @@ let idleTimer = 0;
 function poke() {
   document.body.classList.remove('idle');
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { if (S.autoHide && !openName) document.body.classList.add('idle'); }, 3000);
+  idleTimer = setTimeout(() => { if (S.autoHide && menuEl.hidden) document.body.classList.add('idle'); }, 3000);
 }
 window.addEventListener('pointermove', poke, { passive: true });
 window.addEventListener('pointerdown', poke, { passive: true });   // a tap wakes the interface too
 window.addEventListener('resize', () => { layoutPending = true; });
 
 const HINTS = {
-  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 7: panels',
+  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 7: menus',
   touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
 };
 function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }
-const onPointerModeChange = () => { syncPointerMode(); layoutPending = true; };
-if (coarseQuery.addEventListener) coarseQuery.addEventListener('change', onPointerModeChange);
-else coarseQuery.addListener(onPointerModeChange);   // Safari before 14
+onMediaChange(coarseQuery, () => { syncPointerMode(); layoutPending = true; });
 
 // ------------------------------------------------------------------ GPU views
 // Without WebGL2 the rest of the interface still works; the status line says why the views stay empty.
@@ -3040,7 +3158,6 @@ syncSource();
 syncDisplay();
 loadPlan();
 renderBookmarks();
-renderMemList();
 syncScanTabs();
 syncScanner();
 syncUpdate();

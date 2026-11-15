@@ -1,4 +1,4 @@
-"""The sources Radiolack opens by kind: those the Source panel switches
+"""The sources Radiolack opens by kind: those the Receiver menu switches
 between, and the one used last, which Radiolack opens again at start.
 
 Each source tells how to open its receiver again (``Source.reopen``): its

@@ -1,6 +1,7 @@
 """Tests for Radiolack's logo and icons, which packaging/identity.py draws:
-the copies in the interface's pages, the package and README.md agree with
-one another and with the script, and none needs a font or another file.
+the copies in the pairing page, the package and README.md agree with one
+another and with the script, and none needs a font or another file. The
+interface itself names Radiolack in its title only.
 Drawing them again needs the font, which stays out of the repository: these
 tests read the files the script wrote."""
 
@@ -36,7 +37,7 @@ def local_name(name: str) -> str:
 
 
 def inline_logo(page: str) -> str:
-    """The logo that the interface's page ``page`` inlines."""
+    """The logo that the web page ``page`` inlines."""
     found = INLINE_LOGO.findall((WEB / page).read_text(encoding="utf-8"))
     if len(found) != 1:
         raise AssertionError(f"{page} inlines {len(found)} logos")
@@ -81,22 +82,23 @@ class IconTest(unittest.TestCase):
 class LogoTest(unittest.TestCase):
     def logos(self) -> dict[str, ElementTree.Element]:
         """Every copy of the mark and the name together, by where it is."""
-        copies = {page: ElementTree.fromstring(inline_logo(page)) for page in ("index.html", "pair.html")}
+        copies = {"pair.html": ElementTree.fromstring(inline_logo("pair.html"))}
         for theme in ("light", "dark"):
             copies[f"radiolack-{theme}.svg"] = ElementTree.parse(DOCS / f"radiolack-{theme}.svg").getroot()
         return copies
 
-    def test_the_pages_inline_the_same_logo_for_assistive_technologies(self):
+    def test_the_pairing_page_inlines_the_logo_for_assistive_technologies(self):
+        # The interface leaves it out, so that nothing pushes the frequency aside.
         index = (WEB / "index.html").read_text(encoding="utf-8")
-        self.assertIn('<h1 id="brand"><svg ', index)
-        self.assertEqual(inline_logo("index.html"), inline_logo("pair.html"))
-        logo = ElementTree.fromstring(inline_logo("index.html"))
+        self.assertEqual(INLINE_LOGO.findall(index), [])
+        self.assertIn("<title>Radiolack</title>", index)
+        logo = ElementTree.fromstring(inline_logo("pair.html"))
         self.assertEqual((logo.get("role"), logo.get("aria-label")), ("img", "Radiolack"))
         # The style sheets size it: neither a width nor a height.
         self.assertEqual({"width", "height"} & set(logo.attrib), set())
 
     def test_every_copy_is_the_same_drawing_in_its_own_colour(self):
-        colours = {"index.html": "currentColor", "pair.html": "currentColor",
+        colours = {"pair.html": "currentColor",
                    "radiolack-light.svg": identity.LIGHT_THEME_TEXT, "radiolack-dark.svg": identity.DARK_THEME_TEXT}
         drawings = {}
         for where, logo in self.logos().items():
@@ -111,10 +113,10 @@ class LogoTest(unittest.TestCase):
                         attributes[paint] = "text"
                 paths.append(attributes)
             drawings[where] = (logo.get("viewBox"), paths)
-        self.assertEqual(len(drawings["index.html"][1]), 2)    # the mark, then the name
+        self.assertEqual(len(drawings["pair.html"][1]), 2)     # the mark, then the name
         for where, drawing in drawings.items():
             with self.subTest(copy=where):
-                self.assertEqual(drawing, drawings["index.html"])
+                self.assertEqual(drawing, drawings["pair.html"])
 
     def test_the_readme_files_name_radiolack(self):
         for theme in ("light", "dark"):
