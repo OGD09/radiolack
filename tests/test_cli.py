@@ -161,6 +161,14 @@ class ParserTest(unittest.TestCase):
         self.assertIn(radiolack.__version__, out.getvalue())
 
 
+class ProblemReportTest(unittest.TestCase):
+    def test_keeps_the_warnings_and_errors_from_the_start(self):
+        with own_settings(), mock.patch.object(cli, "private_addresses", list), \
+                mock.patch.object(cli.report, "keep_recent_messages") as keep:
+            self.assertEqual(run_main("--ui", "none", "--remote", str(ephemeral_port()))[0], 1)
+        keep.assert_called_once_with()
+
+
 class RemoteOptionTest(unittest.TestCase):
     """--remote, with 127.0.0.1 in place of this computer's local network
     addresses: no test listens on the owner's network."""

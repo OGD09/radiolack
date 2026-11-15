@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from radiolack import window
+from radiolack import report, window
 
 ORIGIN = window._origin("http://127.0.0.1:8000/")
 
@@ -63,6 +63,23 @@ class StayOnOriginTest(unittest.TestCase):
     def test_refuses_new_windows(self):
         self.assertTrue(self.decide("http://127.0.0.1:8000/", DECISION.NEW_WINDOW_ACTION))
 
+    def test_opens_the_new_issue_page_in_the_web_browser(self):
+        uri = f"{report.ISSUES_URL}?body=%2A%2AWhat+happened%2A%2A"
+        for decision_type in (DECISION.NEW_WINDOW_ACTION, DECISION.NAVIGATION_ACTION):
+            with self.subTest(decision_type=decision_type), mock.patch.object(window, "_open_outside") as open_outside:
+                self.assertTrue(self.decide(uri, decision_type))
+                open_outside.assert_called_once_with(uri)
+
+    def test_opens_no_other_page_in_the_web_browser(self):
+        for uri in ("https://github.com/OGD09/radiolack/issues", "https://github.com/OGD09/radiolack/issues/new/choose",
+                    "http://github.com/OGD09/radiolack/issues/new", "https://example.com/OGD09/radiolack/issues/new",
+                    "https://someone@github.com/OGD09/radiolack/issues/new",
+                    "https://github.com:444/OGD09/radiolack/issues/new",
+                    "https://github.com/OGD09/radiolack/issues/new#body", "https://github.com/OGD09/other/issues/new"):
+            with self.subTest(uri=uri), mock.patch.object(window, "_open_outside") as open_outside:
+                self.assertTrue(self.decide(uri, DECISION.NEW_WINDOW_ACTION))
+                open_outside.assert_not_called()
+
     def test_leaves_responses_alone(self):
         decision = SimpleNamespace(ignore=mock.Mock())
         self.assertFalse(window._stay_on_origin(None, decision, DECISION.RESPONSE, ORIGIN, FAKE_WEBKIT))
@@ -70,6 +87,9 @@ class StayOnOriginTest(unittest.TestCase):
 
 
 class ShowTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(report, "_window", None))     # show() names its toolkit there
+
     def test_keeps_no_browser_data_on_disk(self):
         # A persistent context would fill ~/.local/share/radiolack and ~/.cache/radiolack at each start.
         Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
@@ -79,12 +99,40 @@ class ShowTest(unittest.TestCase):
         self.assertIs(WebKit2.WebView.call_args.kwargs["web_context"], WebKit2.WebContext.new_ephemeral.return_value)
         WebKit2.WebView.return_value.load_uri.assert_called_once_with("http://127.0.0.1:8000/")
 
+    def test_names_its_toolkit_for_the_reports(self):
+        Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+        for module, version in ((Gtk, (3, 24, 38)), (WebKit2, (2, 50, 6))):
+            module.get_major_version.return_value, module.get_minor_version.return_value, \
+                module.get_micro_version.return_value = version
+        with mock.patch.object(window, "_load_toolkit", return_value=(Gdk, GLib, Gtk, WebKit2)), \
+                mock.patch.object(report, "set_window") as set_window:
+            window.show("http://127.0.0.1:8000/")
+        set_window.assert_called_once_with("GTK 3.24.38, WebKitGTK 2.50.6")
+
     def test_saves_the_downloads(self):
         Gdk, GLib, Gtk, WebKit2 = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
         with mock.patch.object(window, "_load_toolkit", return_value=(Gdk, GLib, Gtk, WebKit2)):
             window.show("http://127.0.0.1:8000/")
         WebKit2.WebContext.new_ephemeral.return_value.connect.assert_called_once_with(
             "download-started", window._save_download, WebKit2.WebView.return_value, GLib)
+
+
+class OpenOutsideTest(unittest.TestCase):
+    def test_says_why_no_web_browser_opened_the_page(self):
+        class Error(Exception):
+            message = "No application is registered as handling this file"
+
+        launch = mock.Mock(side_effect=Error())
+        repository = SimpleNamespace(Gio=SimpleNamespace(AppInfo=SimpleNamespace(launch_default_for_uri=launch)),
+                                     GLib=SimpleNamespace(Error=Error))
+        uri = f"{report.ISSUES_URL}?body=report"
+        with mock.patch.dict(sys.modules, {"gi": SimpleNamespace(repository=repository), "gi.repository": repository}), \
+                self.assertLogs("radiolack.window", "WARNING") as logs:
+            window._open_outside(uri)
+        launch.assert_called_once_with(uri, None)
+        # Without the report, which the page gave in full.
+        self.assertEqual(logs.output, [f"WARNING:radiolack.window:no web browser opened {report.ISSUES_URL}: "
+                                       "No application is registered as handling this file"])
 
 
 class UnavailableReasonTest(unittest.TestCase):

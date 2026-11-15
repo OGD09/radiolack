@@ -11,7 +11,7 @@ import threading
 import webbrowser
 from collections.abc import Iterator
 
-from . import __version__, window
+from . import __version__, report, window
 from .recordings import default_folder
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
@@ -106,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    report.keep_recent_messages()   # for the reports that the interface offers to share
     source: RtlTcpSource | None = None
     if args.rtl_sdr is not None:
         if shutil.which(RTL_TCP_PROGRAM) is None:

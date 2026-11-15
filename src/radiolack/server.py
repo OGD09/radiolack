@@ -66,8 +66,8 @@ _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stre
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "recording",
-             "recordings", "update", "remote")
-_LOCAL_COMMANDS = ("update", "remote")     # refused to remote devices
+             "recordings", "update", "remote", "report")
+_LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
@@ -322,6 +322,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.configure_updates(changes)
         elif kind == "remote":
             remote.command(changes)
+        elif kind == "report":
+            engine.report(changes, subscription)
         else:
             on = changes.pop("on", None)
             if changes:
