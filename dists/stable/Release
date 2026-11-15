@@ -2,11 +2,11 @@ Origin: Radiolack
 Label: Radiolack
 Suite: stable
 Codename: stable
-Date: Sat, 14 Nov 2026 16:34:11 +0000
+Date: Sun, 15 Nov 2026 10:27:24 +0000
 Architectures: all
 Components: main
 Description: Radiolack, a receive-only SDR receiver
 Acquire-By-Hash: yes
 SHA256:
- bad393fa67092f9a642e9df214be8da9fd6f8ac7942b34c9b75f279ff23dd143 8489 main/binary-all/Packages
- 2c5911376384ab170f72b51004e9f7d1f7ccc7db559278c1e792fcba90fe9855 1272 main/binary-all/Packages.gz
+ b95dede6a55b286f08d970aa0b08e27079a5323980352597d84023373798860a 9641 main/binary-all/Packages
+ 0d9ced5c7fcc32e06bb814e6ca7b297dec2d66684f03e1408c54b49bbc8c48fc 1350 main/binary-all/Packages.gz
