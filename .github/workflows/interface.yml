@@ -131,9 +131,10 @@ jobs:
           pulseaudio --start --exit-idle-time=-1 -n --load=module-native-protocol-unix --load=module-null-sink
           pactl info
 
-      # Only the browser tests: the Tests workflow runs the others.
+      # Only the browser tests: the Tests workflow runs the others. They take
+      # from 3.5 to over 5 minutes, as the runners' speed varies.
       - name: Run the browser tests
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           RADIOLACK_BROWSER_TESTS: "1"
         run: xvfb-run -a python -m unittest tests.test_browser -v
