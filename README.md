@@ -165,7 +165,17 @@ Radiolack listens on 127.0.0.1 only, unless Settings or `--remote` turns
 remote access on ([Remote access](#remote-access)). It answers only requests addressed to
 127.0.0.1 or localhost, which keeps web pages from reaching it through DNS
 rebinding. The desktop window stays on the interface: it opens no other page
-and no new window.
+and no new window. When WebKit's process that draws the page ends, after a
+crash in WebKitGTK for instance, the window loads the page again, which
+comes back as it was since the engine carried on, and Radiolack says so on
+its error output (when the menu entry started it, the system journal with
+GNOME, for instance). If it ends again within a minute, the window says
+that the interface stopped, with a button that reloads it. WebKit paints
+the page on the processor rather than the graphics card: its GPU painting
+crashed WebKitGTK 2.50 (Debian 12), and on the processor it costs no more,
+as the spectrum and the waterfall still draw on the graphics card (WebGL2).
+To have WebKit paint on the graphics card, start Radiolack with
+`WEBKIT_SKIA_ENABLE_CPU_RENDERING=0`.
 
 The interface receives the spectrum, the audio, the receiver state, the
 demodulation settings, the bookmarks and the signals found from the engine,
