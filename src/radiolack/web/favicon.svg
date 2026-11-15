@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Radiolack's favicon: the Peak on its tile. Built by packaging/identity.py. -->
+  <clipPath id="tile"><rect width="100" height="100" rx="20"/></clipPath><g clip-path="url(#tile)"><rect width="100" height="100" fill="#0a0c0f"/><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset=".2" stop-color="#59a7ff" stop-opacity="0.5"/><stop offset="1" stop-color="#59a7ff" stop-opacity="0"/></linearGradient></defs><path d="M9 65 H31 C38.5 65 43.2 61 45.2 52.5 L50 18 L54.8 52.5 C56.8 61 61.5 65 69 65 H91 V100 H9 Z" fill="url(#fill)"/><path d="M9 65 H31 C38.5 65 43.2 61 45.2 52.5 L50 18 L54.8 52.5 C56.8 61 61.5 65 69 65 H91" fill="none" stroke="#59a7ff" stroke-width="9.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>

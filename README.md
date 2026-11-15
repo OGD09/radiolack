@@ -1,4 +1,9 @@
-# Radiolack
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/identity/radiolack-dark.svg">
+    <img src="docs/identity/radiolack-light.svg" alt="Radiolack">
+  </picture>
+</h1>
 
 Receive-only SDR receiver. Radiolack reads I/Q samples from an SDR receiver,
 shows a full-screen spectrum and waterfall, demodulates the signal and scans
@@ -684,6 +689,9 @@ joining a network you do not trust. On each device, once:
 3. Enter the access code that Settings shows. The device stays paired: it
    then opens the interface at that address directly.
 
+On an iPhone or iPad, Safari's Share > Add to Home Screen then puts
+Radiolack's icon on the Home Screen.
+
 The local authority vouches only for private addresses and for names ending
 in `.local`, `.home.arpa` or `.internal`: name constraints, in the
 certificate that signs Radiolack's, keep it from vouching for any other
@@ -1138,6 +1146,26 @@ the command signs the repository again, as it must with a new signing
 subkey before the old one expires. It needs Python, dpkg-deb and GnuPG (gpg
 and gpgv).
 
+## Logo
+
+Radiolack's logo is the Peak, a signal's trace that rises from a flat floor
+to a sharp peak, and the name in Saira Italic (Copyright 2020 The Saira
+Project Authors, SIL Open Font License 1.1), drawn as outlines: no font
+ships with Radiolack or loads in its interface. The icons show the Peak in
+the interface's blue on a dark tile: the favicon, the Home Screen icon of
+an iPhone or iPad, the menu entry's and the window's icon, and the social
+preview. Beside the name, the logo takes the text's colour: in the
+interface's top-left corner, on the pairing page and at the top of this
+README, in GitHub's light or dark theme.
+
+`packaging/identity.py` draws them all from the font, which stays out of
+the repository: its docstring names the file to download and the
+programs it needs (fontTools, Inkscape and ImageMagick).
+`tests/test_identity.py` checks that the copies agree. GitHub shows
+`docs/identity/social-preview.png` where the repository's link is shared,
+once the repository's owner uploads it in Settings > General > Social
+preview.
+
 ## Documentation
 
 - [docs/design/scoping.md](docs/design/scoping.md): purpose, decisions,
@@ -1199,10 +1227,11 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents
+docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,
                 icon, systemd service, licence notice, APT source and
-                key), its smoke test, the release script and the APT
-                repository's tools
+                key), its smoke test, the release script, the APT
+                repository's tools and the logo's generator
 .github/        GitHub Actions workflows, their settings and Dependabot's
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
