@@ -310,3 +310,10 @@ the history under the tag `v0.1.0`.
   release is an annotated tag `vX.Y.Z` on `main` that matches `__version__`;
   between releases `main` holds the next `.dev0`. A published tag never
   moves.
+- Check for yourself, every time, whatever a command can tell you: CI
+  results, a release's run, a publication, a merge state, an installed
+  package. Never ask the owner whether checks have passed: wait for running
+  ones with one bounded watch (`gh pr checks N --watch`, `gh run watch ID
+  --exit-status`), then read their outcome. Ask the owner only for what needs
+  them: a decision, their approval of the `release` environment, sudo, their
+  key (decided 2026-11-15).
