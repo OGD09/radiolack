@@ -24,6 +24,8 @@ from pathlib import Path
 from unittest import mock
 
 from radiolack import __version__
+from radiolack.recordings import recording_name, wav_header
+from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
@@ -51,6 +53,7 @@ SQUELCH_RANGE = (-130, -20)  # the squelch threshold's range, in dB (#dm-sql)
 MID_SCALE = re.compile(r"^-5[6-8]$")    # the threshold that a press halfway along the S-meter sets: -57 dB, to a pixel
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
 HISTORY_CONFIRM_MS = 5000   # how long a first press of a Clear in the History waits for the second (main.js)
+RECORDINGS_CONFIRM_MS = 5000  # how long a first press of a recording's Delete waits for the second (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
@@ -1163,6 +1166,31 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#rec-iq-state")).to_be_empty()
                 expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
 
+    def test_a_recording_button_pressed_while_the_list_changes_takes_the_click(self):
+        # A first press of Delete that no second one follows turns back into
+        # Delete, which rebuilds the list: a button pressed meanwhile stays
+        # until the click, which reaches it.
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+        folder.mkdir()
+        started = time.time()
+        older = recording_name(started - 7200, 433_500_000.0, "AM")
+        newer = recording_name(started - 600, 145_500_000.0, "NFM")
+        for name in (older, newer):     # recorded before, without audio: the list needs no receiver
+            (folder / name).write_bytes(wav_header(12_000, 0))
+        url = self.serve(recordings=folder)
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "record")
+                armed = page.locator(f'#rec-list button[data-del="{older}"]')
+                pressed = page.locator(f'#rec-list button[data-del="{newer}"]')
+                armed.click()
+                expect(armed).to_have_text("Confirm")
+                self.press(page, pressed)
+                page.wait_for_timeout(RECORDINGS_CONFIRM_MS + 500)  # the Delete turns back meanwhile
+                page.mouse.up()
+                expect(pressed).to_have_text("Confirm")
+                expect(armed).to_have_text("Delete")
+
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network
         for browser in BROWSERS:
@@ -1254,6 +1282,28 @@ class BrowserTest(unittest.TestCase):
                 computer.reload()       # this computer's interfaces keep their own settings
                 expect(computer.locator("#status")).to_contain_text("fps")     # frames, which follow the preferences
                 expect(computer.locator("#wf-pal")).to_have_value("classic")
+
+    def test_a_device_button_pressed_while_remote_access_changes_takes_the_click(self):
+        # Every state of remote access rebuilds the list of paired devices:
+        # one that comes between the press and the release of Forget, such
+        # as another interface's new port, waits until the click, which
+        # forgets the device pressed.
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            access = RemoteAccess()
+            access.pair("Phone")    # before this start: remote access stays off, listening nowhere
+            Store(directory).save(REMOTE_FILE, access.stored())
+            url = self.serve(store=Store(directory))
+            port = free_port()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "settings")
+                self.press(first, first.get_by_role("button", name="Forget Phone", exact=True))
+                second.locator("#st-remote-port").fill(str(port))
+                second.locator("#st-remote-port").blur()
+                expect(first.locator("#st-remote-port")).to_have_value(str(port))  # the state came during the press
+                first.mouse.up()
+                expect(first.locator("#st-remote-devices")).to_have_text("No paired device")
 
     def test_a_stream_refused_before_it_opened_asks_for_a_reload_instead_of_reloading(self):
         # As if the browser sent the session cookie with the page but not with
