@@ -1354,6 +1354,7 @@ function peakShownHz(p) {
 const peakSeen = (p, now) => (p.active ? 'active' : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
 let shownPeaks = new Map();         // each row's shown frequency → the engine's, which Ignore sends
 function renderPeaks() {
+  if (peaksHold.wait()) return;
   const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
   shownPeaks = new Map();
   list.innerHTML = peaks.length
@@ -1370,6 +1371,7 @@ function renderPeaks() {
 }
 // Between lists, only the times since the inactive signals were found change.
 function updatePeakAges() {
+  if (peaksHold.held) return;       // the rows may be an older list's until the click
   const now = performance.now();
   $$('#pk-body td.seen').forEach((cell, i) => {
     const text = peaks[i] ? peakSeen(peaks[i], now) : '';
@@ -1635,7 +1637,7 @@ function renderHistory() {
         + `${armed ? ` aria-label="Confirm clearing ${fmtMHz(f)} MHz"` : ''}>${armed ? 'Confirm' : 'Clear'}</button></td></tr>`;
     }).join('')
     : `<tr><td colspan="5" class="empty">${observations === null ? 'Not received yet' : 'No channel recorded yet'}</td></tr>`;
-  if (html !== historyHtml) {
+  if (html !== historyHtml && !historyHold.wait()) {
     body.innerHTML = html;
     historyHtml = html;
     focusAgain(body, refocus);
@@ -2170,6 +2172,42 @@ function focusAgain(list, selector) {
   const el = selector && list.querySelector(selector);
   if (el) el.focus();
 }
+// A list rebuilt between the press and the release of a click loses the
+// click: the pressed button leaves the page, and the browser drops the click,
+// gives it to the list, or after a touch to whatever is then under the
+// finger. From a press of the main button on the list until the click that
+// follows its release, a rebuild waits; render() then shows the latest. A
+// touch's click comes a little after its release, within
+// CLICK_AFTER_RELEASE_MS; a press released elsewhere, or that the browser
+// cancels for a scroll, makes no click.
+const CLICK_AFTER_RELEASE_MS = 500;
+function holdUnderPointer(list, render) {
+  let held = false, waiting = false, timer = 0;
+  const releaseIn = (ms) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      held = false;
+      if (waiting) { waiting = false; render(); }
+    }, ms);
+  };
+  list.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    clearTimeout(timer);
+    held = true;
+  });
+  list.addEventListener('click', () => { if (held) releaseIn(0); });     // once every listener of the click ran
+  window.addEventListener('pointerup', () => { if (held) releaseIn(CLICK_AFTER_RELEASE_MS); }, true);
+  window.addEventListener('pointercancel', () => { if (held) releaseIn(0); }, true);
+  window.addEventListener('blur', () => { if (held) releaseIn(0); });     // its release may never come
+  return {
+    get held() { return held; },
+    // Whether a rebuild must wait: render() then follows the release.
+    wait() {
+      if (held) waiting = true;
+      return held;
+    },
+  };
+}
 // Send a bookmark command: every interface receives the bookmarks once the engine applies it.
 function sendBookmark(send) {
   const sent = send();
@@ -2253,6 +2291,10 @@ pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ dete
 pkThr.addEventListener('input', () => { pkThrOut.textContent = `${pkThr.value} dB`; });
 pkThr.addEventListener('change', () => sendScanner(() => stream.setScanner({ thresholdDb: Number(pkThr.value) })));
 bindCheck('pk-marks', 'peakMarks');
+// The Signals table, rebuilt by every list, and the History's, by every
+// change, keep their rows under a pressed pointer.
+const peaksHold = holdUnderPointer($('#pk-body'), () => { if (signalsShown()) renderPeaks(); });
+const historyHold = holdUnderPointer($('#hist-body'), () => { if (historyShown()) renderHistory(); });
 $('#pk-body').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
