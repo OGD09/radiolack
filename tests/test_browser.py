@@ -343,8 +343,10 @@ class BrowserTest(unittest.TestCase):
     def test_the_icon_beside_the_frequency_opens_the_antenna_lengths(self):
         # The lengths follow the VFO while they show, as when another
         # interface tunes, and the dialog keeps the keys: nothing tunes behind
-        # it, and Escape closes it alone. A server for each browser, as the
-        # test moves the VFO.
+        # it, and Escape closes it alone, giving the focus back to the icon.
+        # Closed with a pointer, it leaves the icon unfocused, so that no
+        # focus ring stays on it. A server for each browser, as the test moves
+        # the VFO.
         for browser in BROWSERS:
             url = self.serve()      # the VFO on 145.6 MHz
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
@@ -367,10 +369,11 @@ class BrowserTest(unittest.TestCase):
                 icon.click()
                 dialog.get_by_role("button", name="Close the antenna lengths").click()
                 expect(dialog).to_be_hidden()
+                expect(icon).not_to_be_focused()
                 icon.click()
                 first.mouse.click(4, 4)     # on the backdrop, away from the dialog
                 expect(dialog).to_be_hidden()
-                expect(icon).to_be_focused()
+                expect(icon).not_to_be_focused()
                 icon.dblclick()             # whose second click lands on the backdrop
                 expect(dialog).to_be_visible()
                 first.keyboard.press("Escape")
@@ -409,6 +412,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertLessEqual(box["x"] + box["width"], PHONE["viewport"]["width"])
                 dialog.get_by_role("button", name="Close the antenna lengths").tap()
                 expect(dialog).to_be_hidden()
+                expect(icon).not_to_be_focused()
 
     def test_held_audio_shows_a_speaker_and_a_touch_asks_it_to_start(self):
         # A tap activates the page only once the finger leaves the screen, and
