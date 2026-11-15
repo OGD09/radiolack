@@ -469,7 +469,8 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
                 icon = page.get_by_role("button", name="Antenna length", exact=True)
                 target, freq = icon.bounding_box(), page.locator("#freq").bounding_box()
-                self.assertGreaterEqual(min(target["width"], target["height"]), 40)
+                # 40 px, to within the rounding of edges that fall between pixels (Firefox: 40 - 2**-20)
+                self.assertGreaterEqual(min(target["width"], target["height"]), 40 - 0.01)
                 self.assertGreaterEqual(target["x"], freq["x"] + freq["width"] - 0.5)
                 page.keyboard.press("Escape")       # the menu lies over the readout
                 icon.tap()
