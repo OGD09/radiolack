@@ -241,7 +241,7 @@ body.idle #hoverinfo { opacity: 0; }
   background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   font-size: 12.5px; user-select: text; -webkit-user-select: text;
 }
-#menu-scrim[hidden], #menu[hidden], #menu section[hidden], .check[hidden] { display: none; }
+#menu-scrim[hidden], #menu[hidden], #menu section[hidden], .check[hidden], .row[hidden] { display: none; }
 #menu nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 10px 8px; border-right: 1px solid var(--line); overflow: auto; overscroll-behavior: contain; }
 #menu nav button {
   flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 7px;
@@ -308,6 +308,7 @@ a.link, a.btn { display: inline-flex; align-items: center; text-decoration: none
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.primary { border-color: rgba(89, 167, 255, 0.55); }
 .row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+#src-power-row { justify-content: space-between; font-size: 12.5px; }
 .value { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .value.code { letter-spacing: 0.08em; font-weight: 600; }
 .value.fingerprint { display: block; font: 11px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }

@@ -141,6 +141,7 @@ RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the client
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
+UNSAVED_SETTINGS = ("bias_tee",)    # source settings that start off at each start: never saved
 LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this computer's interfaces may change
 # Why a recording stopped by itself, as the output tells it.
 _RECORDING_STOPS = {"rate": "the audio rate changed, into or out of WFM", "source": "the simulated band was chosen",
@@ -239,7 +240,8 @@ class FixedSource:
         return {"kind": self.kind, "status": "streaming", "detail": "", "address": None,
                 "tuner": None, "centre_hz": centre, "sample_rate_hz": self.sample_rate_hz,
                 "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [centre, centre],
-                "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "settable": []}
+                "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
+                "settable": []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
         raise ValueError(f"the {self.kind} source cannot change its settings")
@@ -706,6 +708,13 @@ class Engine:
                 self._stopped = (scan, "start")
                 self._scanner_changed()
             raise
+
+    def power_antenna(self) -> None:
+        """Turn the antenna power on for the receiver in use at start (cli's
+        --bias-tee). Raises ValueError, saying why, for a source without it."""
+        if "bias_tee" not in self.source.describe()["settable"]:
+            raise ValueError(f"the {self.source.kind} source has no antenna power")
+        self.configure({"bias_tee": True})
 
     def observations_state(self) -> dict[str, Any]:
         """The observations message: the channels where detection found
@@ -1614,7 +1623,7 @@ class Engine:
         """The settings saved for the receiver in use: while a scan runs,
         with the centre frequency and the VFO at its start."""
         state = self.state()
-        source = {name: state[name] for name in state["settable"]}
+        source = {name: state[name] for name in state["settable"] if name not in UNSAVED_SETTINGS}
         demod = self._demod.describe()
         if self._home is not None:
             centre_hz, demod["frequency_hz"] = self._home
@@ -1630,7 +1639,7 @@ class Engine:
             return
         settable = self.state()["settable"]
         for name, value in saved.items():
-            if name not in settable or name in self.source.given:
+            if name not in settable or name in self.source.given or name in UNSAVED_SETTINGS:
                 continue
             try:
                 self.configure({name: value})

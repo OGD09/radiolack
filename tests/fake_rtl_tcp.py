@@ -12,7 +12,8 @@ port given. The device decides what it does:
 
 Like rtl_tcp, it opens the receiver for a moment before it listens. Each run
 appends "<pid> started <arguments>" to the file that the FAKE_RTL_TCP_LOG
-environment variable names, then "<pid> stopping" on SIGTERM.
+environment variable names, "<pid> command <command> <value>" for each
+command it receives, then "<pid> stopping" on SIGTERM.
 """
 
 import argparse
@@ -49,7 +50,8 @@ def stop(_signum, _frame) -> None:
 
 
 async def serve(port: int) -> None:
-    async with FakeRtlTcp(port=port, chunk_bytes=8000):
+    async with FakeRtlTcp(port=port, chunk_bytes=8000) as fake:
+        fake.on_command = lambda command, value: log(f"command {command} {value}")
         await asyncio.Event().wait()
 
 

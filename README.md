@@ -157,6 +157,7 @@ stops Radiolack.
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
+| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band ignores it, which Radiolack says. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
 | `--version` | Prints the version. |
@@ -354,8 +355,36 @@ With either option:
   starts rtl_tcp again.
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
   Fitipower FC0012 and FC0013, FCI FC2580. Shortwave comes through direct
-  sampling or a tuner that covers it (below); an upconverter and antenna
-  power (bias-T) are not supported yet.
+  sampling or a tuner that covers it (below), and antenna power through the
+  bias tee (below); an upconverter is not supported yet.
+
+### Antenna power
+
+An RTL-SDR Blog V3 or V4 can power an active antenna or a preamplifier
+through its antenna socket: 4.5 V, at most 180 mA, with its bias tee. The
+Receiver menu's "Antenna power (bias tee)" shows whether it is on, on every
+interface. Turning it on takes two presses: the first one makes the button
+say "Confirm: 4.5 V on the antenna socket" for 5 s, and the second one turns
+the power on; turning it off takes one.
+
+The antenna power is off at each start, unless Radiolack was started with
+`--bias-tee`, and it is never saved. Radiolack sends its state at each
+connection to rtl_tcp, since rtl_tcp keeps that of its previous client, and
+turns it off before it closes the receiver: when it stops, when another
+receiver of the list takes its place, and before it leaves an rtl_tcp server
+for another address.
+
+Limits:
+
+- Power into an antenna that is a short circuit for direct current, such as
+  a loop or a folded dipole, or into a receiver's input that is not made
+  for it, may damage the dongle or what is connected to it.
+- An rtl_tcp older than 0.5.4 ignores the command, and Radiolack cannot read
+  the state back from the receiver.
+- A crash, a power cut or a killed Radiolack leaves the power as it was.
+- An rtl_tcp server that Radiolack did not start may set the power by
+  itself, for instance with its `-T` option.
+- It is not enough for a satellite LNB, which needs 13 to 18 V.
 
 ### Shortwave
 
@@ -972,6 +1001,9 @@ port, with an empty `ExecStart=` before the new one:
 ExecStart=
 ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080 --scan memory
 ```
+
+The service's command leaves out `--bias-tee`: for an active antenna that
+needs the receiver's power, add it there.
 
 It runs as a user of its own, which systemd makes at each start
 (`DynamicUser`), in the plugdev group that the receivers' device rules let

@@ -87,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="start the memory scan or the sweep at start, with its saved settings, which goes on "
              "without any interface; when it cannot start, say why and run on without it",
     )
+    parser.add_argument(
+        "--bias-tee", action="store_true",
+        help="turn the antenna power (bias tee: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) "
+             "on at start, for the receiver given or reopened; off otherwise, and never saved",
+    )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
         "--rtl-sdr", nargs="?", const="0", type=_device, metavar="DEVICE",
@@ -130,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     with server:
         if args.remote is not None and not _turn_on_remote(server, args.remote or None):
             return 1
+        if args.bias_tee:
+            _power_antenna(server)
         if args.scan is not None:
             _start_scan(server, args.scan)
         if args.ui == "window":
@@ -175,6 +182,17 @@ def _turn_on_remote(server: LocalServer, port: int | None) -> bool:
     else:
         print(f"Access code: {state['code']}", flush=True)
     return True
+
+
+def _power_antenna(server: LocalServer) -> None:
+    """Turn the antenna power on for --bias-tee; a source without it, such
+    as the simulated band, ignores the option, which the error output says."""
+    try:
+        server.power_antenna()
+    except ValueError as error:
+        print(f"radiolack: --bias-tee is ignored: {error}", file=sys.stderr)
+    except TimeoutError:
+        print("radiolack: the antenna power did not turn on in time", file=sys.stderr)
 
 
 def _start_scan(server: LocalServer, scan: str) -> None:

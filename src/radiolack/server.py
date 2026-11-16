@@ -904,6 +904,25 @@ class LocalServer:
             future.cancel()
             raise
 
+    def power_antenna(self) -> None:
+        """Turn the antenna power on for the receiver in use, given at start
+        (cli's --bias-tee), as Engine.power_antenna does. Raises ValueError,
+        saying why, for a source without it, and TimeoutError when the
+        server does not answer in time."""
+        loop, engine = self._loop, self._engine
+        if loop is None or engine is None:
+            raise RuntimeError("the server is not running")
+
+        async def power() -> None:
+            engine.power_antenna()
+
+        future = asyncio.run_coroutine_threadsafe(power(), loop)
+        try:
+            future.result(_START_TIMEOUT_S)
+        except TimeoutError:
+            future.cancel()
+            raise
+
     def _run(self) -> None:
         try:
             asyncio.run(self._serve())
