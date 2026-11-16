@@ -22,7 +22,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import struct
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -159,6 +159,12 @@ class Meter:
     open: bool
 
 
+def has_channel(mode: str, rate_hz: float) -> bool:
+    """Whether a receiver at ``rate_hz`` gives the mode a channel: WFM needs
+    its channel rate, the other modes theirs."""
+    return rate_hz >= (WFM_CHANNEL_RATE_HZ if mode == "WFM" else CHANNEL_RATE_HZ)
+
+
 def vfo_position_hz(mode: str) -> float:
     """Where the front filter puts the VFO's frequency in the channel: 0 Hz,
     or in CW the CW pitch, so that a carrier on the VFO sounds at that pitch."""
@@ -234,12 +240,16 @@ class Demodulator:
         return self.channel_rate_hz / self._decimation
 
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
-                noise_density: float | None, audio: bool) -> tuple[Meter, np.ndarray | None]:
+                noise_density: float | None, audio: bool,
+                tap: Callable[[np.ndarray], None] | None = None) -> tuple[Meter, np.ndarray | None]:
         """The meter for ``samples``, received at ``centre_hz`` and ``rate_hz``,
         and with ``audio`` the 16-bit audio they make. ``noise_density`` is
         the noise power per hertz around the VFO, for the automatic squelch.
+        ``tap`` receives the channel, at ``channel_rate_hz``, before any
+        detector: its 0 Hz is the VFO's frequency less ``vfo_position_hz``.
         A VFO outside the received band reads nothing and stays silent; a
-        receiver slower than the channel rate gives no meter and no audio."""
+        receiver slower than the channel rate gives no meter, no audio and
+        no channel."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
@@ -256,6 +266,8 @@ class Demodulator:
         channel = self._channel.process(self._front.process(samples))
         if not abs(shift_hz) <= rate_hz / 2:
             channel = np.zeros_like(channel)    # the VFO lies outside the received band
+        if tap is not None:
+            tap(channel)
 
         power = channel.real.astype(np.float64) ** 2 + channel.imag.astype(np.float64) ** 2
         mean = float(power.mean()) if len(power) else 0.0

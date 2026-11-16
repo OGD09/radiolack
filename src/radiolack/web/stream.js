@@ -3,10 +3,11 @@
  * state, the demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the recording state, the
  * storage state, the update state and remote access's state from the
- * engine, and the observations, the recordings and a problem report when
- * this interface asks, and takes this interface's changes, its preferences,
- * its request for audio, its recordings, its update requests, its remote
- * access settings and its report requests to it (docs/design/protocol.md).
+ * engine, and the observations, the recordings, a problem report and the
+ * measure of a carrier when this interface asks, and takes this interface's
+ * changes, its preferences, its request for audio, its recordings, its
+ * update requests, its remote access settings, its report requests and its
+ * carrier measure requests to it (docs/design/protocol.md).
  * It reconnects by itself after a disconnection. On a device that remote
  * access serves, the engine sends neither the storage, update nor remote
  * access state, nor the recordings folder, nor a problem report, and takes
@@ -32,7 +33,7 @@ const SETTINGS = ['address', 'hf_input', 'converter_lo_hz', 'converter', 'centre
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
-  'recordings', 'update', 'remote', 'report'];
+  'recordings', 'update', 'remote', 'report', 'carrier'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -277,6 +278,19 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * The measure of the carrier at the VFO, which the engine sends to the
+ * interface that asks: its frequency on the air, to the tenth of a hertz,
+ * or why there is none.
+ * @typedef {object} CarrierMeasure
+ * @property {number | null} id           the request's id, which this interface gave
+ * @property {number | null} frequencyHz  null: no frequency, see `reason`
+ * @property {number | null} marginDb     how far the line stands above the median of the filter's bins;
+ *                                        null when nothing was measured, or no line stands out
+ * @property {string | null} reason       null with a frequency; "silent", "no_signal", "several",
+ *                                        "unstable", or one this interface does not know
+ */
+
+/**
  * A device paired with remote access.
  * @typedef {object} RemoteDevice
  * @property {string} id            names it in forget requests
@@ -302,7 +316,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'recording'
- *   | 'recordings' | 'update' | 'remote' | 'report'} Command
+ *   | 'recordings' | 'update' | 'remote' | 'report' | 'carrier'} Command
  */
 
 /**
@@ -395,6 +409,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
+ * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -806,6 +821,23 @@ export function decodeReport(message) {
 }
 
 /**
+ * Decode a carrier measure message. Returns null when a field is missing or
+ * malformed: a frequency comes without a reason, and a reason without a
+ * frequency.
+ * @param {any} message  a parsed JSON message of type "carrier"
+ * @returns {CarrierMeasure | null}
+ */
+export function decodeCarrier(message) {
+  const m = message;
+  /** @param {unknown} value */
+  const numberOrNull = (value) => value === null || (typeof value === 'number' && Number.isFinite(value));
+  const valid = (m.id === null || Number.isSafeInteger(m.id)) && numberOrNull(m.frequency_hz)
+    && numberOrNull(m.margin_db) && (m.reason === null || typeof m.reason === 'string')
+    && (m.frequency_hz === null) === (m.reason !== null);
+  return valid ? { id: m.id, frequencyHz: m.frequency_hz, marginDb: m.margin_db, reason: m.reason } : null;
+}
+
+/**
  * Decode a remote access message. Returns null when a field is missing or
  * malformed.
  * @param {any} message  a parsed JSON message of type "remote"
@@ -873,6 +905,8 @@ export class EngineStream {
   #scanners = [];         // the scanners the engine runs, as its last hello listed them
   /** @type {string[]} */
   #recordings = [];       // what the engine records, as its last hello listed it
+  /** @type {string[]} */
+  #measures = [];         // what the engine measures, as its last hello listed it
   #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
@@ -922,6 +956,15 @@ export class EngineStream {
    */
   get recordings() {
     return this.#recordings.slice();
+  }
+
+  /**
+   * What the engine measures when an interface asks, as its last hello
+   * listed it, such as "carrier": an older engine measures nothing.
+   * @returns {string[]}
+   */
+  get measures() {
+    return this.#measures.slice();
   }
 
   /** Connect, unless already connected or connecting. */
@@ -1192,6 +1235,18 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine to measure the carrier at the VFO: the result comes to
+   * this interface only (`onCarrier`), about two seconds later, with `id`.
+   * Asking again before it comes waits for the same measure, with the new
+   * id. Returns false, sending nothing, when the stream is not open.
+   * @param {number} id  a whole number from 1
+   * @returns {boolean}
+   */
+  measureCarrier(id) {
+    return this.#send({ type: 'carrier', action: 'measure', id });
+  }
+
+  /**
    * Turn remote access on or off: this computer's interfaces receive its
    * state as it changes, which says why it could not turn on. Returns false,
    * sending nothing, when the stream is not open.
@@ -1356,6 +1411,9 @@ export class EngineStream {
     } else if (message.type === 'report') {
       const report = decodeReport(message);
       if (report) this.#handlers.onReport(report);
+    } else if (message.type === 'carrier') {
+      const measure = decodeCarrier(message);
+      if (measure) this.#handlers.onCarrier(measure);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);
@@ -1380,6 +1438,7 @@ export class EngineStream {
     const names = (list) => (Array.isArray(list) ? list.filter((name) => typeof name === 'string') : []);
     this.#scanners = names(message.scanners);
     this.#recordings = names(message.recording);
+    this.#measures = names(message.measures);
     this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));

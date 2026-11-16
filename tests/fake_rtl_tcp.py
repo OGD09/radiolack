@@ -8,6 +8,8 @@ port given. The device decides what it does:
   unknown, and exits.
 - "mute": never listens, until stopped.
 - "stubborn": serves, but ignores SIGTERM.
+- "carrier": serves CARRIER_HZ through a crystal CARRIER_CRYSTAL_PPB off,
+  until SIGTERM.
 - any other value: serves until SIGTERM.
 
 Like rtl_tcp, it opens the receiver for a moment before it listens. Each run
@@ -26,6 +28,8 @@ import time
 from tests.fakes import FakeRtlTcp
 
 OPEN_S = 0.2    # rtl_tcp opens the receiver before it listens
+CARRIER_HZ = 145_010_000            # the "carrier" device's carrier, on the air
+CARRIER_CRYSTAL_PPB = 3_210         # and its crystal's error
 FOUND = ("Found 1 device(s):\n  0:  Realtek, RTL2838UHIDIR, SN: 00000001\n\n"
          "Using device 0: Generic RTL2832U OEM\n")
 FAILURES = {
@@ -49,8 +53,9 @@ def stop(_signum, _frame) -> None:
     os._exit(0)
 
 
-async def serve(port: int) -> None:
-    async with FakeRtlTcp(port=port, chunk_bytes=8000) as fake:
+async def serve(port: int, device: str) -> None:
+    carrier = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB} if device == "carrier" else {}
+    async with FakeRtlTcp(port=port, chunk_bytes=8000, **carrier) as fake:
         fake.on_command = lambda command, value: log(f"command {command} {value}")
         await asyncio.Event().wait()
 
@@ -74,7 +79,7 @@ def main() -> None:
     if args.d == "mute":
         while True:
             time.sleep(60)
-    asyncio.run(serve(args.p))
+    asyncio.run(serve(args.p, args.d))
 
 
 if __name__ == "__main__":

@@ -2839,3 +2839,193 @@ class ConverterTest(RecordingCase):
     def iq_bytes(state: dict) -> int:
         """How much the I/Q recording that runs was given; -1 when none runs."""
         return state["iq"]["bytes"] if state["iq"] is not None else -1
+
+
+async def next_carrier(subscription: Subscription, timeout: float = 20.0) -> dict:
+    """The next carrier measure that ``subscription`` receives."""
+    async def wait() -> dict:
+        while True:
+            message = await subscription.get()
+            if isinstance(message, dict) and message["type"] == "carrier":
+                return message
+    return await asyncio.wait_for(wait(), timeout)
+
+
+def calibrated_ppm(ppm: float, measured_hz: float, true_hz: float, tuned=lambda f: f) -> float:
+    """The correction that calibration.js's calibratedPpm computes, to the
+    hundredth: (1 + ppm) × T_s / T_m − 1, on the frequencies the receiver
+    tunes."""
+    return round(((1 + ppm / 1e6) * tuned(true_hz) / tuned(measured_hz) - 1) * 1e6, 2)
+
+
+class CarrierTest(unittest.IsolatedAsyncioTestCase):
+    """The carrier's measure, on the fake rtl_tcp: the frequency on the air,
+    in every mode, through direct sampling and a converter, with and
+    without a crystal error, and the correction that a calibration
+    computes from it, which brings the carrier to its true frequency."""
+
+    async def start(self, carriers: dict[float, float], *, crystal_ppb: int = 0, rate_hz: float = 1_024_000.0,
+                    centre_hz: float = 145_000_000.0, **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
+        fake = FakeRtlTcp(carriers=carriers, crystal_ppb=crystal_ppb, chunk_bytes=16_384, interval_s=0.004)
+        await fake.__aenter__()
+        self.addAsyncCleanup(fake.__aexit__, None, None, None)
+        source = RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1)
+        engine = Engine(source)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        subscription = engine.subscribe()
+        engine.configure({**settings, "centre_hz": centre_hz})      # on the air, behind a converter
+        await eventually(lambda: engine.state()["status"] == "streaming")
+        return engine, subscription, fake
+
+    async def measure(self, engine: Engine, subscription: Subscription, request_id: int = 1) -> dict:
+        engine.measure_carrier({"action": "measure", "id": request_id}, subscription)
+        result = await next_carrier(subscription)
+        self.assertEqual(result["id"], request_id)
+        self.assertIsNone(engine._carrier)          # nobody waits: nothing more is measured
+        return result
+
+    async def test_measures_the_frequency_on_the_air_in_every_mode(self):
+        air_hz = 145_012_345.6
+        # The VFO on the carrier, or beside it in SSB, so that it lies within the filter.
+        vfos = {"NFM": 0, "AM": 0, "USB": -1000, "LSB": 1000, "CW": 0, "WFM": 0}
+        for crystal_ppb in (0, 37_420):
+            # WFM last, at a sample rate that holds its channel; the others at the lowest, which is faster.
+            engine, subscription, fake = await self.start({air_hz: 0.2}, crystal_ppb=crystal_ppb, rate_hz=240_000.0,
+                                                           ppm=crystal_ppb / 1000)
+            for mode in sorted(MODES, key=lambda mode: mode == "WFM"):
+                with self.subTest(crystal_ppb=crystal_ppb, mode=mode):
+                    if mode == "WFM":
+                        engine.configure({"sample_rate_hz": 1_024_000.0})
+                    engine.configure_demod({"frequency_hz": round(air_hz + vfos[mode]), "mode": mode})
+                    result = await self.measure(engine, subscription)
+                    self.assertIsNone(result["reason"])
+                    self.assertAlmostEqual(result["frequency_hz"], air_hz, delta=1.0)
+                    self.assertGreater(result["margin_db"], 40)
+            engine.close()          # the next receiver alone streams
+            fake.sending = False
+
+    async def test_a_calibration_brings_the_carrier_to_its_true_frequency(self):
+        offset_hz = 10_000.0
+        # The frequency on the air, the settings, and where the receiver tunes for a frequency on the air.
+        paths = (("tuner", 145_000_000.0, {}, lambda f: f),
+                 ("direct sampling", 7_100_000.0, {"hf_input": "q"}, lambda f: f),
+                 ("upconverter", 7_100_000.0, {"converter": "up", "converter_lo_hz": 125_000_000.0},
+                  lambda f: f + 125_000_000.0))
+        for crystal_ppb in (37_420, -52_730):
+            for path, centre_hz, settings, tuned in paths:
+                with self.subTest(crystal_ppb=crystal_ppb, path=path):
+                    air_hz = centre_hz + offset_hz
+                    engine, subscription, fake = await self.start(
+                        {tuned(air_hz): 0.2}, crystal_ppb=crystal_ppb, rate_hz=240_000.0, **settings,
+                        centre_hz=centre_hz)
+                    # Off by the crystal's error at the frequency the receiver tunes: the VFO on it.
+                    expected_hz = tuned(air_hz) / (1 + crystal_ppb / 1e9) - (tuned(air_hz) - air_hz)
+                    engine.configure_demod({"frequency_hz": round(expected_hz), "mode": "AM"})
+                    before = await self.measure(engine, subscription)
+                    self.assertAlmostEqual(before["frequency_hz"], expected_hz, delta=1.0)
+                    self.assertGreater(abs(before["frequency_hz"] - air_hz), 100.0)
+                    ppm = calibrated_ppm(0.0, before["frequency_hz"], air_hz, tuned)
+                    self.assertAlmostEqual(ppm, crystal_ppb / 1000, delta=0.02)
+                    # Applied as the dialog does: the correction, and the VFO on the true frequency.
+                    engine.configure({"ppm": ppm})
+                    engine.configure_demod({"frequency_hz": air_hz})
+                    after = await self.measure(engine, subscription, 2)
+                    self.assertAlmostEqual(after["frequency_hz"], air_hz, delta=1.0)
+                    engine.close()          # the next path's receiver alone streams
+                    fake.sending = False
+
+    async def test_says_why_it_gives_no_frequency(self):
+        air_hz = 145_010_000.0
+        engine, subscription, _ = await self.start({air_hz: 0.2}, rate_hz=240_000.0)
+        cases = ((145_050_000, "AM", "no_signal"),      # within the span, nothing there
+                 (145_500_000, "AM", "silent"),         # outside the span
+                 (air_hz, "WFM", "silent"))             # WFM needs a faster sample rate
+        for frequency, mode, reason in cases:
+            with self.subTest(frequency=frequency, mode=mode):
+                engine.configure_demod({"frequency_hz": frequency, "mode": mode})
+                result = await self.measure(engine, subscription)
+                self.assertEqual((result["reason"], result["frequency_hz"]), (reason, None))
+                if reason == "no_signal":
+                    self.assertLess(result["margin_db"], 20)
+                else:
+                    self.assertIsNone(result["margin_db"])
+
+    async def test_a_change_meanwhile_starts_the_measure_again(self):
+        air_hz = 145_010_000.0
+        engine, subscription, _ = await self.start({air_hz: 0.2}, rate_hz=240_000.0)
+        engine.configure_demod({"frequency_hz": air_hz, "mode": "AM"})
+        engine.measure_carrier({"action": "measure", "id": 1}, subscription)
+        await asyncio.sleep(0.2)
+        engine.configure_demod({"mode": "CW"})        # the carrier moves to the CW pitch in the channel
+        result = await next_carrier(subscription)
+        self.assertAlmostEqual(result["frequency_hz"], air_hz, delta=1.0)
+
+    async def test_measures_while_a_scan_runs_which_goes_on(self):
+        air_hz = 145_010_000.0
+        engine, subscription, _ = await self.start({air_hz: 0.2}, rate_hz=240_000.0)
+        engine.edit_bookmarks({"action": "add", "frequency_hz": air_hz, "name": "Carrier", "mode": "AM",
+                               "scan": True})
+        engine.configure_scanner({"scan": "memory"})
+        await asyncio.wait_for(next_scanner(subscription, until=in_state("listening")), 10)
+        result = await self.measure(engine, subscription)
+        self.assertAlmostEqual(result["frequency_hz"], air_hz, delta=1.0)
+        self.assertEqual(engine.scanner_state()["scan"], "memory")
+
+    async def test_answers_an_unsteady_measure_once_its_time_is_up(self):
+        engine, subscription, fake = await self.start({145_010_000.0: 0.2}, rate_hz=240_000.0)
+        fake.sending = False        # no samples: the source waits
+        with mock.patch("radiolack.engine.CARRIER_TIMEOUT_S", 0.5):
+            engine.measure_carrier({"action": "measure"}, subscription)
+            result = await next_carrier(subscription)
+        self.assertEqual((result["id"], result["reason"], result["frequency_hz"]), (None, "silent", None))
+
+
+class CarrierRequestTest(unittest.IsolatedAsyncioTestCase):
+    """Who receives a carrier's measure, and the refused requests."""
+
+    async def asyncSetUp(self):
+        self.engine = Engine(FakeSource())
+        self.task = asyncio.ensure_future(self.engine.run())
+
+    async def asyncTearDown(self):
+        self.engine.close()
+        await asyncio.wait_for(self.task, timeout=5)
+
+    async def test_interfaces_that_ask_meanwhile_share_one_measure_each_with_its_id(self):
+        first, second, third = (self.engine.subscribe() for _ in range(3))
+        self.engine.measure_carrier({"action": "measure", "id": 1}, first)
+        self.engine.measure_carrier({"action": "measure", "id": 7}, second)
+        measure = self.engine._carrier
+        self.engine.measure_carrier({"action": "measure", "id": 8}, second)     # asks again: one answer
+        self.assertIs(self.engine._carrier, measure)
+        answers = [await next_carrier(first), await next_carrier(second)]
+        self.assertEqual([answer["id"] for answer in answers], [1, 8])
+        self.assertEqual(answers[0], {**answers[1], "id": 1})
+        await asyncio.sleep(0.2)
+        self.assertNotIn("carrier", [m["type"] for m in ready_messages(second) if isinstance(m, dict)])
+        self.assertNotIn("carrier", [m["type"] for m in ready_messages(third) if isinstance(m, dict)])
+
+    async def test_an_interface_that_goes_away_stops_the_measure_unless_another_waits(self):
+        first, second = self.engine.subscribe(), self.engine.subscribe()
+        self.engine.measure_carrier({"action": "measure"}, first)
+        self.engine.measure_carrier({"action": "measure"}, second)
+        self.engine.unsubscribe(first)
+        self.assertIsNotNone(self.engine._carrier)
+        self.engine.unsubscribe(second)
+        self.assertIsNone(self.engine._carrier)
+
+    async def test_refuses_another_action_field_or_id(self):
+        subscription = self.engine.subscribe()
+        for changes in ({}, {"action": "start"}, {"action": "measure", "id": 0}, {"action": "measure", "id": True},
+                        {"action": "measure", "id": 1.5}, {"action": "measure", "id": 2 ** 53},
+                        {"action": "measure", "every": 2}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.engine.measure_carrier(changes, subscription)
+        self.assertIsNone(self.engine._carrier)

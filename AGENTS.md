@@ -33,7 +33,9 @@ the history under the tag `v0.1.0`.
   clients, sends audio to those that ask, passes their changes on,
   switches between kinds of
   sources, restores and saves the settings and the source in use; sends a
-  problem report to this computer's interface that asks; keeps the
+  problem report to this computer's interface that asks; measures the
+  carrier at the VFO for the interfaces that ask, gathering the VFO's
+  channel only while one waits, and sends each the result alone; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
@@ -95,7 +97,11 @@ the history under the tag `v0.1.0`.
   recording's tap),
   `correction` (the frequency correction in hundredths of ppm: its checks,
   the whole part a receiver takes itself and the frequency to ask for the
-  rest), `converter` (a converter in front of a receiver: its kinds and
+  rest), `carrier` (the measure of a carrier in the VFO's channel, before
+  the demodulator: Hann window, FFT of one second, the strongest line
+  within the filter placed by a parabola, its margin over the median, two
+  seconds that must agree within 1 Hz; apart from the engine and the
+  interface, for later runs across several stations), `converter` (a converter in front of a receiver: its kinds and
   oscillator, the frequency the receiver tunes for one on the air and the
   other way round, the reach on the air),
   `sources` (opens each kind of source from its saved
@@ -123,7 +129,9 @@ the history under the tag `v0.1.0`.
   Automatic step), `rates.js` (what a mode needs of the sample rate),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
-  `correction.js` (the frequency correction's field) carry JSDoc
+  `correction.js` (the frequency correction's field) and `calibration.js`
+  (the Calibrate dialog: the correction from a carrier measured and its
+  true frequency, with its derivation, and what the dialog shows) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`

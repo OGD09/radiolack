@@ -17,6 +17,7 @@ import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } f
 import { automaticStep } from './tuning.js';
 import { modeRateNote } from './rates.js';
 import { ppmText, typedPpm } from './correction.js';
+import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, startingTrueText } from './calibration.js';
 import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
@@ -112,6 +113,7 @@ const noticeEl = $('#notice');
 const readoutEl = $('#readout');
 const antennaEl = $('#antenna');
 const antennaDialog = $('#antenna-dialog');
+const calibrateDialog = $('#calibrate-dialog');
 const reportDialog = $('#report-dialog');
 const legalDialog = $('#legal-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
@@ -326,6 +328,7 @@ const stream = new EngineStream({
       setView(view.f0, view.f1);      // the view's limits follow the source's
     }
     syncSource();
+    syncCalibration();    // a measure taken before the change computes nothing
     syncSweep();          // whether the receiver tunes, as the sweep needs,
     syncMem();            // and as the memory scan's list tells
     syncRecording();      // the simulated band is not recorded
@@ -402,6 +405,15 @@ const stream = new EngineStream({
     $('#report-issue').href = report.issueUrl;
     if (!reportDialog.open) openReportDialog();
   },
+  onCarrier: (measure) => {
+    // Only the latest request's answer: an older one may predate a change.
+    if (!calibrateDialog.open || measure.id !== carrierId) return;
+    carrierMeasure = measure;
+    carrierError = '';
+    renderCalibration();
+    clearTimeout(carrierTimer);
+    carrierTimer = setTimeout(askCarrier, Math.max(0, MEASURE_EVERY_MS - (performance.now() - carrierAsked)));
+  },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
       demodError = message;     // the engine's settings came back before the error
@@ -450,6 +462,16 @@ const stream = new EngineStream({
       $('#ab-report-msg').textContent = `Refused: ${message}.`;
       return;
     }
+    if (command === 'carrier') {
+      carrierError = `Refused: ${message}.`;
+      renderCalibration();
+      return;
+    }
+    // A correction applied from the calibration may be refused too.
+    if (command === 'source' && calibrateDialog.open) {
+      carrierError = `Refused: ${message}.`;
+      renderCalibration();
+    }
     sourceError = message;
     dropPendingTune();
     syncSource();       // the controls show the engine's settings again
@@ -477,6 +499,8 @@ const stream = new EngineStream({
     syncRecording();
     updateStatus();
     if (state === 'open' && historyShown()) askHistory();
+    if (state === 'open') carrierKey = '';      // a new connection: the measure is asked again
+    syncCalibration();
     if (state === 'open' && recordShown()) askRecordings();
   },
 });
@@ -1391,6 +1415,7 @@ function applyDemod(state) {
   showVfo(settling || !moved);  // a view looking elsewhere stays there, unless the VFO moved
   syncAudioNote();
   if (modeRateNote(S.mode, S.fs) !== shownRateNote) updateStatus();
+  syncCalibration();
 }
 
 // ------------------------------------------------------------------ scanners
@@ -1898,6 +1923,9 @@ function syncSource() {
   const ppmEl = $('#src-ppm');
   if (!typingIn.has(ppmEl)) ppmEl.value = ppmText(source?.ppm ?? 0);
   ppmEl.disabled = !settable.has('ppm');
+  const calibrate = calibrateEntry(source, stream.measures, streamState === 'open');
+  $('#src-calibrate').disabled = !calibrate.enabled;
+  $('#src-calibrate-note').textContent = calibrate.note;
   const dcEl = $('#src-dc');
   dcEl.checked = Boolean(source?.dcRemoval);
   dcEl.disabled = !settable.has('dc_removal');
@@ -3261,6 +3289,109 @@ antennaEl.addEventListener('click', () => {
   syncAntenna();
 });
 
+// The Receiver menu's Calibrate dialog (calibration.js): while it is open,
+// the engine measures the carrier at the VFO, asked again as each measure
+// comes, every MEASURE_EVERY_MS at most; the user types the carrier's true
+// frequency, and Apply sends the correction that brings the carrier there,
+// as any change of the correction, and tunes the VFO there, where the
+// carrier then lies, keeping the dialog open on the next measures. Only the latest request's answer counts, and a change of the
+// receiver's settings or of the VFO asks again: no measure taken before the
+// change computes a correction.
+const CARRIER_LOST_MS = 10000;  // an answer lost with a dropped stream is asked again after this
+const calibrateButton = $('#src-calibrate');
+const openCalibrateDialog = bindDialog(calibrateDialog, calibrateButton);
+let carrierId = 0;              // the latest request's id
+let carrierMeasure = null;      // its answer; null while it is on its way
+let carrierAsked = 0;           // when it went, performance.now()
+let carrierTimer = 0;
+let carrierError = '';          // why the engine refused a request or a correction, or ''
+let carrierKey = '';            // the settings the measure depends on: another asks again
+let trueTyped = false;          // the user typed the true frequency: it no longer follows the VFO
+let calibrationApplied = false; // a correction went: Cancel reads Close
+// What a measure depends on: the receiver, its correction, converter and span, and the VFO's channel.
+function carrierSetting() {
+  if (!source) return '';
+  return JSON.stringify([source.kind, source.address, source.ppm, source.converter, source.converterLoHz,
+    source.centreHz, source.rateHz, source.dcRemoval, S.vfo, S.mode, S.bw]);
+}
+function askCarrier() {
+  clearTimeout(carrierTimer);
+  carrierTimer = 0;
+  if (!calibrateDialog.open) return;
+  carrierId += 1;
+  carrierAsked = performance.now();
+  stream.measureCarrier(carrierId);     // not connected: asked again once the stream opens
+  carrierTimer = setTimeout(askCarrier, CARRIER_LOST_MS);
+}
+// The dialog follows a change: a new measure for new settings, and the VFO's
+// frequency, until the user types another.
+function syncCalibration() {
+  if (!calibrateDialog.open) return;
+  const key = carrierSetting();
+  if (key !== carrierKey && streamState === 'open') {
+    carrierKey = key;
+    carrierMeasure = null;
+    askCarrier();
+  }
+  if (!trueTyped) setValue($('#calibrate-true'), startingTrueText(S.vfo));
+  renderCalibration();
+}
+// Writes only what changed.
+function setValue(el, value) { if (el.value !== value) el.value = value; }
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+function renderCalibration() {
+  if (!calibrateDialog.open || !source) return;
+  const entry = calibrateEntry(source, stream.measures, streamState === 'open');
+  const view = calibrationView({ measure: carrierMeasure, trueText: $('#calibrate-true').value, source, vfoHz: S.vfo });
+  setText($('#calibrate-measured'), streamState === 'open' ? view.measured : notConnected('nothing is measured'));
+  setText($('#calibrate-in-use'), view.inUse);
+  setText($('#calibrate-correction'), view.correction);
+  setText($('#calibrate-note'), carrierError || entry.note || view.note);
+  $('#calibrate-apply').disabled = !entry.enabled || view.apply === null;
+  $('#calibrate-converter').hidden = !source.converter || source.converter === 'none';
+  $('#calibrate-tuner').hidden = source.direct || !source.hfInputs.some((input) => input === 'q' || input === 'i');
+  setText($('#calibrate-cancel'), calibrationApplied ? 'Close' : 'Cancel');
+}
+calibrateButton.addEventListener('click', () => {
+  if (!calibrateEntry(source, stream.measures, streamState === 'open').enabled) return;
+  trueTyped = calibrationApplied = false;
+  carrierError = carrierKey = '';
+  carrierMeasure = null;
+  setValue($('#calibrate-true'), startingTrueText(S.vfo));
+  openCalibrateDialog();
+  syncCalibration();
+});
+calibrateDialog.addEventListener('close', () => {
+  clearTimeout(carrierTimer);
+  carrierTimer = 0;
+  carrierId += 1;               // an answer still on its way is ignored
+  carrierMeasure = null;
+});
+$('#calibrate-true').addEventListener('input', () => {
+  trueTyped = true;
+  renderCalibration();
+});
+$('#calibrate-apply').addEventListener('click', () => {
+  const trueText = $('#calibrate-true').value, trueHz = parseFrequency(trueText);
+  const view = calibrationView({ measure: carrierMeasure, trueText, source, vfoHz: S.vfo });
+  if (view.apply === null || trueHz === null) return;
+  if (!stream.sendSource({ ppm: view.apply })) {
+    carrierError = notConnected('no correction was applied');
+  } else {
+    // The carrier moves by the change, a few kilohertz on the tuner: the VFO follows it, in its mode.
+    if (trueHz !== S.vfo) stream.sendDemod({ frequencyHz: trueHz });
+    calibrationApplied = true;
+    carrierError = '';
+    carrierMeasure = null;
+    askCarrier();               // after the change, on the stream: measured with the new correction
+  }
+  renderCalibration();
+});
+// Cancel closes as the close button does, from the keyboard or with a pointer.
+$('#calibrate-cancel').addEventListener('click', (e) => {
+  calibrateDialog.querySelector('.close').dispatchEvent(new MouseEvent('click', { detail: e.detail }));
+});
+
 // About's problem report: the engine makes it, with what the interface tells
 // of itself; a modal dialog shows it, to open as a new GitHub issue, which
 // the user's web browser shows, or to copy.
@@ -3366,7 +3497,7 @@ bindStepButton($('#tune-up'), 1);
 window.addEventListener('keydown', (e) => {
   poke();
   // A dialog keeps its keys: Escape closes it alone, and nothing tunes behind it.
-  if (antennaDialog.open || reportDialog.open || legalDialog.open) return;
+  if (antennaDialog.open || calibrateDialog.open || reportDialog.open || legalDialog.open) return;
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
     else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }

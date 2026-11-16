@@ -75,7 +75,12 @@ delete one; this computer's interfaces may also choose another folder,
 which is saved.
 
 This computer's interfaces may ask for a problem report (report.py), which
-the engine sends to the one that asked, for its user to share or not.
+the engine sends to the one that asked, for its user to share or not. Any
+interface may ask for the measure of the carrier at the VFO (carrier.py),
+to calibrate the receiver's frequency correction: the engine gathers the
+VFO's channel, before the demodulator, only while an interface waits for a
+measure, which every interface that asked meanwhile shares and receives,
+each alone.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
@@ -107,9 +112,10 @@ import numpy as np
 
 from . import __version__
 from .bookmarks import Bookmark, Bookmarks
+from .carrier import SILENT, UNSTABLE, Carrier, CarrierMeasure
 from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
-                    noise_clearance_hz)
+                    has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, check_folder, chosen_folder,
@@ -138,6 +144,8 @@ PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
 SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "sweep_low_hz", "sweep_high_hz", "sweep_window_s",
                     "ignore", "restore", "scan")
 OBSERVATIONS_FIELDS = ("clear", "clear_all")
+CARRIER_TIMEOUT_S = 6.0     # a carrier's measure that settings kept starting again ends this long after it began
+MAX_REQUEST_ID = 2 ** 53 - 1    # the largest whole number JavaScript counts exactly
 RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the clients this often
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
@@ -497,6 +505,14 @@ class Engine:
         self._progress_timer: asyncio.TimerHandle | None = None
         self._unfinished: set[Recording] = set()
         self._requests: set[asyncio.Future] = set()
+        # The carrier's measure while an interface waits for it: the
+        # interfaces waiting, with the id each gave its latest request, when
+        # it began, and the count of the source's changes, which start it
+        # again.
+        self._carrier: CarrierMeasure | None = None
+        self._carrier_waiting: dict[Subscription, int | None] = {}
+        self._carrier_began = 0.0
+        self._source_changes = 0
         self._adopt()
         self._watch_bookmarks()
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
@@ -534,6 +550,9 @@ class Engine:
 
     def unsubscribe(self, subscription: Subscription) -> None:
         self._clients.discard(subscription)
+        self._carrier_waiting.pop(subscription, None)
+        if not self._carrier_waiting:
+            self._carrier = None        # nobody waits: nothing more to measure
         if self._idle():
             self._wanted.clear()
 
@@ -901,6 +920,26 @@ class Engine:
         made = Report.now(receiver_line(self.source.describe()), check_page(changes.get("page", "")))
         subscription.reply({"type": "report", "text": made.text(), "issue_url": made.issue_url()})
 
+    def measure_carrier(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Measure the carrier at the VFO for ``subscription``, which then
+        receives the result alone: ``action`` must be ``measure``, and
+        ``id``, if given, a whole number that the result repeats. A client
+        that asks again while a measure runs waits for that one, with its
+        new id. Raises ValueError when refused."""
+        for name in changes:
+            if name not in ("action", "id"):
+                raise ValueError(f"unknown carrier field: {str(name)[:40]}")
+        if changes.get("action") != "measure":
+            raise ValueError("a carrier message takes the action measure")
+        request_id = changes.get("id")
+        if request_id is not None and (isinstance(request_id, bool) or not isinstance(request_id, int)
+                                       or not 0 < request_id <= MAX_REQUEST_ID):
+            raise ValueError("a request id must be a whole number from 1")
+        self._carrier_waiting[subscription] = request_id
+        if self._carrier is None:
+            self._carrier = CarrierMeasure()
+            self._carrier_began = time.monotonic()
+
     def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's recordings message, which without any field asks
         for the list of the recordings; ``delete``, a recording as the list
@@ -958,6 +997,8 @@ class Engine:
         if self._observations_timer is not None:
             self._observations_timer.cancel()
             self._observations_timer = None
+        self._carrier = None
+        self._carrier_waiting.clear()
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
@@ -1003,6 +1044,7 @@ class Engine:
                     # Waiting, so check that clients still listen, and that
                     # signals no longer found are no longer shown as active.
                     self._check_peaks()
+                    self._check_carrier()
                     continue        # or switched away from
                 capture = (source.centre_hz, source.sample_rate_hz)
                 if capture != self._capture:
@@ -1015,12 +1057,18 @@ class Engine:
                 # receiver: none while the samples still come from another.
                 channels = self._watched if self._memory is not None and capture == self._span() else None
                 sweep = self._sweep
-                power, codes, meter, pcm, detections, levels = await asyncio.to_thread(
+                measure = self._carrier_measure(capture)
+                power, codes, meter, pcm, detections, levels, carrier = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
                     *capture, self._dc_removal, self._demod, audio, threshold_db,
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
-                    None if channels is None else self._bands)
+                    None if channels is None else self._bands, measure)
                 self._publish(capture, power, codes, meter, pcm)
+                if measure is not None and measure[0] is self._carrier:
+                    if carrier is not None:
+                        self._answer_carrier(carrier, measure[2])
+                    else:
+                        self._check_carrier()
                 if self._audio is not None and pcm is not None and len(pcm):
                     self._record_audio(pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
@@ -1038,6 +1086,7 @@ class Engine:
             self.close()
 
     def _source_changed(self) -> None:
+        self._source_changes += 1       # a carrier's measure starts again
         for subscription in self._clients:
             subscription.changed("source")
         self._settings_changed()
@@ -1058,6 +1107,41 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("remote")
         self._settings_changed()
+
+    def _carrier_measure(self, capture: tuple[float, float]
+                         ) -> tuple[CarrierMeasure, tuple[Any, ...], float] | None:
+        """What a block measures of the carrier, while an interface waits for
+        it: the measure, the setting its samples come from, which starts it
+        again when it changes, and the frequency on the air of the channel's
+        0 Hz. A VFO whose channel receives nothing, outside the span or in a
+        mode that the sample rate cannot hold, answers at once: there is
+        nothing to measure."""
+        if self._carrier is None:
+            return None
+        demod, (centre_hz, rate_hz) = self._demod, capture
+        if not has_channel(demod.mode, rate_hz) or not abs(demod.frequency_hz - centre_hz) <= rate_hz / 2:
+            self._answer_carrier(Carrier(None, None, SILENT), 0.0)
+            return None
+        key = (self._source_changes, demod.frequency_hz, demod.mode, demod.bandwidth_hz, capture, self._dc_removal)
+        return self._carrier, key, demod.frequency_hz - vfo_position_hz(demod.mode)
+
+    def _check_carrier(self) -> None:
+        """End a carrier's measure that settings kept starting again, or for
+        which no samples came, once it ran for CARRIER_TIMEOUT_S."""
+        if self._carrier is not None and time.monotonic() - self._carrier_began >= CARRIER_TIMEOUT_S:
+            self._answer_carrier(Carrier(None, None, UNSTABLE if self._carrier.received else SILENT), 0.0)
+
+    def _answer_carrier(self, carrier: Carrier, origin_hz: float) -> None:
+        """Send the measure's result to every interface waiting for it, each
+        alone, with the frequency on the air, from ``origin_hz``, that of the
+        channel's 0 Hz, to the tenth of a hertz; the next request starts
+        another."""
+        frequency = None if carrier.frequency_hz is None else round(origin_hz + carrier.frequency_hz, 1)
+        for subscription, request_id in self._carrier_waiting.items():
+            subscription.reply({"type": "carrier", "id": request_id, "frequency_hz": frequency,
+                                "margin_db": carrier.margin_db, "reason": carrier.reason})
+        self._carrier_waiting.clear()
+        self._carrier = None
 
     def _check_peaks(self) -> None:
         """Tell the clients of the signals found once the list changed, such
@@ -1910,14 +1994,16 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
                    watch: ChannelWatch, samples: np.ndarray, centre_hz: float, rate_hz: float,
                    dc_removal: bool, settings: DemodSettings, audio: bool, threshold_db: float | None,
                    search_blocks: int, bands: np.ndarray | None,
+                   measure: tuple[CarrierMeasure, tuple[Any, ...], float] | None = None,
                    ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
-                              tuple[np.ndarray, np.ndarray] | None]:
+                              tuple[np.ndarray, np.ndarray] | None, Carrier | None]:
     """The bin powers, the display codes, the channel meter, with ``audio``
     the audio, once ``detector`` has averaged ``search_blocks`` blocks the
-    signals found, and once ``watch`` knows the noise the power and the
-    noise of the memory scan's channels, of a block of samples, worked out in
-    a worker thread. Detection is off without ``threshold_db``, and the
-    memory scan's channels are not watched without ``bands``, their
+    signals found, once ``watch`` knows the noise the power and the noise of
+    the memory scan's channels, and once ``measure``, a carrier's measure and
+    the setting of these samples, has one its result, of a block of samples,
+    worked out in a worker thread. Detection is off without ``threshold_db``,
+    and the memory scan's channels are not watched without ``bands``, their
     passbands and noise clearances."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
@@ -1925,7 +2011,17 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     power = analyzer.power(samples)
     noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz,
                                    noise_clearance_hz(settings.mode, settings.bandwidth_hz))
-    meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio)
+    carrier: list[Carrier | None] = [None]     # what the measure gives, if any
+    tap: Callable[[np.ndarray], None] | None = None
+    if measure is not None:
+        gatherer, key, _ = measure
+        low_hz, high_hz = passband_hz(settings.mode, settings.bandwidth_hz)
+        position = vfo_position_hz(settings.mode)       # where the channel's filter lies, from its 0 Hz
+
+        def tap(channel: np.ndarray) -> None:
+            carrier[0] = gatherer.add(channel, demodulator.channel_rate_hz, position + low_hz, position + high_hz,
+                                      key)
+    meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio, tap)
     if threshold_db is None:
         detector.reset()
         detections = None
@@ -1936,7 +2032,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
         levels = None
     else:
         levels = watch.levels(power, centre_hz, rate_hz, bands, analyzer.enbw)
-    return power, analyzer.codes(power), meter, pcm, detections, levels
+    return power, analyzer.codes(power), meter, pcm, detections, levels, carrier[0]
 
 
 def _conversion(described: Mapping[str, Any]) -> Conversion:

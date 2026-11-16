@@ -487,11 +487,58 @@ down by up to 6.9 Hz.
   the fake rtl_tcp's crystal error.
 - It needs a source with a correction: not the simulated band.
 
+As built, where this section left a choice open or a rule had to bend:
+
+- The measure lives in `carrier.py`, which knows nothing of the engine or
+  the dialog: `strongest_line` measures a stretch of channel, and
+  `CarrierMeasure` gathers it as the demodulator makes it, through a tap
+  after the channel filter. The hello lists `carrier` under `measures`.
+- A fourth reason, `several`: another line, more than 5 Hz from the
+  strongest, within 6 dB of it. Without it, two steady carriers of nearly
+  equal strength would give a stable measure of either one, and a
+  correction computed for the other; an FM signal whose carrier vanishes
+  shows the same way. `silent` also covers WFM below its channel rate and
+  a receiver that sends nothing for 6 s.
+- The measure starts again whenever the receiver's settings, the VFO's
+  frequency, mode or filter, or the span change, so that its two seconds
+  come from one setting; one that cannot finish within 6 s, as while a
+  memory scan moves the VFO, answers `unstable`. Measuring never stops a
+  scan.
+- The request and the answer carry an optional `id`: the dialog ignores
+  the answer to an older request, which may hold a measure taken before
+  the correction or the converter changed, delivered after the new source
+  state.
+- The correction is computed in `calibration.js`, where the derivation is
+  written: p' = (1 + p) × T_s / T_m − 1, on the frequencies the receiver
+  tunes, T_s the true one and T_m the one measured, so that behind a
+  converter the oscillator is taken as exact and the crystal scales the
+  receiver's own frequencies only.
+- A true frequency typed far from the carrier: both corrections lie within
+  −100 to 100 ppm, so no change legitimately exceeds 200 ppm, and the range
+  check refuses any typo that far, with a message that asks to check the
+  frequency and the VFO. A change of more than 10 ppm, more than a crystal
+  drifts but possible for a cheap dongle never calibrated, is warned of,
+  and Apply stays available.
+- Apply also tunes the VFO to the true frequency, keeping its mode and
+  filter: the carrier moves by the change, 5.4 kHz at 145 MHz for 37 ppm,
+  which would leave it outside the filter, and the next measure would find
+  nothing. The dialog stays open on the next measures, and Cancel then
+  reads Close.
+- The dialog notes that a converter's oscillator is taken as exact when
+  one is set, and that the tuner's own error is included when the
+  receiver could sample directly but does not.
+
 Limits: the result is as true as the frequency typed; on shortwave the
 ionosphere moves a carrier by up to about 1 Hz; with a converter it takes
 the converter's oscillator as exact; on the tuner it also takes in the
 tuner's own error at that centre frequency (pull request 13), so the
-crystal alone is best measured in direct sampling.
+crystal alone is best measured in direct sampling. As built: the receiver
+corrects its sample rate by whole ppm only, which moves a carrier up to
+half a ppm of its distance from the centre frequency (0.6 Hz at the edge
+of a 2.4 MS/s span), and the frequency asked of it is rounded to the hertz
+(pull request 9), so a carrier measures within about a hertz of its true
+frequency after Apply, not exactly on it. A carrier on the centre
+frequency goes with the DC removal, and the dialog says so.
 
 ### 11. The band plan from 0 Hz to 10.5 GHz
 

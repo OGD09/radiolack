@@ -90,6 +90,19 @@ function conversionOf(source) {
 }
 
 /**
+ * Where the receiver behind ``source``'s converter tunes for ``f`` on the
+ * air: ``f`` itself without one.
+ * @param {number} f
+ * @param {import('./stream.js').SourceState} source
+ * @returns {number}
+ */
+export function tunedFrequency(f, source) {
+  const c = conversionOf(source);
+  if (!c) return f;
+  return c.kind === 'up' ? f + c.loHz : c.kind === 'down' ? f - c.loHz : c.loHz - f;
+}
+
+/**
  * Whether the frequencies moved from one source state to the next, the
  * same receiver behind another converter or oscillator.
  * @param {import('./stream.js').SourceState} before
@@ -110,9 +123,7 @@ export function conversionMoved(before, after) {
  * @returns {number}
  */
 export function convertedFrequency(f, before, after) {
-  const a = conversionOf(before), b = conversionOf(after);
-  let tuned = f;
-  if (a) tuned = a.kind === 'up' ? f + a.loHz : a.kind === 'down' ? f - a.loHz : a.loHz - f;
+  const tuned = tunedFrequency(f, before), b = conversionOf(after);
   if (!b) return tuned;
   return b.kind === 'up' ? tuned - b.loHz : b.kind === 'down' ? tuned + b.loHz : b.loHz - tuned;
 }

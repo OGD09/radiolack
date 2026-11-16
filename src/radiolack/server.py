@@ -7,9 +7,10 @@ streams its frames, its audio, its source state, its demodulation settings,
 its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
-audio, for an update check, for the observations and for the list of the
-recordings. It serves the recordings that the engine lists, and the I/Q
-recordings' metadata, to download (``/recordings/NAME``).
+audio, for an update check, for the observations, for the list of the
+recordings and for the measure of a carrier. It serves the recordings that
+the engine lists, and the I/Q recordings' metadata, to download
+(``/recordings/NAME``).
 
 The server reads the interface's files once, when it is made, and serves
 them from memory: a running Radiolack keeps serving the interface it started
@@ -67,11 +68,12 @@ _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stre
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "recording",
-             "recordings", "update", "remote", "report")
+             "recordings", "update", "remote", "report", "carrier")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
+MEASURES = ("carrier",)     # what the engine measures when an interface asks, as the hello tells
 _DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
@@ -238,7 +240,7 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
     try:
         await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "version": __version__,
                             "remote": device is not None, "scanners": list(SCANNERS),
-                            "recording": list(RECORDING_KINDS)})
+                            "recording": list(RECORDING_KINDS), "measures": list(MEASURES)})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -326,6 +328,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             remote.command(changes)
         elif kind == "report":
             engine.report(changes, subscription)
+        elif kind == "carrier":
+            engine.measure_carrier(changes, subscription)
         else:
             on = changes.pop("on", None)
             if changes:

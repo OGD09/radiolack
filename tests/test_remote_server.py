@@ -276,7 +276,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "version": __version__, "remote": True,
-                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
+                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
+                          "measures": ["carrier"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
@@ -350,6 +351,10 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         while (message := await next_text(ws))["type"] != "observations":
             self.assertNotEqual(message["type"], "error")
         self.assertEqual(message["channels"], [])
+        await ws.send_json({"type": "carrier", "action": "measure", "id": 3})     # calibrates from any interface
+        while (message := await next_text(ws))["type"] != "carrier":
+            self.assertNotEqual(message["type"], "error")
+        self.assertEqual(message["id"], 3)
         for command in ({"type": "remote", "on": False}, {"type": "remote", "new_code": True},
                         {"type": "update", "check": True}, {"type": "source", "address": "192.168.1.2:1234"},
                         {"type": "report"}):
