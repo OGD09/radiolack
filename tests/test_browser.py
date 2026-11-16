@@ -24,6 +24,8 @@ from pathlib import Path
 from unittest import mock
 
 from radiolack import __version__
+from radiolack.recordings import recording_name, wav_header
+from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
@@ -51,6 +53,8 @@ S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left en
 SQUELCH_RANGE = (-130, -20)  # the squelch threshold's range, in dB (#dm-sql)
 MID_SCALE = re.compile(r"^-5[6-8]$")    # the threshold that a press halfway along the S-meter sets: -57 dB, to a pixel
 PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its changed preferences (main.js)
+HISTORY_CONFIRM_MS = 5000   # how long a first press of a Clear in the History waits for the second (main.js)
+RECORDINGS_CONFIRM_MS = 5000  # how long a first press of a recording's Delete waits for the second (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
@@ -143,7 +147,7 @@ MENU_OVERFLOW = """() => {
 }"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
-    from playwright.sync_api import Page, expect, sync_playwright
+    from playwright.sync_api import Locator, Page, expect, sync_playwright
 
 
 def overlap(first: dict, second: dict) -> bool:
@@ -193,11 +197,13 @@ class BrowserTest(unittest.TestCase):
     def interfaces(self, browser: str, url: str, count: int, **options) -> Iterator[list[Page]]:
         """``count`` interfaces at ``url``, each with the Receiver menu open:
         clicks, which let the audio start. ``self.audio[page]`` counts the
-        audio frames each one receives, and ``self.sent[page]`` lists the
-        messages each one sends, as text. ``options`` go to each browser
-        context, such as a phone's viewport and touch input."""
+        audio frames each one receives, ``self.signals[page]`` the lists of
+        signals found, and ``self.sent[page]`` lists the messages each one
+        sends, as text. ``options`` go to each browser context, such as a
+        phone's viewport and touch input."""
         errors: list[str] = []
         self.audio: dict[Page, list[int]] = {}
+        self.signals: dict[Page, list[int]] = {}
         self.sent: dict[Page, list[str]] = {}
         with contextlib.ExitStack() as stack:
             pages = []
@@ -206,11 +212,14 @@ class BrowserTest(unittest.TestCase):
                 stack.callback(context.close)
                 page = self.watched_page(context, browser, errors)
                 self.audio[page] = received = []
+                self.signals[page] = lists = []
                 self.sent[page] = sent = []
 
-                def watch(socket, received=received, sent=sent) -> None:
+                def watch(socket, received=received, lists=lists, sent=sent) -> None:
                     socket.on("framereceived", lambda payload: received.append(1) if isinstance(
                         payload, bytes) and payload[:1] == bytes([AUDIO_FRAME]) else None)
+                    socket.on("framereceived", lambda payload: lists.append(1) if isinstance(
+                        payload, str) and json.loads(payload).get("type") == "peaks" else None)
                     socket.on("framesent", lambda payload: sent.append(payload) if isinstance(payload, str) else None)
 
                 page.on("websocket", watch)
@@ -410,6 +419,24 @@ class BrowserTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline,
                             "no audio arrived (Firefox plays none without a sound server: README.md, Tests)")
             page.wait_for_timeout(100)      # lets Playwright deliver the page's events
+
+    def wait_for_signals(self, page: Page, lists: int) -> None:
+        """Wait until ``page`` has received ``lists`` lists of signals found."""
+        deadline = time.monotonic() + TIMEOUT_MS / 1000
+        while len(self.signals[page]) < lists:
+            self.assertLess(time.monotonic(), deadline, "no new list of signals came")
+            page.wait_for_timeout(100)      # lets Playwright deliver the page's events
+
+    @staticmethod
+    def press(page: Page, target: Locator) -> list[float]:
+        """Press the mouse's main button at the centre of ``target`` and keep
+        it pressed: the point pressed, [x, y]."""
+        target.scroll_into_view_if_needed()
+        box = target.bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        return [x, y]
 
     def test_audio_starts_with_a_click_and_the_vfo_is_shared(self):
         url = self.serve()
@@ -846,6 +873,26 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
                 expect(first.locator("#pk-note")).to_be_hidden()
 
+    def test_a_signal_pressed_while_a_new_list_comes_takes_the_click(self):
+        # Each list rebuilds the Signals table: on the simulated band, about
+        # every second, as the beacons' margins move. A list that comes
+        # between the press and the release of a click waits until the click,
+        # which reaches the button pressed.
+        for browser in BROWSERS:
+            url = self.serve()      # nothing ignored yet
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "scan")     # on its Signals tab
+                ignore = page.locator("#pk-body button[data-ignore]").first
+                expect(ignore).to_be_visible()
+                point = self.press(page, ignore)
+                # The signal of the button pressed, whichever list showed it.
+                frequency = page.evaluate("([x, y]) => document.elementFromPoint(x, y).dataset.ignore", point)
+                self.assertIsNotNone(frequency)
+                self.wait_for_signals(page, len(self.signals[page]) + 2)    # one at least after the press
+                page.mouse.up()
+                expect(page.locator("#pk-excluded")).to_have_text("1 ignored frequency.")
+                expect(page.locator(f'#pk-body button[data-tune="{frequency}"]')).to_have_count(0)
+
     def test_every_interface_follows_the_memory_scan_until_one_tunes_by_hand(self):
         for browser in BROWSERS:
             directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
@@ -986,6 +1033,28 @@ class BrowserTest(unittest.TestCase):
                 expect(clear_all).to_be_hidden()
                 expect(second.locator("#hist-note")).to_be_hidden()
 
+    def test_a_history_button_pressed_while_the_table_changes_takes_the_click(self):
+        # A first press of Clear that no second one follows turns back into
+        # Clear, which rebuilds the table: a button pressed meanwhile stays
+        # until the click, which reaches it.
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            heard = time.time()
+            Store(directory).save(OBSERVATIONS_FILE, {"channels": [
+                kept_channel(433_500_000, heard - 7200), kept_channel(145_500_000, heard - 600)]})
+            url = self.serve(store=Store(directory))
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "scan")
+                page.locator('#scan-tabs button[data-tab="history"]').click()
+                clear = page.locator('#hist-body button[data-clear="433500000"]')
+                clear.click()
+                expect(clear).to_have_text("Confirm")
+                self.press(page, page.locator('#hist-body button[data-mark="145500000"]'))
+                page.wait_for_timeout(HISTORY_CONFIRM_MS + 500)     # the Clear turns back meanwhile
+                page.mouse.up()
+                expect(page.locator("#hist-note")).to_have_text("145.5000 MHz added to the bookmarks as Bookmark 1.")
+                expect(clear).to_have_text("Clear")
+
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_every_interface_records_the_audio_and_lists_the_recordings(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
@@ -1118,6 +1187,31 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#rec-iq-state")).to_be_empty()
                 expect(page.locator("#rec-list .empty")).to_have_text("No recording yet")
 
+    def test_a_recording_button_pressed_while_the_list_changes_takes_the_click(self):
+        # A first press of Delete that no second one follows turns back into
+        # Delete, which rebuilds the list: a button pressed meanwhile stays
+        # until the click, which reaches it.
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+        folder.mkdir()
+        started = time.time()
+        older = recording_name(started - 7200, 433_500_000.0, "AM")
+        newer = recording_name(started - 600, 145_500_000.0, "NFM")
+        for name in (older, newer):     # recorded before, without audio: the list needs no receiver
+            (folder / name).write_bytes(wav_header(12_000, 0))
+        url = self.serve(recordings=folder)
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "record")
+                armed = page.locator(f'#rec-list button[data-del="{older}"]')
+                pressed = page.locator(f'#rec-list button[data-del="{newer}"]')
+                armed.click()
+                expect(armed).to_have_text("Confirm")
+                self.press(page, pressed)
+                page.wait_for_timeout(RECORDINGS_CONFIRM_MS + 500)  # the Delete turns back meanwhile
+                page.mouse.up()
+                expect(pressed).to_have_text("Confirm")
+                expect(armed).to_have_text("Delete")
+
     def test_remote_access_says_why_it_cannot_turn_on(self):
         url = self.serve()      # which finds no address on a local network
         for browser in BROWSERS:
@@ -1210,6 +1304,28 @@ class BrowserTest(unittest.TestCase):
                 computer.reload()       # this computer's interfaces keep their own settings
                 expect(computer.locator("#status")).to_contain_text("fps")     # frames, which follow the preferences
                 expect(computer.locator("#wf-pal")).to_have_value("classic")
+
+    def test_a_device_button_pressed_while_remote_access_changes_takes_the_click(self):
+        # Every state of remote access rebuilds the list of paired devices:
+        # one that comes between the press and the release of Forget, such
+        # as another interface's new port, waits until the click, which
+        # forgets the device pressed.
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            access = RemoteAccess()
+            access.pair("Phone")    # before this start: remote access stays off, listening nowhere
+            Store(directory).save(REMOTE_FILE, access.stored())
+            url = self.serve(store=Store(directory))
+            port = free_port()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "settings")
+                self.press(first, first.get_by_role("button", name="Forget Phone", exact=True))
+                second.locator("#st-remote-port").fill(str(port))
+                second.locator("#st-remote-port").blur()
+                expect(first.locator("#st-remote-port")).to_have_value(str(port))  # the state came during the press
+                first.mouse.up()
+                expect(first.locator("#st-remote-devices")).to_have_text("No paired device")
 
     def test_a_stream_refused_before_it_opened_asks_for_a_reload_instead_of_reloading(self):
         # As if the browser sent the session cookie with the page but not with

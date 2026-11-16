@@ -1374,6 +1374,7 @@ function peakShownHz(p) {
 const peakSeen = (p, now) => (p.active ? 'active' : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
 let shownPeaks = new Map();         // each row's shown frequency → the engine's, which Ignore sends
 function renderPeaks() {
+  if (peaksHold.wait()) return;
   const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
   shownPeaks = new Map();
   list.innerHTML = peaks.length
@@ -1390,6 +1391,7 @@ function renderPeaks() {
 }
 // Between lists, only the times since the inactive signals were found change.
 function updatePeakAges() {
+  if (peaksHold.held) return;       // the rows may be an older list's until the click
   const now = performance.now();
   $$('#pk-body td.seen').forEach((cell, i) => {
     const text = peaks[i] ? peakSeen(peaks[i], now) : '';
@@ -1655,7 +1657,7 @@ function renderHistory() {
         + `${armed ? ` aria-label="Confirm clearing ${fmtMHz(f)} MHz"` : ''}>${armed ? 'Confirm' : 'Clear'}</button></td></tr>`;
     }).join('')
     : `<tr><td colspan="5" class="empty">${observations === null ? 'Not received yet' : 'No channel recorded yet'}</td></tr>`;
-  if (html !== historyHtml) {
+  if (html !== historyHtml && !historyHold.wait()) {
     body.innerHTML = html;
     historyHtml = html;
     focusAgain(body, refocus);
@@ -2190,6 +2192,42 @@ function focusAgain(list, selector) {
   const el = selector && list.querySelector(selector);
   if (el) el.focus();
 }
+// A list rebuilt between the press and the release of a click loses the
+// click: the pressed button leaves the page, and the browser drops the click,
+// gives it to the list, or after a touch to whatever is then under the
+// finger. From a press of the main button on the list until the click that
+// follows its release, a rebuild waits; render() then shows the latest. A
+// touch's click comes a little after its release, within
+// CLICK_AFTER_RELEASE_MS; a press released elsewhere, or that the browser
+// cancels for a scroll, makes no click.
+const CLICK_AFTER_RELEASE_MS = 500;
+function holdUnderPointer(list, render) {
+  let held = false, waiting = false, timer = 0;
+  const releaseIn = (ms) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      held = false;
+      if (waiting) { waiting = false; render(); }
+    }, ms);
+  };
+  list.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    clearTimeout(timer);
+    held = true;
+  });
+  list.addEventListener('click', () => { if (held) releaseIn(0); });     // once every listener of the click ran
+  window.addEventListener('pointerup', () => { if (held) releaseIn(CLICK_AFTER_RELEASE_MS); }, true);
+  window.addEventListener('pointercancel', () => { if (held) releaseIn(0); }, true);
+  window.addEventListener('blur', () => { if (held) releaseIn(0); });     // its release may never come
+  return {
+    get held() { return held; },
+    // Whether a rebuild must wait: render() then follows the release.
+    wait() {
+      if (held) waiting = true;
+      return held;
+    },
+  };
+}
 // Send a bookmark command: every interface receives the bookmarks once the engine applies it.
 function sendBookmark(send) {
   const sent = send();
@@ -2273,6 +2311,10 @@ pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ dete
 pkThr.addEventListener('input', () => { pkThrOut.textContent = `${pkThr.value} dB`; });
 pkThr.addEventListener('change', () => sendScanner(() => stream.setScanner({ thresholdDb: Number(pkThr.value) })));
 bindCheck('pk-marks', 'peakMarks');
+// The Signals table, rebuilt by every list, and the History's, by every
+// change, keep their rows under a pressed pointer.
+const peaksHold = holdUnderPointer($('#pk-body'), () => { if (signalsShown()) renderPeaks(); });
+const historyHold = holdUnderPointer($('#hist-body'), () => { if (historyShown()) renderHistory(); });
 $('#pk-body').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
@@ -2464,7 +2506,7 @@ function renderRecordings() {
   const files = recordingList ? recordingList.files : [];
   const html = files.map(recordingItem).join('')
     || `<li class="empty">${recordingList === null ? 'Not received yet' : 'No recording yet'}</li>`;
-  if (html !== recordingsHtml) {
+  if (html !== recordingsHtml && !recordingsHold.wait()) {
     list.innerHTML = html;
     recordingsHtml = html;
     focusAgain(list, refocus);
@@ -2473,7 +2515,9 @@ function renderRecordings() {
   syncRecordingSummary();
   syncRecordNote();
 }
-// The running recordings' lengths and sizes, which their state brings every second.
+// The running recordings' lengths and sizes, which their state brings every
+// second, each found by its file: rows that a pressed pointer keeps from an
+// older list get their own.
 function syncRecordingLive() {
   for (const el of document.querySelectorAll('#rec-list [data-live]')) {
     const r = [recordingRuns() && recording.audio, iqRuns() && recording.iq].find((r) => r && r.file === el.dataset.live);
@@ -2516,6 +2560,8 @@ recIq.addEventListener('click', () => {
   recordingAsk = 'iq';
   setRecordNote(stream.setIqRecording(on) ? '' : notConnected(on ? 'nothing is recorded' : 'the recording goes on'));
 });
+// The list, rebuilt by every change, keeps its rows under a pressed pointer.
+const recordingsHold = holdUnderPointer($('#rec-list'), () => { if (recordShown()) renderRecordings(); });
 $('#rec-list').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-del]');
   if (!b) return;
@@ -2606,6 +2652,10 @@ remotePortEl.addEventListener('change', () => {
 $('#st-remote-renew').addEventListener('click', () => {
   if (!stream.renewRemoteCode()) setRemoteNote(notConnected('the code did not change'));
 });
+// The paired devices, rebuilt by every state of remote access, keep their
+// rows under a pressed pointer. The list follows the state while Settings
+// is closed too: opening it does not rebuild the list.
+const devicesHold = holdUnderPointer($('#st-remote-devices'), () => { if (remoteState) renderRemoteDevices(); });
 $('#st-remote-devices').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-forget]');
   if (b && !stream.forgetRemoteDevice(b.dataset.forget)) setRemoteNote(notConnected('the device was not forgotten'));
@@ -2632,6 +2682,7 @@ function fmtSeen(seconds) {
   return `used ${days} ${days === 1 ? 'day' : 'days'} ago`;
 }
 function renderRemoteDevices() {
+  if (devicesHold.wait()) return;
   const list = $('#st-remote-devices'), refocus = focusedIn(list);
   list.innerHTML = remoteState.devices.map((d) => `<li class="device"><span class="name">${escapeHtml(d.label)}</span>`
     + `<span class="num">${d.connected ? 'connected' : fmtSeen(d.seenS)}</span>`
