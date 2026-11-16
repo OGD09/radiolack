@@ -111,8 +111,10 @@ with apt as above; a package built from a later commit installs over an
 earlier one. DEBFULLNAME and DEBEMAIL, as Debian's tools read them, can give
 the maintainer instead of `--maintainer`. The build is reproducible: from
 the same commit, with the same maintainer and the same version of dpkg-deb,
-it makes the same package, byte for byte, so that anyone can rebuild a
-release's package and compare.
+it makes the same package, byte for byte, whatever dpkg-deb's own settings
+in the environment, such as DPKG_DEB_COMPRESSOR_LEVEL, so that anyone can
+rebuild a release's package and compare. Its files carry the commit's date,
+or SOURCE_DATE_EPOCH when that is set: leave it unset to rebuild a release.
 
 ### From the repository
 
