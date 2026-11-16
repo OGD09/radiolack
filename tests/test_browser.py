@@ -734,7 +734,9 @@ class BrowserTest(unittest.TestCase):
     def test_a_digit_dragged_or_under_the_wheel_changes_and_opens_no_entry(self):
         # Dragged up or down, a digit changes by one for each 16 px, off the
         # step's grid; a drag never opens the entry. Here the 1 kHz digit,
-        # from 145.6 MHz.
+        # from 145.6 MHz. The drag stays within the page, which starts some
+        # 20 px above the digits: beyond it, Firefox under Playwright reports
+        # the pointer at another height.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
@@ -745,21 +747,21 @@ class BrowserTest(unittest.TestCase):
                 x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
                 page.mouse.move(x, y)
                 page.mouse.down()
-                page.mouse.move(x, y - 40, steps=8)        # two steps up
-                expect(freq).to_have_attribute("aria-valuenow", "145602000")
-                page.mouse.move(x, y + 40, steps=16)       # then two below where it started
-                expect(freq).to_have_attribute("aria-valuenow", "145598000")
+                page.mouse.move(x, y + 56, steps=8)        # three steps down
+                expect(freq).to_have_attribute("aria-valuenow", "145597000")
+                page.mouse.move(x, y - 20, steps=8)        # then one above where it started
+                expect(freq).to_have_attribute("aria-valuenow", "145601000")
                 page.mouse.up()
                 page.mouse.move(x, y)
                 page.mouse.down()
                 page.mouse.move(x, y - 5)                  # a press that moves less than 8 px changes nothing
                 page.mouse.up()
-                expect(freq).to_have_attribute("aria-valuenow", "145598000")
+                expect(freq).to_have_attribute("aria-valuenow", "145601000")
                 expect(page.locator("#freq input")).to_have_count(0)
                 box = page.locator('#freq .d[data-m="10"]').bounding_box()
                 page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
                 page.mouse.wheel(0, -100)                  # a notch up: 10 Hz more
-                expect(freq).to_have_attribute("aria-valuenow", "145598010")
+                expect(freq).to_have_attribute("aria-valuenow", "145601010")
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_digit_that_leaves_the_span_moves_it(self):
