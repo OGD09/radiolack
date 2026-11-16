@@ -13,6 +13,7 @@ import { antennaLengths, formatLength } from './antenna.js';
 import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
+import { modeRateNote } from './rates.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -281,6 +282,7 @@ function setCapture(centre, rate, bins) {
   syncSource();
   syncDisplay();
   renderPlanList();
+  syncAudioNote();      // a mode may need another sample rate
   updateStatus();
 }
 
@@ -1127,6 +1129,7 @@ function showStatusNote(note) {
   statusNoteTimer = setTimeout(() => { statusNote = ''; updateStatus(); }, STATUS_NOTE_MS);
   updateStatus();
 }
+let shownRateNote = '';      // why the mode plays nothing at this sample rate, as the status line shows it
 function updateStatus() {
   let text;
   if (streamState === 'open' && source) {
@@ -1154,6 +1157,8 @@ function updateStatus() {
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
   if (streamState === 'open' && sweepRuns()) text += ' · sweep';
   if (streamState === 'open') text += recordingStatus();
+  shownRateNote = streamState === 'open' ? modeRateNote(S.mode, S.fs) : '';
+  if (shownRateNote) text = `${shownRateNote} · ${text}`;
   if (statusNote) text = `${statusNote} · ${text}`;
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
@@ -1374,6 +1379,7 @@ function applyDemod(state) {
   if (!settling) lastSeg = segmentAt(S.vfo);
   showVfo(settling || !moved);  // a view looking elsewhere stays there, unless the VFO moved
   syncAudioNote();
+  if (modeRateNote(S.mode, S.fs) !== shownRateNote) updateStatus();
 }
 
 // ------------------------------------------------------------------ scanners
@@ -2018,6 +2024,7 @@ function syncAudioNote() {
   let text = '';
   if (demodError) text = `Change refused: ${demodError}.`;
   else if (!audioModes.includes(S.mode)) text = `${S.mode} is not demodulated yet: only ${audioModes.join(' and ')} plays.`;
+  else if (modeRateNote(S.mode, S.fs)) text = `${modeRateNote(S.mode, S.fs)}.`;
   else if (audioState === 'blocked') text = 'Audio starts with a click, a tap or a key press on the page.';
   else if (audioState === 'failed') text = 'Audio cannot play in this browser.';
   const el = $('#dm-audio-note');

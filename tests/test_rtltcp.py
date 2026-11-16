@@ -176,6 +176,22 @@ class SettingsTest(SourceTest):
         self.assert_labelled(source, await self.read(source))
         self.assertEqual(source.sample_rate_hz, 1_024_000.0)
 
+    async def test_takes_librtlsdr_s_lower_range_of_sample_rates(self):
+        source = await self.start()
+        await self.read(source)
+        for rate in (225_001, 240_000, 300_000, 900_001):
+            with self.subTest(rate=rate):
+                source.configure({"sample_rate_hz": rate})
+                await eventually(lambda rate=rate: self.fake.commands[-2:] == [(0x02, rate), (0x01, 145_000_000)])
+                self.assert_labelled(source, await self.read(source))
+                self.assertEqual(source.sample_rate_hz, float(rate))
+        with self.assertRaisesRegex(ValueError, "^the sample rate must be from 0.225001 to 0.3 "
+                                                "or from 0.900001 to 3.2 MS/s$"):
+            source.configure({"sample_rate_hz": 600_000})
+        # At 240 kS/s, direct sampling's span starts at 0 Hz from a centre of 120 kHz.
+        source.configure({"sample_rate_hz": 240_000, "hf_input": "q", "centre_hz": 120_000})
+        self.assertEqual(source.describe()["range_hz"], [120e3, 1766e6])
+
     async def test_gain_snaps_to_the_tuner_and_none_is_automatic(self):
         source = await self.start()
         await self.read(source)
@@ -220,7 +236,9 @@ class SettingsTest(SourceTest):
             {"centre_hz": 10**400},
             {"centre_hz": 20e6},
             {"centre_hz": 1800e6},
-            {"sample_rate_hz": 250_000},
+            {"sample_rate_hz": 225_000},
+            {"sample_rate_hz": 300_001},
+            {"sample_rate_hz": 900_000},
             {"sample_rate_hz": 3_300_000},
             {"gain_db": "auto"},
             {"ppm": 101},

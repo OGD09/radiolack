@@ -292,8 +292,16 @@ there, the status line says why and Radiolack tries again by itself until
 you give another address.
 
 rtl_tcp sends every sample, two bytes each: 4.8 MB/s at 2.4 MS/s, about
-17 GB an hour, and 2 MB/s at 1.024 MS/s. Over a slow or metered link, such
-as a phone's connection, lower the sample rate.
+17 GB an hour, 2 MB/s at 1.024 MS/s and 0.48 MB/s at 0.240 MS/s. Over a
+slow or metered link, such as a phone's connection, lower the sample rate.
+
+The two lowest sample rates, 0.240 and 0.300 MS/s, come from librtlsdr's
+lower range of rates, 225,001 to 300,000 samples per second: a span as wide
+as a shortwave band, 29 and 37 Hz per bin of the spectrum, and less work
+for the computer. WFM's channel is 320 kHz wide: at these rates WFM plays
+nothing, the mode stays, and the status line and Radio's audio note say
+"WFM needs a sample rate of 1.024 MS/s or more". The finest view stays
+4 kHz wide whatever the rate.
 
 With either option:
 
@@ -301,7 +309,8 @@ With either option:
   those of its previous client: 145 MHz, 2.4 MS/s, automatic gain and no
   frequency correction at first, then the latest ones.
 - The Receiver menu names the tuner and sets the centre frequency, the sample
-  rate (1.024 to 2.88 MS/s), the gain and the frequency correction. "Tuner
+  rate (0.240 and 0.300 MS/s, or 1.024 to 2.88 MS/s), the gain and the
+  frequency correction. "Tuner
   AGC" gives automatic gain; otherwise the gain is one of those the tuner
   offers. The frequency correction, in whole ppm from -100 to +100, makes up
   for a receiver whose clock is off, which shifts every signal by as many

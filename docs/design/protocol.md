@@ -570,7 +570,7 @@ are:
 | `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. |
 | `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
-| `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes 900001 to 3200000 Hz, librtlsdr's upper range. |
+| `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
 | `gain_db` | Tuner gain in dB, or null for automatic gain. A gain becomes the nearest in `gains_db`. |
 | `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to a whole number. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`. |
 | `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |

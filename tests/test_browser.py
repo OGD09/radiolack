@@ -1723,6 +1723,33 @@ class BrowserTest(unittest.TestCase):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_wfm_says_it_needs_a_higher_sample_rate_than_the_lowest_ones(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
+        note = "WFM needs a sample rate of 1.024 MS/s or more"
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                first.locator("#src-rate").select_option("240000")
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 0.240 MS/s")
+                    expect(page.locator("#status")).not_to_contain_text(note)
+                self.open_menu(second, "radio")
+                second.locator('#mode-group button[data-mode="WFM"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("WFM")     # the mode stays
+                    expect(page.locator("#status")).to_contain_text(f"{note} {DOT} RTL-SDR {DOT} 0.240 MS/s")
+                expect(second.locator("#dm-audio-note")).to_have_text(f"{note}.")
+                first.locator("#src-rate").select_option("1024000")
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 1.024 MS/s")
+                    expect(page.locator("#status")).not_to_contain_text(note)
+                expect(second.locator("#dm-audio-note")).to_be_hidden()
+                second.locator('#mode-group button[data-mode="NFM"]').click()
+                first.locator("#src-rate").select_option("2400000")
+                expect(second.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_shortwave_samples_directly_below_the_tuner_without_gain_control(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
