@@ -513,10 +513,61 @@ Limits:
   to 12 Hz off at 24 MHz and 883 Hz off at 1766 MHz.
 - A crystal drifts with temperature, by up to 1 ppm (145 Hz at 145 MHz)
   as the receiver warms up: hundredths hold only after a calibration on a
-  known signal, once the receiver is warm, and the next calibration may
-  differ.
+  known signal ([Calibration](#calibration)), once the receiver is warm,
+  and the next calibration may differ.
 - The tuner's own PLL may add an error of its own, fixed for each centre
   frequency, which the correction does not include.
+
+### Calibration
+
+The Receiver menu's Calibrate finds the correction from a carrier whose
+frequency you know. Radiolack measures the strongest line within the VFO's
+filter to a tenth of a hertz, over two seconds, which the display, at
+293 Hz per bin at 2.4 MS/s, could never show.
+
+1. Let the receiver warm up for a quarter of an hour.
+2. Tune the VFO onto a steady carrier whose frequency you know, in AM or
+   CW, and keep it off the centre frequency, where removing the DC spike
+   takes a carrier out.
+3. Open Receiver > Calibrate. Every two seconds it shows the carrier
+   measured, how far it stands above the noise, and how far it lies from
+   "True frequency of this carrier", which starts from the VFO's frequency
+   rounded to the kilohertz: type the true frequency if it differs.
+4. Apply sends "Correction to apply", the correction that brings the
+   carrier to its true frequency, as a change in the Receiver menu would,
+   and tunes the VFO there, where the carrier then lies. The next measures
+   show it there, within about a hertz.
+
+Good references are carriers whose frequency is kept exact on purpose: the
+standard-frequency and time-signal stations of the shortwave bands, on
+round frequencies such as 5, 10 or 15 MHz, and the carriers of AM
+broadcasters, most of which hold their frequency closely; check a station's
+frequency in a current source before you rely on it. A signal whose carrier
+is not its strongest line gives no reference: NFM and SSB have none to
+measure, and a CW signal that keys on and off moves between measures.
+
+Calibrate in direct sampling ([Shortwave](#shortwave)) to measure the
+crystal alone: on the tuner, the result also takes in the tuner's own error
+at that centre frequency, which another centre frequency does not share.
+
+The dialog says why it shows no frequency: nothing received at the VFO, no
+line standing 20 dB above the noise within the filter, two lines of nearly
+equal strength, or a line that moved by more than 1 Hz between two
+measures. It refuses a correction beyond -100 to 100 ppm, which a typo
+gives, and warns before a change of more than 10 ppm, more than a crystal
+drifts: check the true frequency and that the VFO is on that carrier. The
+simulated band has no correction to calibrate.
+
+Limits:
+
+- The result is as true as the frequency you type.
+- On shortwave, the ionosphere moves a carrier by up to about 1 Hz, and
+  more when the path changes: measure a few times and at a quiet hour.
+- Behind a converter, the converter's oscillator is taken as exact, and
+  the correction is the receiver's own.
+- The receiver corrects its sample rate by whole ppm only: a carrier far
+  from the centre frequency measures up to half a ppm of that distance off,
+  0.6 Hz at the edge of a 2.4 MS/s span.
 
 ## Demodulation and audio
 
@@ -1551,6 +1602,8 @@ src/radiolack/
                 and for the receiver
   correction.py the frequency correction in hundredths of ppm, split between
                 the receiver and Radiolack
+  carrier.py    the measure of a carrier, to a tenth of a hertz, for the
+                calibration
   sources.py    opens each kind of source, for the Receiver list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band

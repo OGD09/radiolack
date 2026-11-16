@@ -1770,6 +1770,58 @@ class BrowserTest(unittest.TestCase):
                     for page in (first, second):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
 
+    def test_calibrating_needs_a_receiver_with_a_frequency_correction(self):
+        url = self.serve()      # the simulated band
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                expect(page.locator("#src-calibrate")).to_be_disabled()
+                expect(page.locator("#src-calibrate-note")).to_have_text(
+                    "The simulated band has no frequency correction to calibrate.")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_calibration_brings_a_carrier_to_its_true_frequency(self):
+        # The fake's carrier, at 145.010 MHz on the air, shows 465.5 Hz low
+        # through its crystal, 3.21 ppm fast.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource("carrier", program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.locator("#freq").dblclick()
+                page.locator("#freq input").fill("145.0095")
+                page.locator("#freq input").press("Enter")
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145009500")
+                self.open_menu(page, "receiver")
+                page.locator("#src-calibrate").click()
+                dialog, true = page.locator("#calibrate-dialog"), page.locator("#calibrate-true")
+                expect(dialog).to_be_visible()
+                expect(true).to_have_value("145.010")       # the VFO, rounded to the kilohertz
+                expect(page.locator("#calibrate-in-use")).to_have_text("0.00 ppm")
+                expect(page.locator("#calibrate-measured")).to_contain_text(
+                    re.compile(rf"^145\.00953\d\d MHz {DOT} \d+ dB above the noise, "
+                               r"46[45]\.\d Hz below its true frequency$"))
+                expect(page.locator("#calibrate-correction")).to_have_text("3.21 ppm")
+                apply = page.locator("#calibrate-apply")
+                true.fill("146")                  # a typo, far beyond what a crystal is off
+                expect(page.locator("#calibrate-note")).to_contain_text("beyond the -100 to 100 ppm")
+                expect(apply).to_be_disabled()
+                true.fill("145.012")              # 17 ppm: possible, but more than a drift
+                expect(page.locator("#calibrate-note")).to_contain_text("more than a crystal drifts")
+                expect(apply).to_be_enabled()
+                true.fill("145.01")
+                expect(page.locator("#calibrate-note")).to_have_text("")
+                apply.click()
+                expect(page.locator("#src-ppm")).to_have_value("3.21")
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145010000")
+                expect(page.locator("#calibrate-in-use")).to_have_text("3.21 ppm")
+                expect(page.locator("#calibrate-cancel")).to_have_text("Close")
+                expect(page.locator("#calibrate-measured")).to_contain_text(
+                    re.compile(r", 0\.\d Hz (above|below) its true frequency$"))
+                page.locator("#calibrate-cancel").click()
+                expect(dialog).to_be_hidden()
+
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_antenna_power_turns_on_with_a_second_press_and_off_with_one(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from

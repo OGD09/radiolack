@@ -22,7 +22,8 @@ preferences apart from this computer's.
 
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
-    "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]}
+    "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
+    "measures": ["carrier"]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -41,7 +42,10 @@ preferences apart from this computer's.
    VFO, and `iq`, the receiver's raw I/Q (the recording state and the
    recordings, below). An engine older than the recordings sends no
    `recording`: it records nothing; one older than the I/Q recordings lists
-   `audio` alone.
+   `audio` alone. `measures` lists what the engine measures when an
+   interface asks: `carrier`, the carrier at the VFO (the carrier's
+   measure, below). An engine older than the calibration sends no
+   `measures`: it measures nothing.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -542,7 +546,36 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-17. An error, to one interface only, when the engine refuses a message from
+17. A carrier's measure, a JSON text message, to one interface only, when
+    it asks for one (`carrier` message), about two seconds later: the
+    strongest line within the VFO's filter, as the receiver gives the
+    channel, before the demodulator.
+
+    ```json
+    {"type": "carrier", "id": 12, "frequency_hz": 9999987.3, "margin_db": 47.2, "reason": null}
+    {"type": "carrier", "id": 13, "frequency_hz": null, "margin_db": 12.4, "reason": "no_signal"}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `id` | The `id` of the interface's latest `carrier` message, or null when it gave none. |
+    | `frequency_hz` | The line's frequency on the air, to the tenth of a hertz, in every mode, through direct sampling and a converter alike; null when there is none, and `reason` says why. |
+    | `margin_db` | How far the line stands above the median of the filter's bins, in dB, to the tenth; null when nothing was measured, or no line stands out within the filter. |
+    | `reason` | Null with a frequency. Otherwise `silent`: the VFO's channel receives nothing, outside the span, in WFM below a sample rate of 320 kHz, or no samples came for 6 s; `no_signal`: no line stands 20 dB above the median within the filter, or the strongest bin there is no peak, its line lying beyond the filter's edge; `several`: another line, more than 5 Hz from the strongest, comes within 6 dB of it; `unstable`: two seconds in a row disagree by more than 1 Hz, or the measure, which starts again whenever the receiver's settings, the VFO's frequency, mode or filter, or the span change, could not finish within 6 s. An interface shows a reason it does not know as a failed measure. |
+
+    The engine measures one second of the channel, at the channel rate, 48
+    or 320 kHz (bins of 1 Hz), through a Hann window and an FFT, places the
+    strongest bin within the filter between its neighbours with a parabola
+    through their levels in dB, then measures the next second: the result
+    is their mean. A second without a line, or whose line stands too low or
+    has a rival, ends the measure at once. In CW the channel's 0 Hz lies
+    the CW pitch below the VFO; the frequency given is the one on the air
+    either way. The engine gathers the channel only while an interface
+    waits for a measure: the interfaces that ask while one runs share it,
+    and each receives it alone, with its own latest `id`; one that goes
+    away stops waiting, and once none waits nothing more is measured.
+
+18. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -554,12 +587,14 @@ What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
 found, the recording state, the storage state, the update state and remote
 access's state, each when it changed (and the preferences at the start),
-then the observations, the recordings, the reports and errors, in the
+then the observations, the recordings, the reports, the carrier's
+measures and errors, in the
 order of the messages they answer, then audio frames, then spectrum frames. A client
 that reads too slowly loses its oldest frames: the engine keeps the latest
 four spectrum frames and fifteen audio frames (half a second) for it and
 never slows down for one client; it keeps its latest states, and up to
-eight observations, recordings, reports and errors together. When
+eight observations, recordings, reports, carrier's measures and errors
+together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -784,6 +819,18 @@ sender alone, with what the interface tells of itself, if it does:
 it is. The engine refuses other fields and another `page`, and the message
 of a remote client.
 
+A `carrier` message asks the engine to measure the carrier at the VFO,
+which comes to the sender alone (the carrier's measure, above):
+
+```json
+{"type": "carrier", "action": "measure", "id": 12}
+```
+
+`action` is `measure`; `id`, optional, a whole number from 1 to 2⁵³ − 1,
+which the measure repeats. An interface that asks again before its measure
+comes waits for the same one, which carries its new id. The engine refuses
+other fields and values.
+
 A `remote` message changes remote access ([Remote access](#remote-access)),
 one setting at a time:
 
@@ -807,8 +854,8 @@ sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
-`observations`, `preferences`, `recording`, `recordings` and `audio`
-messages, but neither `update` nor `remote` messages, nor a `source`
+`observations`, `preferences`, `recording`, `recordings`, `carrier` and
+`audio` messages, but neither `update` nor `remote` messages, nor a `source`
 message that names `address`, nor a `recording` message that names
 `folder`: the engine refuses them with the error "only Radiolack's
 interface on the computer may change this". Its `preferences` are its
@@ -923,6 +970,15 @@ and later.
   hello does not list `sweep` for the sweep. An interface reads a scanner
   state without the sweep's fields, as an older engine's, as one without a
   sweep.
+- An interface whose hello does not list `carrier` among its `measures`,
+  as an older engine's, disables Calibrate and says that it needs
+  Radiolack to restart. While its Calibrate dialog is open, the interface
+  asks for a carrier's measure, with a new `id` each time, as soon as the
+  previous one came and two seconds after it went at the earliest, and
+  again after 10 s without an answer; it asks again at once, and ignores
+  the measures of older ids, after a change of the source's settings or
+  of the VFO's frequency, mode or filter, so that no measure taken before
+  the change computes a correction. Closing the dialog asks for no more.
 - The interface asks for the observations when its History shows, then
   every 30 s while it shows and its page is visible.
 - An interface whose hello does not list `audio` in its `recording`, as an
@@ -1025,7 +1081,9 @@ and later.
   `converter_lo_hz`, likewise, with the recording state's `stopped` reason
   `converter`, which an older interface shows as a plain stop. An older
   interface behind a converter shows and takes the frequencies on the air,
-  as every interface does.
+  as every interface does. Later that day, the calibration: the hello's
+  `measures`, which an older interface ignores, and the `carrier`
+  messages, which an older interface never sends, and so never receives.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

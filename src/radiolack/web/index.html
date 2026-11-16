@@ -247,6 +247,7 @@
           </div>
           <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" disabled></div>
           <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.01" value="0" disabled></div>
+          <div class="row"><button type="button" class="btn" id="src-calibrate" aria-haspopup="dialog" aria-controls="calibrate-dialog" disabled>Calibrate</button><span class="note" id="src-calibrate-note"></span></div>
           <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
         </div>
       </section>
@@ -408,6 +409,23 @@
       </dl>
       <p class="note">The dipole and the vertical include the usual 5% shortening: cut them a little longer, then trim.</p>
       <p class="note">Listening needs no resonant antenna: below 30 MHz a long wire often does as well; above, a resonant one mostly helps weak signals.</p>
+    </div>
+  </dialog>
+
+  <dialog id="calibrate-dialog" aria-labelledby="calibrate-title" aria-describedby="calibrate-about">
+    <div class="dialog-body">
+      <div class="dialog-head"><h2 id="calibrate-title">Calibrate</h2><button type="button" class="close" aria-label="Close the calibration">×</button></div>
+      <p class="note" id="calibrate-about">Tune the VFO onto a steady carrier whose frequency you know, in AM or CW: Radiolack measures the strongest line within the filter, which in NFM or SSB may not be the carrier.</p>
+      <div class="field"><span class="label">Carrier measured</span><p id="calibrate-measured" role="status"></p></div>
+      <div class="field"><label for="calibrate-true">True frequency of this carrier (MHz)</label><input id="calibrate-true" type="text" inputmode="decimal" spellcheck="false" autocomplete="off"></div>
+      <dl class="lengths">
+        <dt>Correction in use</dt><dd id="calibrate-in-use"></dd>
+        <dt>Correction to apply</dt><dd id="calibrate-correction"></dd>
+      </dl>
+      <p class="note" id="calibrate-note" role="status"></p>
+      <p class="note" id="calibrate-converter" hidden>A converter is set: its oscillator is taken as exact.</p>
+      <p class="note" id="calibrate-tuner" hidden>On the tuner, the result also takes in the tuner's own error at this frequency: for the crystal alone, calibrate in direct sampling.</p>
+      <div class="row"><button type="button" class="btn primary" id="calibrate-apply" disabled>Apply</button><button type="button" class="btn" id="calibrate-cancel">Cancel</button></div>
     </div>
   </dialog>
 

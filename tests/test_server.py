@@ -252,7 +252,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
-                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
+                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
+                              "measures": ["carrier"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -476,6 +477,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "report", "text": "mine"}': ("report", "unknown report field: text"),
             '{"type": "report", "page": "two\\nlines"}': (
                 "report", "page must be a line of text of at most 300 characters"),
+            '{"type": "carrier"}': ("carrier", "a carrier message takes the action measure"),
+            '{"type": "carrier", "action": "measure", "id": -1}': (
+                "carrier", "a request id must be a whole number from 1"),
         }
         async with self.connect(self.origin) as ws:
             await self.start(ws)
@@ -789,6 +793,24 @@ class ReportStreamTest(unittest.IsolatedAsyncioTestCase):
             await asking.send_json({"type": "scanner", "threshold_db": 20})
             while (message := await next_text(other))["type"] != "scanner":
                 self.assertNotEqual(message["type"], "report")
+
+
+class CarrierStreamTest(ReportStreamTest):
+    """Any interface, a remote device's included, asks for the measure of
+    the carrier at the VFO, which comes to it alone."""
+
+    async def test_sends_the_measure_to_the_interface_that_asks(self):
+        async with self.connect() as asking, self.connect() as other:
+            for ws in (asking, other):
+                await read_start(self, ws)
+            await asking.send_json({"type": "carrier", "action": "measure", "id": 4})
+            while (message := await next_text(asking))["type"] != "carrier":
+                continue
+            self.assertEqual(set(message), {"type", "id", "frequency_hz", "margin_db", "reason"})
+            self.assertEqual(message["id"], 4)
+            await asking.send_json({"type": "scanner", "threshold_db": 20})
+            while (message := await next_text(other))["type"] != "scanner":
+                self.assertNotEqual(message["type"], "carrier")
 
 
 async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:
