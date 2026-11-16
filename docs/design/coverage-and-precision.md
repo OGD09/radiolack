@@ -791,6 +791,29 @@ As built, where this section left a choice open or a rule had to bend:
   neither installs `tools/`. Exit status 0 with a verdict, 1 without one
   or when the centre frequency could not be restored, 130 after Ctrl-C.
 
+Measured on 2026-11-16, on the owner's V3 with rtl-sdr 0.6.0
+([`scoping.md`](scoping.md), spike 6, with the table):
+
+- A spread of 203 Hz near 111 MHz, the tuner's divider of 145 MHz, that
+  follows the truncating computation within 0.13 Hz at each of 53
+  measures; the crystal drifted by 1.7 Hz meanwhile.
+- **The oscillator was the centre plus 3.57 MHz at every sample rate**, as
+  this section first had it, and not the IF of the sample rate that the
+  first point above describes. That point reads the driver rightly, but
+  Radiolack sends command 0x09 with 0 after the sample rate
+  (`rtltcp.py`, since pull request 4), and librtlsdr's
+  `rtlsdr_set_direct_sampling` then starts the tuner again: its IF goes
+  back to 3.57 MHz and its filter to the widest, whatever the sample rate.
+  The tool, which took the IF of the sample rate, answered that the
+  carrier followed neither prediction; the figures were computed again
+  from its table with the oscillator that was truly set. The tool's
+  oscillator, and whether Radiolack should send the sample rate after
+  0x09 so that the tuner's filter follows it again, are to settle with
+  what pull request 14 becomes.
+- By the rule, pull request 14 is built; as the second point above says,
+  its premise does not hold for this computation, so what it becomes is
+  the owner's to decide.
+
 ### 14. PLL-exact centre frequencies, only if 13 says so
 
 - For an R820T or R828D on a 28.8 MHz crystal, the source moves each

@@ -525,7 +525,7 @@ band.
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Decided on 2026-11-11: a local authority limited by name constraints (see Decisions); to check on the owner's iPhone. |
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
-| 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Coverage and precision, pull request 13, on the owner's receiver. |
+| 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: what to build is to decide. |
 | 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Any receiver, first pull request. |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Listening tools, first pull request. |
 | 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
@@ -570,6 +570,102 @@ Consequences:
 - The UI keeps its drawing buffers at about 3.4 million device pixels or less
   on large HiDPI windows, and starts audio on the first user gesture wherever
   autoplay is blocked, as remote browsers require anyway.
+
+### Spike 6 result (2026-11-16)
+
+Measured with `tools/measure_pll.py` (coverage-and-precision.md, pull
+request 13) on the owner's RTL-SDR Blog V3 (R820T tuner), through rtl_tcp
+of rtl-sdr 0.6.0 as Debian 12 packages it (upstream commit 2659e2d), at
+2.4 MS/s, without correction, after ten minutes of warming up. The VFO
+stayed on one steady, continuous carrier near 111 MHz, 55 dB above the
+noise, measured in AM through a 6 kHz filter; the tuner's divider there
+is 16, the one it uses at 145 MHz.
+
+- **The error is there.** Over 40 centre frequencies 1.234 kHz apart, the
+  carrier moved by 200 Hz in all, from -104.0 to +96.1 Hz, and by 203 Hz
+  with the eight centres of the second sweep. The crystal drifted by
+  1.7 Hz over the run, 0.4 Hz at most between two measures of the first
+  centre, which the offsets leave out.
+- **It follows the driver's older computation**, the one of rtl-sdr up to
+  2.0.1, within 0.13 Hz at every one of the 53 measures, once the tuner's
+  oscillator is taken as the centre frequency plus 3.57 MHz. The newer
+  computation, of rtl-sdr 2.0.2 and later, misses 31 points of 48 by more
+  than 5 Hz, by up to 110 Hz.
+- **The oscillator is the centre plus 3.57 MHz at every sample rate**, not
+  the intermediate frequency that the driver computes from the sample
+  rate (1.815 MHz at 2.4 MS/s), which the tool assumed: short runs at
+  1.024 and 2.56 MS/s gave the same offsets, within 0.14 Hz of the same
+  prediction. The driver's code says why: Radiolack sends rtl_tcp's
+  command 0x09 with 0, direct sampling off, after the sample rate, and
+  `rtlsdr_set_direct_sampling` then starts the tuner again, which puts its
+  intermediate frequency back to 3.57 MHz and its filter back to the
+  widest, whatever the sample rate asked for before. The tool therefore
+  answered "follows neither prediction": its verdict came from the wrong
+  oscillator, and the figures here were computed again from its table.
+- **By the rule fixed beforehand**, a spread of 30 Hz or more that follows
+  one of the predictions, pull request 14 is built. As designed it cannot
+  be: the older computation is exact only where the tuner's
+  voltage-controlled oscillator is a multiple of 57.6 MHz, every 3.6 MHz
+  of the tuner's oscillator near 145 MHz, more than the span, not every
+  112.5 kHz. Since the computation predicts the tuner to a fraction of a
+  hertz, Radiolack could instead compute where the tuner truly sits and
+  label its samples with that; it would have to know which computation
+  the driver in use runs. What to build is the owner's to decide.
+
+The first sweep, the centre frequency counted from the first one, and
+where each computation puts the carrier with the oscillator at the centre
+plus 3.57 MHz; the carrier's own frequency is left out:
+
+| Centre, from the first (Hz) | Carrier moved (Hz) | Older computation (Hz) | Newer computation (Hz) |
+| --- | --- | --- | --- |
+| +0 | +0.0 | +0.0 | +0.0 |
+| +1234 | +25.5 | +25.5 | +25.5 |
+| +2468 | -58.8 | -58.9 | -3.9 |
+| +3702 | -33.3 | -33.4 | +21.6 |
+| +4936 | -7.8 | -7.8 | -7.8 |
+| +6170 | +17.6 | +17.7 | +17.7 |
+| +7404 | +43.2 | +43.2 | -11.8 |
+| +8638 | -41.2 | -41.2 | +13.7 |
+| +9872 | +94.2 | +94.2 | +39.2 |
+| +11106 | +9.8 | +9.8 | +9.8 |
+| +12340 | +35.3 | +35.3 | +35.3 |
+| +13574 | +60.8 | +60.8 | +5.9 |
+| +14808 | -23.5 | -23.5 | +31.4 |
+| +16042 | +1.9 | +2.0 | +2.0 |
+| +17276 | +27.4 | +27.5 | +27.5 |
+| +18510 | -56.9 | -56.9 | -2.0 |
+| +19744 | +78.5 | +78.5 | +23.5 |
+| +20978 | -5.8 | -5.9 | -5.9 |
+| +22212 | -90.2 | -90.2 | +19.6 |
+| +23446 | +45.1 | +45.1 | -9.8 |
+| +24680 | +70.7 | +70.6 | +15.7 |
+| +25914 | +96.1 | +96.1 | +41.2 |
+| +27148 | +11.8 | +11.8 | +11.8 |
+| +28382 | -72.6 | -72.6 | +37.3 |
+| +29616 | +62.8 | +62.8 | +7.8 |
+| +30850 | -21.6 | -21.6 | +33.3 |
+| +32084 | +3.9 | +3.9 | +3.9 |
+| +33318 | +29.5 | +29.4 | +29.4 |
+| +34552 | -54.9 | -54.9 | -0.0 |
+| +35786 | -29.5 | -29.4 | +25.5 |
+| +37020 | -3.9 | -3.9 | -3.9 |
+| +38254 | +21.6 | +21.6 | +21.6 |
+| +39488 | +47.1 | +47.1 | -7.8 |
+| +40722 | -37.3 | -37.3 | +17.7 |
+| +41956 | -11.8 | -11.8 | -11.8 |
+| +43190 | +13.8 | +13.7 | +13.7 |
+| +44424 | +39.3 | +39.2 | +39.2 |
+| +45658 | +64.8 | +64.7 | +9.8 |
+| +46892 | -19.5 | -19.6 | +35.3 |
+| +48126 | -104.0 | -104.0 | +5.9 |
+
+In the second sweep, eight centres from 415.5 kHz below the first to
+372 kHz above it, the carrier sat 106.8 to 107.0 Hz below its first
+measure, where the older computation puts it at 106.9 Hz below.
+
+Not measured: the owner's other computer, whose rtl-sdr 2.0.1 has the same
+computation and the same `rtlsdr_set_direct_sampling`; another divider of
+the tuner than 16; an RTL-SDR Blog V4.
 
 ## Preparing a public release
 
