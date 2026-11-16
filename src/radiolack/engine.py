@@ -1781,6 +1781,8 @@ class Engine:
         observations = self._observations_due
         if observations:
             self._observations_due = False
+            # Counted from here while the file is written, so that a change
+            # made meanwhile does not ask for another write at once.
             self._observations_saved_s = time.monotonic()
             self._observations.forget(time.time())
         try:
@@ -1789,6 +1791,14 @@ class Engine:
                     self._saved[name] = content
         except Exception:
             log.exception("the settings could not be saved")
+        if observations:
+            # The write may have taken a moment: the time to the next one
+            # counts from its end, for a write asked for meanwhile too.
+            self._observations_saved_s = time.monotonic()
+            if self._observations_timer is not None:
+                self._observations_timer.cancel()
+                self._observations_timer = asyncio.get_running_loop().call_later(
+                    self._observations_save_s, self._observations_save_due)
         if self.storage_state() != before:
             for subscription in self._clients:
                 subscription.changed("storage")

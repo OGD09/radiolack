@@ -2109,8 +2109,10 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name) / "radiolack"
 
-    def engine(self, source: Source | None = None, run: bool = True, **options) -> Engine:
-        engine = Engine(source if source is not None else FakeSource(), store=Store(self.directory), **options)
+    def engine(self, source: Source | None = None, run: bool = True, store: Store | None = None,
+               **options) -> Engine:
+        engine = Engine(source if source is not None else FakeSource(),
+                        store=store if store is not None else Store(self.directory), **options)
         task = asyncio.ensure_future(engine.run()) if run else None
 
         async def stop():
@@ -2215,22 +2217,44 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
                 engine.configure_observations(changes, subscription)
         self.assertEqual(observations_of(subscription), [])
 
-    async def test_written_at_most_every_interval_while_it_runs(self):
-        started = time.monotonic()
-        engine = self.engine(save_delay_s=0.01, observations_save_s=0.5)
-        engine.subscribe()
-        writes = []
-        deadline = started + 10
-        while len(writes) < 2:
+    async def written(self, count: int) -> list[tuple[float, dict]]:
+        """The file's first ``count`` contents, each with when it was seen."""
+        writes: list[tuple[float, dict]] = []
+        deadline = time.monotonic() + 10
+        while len(writes) < count:
             self.assertLess(time.monotonic(), deadline, f"written {len(writes)} times")
             content = self.read()
             if content is not None and (not writes or content != writes[-1][1]):
                 writes.append((time.monotonic(), content))
             await asyncio.sleep(0.01)
+        return writes
+
+    async def test_written_at_most_every_interval_while_it_runs(self):
+        started = time.monotonic()
+        engine = self.engine(save_delay_s=0.01, observations_save_s=0.5)
+        engine.subscribe()
+        writes = await self.written(2)
         self.assertGreaterEqual(writes[0][0] - started, 0.45)
         self.assertGreaterEqual(writes[1][0] - writes[0][0], 0.45)
         [channel] = writes[1][1]["channels"]
         self.assertAlmostEqual(channel["frequency_hz"], FAKE_TONE_HZ, delta=FAKE_RATE_HZ / 8192)
+
+    async def test_the_interval_counts_from_the_end_of_a_slow_write(self):
+        class SlowAtFirst(Store):
+            """A disk that takes a moment over the observations' first write."""
+
+            slow = True
+
+            def save(self, name, content):
+                if name == OBSERVATIONS_FILE and self.slow:
+                    self.slow = False
+                    time.sleep(0.2)
+                return super().save(name, content)
+
+        engine = self.engine(store=SlowAtFirst(self.directory), save_delay_s=0.01, observations_save_s=0.5)
+        engine.subscribe()
+        writes = await self.written(2)
+        self.assertGreaterEqual(writes[1][0] - writes[0][0], 0.45)
 
     async def test_written_when_the_engine_stops_and_read_at_the_next_start(self):
         engine = self.engine(observations_save_s=3600)
