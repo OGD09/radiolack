@@ -46,12 +46,15 @@ Each band, and each segment inside a band:
 | `short` | Bands only, optional: a shorter name, at most 12 characters, that the band strip shows where the name does not fit (`2 m` for `2 m amateur`). |
 | `type` | One of `types`. |
 | `mode` | Optional: `NFM`, `AM`, `USB`, `LSB`, `CW` or `WFM`, the demodulator selected when tuning into the range. Without it, the mode stays as it is. |
-| `step` | Optional: tuning step in Hz, used by the Automatic step. The default is 100 Hz. |
+| `step` | Optional, where the range has channels: their spacing in Hz. The Automatic step takes it while the view shows two channels or more; elsewhere, and in a range without it, the Automatic step follows the view's width ([`coverage-and-precision.md`](coverage-and-precision.md), pull request 3). |
 | `segments` | Bands only, optional: segments in frequency order inside the band. The gaps between segments show the band itself. |
 
-Some steps follow a channel raster rather than a round number: the airband
-step is 25 kHz / 3 (8.33 kHz channels), and PMR446 uses 6.25 kHz so that the
-steps reach its channel centres (446.00625 MHz + n × 12.5 kHz). FM broadcast
+A step is a channel spacing, never a default for tuning: ranges without
+channels, such as the utility ranges and the amateur CW and beacon segments,
+have none (decided 2026-11-16). Some steps follow a channel raster rather than
+a round number: the airband step is 25 kHz / 3 (8.33 kHz channels), and
+PMR446 uses 6.25 kHz so that the steps reach its channel centres
+(446.00625 MHz + n × 12.5 kHz). FM broadcast
 steps by 50 kHz, to reach the stations that some countries place between the
 100 kHz channels, and selects WFM, v3's demodulator for broadcast FM
 ([`scoping.md`](scoping.md)).

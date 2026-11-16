@@ -15,6 +15,12 @@ LOWEST_HZ = 9_000               # where the ITU allocation table starts
 HIGHEST_HZ = 6_425_000_000      # above the 6 GHz of the highest receivers in scope
 LONGEST_NAME = 40               # names show in the readout's single line
 LONGEST_SHORT_NAME = 12         # short names stand in where a band's name does not fit in the band strip
+# A step is a range's channel spacing, never a default: broadcast's 9 and
+# 5 kHz, CB's 5 kHz, PMR446's 6.25 kHz grid, the airband's 25 kHz / 3, the
+# 10 m and 6 m FM channels' 10 kHz, the 12.5 and 25 kHz channels, and FM
+# broadcast's and the VOR's 50 kHz. Elsewhere the Automatic step follows the
+# zoom (tuning.js).
+CHANNEL_SPACINGS = {5_000, 6_250, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 
 
@@ -73,7 +79,7 @@ class BandPlanTest(unittest.TestCase):
                     self.assertIn(entry["mode"], MODES)
                 if "step" in entry:
                     self.assertIn(type(entry["step"]), (int, float))
-                    self.assertGreater(entry["step"], 0)
+                    self.assertIn(entry["step"], CHANNEL_SPACINGS)
                 if "segments" in entry:
                     self.assertTrue(entry["segments"])
 

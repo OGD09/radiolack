@@ -105,8 +105,8 @@ the history under the tag `v0.1.0`.
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
   `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
   (band plan loader), `antenna.js` (antenna lengths for the VFO's
-  frequency) and `frequency.js` (the one formatter and the one reader of
-  exact frequencies) carry JSDoc types; `main.js` still holds the mockup's code under
+  frequency), `frequency.js` (the one formatter and the one reader of
+  exact frequencies) and `tuning.js` (the Automatic step) carry JSDoc types; `main.js` still holds the mockup's code under
   `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that

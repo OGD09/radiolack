@@ -377,9 +377,15 @@ a digit of the frequency changes that digit, and so does dragging it up or
 down with any pointer, by one for every 16 px; both move the span when the
 frequency leaves it.
 
-The tuning step, in the Radio menu, is Automatic (the band plan's, or
-100 Hz where it gives none) or one of 1, 10, 50, 100 and 500 Hz, 1, 5,
-6.25, 8.33 (25 kHz / 3, the airband's), 9, 10, 12.5, 25, 50 and 100 kHz. A
+The tuning step, in the Radio menu, is Automatic or one of 1, 10, 50, 100
+and 500 Hz, 1, 5, 6.25, 8.33 (25 kHz / 3, the airband's), 9, 10, 12.5, 25,
+50 and 100 kHz, which applies whatever the zoom. Automatic is the channel
+spacing where the band plan gives one, such as 12.5 kHz on the 2 m
+repeaters or 9 kHz on medium wave, while the view shows two channels or
+more; elsewhere it follows the view's width: 100 kHz from 200 MHz wide,
+10 kHz from 20 MHz, 1 kHz from 2 MHz, 100 Hz from 200 kHz, 10 Hz from
+20 kHz, and 1 Hz in a narrower view. The line under the frequency shows the
+step in use. A
 click, dragging the filter, the wheel, the arrow keys and the − and +
 buttons land on the step's grid, and Shift with an arrow key steps ten
 times as far; a typed frequency, a bookmark and a digit do not.
@@ -1008,8 +1014,9 @@ range and its edges, and clicking it zooms to the range. Zoomed out, where a
 band's ranges would be too narrow to read, the band shows as one block of
 its colour, named in full, by a short name or not at all as room allows,
 and clicking it zooms to the band. With Radio > "Mode
-and step from the band plan", tuning into a range selects its usual mode, and
-the Automatic tuning step follows the plan. The Bookmarks menu lists the
+and step from the band plan", tuning into a range selects its usual mode.
+The Automatic tuning step takes the channel spacing of the ranges that have
+channels ([Demodulation and audio](#demodulation-and-audio)). The Bookmarks menu lists the
 ranges of the received span. Display > "Band plan" hides the strip.
 
 The plan is a simplified table for Europe (ITU Region 1): a guide, not a legal
