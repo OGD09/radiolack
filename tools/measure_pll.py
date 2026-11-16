@@ -13,6 +13,21 @@ air, so an error of the PLL shows as a carrier that moves with the centre
 frequency. The two computations of the driver (tests/r82xx_pll.py) predict
 how it moves.
 
+The tuner's oscillator: the centre frequency plus the tuner's intermediate
+frequency (IF), which depends on what librtlsdr did to the tuner last
+(r82xx_pll.TUNER_STATES): the IF of the sample rate once the sample rate
+gave the tuner its bandwidth, or 3.57 MHz once command 0x09 with 0 started
+the tuner again. Every prediction is made under each IF, so that the
+measures tell which one the tuner ran at, and the table and the
+conclusion name the one they follow. Only the second sweep must take one
+beforehand, to put the oscillator on multiples of 112.5 kHz: it takes the
+IF of the sample rate (``ASSUMED_STATE``). Radiolack sends the sample rate
+after 0x09 since the fix that followed this measure's first run; a
+Radiolack from before it, back to the shortwave pull request, left the
+tuner at 3.57 MHz, which the conclusion then says. The tool cannot tell
+them apart at start: the calibration that the measure needs came between
+the two, without a release, so that both say the same version.
+
 Drift: the crystal warms up and drifts over the minutes a run takes, which
 moves the carrier too, slowly and whatever the centre frequency. The tool
 measures the first centre again every few points and at the end, takes
@@ -93,6 +108,16 @@ PREDICTIONS = {
     "rounding": "rtl-sdr 2.0.2 and later",
 }
 NAMES = {"truncating": "up to 2.0.1", "rounding": "2.0.2 on"}
+# The tuner's IF in each of its states (the module docstring).
+STATE_NAMES = {"rate": "IF of the rate", "started": "IF 3.57 MHz"}
+STATES = {
+    "rate": "the IF that librtlsdr sets with the sample rate",
+    "started": "3.57 MHz, the IF of a tuner that command 0x09 with 0 has just started again, until the next "
+               "sample rate",
+}
+ASSUMED_STATE = "rate"      # the IF that the second sweep takes
+# Every prediction: a computation of the driver, with the tuner in one of its states.
+HYPOTHESES = tuple((computation, state) for computation in PLL.COMPUTATIONS for state in PLL.TUNER_STATES)
 STEP, MULTIPLE, REFERENCE = "1.234 kHz step", "112.5 kHz oscillator", "reference"
 
 EXIT_VERDICT, EXIT_FAILED, EXIT_INTERRUPTED = 0, 1, 130
@@ -125,21 +150,26 @@ class Receiver:
         """The frequency that Radiolack asks of rtl_tcp for ``centre_hz``."""
         return corrected_hz(centre_hz, self.ppm, self.whole_ppm)
 
-    def oscillator_hz(self, centre_hz: int) -> int:
-        return PLL.oscillator_hz(self.asked_hz(centre_hz), self.rate_hz)
+    def oscillator_hz(self, centre_hz: int, state: str = ASSUMED_STATE) -> int:
+        """The oscillator that librtlsdr asks of the tuner for ``centre_hz``,
+        the tuner in ``state``."""
+        return PLL.oscillator_hz(self.asked_hz(centre_hz), self.rate_hz, state)
 
-    def true_centre_hz(self, computation: str, centre_hz: int) -> float:
-        """The centre the receiver truly tunes for ``centre_hz`` by the
-        driver's ``computation``, the crystal as corrected."""
+    def true_centre_hz(self, hypothesis: tuple[str, str], centre_hz: int) -> float:
+        """The centre the receiver truly tunes for ``centre_hz`` by
+        ``hypothesis``, the driver's computation with the tuner in one of
+        its states, the crystal as corrected."""
+        computation, state = hypothesis
         scale = (1 + self.ppm / 1e6) / (1 + self.whole_ppm / 1e6)
-        return PLL.tuned_hz(computation, self.asked_hz(centre_hz), self.rate_hz, self.whole_ppm) * scale
+        return PLL.tuned_hz(computation, self.asked_hz(centre_hz), self.rate_hz, self.whole_ppm, state) * scale
 
-    def predicted_hz(self, computation: str, centre_hz: int) -> float:
+    def predicted_hz(self, hypothesis: tuple[str, str], centre_hz: int) -> float:
         """How far the carrier moves from its first measure at
-        ``centre_hz``: it shows at the centre asked plus its distance from
-        the centre truly tuned."""
+        ``centre_hz`` by ``hypothesis``, a computation and a state of the
+        tuner: it shows at the centre asked plus its distance from the
+        centre truly tuned."""
         def shift(centre: int) -> float:
-            return centre - self.true_centre_hz(computation, centre)
+            return centre - self.true_centre_hz(hypothesis, centre)
         return shift(centre_hz) - shift(self.centre_hz)
 
     def fits(self, centre_hz: int) -> str | None:
@@ -153,8 +183,8 @@ class Receiver:
         if distance + self.bandwidth_hz / 2 > SPAN_USE * self.rate_hz:
             return f"the VFO would lie too close to the edge of the span around {centre_hz} Hz"
         try:
-            for computation in PLL.COMPUTATIONS:
-                self.true_centre_hz(computation, centre_hz)
+            for hypothesis in HYPOTHESES:
+                self.true_centre_hz(hypothesis, centre_hz)
         except ValueError as problem:
             return str(problem)
         return None
@@ -179,8 +209,9 @@ class Measure:
 @dataclass
 class Analysis:
     spread_hz: float
-    residual_hz: dict[str, float]
-    follows: list[str]
+    residual_hz: dict[tuple[str, str], float]   # by hypothesis
+    follows: list[tuple[str, str]]              # the hypotheses followed
+    state: str                  # the tuner's state that the measures show, or else the one assumed
     references: list[float]
     drift_hz: float
     drift_step_hz: float
@@ -192,8 +223,9 @@ class Analysis:
 def plan(receiver: Receiver, steps: int, multiples: int) -> list[Point]:
     """The centre frequencies to measure, the first one first: ``steps``
     1.234 kHz apart, upwards or else downwards, then up to ``multiples``
-    whose oscillators lie on multiples of 112.5 kHz, nearest to the first
-    one's; Refused when the first sweep fits neither way."""
+    whose oscillators, with the IF assumed (``ASSUMED_STATE``), lie on
+    multiples of 112.5 kHz, nearest to the first one's; Refused when the
+    first sweep fits neither way."""
     first = receiver.centre_hz
     why = ""
     for direction in (1, -1):
@@ -206,7 +238,7 @@ def plan(receiver: Receiver, steps: int, multiples: int) -> list[Point]:
         raise Refused(f"the centre frequency cannot move by {STEP_HZ} Hz {steps - 1} times either way: {why}. "
                       f"Put the VFO further from the centre frequency, within the span.")
     points = [Point(STEP, centre) for centre in centres]
-    intermediate = PLL.intermediate_hz(receiver.rate_hz)
+    intermediate = PLL.intermediate_hz(receiver.rate_hz, ASSUMED_STATE)
     scale = (1 + receiver.ppm / 1e6) / (1 + receiver.whole_ppm / 1e6)
     nearest = round(receiver.oscillator_hz(first) / MULTIPLE_HZ)
     found: list[int] = []
@@ -257,18 +289,21 @@ def analyse(receiver: Receiver, measures: list[Measure]) -> Analysis:
     points = [measure for measure in measures if measure.point.kind != REFERENCE]
     offsets = [measure.offset_hz for measure in points]
     spread = max(offsets) - min(offsets)
-    residual = {computation: max(abs(measure.offset_hz - receiver.predicted_hz(computation, measure.point.centre_hz))
-                                 for measure in points)
-                for computation in PLL.COMPUTATIONS}
-    follows = [computation for computation, value in residual.items() if value <= FOLLOW_HZ]
+    residual = {hypothesis: max(abs(measure.offset_hz - receiver.predicted_hz(hypothesis, measure.point.centre_hz))
+                                for measure in points)
+                for hypothesis in HYPOTHESES}
+    follows = [hypothesis for hypothesis, value in residual.items() if value <= FOLLOW_HZ]
+    # The tuner's state, when the predictions followed agree on it.
+    shown = {state for _, state in follows}
+    state = shown.pop() if len(shown) == 1 else ASSUMED_STATE
     references = [measures[0].carrier_hz] + [measure.carrier_hz for measure in measures[1:]
                                              if measure.point.kind == REFERENCE]
     drift = max(references) - min(references)
     drift_step = max((abs(b - a) for a, b in zip(references, references[1:])), default=0.0)
-    intermediate = PLL.intermediate_hz(receiver.rate_hz)
-    near_rule = (PLL.mix_divider(receiver.oscillator_hz(receiver.centre_hz))
+    intermediate = PLL.intermediate_hz(receiver.rate_hz, state)
+    near_rule = (PLL.mix_divider(receiver.oscillator_hz(receiver.centre_hz, state))
                  == PLL.mix_divider(RULE_HZ + intermediate))
-    analysis = Analysis(spread, residual, follows, references, drift, drift_step, near_rule, "table")
+    analysis = Analysis(spread, residual, follows, state, references, drift, drift_step, near_rule, "table")
     if drift_step > DRIFT_STEP_HZ:
         analysis.reason = (f"the reference moved {drift_step:.1f} Hz between two of its measures, more than "
                            f"{DRIFT_STEP_HZ:g} Hz: let the receiver warm up and measure again")
@@ -280,7 +315,7 @@ def analyse(receiver: Receiver, measures: list[Measure]) -> Analysis:
     elif spread < NOT_OBSERVED_HZ:
         analysis.verdict = "not_observed"
     elif spread >= BUILD_HZ:
-        analysis.reason = f"a spread of {BUILD_HZ:g} Hz or more that follows neither prediction"
+        analysis.reason = f"a spread of {BUILD_HZ:g} Hz or more that follows no prediction, under either IF"
     else:
         analysis.reason = f"a spread from {NOT_OBSERVED_HZ:g} to {BUILD_HZ:g} Hz"
     return analysis
@@ -288,31 +323,40 @@ def analyse(receiver: Receiver, measures: list[Measure]) -> Analysis:
 
 def table(receiver: Receiver, measures: Sequence[Measure]) -> list[str]:
     """The measures as a Markdown table."""
-    columns = ["#", "Kind", "Centre asked (Hz)", "Oscillator (Hz)", "Carrier (Hz)", "Drift (Hz)", "Offset (Hz)",
-               *(f"Predicted, {NAMES[computation]} (Hz)" for computation in PLL.COMPUTATIONS)]
+    columns = ["#", "Kind", "Centre asked (Hz)", f"Oscillator, {STATE_NAMES[ASSUMED_STATE]} (Hz)", "Carrier (Hz)",
+               "Drift (Hz)", "Offset (Hz)", *(f"Predicted, {name(hypothesis)} (Hz)" for hypothesis in HYPOTHESES)]
     lines = ["| " + " | ".join(columns) + " |", "|" + " --- |" * len(columns)]
     for number, measure in enumerate(measures, start=1):
         centre = measure.point.centre_hz
         cells = [str(number), measure.point.kind, str(centre), str(receiver.oscillator_hz(centre)),
                  f"{measure.carrier_hz:.1f}", f"{measure.drift_hz:+.1f}", f"{measure.offset_hz:+.1f}",
-                 *(f"{receiver.predicted_hz(computation, centre):+.1f}" for computation in PLL.COMPUTATIONS)]
+                 *(f"{receiver.predicted_hz(hypothesis, centre):+.1f}" for hypothesis in HYPOTHESES)]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
 
 
+def name(hypothesis: tuple[str, str]) -> str:
+    """A hypothesis's short name, as the table's columns give it."""
+    computation, state = hypothesis
+    return f"{NAMES[computation]}, {STATE_NAMES[state]}"
+
+
 def describe(receiver: Receiver, started: datetime) -> list[str]:
-    intermediate = PLL.intermediate_hz(receiver.rate_hz)
+    intermediate = PLL.intermediate_hz(receiver.rate_hz, ASSUMED_STATE)
     divider = PLL.mix_divider(receiver.oscillator_hz(receiver.centre_hz))
     return [
         f"PLL measure of {started:%Y-%m-%d %H:%M} UTC: {receiver.tuner}, {receiver.rate_hz} S/s "
-        f"(IF {intermediate} Hz), correction {receiver.ppm:g} ppm, VFO at {receiver.vfo_hz} Hz in "
+        f"(IF of the rate {intermediate} Hz), correction {receiver.ppm:g} ppm, VFO at {receiver.vfo_hz} Hz in "
         f"{receiver.mode} with a {receiver.bandwidth_hz:g} Hz filter, first centre {receiver.centre_hz} Hz, "
         f"tuner divider {divider}.",
         "",
-        "Oscillator: the one librtlsdr asks of the tuner. Offset: the carrier's distance from its first measure, "
-        "without the drift, the first centre measured again at the time, interpolated. "
-        f"Predicted: where each computation of the driver moves the carrier; up to 2.0.1: "
-        f"{PREDICTIONS['truncating']}; 2.0.2 on: {PREDICTIONS['rounding']}. A 28.8 MHz crystal is assumed.",
+        f"Oscillator: the one librtlsdr asks of the tuner with the {STATE_NAMES[ASSUMED_STATE]}; the second sweep "
+        "puts it on multiples of 112.5 kHz, as Radiolack sends the sample rate after command 0x09 since the fix "
+        "that followed the first measure. Offset: the carrier's distance from its first measure, without the drift, "
+        "the first centre measured again at the time, interpolated. "
+        f"Predicted: where each computation of the driver moves the carrier, under each IF; up to 2.0.1: "
+        f"{PREDICTIONS['truncating']}; 2.0.2 on: {PREDICTIONS['rounding']}; IF of the rate: {STATES['rate']}; "
+        f"IF 3.57 MHz: {STATES['started']}. A 28.8 MHz crystal is assumed.",
         "",
     ]
 
@@ -322,24 +366,32 @@ def conclusion(analysis: Analysis) -> list[str]:
     references = len(analysis.references)
     drift = (f"Drift: the first centre measured {references} times moved by {analysis.drift_hz:.1f} Hz in all, "
              f"at most {analysis.drift_step_hz:.1f} Hz between two of its measures.")
-    followed = [f"{NAMES[computation]} ({PREDICTIONS[computation]}), largest difference "
-                f"{analysis.residual_hz[computation]:.1f} Hz" for computation in analysis.follows]
-    others = [f"{NAMES[computation]}, largest difference {analysis.residual_hz[computation]:.1f} Hz"
-              for computation in PLL.COMPUTATIONS if computation not in analysis.follows]
+    followed = [f"{name(hypothesis)} ({PREDICTIONS[hypothesis[0]]}), largest difference "
+                f"{analysis.residual_hz[hypothesis]:.1f} Hz" for hypothesis in analysis.follows]
+    others = [f"{name(hypothesis)}, largest difference {analysis.residual_hz[hypothesis]:.1f} Hz"
+              for hypothesis in HYPOTHESES if hypothesis not in analysis.follows]
     follows = (f"Follows, within {FOLLOW_HZ:g} Hz at every point: " + "; ".join(followed) if followed
-               else f"Follows neither prediction within {FOLLOW_HZ:g} Hz")
+               else f"Follows no prediction within {FOLLOW_HZ:g} Hz, under either IF")
     if others and followed:
         follows += "; not " + "; ".join(others)
     elif others:
         follows += ": " + "; ".join(others)
+    lines = ["", spread, drift, follows + "."]
+    if analysis.follows and analysis.state == "started":
+        lines.append(f"The tuner ran at the {STATE_NAMES['started']}, not at the {STATE_NAMES[ASSUMED_STATE]} "
+                     "that the second sweep assumed, whose oscillators are therefore not on multiples of 112.5 kHz: "
+                     "command 0x09 with 0 had started the tuner again after the sample rate, as Radiolack sent "
+                     "them from shortwave until the fix that followed the first measure, and the tuner's filter "
+                     "did not follow the sample rate.")
+    followed_names = " or ".join(name(hypothesis) for hypothesis in analysis.follows)
     verdicts = {
-        "build": f"Verdict: a spread of {BUILD_HZ:g} Hz or more near 145 MHz that follows one prediction: "
-                 "pull request 14 is built.",
+        "build": f"Verdict: a spread of {BUILD_HZ:g} Hz or more near 145 MHz that follows one prediction, "
+                 f"{followed_names}: pull request 14 is built.",
         "not_observed": f"Verdict: a spread under {NOT_OBSERVED_HZ:g} Hz: the PLL's error is recorded as not "
                         "observed, and nothing is built.",
         "table": f"Verdict: neither rule applies, {analysis.reason}: the owner decides from the table.",
     }
-    return ["", spread, drift, follows + ".", verdicts[analysis.verdict]]
+    return [*lines, verdicts[analysis.verdict]]
 
 
 class Stream:
@@ -400,10 +452,13 @@ class Stream:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise Incomplete(f"no answer within {timeout_s:g} s: {what}")
+            # Not asyncio.wait_for: in Python 3.11 it may swallow the
+            # cancellation of Ctrl-C when the news comes at the same moment.
+            news = asyncio.ensure_future(self._news.wait())
             try:
-                await asyncio.wait_for(self._news.wait(), remaining)
-            except TimeoutError:
-                pass
+                await asyncio.wait({news}, timeout=remaining)
+            finally:
+                news.cancel()
 
     async def send(self, message: dict) -> None:
         if self.closed:
@@ -600,8 +655,8 @@ class Measurement:
     def check_filter(self, first: Measure, points: Sequence[Point]) -> None:
         """Refused when the carrier would leave the filter at a prediction."""
         receiver = self.receiver
-        moves = [abs(receiver.predicted_hz(computation, point.centre_hz))
-                 for computation in PLL.COMPUTATIONS for point in points]
+        moves = [abs(receiver.predicted_hz(hypothesis, point.centre_hz))
+                 for hypothesis in HYPOTHESES for point in points]
         needed = abs(first.carrier_hz - receiver.vfo_hz) + max(moves) + FILTER_MARGIN_HZ
         if needed > receiver.bandwidth_hz / 2:
             raise Refused(f"the carrier may move by up to {max(moves):.0f} Hz, beyond the filter: widen it to "
