@@ -39,6 +39,9 @@ VFO_OFFSET_HZ = 40_000      # the VFO above the first centre frequency
 # across four steps, and the other computation predicts otherwise.
 TRUNCATING_CENTRE_HZ = 145_038_000
 ROUNDING_CENTRE_HZ = 144_991_000
+# One where the truncating computation, the tuner left at 3.57 MHz, moves
+# the carrier most, and every other prediction differs.
+STARTED_CENTRE_HZ = 144_957_000
 QUICK = ["--steps", "4", "--multiples", "2", "--reference-every", "3", "--timeout-s", "10"]
 
 
@@ -47,10 +50,19 @@ def pll(computation: str):
     return functools.partial(r82xx_pll.tuned_hz, computation)
 
 
+def left_started(computation: str):
+    """The fake's tuner, following one of the driver's computations, left at
+    the IF of a tuner just started again whatever the commands, as by a
+    Radiolack that sent the sample rate before command 0x09."""
+    def tuned_hz(frequency_hz: int, rate_hz: int, correction_ppm: int, state: str) -> float:
+        return r82xx_pll.tuned_hz(computation, frequency_hz, rate_hz, correction_ppm, "started")
+    return tuned_hz
+
+
 def alternating(error_hz: float):
     """A tuner that errs by ``error_hz`` on every other step of 1.234 kHz,
     as neither computation does."""
-    return lambda frequency_hz, rate_hz, correction_ppm: frequency_hz + error_hz * ((frequency_hz // 1234) % 2)
+    return lambda frequency_hz, rate_hz, correction_ppm, state: frequency_hz + error_hz * ((frequency_hz // 1234) % 2)
 
 
 class ArithmeticTest(unittest.TestCase):
@@ -68,7 +80,9 @@ class ArithmeticTest(unittest.TestCase):
         for centre in multiples:
             self.assertEqual(receiver.oscillator_hz(centre) % 112_500, 0)
             self.assertIsNone(receiver.fits(centre))
-            self.assertEqual(receiver.true_centre_hz("rounding", centre), centre)    # exact there
+            self.assertEqual(receiver.true_centre_hz(("rounding", "rate"), centre), centre)    # exact there
+            # Not with the IF of a tuner just started again: 3.57 MHz, not 2.125 MHz at 240 kS/s.
+            self.assertEqual(receiver.oscillator_hz(centre, "started") - receiver.oscillator_hz(centre), 1_445_000)
 
     def test_the_first_sweep_goes_the_way_that_keeps_the_vfo_off_the_centre_and_within_the_span(self):
         def first_step(vfo_offset_hz: int) -> int:
@@ -92,11 +106,13 @@ class ArithmeticTest(unittest.TestCase):
     def test_the_predictions_are_the_carrier_moving_against_the_tuner(self):
         receiver = self.receiver()
         centre = 145_000_000 + 1234
-        for computation in r82xx_pll.COMPUTATIONS:
-            error = r82xx_pll.tuned_hz(computation, centre, RATE_HZ) - centre
-            first_error = r82xx_pll.tuned_hz(computation, 145_000_000, RATE_HZ) - 145_000_000
-            self.assertAlmostEqual(receiver.predicted_hz(computation, centre), -(error - first_error))
-            self.assertEqual(receiver.predicted_hz(computation, 145_000_000), 0)
+        self.assertEqual(len(tool.HYPOTHESES), 4)       # each computation under each IF
+        for computation, state in tool.HYPOTHESES:
+            with self.subTest(computation=computation, state=state):
+                error = r82xx_pll.tuned_hz(computation, centre, RATE_HZ, 0, state) - centre
+                first_error = r82xx_pll.tuned_hz(computation, 145_000_000, RATE_HZ, 0, state) - 145_000_000
+                self.assertAlmostEqual(receiver.predicted_hz((computation, state), centre), -(error - first_error))
+                self.assertEqual(receiver.predicted_hz((computation, state), 145_000_000), 0)
 
     def test_references_follow_each_measure_count_and_end_the_run(self):
         points = [tool.Point(tool.STEP, 100 + k) for k in range(7)]
@@ -202,9 +218,11 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
             code, out = await self.run_tool("--output", str(output))
             written = output.read_text(encoding="utf-8")
         self.assertEqual(code, 0, out)
-        self.assertIn("pull request 14 is built", out)
-        self.assertIn("Follows, within 5 Hz at every point: up to 2.0.1", out)
-        self.assertIn("not 2.0.2 on", out)
+        self.assertIn("follows one prediction, up to 2.0.1, IF of the rate: pull request 14 is built", out)
+        self.assertIn("Follows, within 5 Hz at every point: up to 2.0.1, IF of the rate (", out)
+        self.assertIn("; not up to 2.0.1, IF 3.57 MHz, largest difference", out)
+        self.assertIn("2.0.2 on, IF of the rate, largest difference", out)
+        self.assertNotIn("The tuner ran at", out)
         self.assertIn(f"Centre frequency restored to {TRUNCATING_CENTRE_HZ} Hz.", out)
         # The table: a heading, its rule, four steps, the multiples and the references.
         rows = [line for line in out.splitlines() if line.startswith("| ")]
@@ -220,7 +238,19 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
         code, out = await self.run_tool()
         self.assertEqual(code, 0, out)
         self.assertIn("pull request 14 is built", out)
-        self.assertIn("Follows, within 5 Hz at every point: 2.0.2 on", out)
+        self.assertIn("Follows, within 5 Hz at every point: 2.0.2 on, IF of the rate (", out)
+        self.assert_restored_and_only_retuned()
+
+    async def test_a_tuner_left_at_3_57_mhz_is_named_with_its_verdict(self):
+        # As a Radiolack that sent the sample rate before command 0x09 left it.
+        await self.start(STARTED_CENTRE_HZ, tuner_pll=left_started("truncating"))
+        code, out = await self.run_tool()
+        self.assertEqual(code, 0, out)
+        self.assertIn("Follows, within 5 Hz at every point: up to 2.0.1, IF 3.57 MHz (", out)
+        self.assertIn("The tuner ran at the IF 3.57 MHz, not at the IF of the rate that the second sweep assumed",
+                      out)
+        self.assertIn("follows one prediction, up to 2.0.1, IF 3.57 MHz: pull request 14 is built", out)
+        self.assertNotIn("neither", out)
         self.assert_restored_and_only_retuned()
 
     async def test_an_exact_tuner_records_the_error_as_not_observed(self):
@@ -241,8 +271,8 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
         await self.start(tuner_pll=alternating(45.0))
         code, out = await self.run_tool()
         self.assertEqual(code, 0, out)
-        self.assertIn("Follows neither prediction within 5 Hz", out)
-        self.assertIn("follows neither prediction: the owner decides from the table", out)
+        self.assertIn("Follows no prediction within 5 Hz, under either IF", out)
+        self.assertIn("follows no prediction, under either IF: the owner decides from the table", out)
         self.assert_restored_and_only_retuned()
 
     async def test_a_carrier_lost_midway_gives_no_verdict(self):
