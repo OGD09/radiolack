@@ -356,7 +356,8 @@ With either option:
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
   Fitipower FC0012 and FC0013, FCI FC2580. Shortwave comes through direct
   sampling or a tuner that covers it (below), and antenna power through the
-  bias tee (below); an upconverter is not supported yet.
+  bias tee (below). A converter in front of the receiver, such as an
+  upconverter or a satellite LNB, moves its range (below).
 
 ### Antenna power
 
@@ -429,6 +430,57 @@ Limits:
   Radiolack cannot see it: rtl_tcp announces a V4 as any R828D.
 - A tuner asked for a frequency it cannot reach says nothing: with the
   wrong setting, the band is silent, not refused.
+
+### Converter
+
+A converter in front of the receiver moves a range of frequencies into the
+tuner's: an upconverter brings shortwave above 24 MHz, and a satellite LNB
+brings the 3 cm band down to a few hundred megahertz. The Receiver menu's
+"Converter" list says which one is there, and "Converter oscillator" its
+oscillator's frequency, typed as any frequency (125 for 125 MHz, 9750,
+9.75 GHz); both are kept with the receiver's settings:
+
+- "None": nothing between the antenna and the receiver, as before.
+- "Upconverter": the receiver tunes the frequency plus the oscillator's,
+  such as 125 MHz: 7.1 MHz on the air is 132.1 MHz for the receiver.
+- "Downconverter (LNB)": the receiver tunes the frequency minus the
+  oscillator's, such as 9750 MHz: 10,489.5 MHz on the air is 739.5 MHz for
+  the receiver.
+- "Downconverter, inverted spectrum": the receiver tunes the oscillator's
+  frequency minus the frequency, for an oscillator above the band, which
+  mirrors the spectrum. Radiolack swaps I and Q as the samples arrive, so
+  that the spectrum, the audio and an I/Q recording show the band as it is
+  on the air.
+
+Every frequency Radiolack shows and keeps is the one on the air: the
+spectrum, the VFO, the bookmarks, the scans, the History and the
+recordings' names. Only the frequency asked of the receiver is converted.
+The converter applies on top of the tuner and of direct sampling alike. The
+centre frequency reaches what the receiver tunes, converted, and stays at or
+above half the sample rate, so that the span never goes below 0 Hz.
+
+Changing the converter or its oscillator keeps the receiver where it is
+tuned: the frequencies shown change, and the signals stay where they are on
+the screen. The VFO stays on the signal it was on, at its new frequency,
+the signals found are found again at theirs, and the bookmarks keep their
+frequencies on the air. A change that would put the receiver's centre
+frequency out of reach on the air, below half the sample rate for instance,
+is refused, with the reason in the menu: tune elsewhere first, or type the
+oscillator before choosing the converter. As with a change of centre
+frequency, a scan stops; an I/Q recording stops too, as its metadata
+describes one converter, while an audio recording goes on.
+
+Limits:
+
+- The frequency correction in ppm is the receiver's crystal's, not the
+  converter's: type the oscillator's true frequency in its field, measured
+  if you can.
+- An LNB's oscillator moves with temperature, by far more than the
+  receiver's crystal: a few hundred kilohertz is common for a cheap one.
+- An LNB needs 13 to 18 V on its cable, which no dongle's antenna power
+  gives: power it through a bias tee of its own, and keep the dongle's
+  antenna power off.
+- No converter has been checked on hardware.
 
 ## Demodulation and audio
 
@@ -721,11 +773,15 @@ GNU Radio's File Source reads their data as bytes. The `.sigmf-data` file
 holds the 8-bit unsigned I/Q pairs (`cu8`, I first), about 17 GB an hour at
 2.4 MS/s, and the `.sigmf-meta` file beside it gives the sample rate, the
 receiver and the captures: where each starts in the data, its centre
-frequency and its start in UTC. A retune or a new frequency correction
+frequency and its start in UTC. Behind a [converter](#converter), the
+receiver's description names it, with its oscillator's frequency, and the
+centre frequencies are those on the air; behind an inverted one, I and Q
+are swapped, so that the data too holds the band as it is on the air. A
+retune or a new frequency correction
 starts a new capture, as does a lost rtl_tcp that comes back; the samples
 that come while the receiver settles, for 0.4 s after a change, are left
-out, as from the spectrum. A new sample rate, another receiver or another
-rtl_tcp address ends the recording. Its files are named after its start in
+out, as from the spectrum. A new sample rate, another receiver, another
+rtl_tcp address or another converter ends the recording. Its files are named after its start in
 UTC, the receiver's centre frequency and the sample rate, such as
 `2026-11-14_15-30-45Z_145.000000MHz_2.400000MSps.sigmf-data`, with `-2`,
 `-3` and so on when a name is taken. The metadata follows the captures
@@ -1455,6 +1511,8 @@ src/radiolack/
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you,
                 and their raw samples for an I/Q recording
+  converter.py  a converter in front of a receiver: frequencies on the air
+                and for the receiver
   sources.py    opens each kind of source, for the Receiver list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band

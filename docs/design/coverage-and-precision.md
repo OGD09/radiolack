@@ -397,6 +397,30 @@ the nearest frequency".
 - An I/Q recording's metadata gives the frequency on the air and describes
   the converter.
 
+As built, where this section left a choice open:
+
+- The reach also stops at 100 GHz less half the sample rate, Radiolack's
+  highest frequency, which an LNB's oscillator near 100 GHz could pass. A
+  change that leaves no reach at all, such as a wider sample rate behind an
+  inverted converter whose oscillator lies just above the tuner's lowest
+  frequency, is refused like any other conversion out of reach.
+- The oscillator is kept without a converter too, 125 MHz until typed, so
+  that it can be typed before the converter is chosen.
+- Another converter or oscillator does what a new centre frequency does
+  today, and more, since every frequency moves: a scan stops (`tuned`); an
+  I/Q recording stops (reason `converter`), as its metadata describes one
+  converter; the signals found are forgotten, and found again at their new
+  frequencies; the VFO moves with the conversion, so as to stay on its
+  signal; an audio recording goes on, as through a retune. The bookmarks
+  keep their frequencies on the air. The interface's view moves with the
+  signals it shows, and its buffers start again.
+- The saved settings of a receiver are applied all at once, then one at a
+  time only if the receiver refuses them together: one at a time, a saved
+  converter would meet the default centre frequency first and could be
+  refused. A converter through which a tuner, once known, reaches nothing
+  is left (`none`), with a warning, as an input the tuner does not offer is.
+- The problem report names the converter, never its oscillator's frequency.
+
 Limits: the correction in ppm is the receiver's crystal's, not the
 converter's: the oscillator's true frequency goes in its field. An LNB's
 oscillator moves with temperature, by far more than the receiver's crystal.

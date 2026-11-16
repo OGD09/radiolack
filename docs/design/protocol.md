@@ -53,9 +53,10 @@ preferences apart from this computer's.
     "centre_hz": 145000000.0, "sample_rate_hz": 2400000.0, "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
     "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": false,
-    "rtl_agc": false, "bias_tee": false, "dc_removal": true,
-    "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm",
-                 "rtl_agc", "bias_tee", "dc_removal"],
+    "rtl_agc": false, "bias_tee": false, "converter": "none", "converter_lo_hz": 125000000.0,
+    "dc_removal": true,
+    "settable": ["address", "hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz",
+                 "gain_db", "ppm", "rtl_agc", "bias_tee", "dc_removal"],
     "kinds": ["synthetic", "rtl_sdr", "rtl_tcp"]}
    ```
 
@@ -68,16 +69,18 @@ preferences apart from this computer's.
    | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`; empty otherwise. |
    | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets), which an interface may change; null for the other sources. |
    | `tuner` | Name of the receiver's tuner once known, or null. |
-   | `centre_hz`, `sample_rate_hz` | The settings asked of the receiver. Each frame carries those it was taken with: after a change, frames follow a moment later. |
+   | `centre_hz`, `sample_rate_hz` | The settings asked of the receiver, the centre frequency on the air, through the converter if there is one. Each frame carries those it was taken with: after a change, frames follow a moment later. |
    | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). |
    | `ppm` | Frequency correction of the receiver's clock, in whole parts per million; null for a source without one. |
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. |
-   | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. |
+   | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input, converter and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. Through a converter, it is the receiver's range converted to frequencies on the air, from half the sample rate at the lowest, so that the span never goes below 0 Hz, to 100 GHz less half the sample rate at the highest. |
    | `hf_input` | What an RTL-SDR uses for shortwave: `none`; `q` or `i`, direct sampling on that input of the RTL2832, by itself below the tuner's range; `tuner`, a tuner that covers shortwave, as an RTL-SDR Blog V4's does. Null for a source without it. |
    | `hf_inputs` | The values of `hf_input` the receiver offers: all four for an R820T or R828D tuner and while the tuner is unknown, the first three for another; empty for a source without them. |
    | `direct` | Whether the receiver samples directly, without its tuner: its gain does not apply meanwhile, and signals mirror each other about 14.4 MHz. |
    | `rtl_agc` | Whether the RTL2832's own AGC runs while the receiver samples directly; null for a source without it. |
    | `bias_tee` | Whether the antenna power is on: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4. Off at each start unless Radiolack was started with `--bias-tee`, never saved, and turned off before the engine closes the receiver. Null for a source without it. |
+   | `converter` | What stands in front of the receiver: `none`; `up`, an upconverter, the receiver tuning the frequency plus the oscillator's; `down`, a downconverter such as a satellite LNB, the frequency minus the oscillator's; `down_inverted`, a downconverter whose oscillator lies above the band, the oscillator's frequency minus the frequency, which mirrors the spectrum: the engine swaps I and Q as the samples arrive, before the spectrum, the audio and an I/Q recording. Every frequency the engine gives and takes is the one on the air. Null for a source without it. |
+   | `converter_lo_hz` | The converter's oscillator, in whole Hz, kept without a converter too; null for a source without it. |
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
    | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. Never `address` for a remote client. |
    | `kinds` | Kinds of source the engine may switch to, `kind` among them; empty when it reads one source only. |
@@ -300,6 +303,7 @@ preferences apart from this computer's.
    | `source` | Audio: the simulated band was chosen; another receiver goes on recording. |
    | `sample_rate` | I/Q: the receiver's sample rate changed. |
    | `receiver` | I/Q: another kind of source, or another rtl_tcp address, was chosen. |
+   | `converter` | I/Q: another converter, or another oscillator behind one, was chosen. |
    | `space` | Less than 2 GiB is free on its disk, at its start or later. |
    | `full` | Audio: its file reached the WAV format's limit of 4 GiB. |
    | `disk` | A disk error, such as a folder that went, or a disk too slow for the recording: `detail` says which. |
@@ -324,9 +328,11 @@ preferences apart from this computer's.
    `-2` to `-999` before the extension when either name is taken. Its
    metadata, SigMF 1.0.0, gives `core:datatype` (`cu8`),
    `core:sample_rate`, `core:hw` (the receiver, such as `RTL-SDR, Rafael
-   Micro R820T`) and `core:recorder` (`Radiolack` and its version), and a
+   Micro R820T`, and the converter in front of it, such as `RTL-SDR, Rafael
+   Micro R820T, behind a downconverter with its oscillator at 9750 MHz`) and
+   `core:recorder` (`Radiolack` and its version), and a
    capture for each stretch of samples: `core:sample_start`,
-   `core:frequency`, the receiver's centre frequency, and `core:datetime`,
+   `core:frequency`, the receiver's centre frequency on the air, and `core:datetime`,
    the time of its first sample, in UTC to the millisecond; no annotation.
    A retune, by an interface or a scan, starts a capture, as do a change of
    frequency correction and the samples that come after a gap, such as
@@ -577,6 +583,8 @@ are:
 | `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |
 | `rtl_agc` | `true` or `false`; applies while the receiver samples directly. |
 | `bias_tee` | `true` or `false`. The interface asks for a second press before it sends `true`. |
+| `converter` | `none`, `up`, `down` or `down_inverted`. Without a `centre_hz` in the same message, the receiver stays where it is tuned: the centre frequency on the air moves, and the VFO moves with it, so as to stay on the same signal. The change is refused when that centre frequency would be out of the new `range_hz`, or when the receiver would reach nothing on the air. Another converter, or another oscillator behind one, stops a scan (`tuned`) and an I/Q recording (`converter`), and empties the signals found, which detection finds again at their new frequencies; frames follow a moment later. |
+| `converter_lo_hz` | The oscillator's frequency, from 1 Hz to 100 GHz, rounded to the Hz; as `converter` for the rest. |
 | `dc_removal` | `true` or `false`. |
 
 The engine applies a valid message at once and sends the new state to every
@@ -1013,7 +1021,11 @@ and later.
   `version`, which an older interface ignores; the same day, the source
   state's `hf_input`, `hf_inputs`, `direct` and `rtl_agc`, settable in a
   `source` message, which an older interface leaves out: it neither shows
-  nor changes them; and `bias_tee`, likewise.
+  nor changes them; and `bias_tee`, likewise; and `converter` and
+  `converter_lo_hz`, likewise, with the recording state's `stopped` reason
+  `converter`, which an older interface shows as a plain stop. An older
+  interface behind a converter shows and takes the frequencies on the air,
+  as every interface does.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

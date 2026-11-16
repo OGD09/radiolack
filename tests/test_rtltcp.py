@@ -57,6 +57,12 @@ async def eventually(condition, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
+def strongest_hz(samples: np.ndarray, rate_hz: float) -> float:
+    """The frequency of the strongest line in ``samples``, from the centre."""
+    spectrum = np.abs(np.fft.fftshift(np.fft.fft(samples * np.hanning(len(samples)))))
+    return (int(np.argmax(spectrum)) - len(samples) // 2) * rate_hz / len(samples)
+
+
 def running(pid: int) -> bool:
     """Whether a process runs, an ended one waiting for its parent aside (Linux)."""
     try:
@@ -128,9 +134,9 @@ class StreamingTest(SourceTest):
             "centre_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
             "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": False,
-            "rtl_agc": False, "bias_tee": False,
-            "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc",
-                         "bias_tee"],
+            "rtl_agc": False, "bias_tee": False, "converter": "none", "converter_lo_hz": 125e6,
+            "settable": ["address", "hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz",
+                         "gain_db", "ppm", "rtl_agc", "bias_tee"],
         })
         # One set of settings whatever the address, which was given here.
         self.assertEqual((source.settings_key, source.given), ("rtl_tcp", frozenset({"address"})))
@@ -409,6 +415,179 @@ class ShortwaveTest(SourceTest):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 source.configure(change)
         self.assertEqual(source.describe(), before)
+
+
+class ConverterTest(SourceTest):
+    """A converter in front of the receiver: every frequency of the source
+    is the one on the air, and only the command is converted."""
+
+    async def commands_after(self, count: int) -> list[tuple[int, int]]:
+        """The commands sent from the ``count``-th on, once they stop coming."""
+        await asyncio.sleep(0.1)
+        return self.fake.commands[count:]
+
+    async def test_sends_the_converted_frequency_for_each_converter(self):
+        cases = (("up", 125_000_000, 7_100_000, 132_100_000),               # shortwave, upconverted
+                 ("down", 9_750_000_000, 10_489_500_000, 739_500_000),      # a satellite LNB
+                 ("down_inverted", 5_150_000_000, 3_800_000_000, 1_350_000_000))
+        for converter, lo_hz, air_hz, tuned_hz in cases:
+            with self.subTest(converter=converter):
+                source = await self.start()
+                source.configure({"converter": converter, "converter_lo_hz": lo_hz, "centre_hz": air_hz})
+                samples = await self.read(source)
+                self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, tuned_hz))
+                self.assertEqual(source.centre_hz, air_hz)      # the samples' label: on the air
+                i_code, q_code = fake_codes(tuned_hz, 2.4e6)
+                if converter == "down_inverted":
+                    i_code, q_code = q_code, i_code             # I and Q swapped as they arrive
+                self.assertEqual(sample_codes(samples), ({i_code}, {q_code}))
+                state = source.describe()
+                self.assertEqual((state["converter"], state["converter_lo_hz"], state["centre_hz"]),
+                                 (converter, float(lo_hz), float(air_hz)))
+                source.close()
+                await self.fake.__aexit__(None, None, None)
+
+    async def test_the_reach_is_the_receiver_s_converted_and_kept_above_half_the_rate(self):
+        source = await self.start()
+        await self.read(source)
+        source.configure({"converter": "up", "centre_hz": 20_000_000})
+        # 24 - 125 MHz is below 0 Hz: the reach starts at half the sample rate.
+        self.assertEqual(source.describe()["range_hz"], [1.2e6, 1641e6])
+        with self.assertRaisesRegex(ValueError, "^the receiver tunes from 1.2 to 1641 MHz through its converter$"):
+            source.configure({"centre_hz": 1_199_999})
+        source.configure({"converter": "down", "converter_lo_hz": 9_750_000_000})
+        self.assertEqual(source.describe()["range_hz"], [9774e6, 11516e6])
+        source.configure({"converter": "down_inverted", "converter_lo_hz": 10_000_000_000})
+        self.assertEqual(source.describe()["range_hz"], [8234e6, 9976e6])     # mirrored
+        source.configure({"converter": "none"})
+        self.assertEqual(source.describe()["range_hz"], [24e6, 1766e6])
+
+    async def test_applies_on_top_of_direct_sampling(self):
+        source = await self.start()
+        # A downconverter whose oscillator brings 127.1 MHz to 7.1 MHz, which the Q input samples.
+        source.configure({"hf_input": "q", "converter": "down", "converter_lo_hz": 120_000_000,
+                          "centre_hz": 127_100_000})
+        await self.read(source)
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 7_100_000, direct=2))
+        state = source.describe()
+        self.assertEqual((state["direct"], state["range_hz"]), (True, [121.2e6, 1886e6]))
+        sent = len(self.fake.commands)
+        source.configure({"centre_hz": 145_000_000})        # 25 MHz: the tuner
+        self.assertEqual(await self.commands_after(sent), [(0x09, 0), (0x03, 0), (0x01, 25_000_000)])
+        self.assertFalse(source.describe()["direct"])
+        # Inverted: 22.9 MHz on the air is 7.1 MHz behind an oscillator of 30 MHz.
+        sent = len(self.fake.commands)
+        source.configure({"converter": "down_inverted", "converter_lo_hz": 30_000_000, "centre_hz": 22_900_000})
+        self.assertEqual(await self.commands_after(sent), [(0x09, 2), (0x01, 7_100_000)])
+        self.assertEqual(source.describe()["range_hz"], [1.2e6, 28.8e6])
+
+    async def test_inverts_the_spectrum_back_for_the_reader_and_the_tap(self):
+        # The receiver gets a carrier 300 kHz above its centre frequency.
+        lo_hz, air_hz = 5_150_000_000, 3_800_000_000
+        tuned_hz = lo_hz - air_hz
+        source = await self.start(FakeRtlTcp(carriers={tuned_hz + 300_000: 0.5}, noise=0.01), idle_s=10.0)
+        handed: list[tuple[bytes, float]] = []
+        source.tap(lambda data, centre_hz, rate_hz, joined: handed.append((bytes(data), centre_hz)))
+        # The same frequency asked of the receiver: air - lo for one, lo - air for the other.
+        for converter, lo, offset_hz in (("down", air_hz - tuned_hz, 300_000), ("down_inverted", lo_hz, -300_000)):
+            with self.subTest(converter=converter):
+                source.configure({"converter": converter, "converter_lo_hz": lo, "centre_hz": air_hz})
+                await asyncio.sleep(0.3)            # the receiver settles
+                handed.clear()
+                samples = await self.read(source, 8192)
+                self.assertAlmostEqual(strongest_hz(samples, 2.4e6), offset_hz, delta=1000)
+                await eventually(lambda: sum(len(data) for data, _ in handed) >= 2 * 8192)
+                tapped = b"".join(data for data, _ in handed)[:2 * 8192]
+                levels = (np.frombuffer(tapped, np.uint8).astype(np.float32) - 127.5) / 127.5
+                self.assertAlmostEqual(strongest_hz(levels.view(np.complex64), 2.4e6), offset_hz, delta=1000)
+                self.assertEqual({centre for _, centre in handed}, {source.describe()["centre_hz"]})
+
+    async def test_another_converter_keeps_the_receiver_where_it_is_tuned(self):
+        source = await self.start()
+        await self.read(source)
+        for changes, centre_hz in (({"converter": "up"}, 20e6), ({"converter_lo_hz": 120_000_000}, 25e6),
+                                   ({"converter": "down", "converter_lo_hz": 9_750_000_000}, 9895e6),
+                                   ({"converter": "down_inverted"}, 9605e6), ({"converter": "none"}, 145e6)):
+            with self.subTest(changes=changes):
+                sent = len(self.fake.commands)
+                source.configure(changes)
+                self.assertEqual(source.describe()["centre_hz"], centre_hz)
+                self.assertEqual(await self.commands_after(sent), [(0x01, 145_000_000)])
+        # The oscillator alone, without a converter, moves nothing.
+        sent = len(self.fake.commands)
+        source.configure({"converter_lo_hz": 100_000_000})
+        self.assertEqual((source.describe()["centre_hz"], await self.commands_after(sent)), (145e6, []))
+
+    async def test_refuses_a_conversion_beyond_the_receiver_s_reach_rather_than_clamp_it(self):
+        source = await self.start()
+        await self.read(source)
+        before = source.describe()
+        # 125 MHz minus the 145 MHz the receiver is tuned to is below 0 Hz.
+        with self.assertRaisesRegex(ValueError, "^through this converter the receiver's centre frequency would be "
+                                                "-20 MHz on the air, out of reach: the receiver tunes from 1.2 "
+                                                "to 101 MHz through its converter$"):
+            source.configure({"converter": "down_inverted"})
+        self.assertEqual(source.describe(), before)
+        # Behind this oscillator only 120 to 500 kHz on the air reach 24 MHz and above...
+        source.configure({"sample_rate_hz": 240_000, "converter_lo_hz": 24_500_000, "converter": "down_inverted",
+                          "centre_hz": 300_000})
+        self.assertEqual(source.describe()["range_hz"], [120e3, 500e3])
+        # ...which half of a wider rate leaves empty.
+        before = source.describe()
+        nothing = ("^through this converter the receiver reaches nothing on the air from 1.2 MHz, half the "
+                   "sample rate, to 100 GHz$")
+        for change in ({"sample_rate_hz": 2_400_000}, {"sample_rate_hz": 2_400_000, "centre_hz": 1_200_000}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, nothing):
+                source.configure(change)
+        self.assertEqual(source.describe(), before)
+
+    async def test_refuses_invalid_converter_settings(self):
+        source = await self.start()
+        await self.read(source)
+        before = source.describe()
+        for change in ({"converter": "x"}, {"converter": None}, {"converter": 1}, {"converter": "Up"},
+                       {"converter_lo_hz": 0}, {"converter_lo_hz": 0.4}, {"converter_lo_hz": -125e6},
+                       {"converter_lo_hz": 100e9 + 1}, {"converter_lo_hz": float("nan")},
+                       {"converter_lo_hz": float("inf")}, {"converter_lo_hz": True}, {"converter_lo_hz": "125e6"},
+                       {"converter_lo_hz": None}, {"converter_lo_hz": 10**400}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                source.configure(change)
+        self.assertEqual(source.describe(), before)
+        source.configure({"converter_lo_hz": 100e9})        # the highest, rounded to the hertz
+        source.configure({"converter_lo_hz": 0.6})
+        self.assertEqual(source.describe()["converter_lo_hz"], 1.0)
+
+    async def test_commands_stay_within_32_bits(self):
+        # An unknown tuner: the command's 32 bits are its only limits.
+        source = await self.start(FakeRtlTcp(tuner_type=99, gain_count=0))
+        await self.read(source)
+        top = 0xFFFF_FFFF
+        source.configure({"converter": "up"})
+        self.assertEqual(source.describe()["range_hz"], [1.2e6, top - 125e6])
+        with self.assertRaisesRegex(ValueError, "^the receiver tunes from 1.2 to 4169.967295 MHz through its converter$"):
+            source.configure({"centre_hz": top - 125_000_000 + 1})
+        source.configure({"converter": "down", "converter_lo_hz": 9_750_000_000, "centre_hz": top + 9_750_000_000})
+        await eventually(lambda: self.fake.commands[-1] == (0x01, top))
+
+    async def test_a_converter_through_which_the_tuner_reaches_nothing_is_left(self):
+        source = await self.start()
+        # The tuner is not known yet: any frequency of 32 bits passes.
+        source.configure({"converter": "down_inverted", "converter_lo_hz": 20_000_000, "centre_hz": 10_000_000})
+        with self.assertLogs("radiolack.rtltcp", "WARNING") as logs:
+            await self.read(source)
+        self.assertIn("the converter is not used", logs.output[0])
+        state = source.describe()
+        self.assertEqual((state["converter"], state["centre_hz"], state["range_hz"]), ("none", 24e6, [24e6, 1766e6]))
+
+    async def test_the_hardware_names_the_converter(self):
+        source = await self.start()
+        source.configure({"converter": "down_inverted", "converter_lo_hz": 5_150_000_000, "centre_hz": 3.8e9})
+        await self.read(source)
+        self.assertEqual(source.hardware, "RTL-SDR, Rafael Micro R820T, behind a downconverter that inverts the "
+                                          "spectrum with its oscillator at 5150 MHz")
+        source.configure({"converter": "up", "converter_lo_hz": 125_000_001, "centre_hz": 7e6})
+        self.assertEqual(source.hardware, "RTL-SDR, Rafael Micro R820T, behind an upconverter with its "
+                                          "oscillator at 125.000001 MHz")
 
 
 class AntennaPowerTest(SourceTest):
@@ -842,8 +1021,8 @@ class RtlSdrSourceTest(SourceTest):
         source = RtlSdrSource(program=FAKE_RTL_TCP)     # nothing reads: nothing starts
         state = source.describe()
         self.assertIsNone(state["address"])
-        self.assertEqual(state["settable"],
-                         ["hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee"])
+        self.assertEqual(state["settable"], ["hf_input", "converter_lo_hz", "converter", "sample_rate_hz",
+                                             "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee"])
         with self.assertRaisesRegex(ValueError, "unknown setting: address"):
             source.configure({"address": "192.0.2.10"})
 
