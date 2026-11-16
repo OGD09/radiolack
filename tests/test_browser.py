@@ -74,6 +74,12 @@ HISTORY_CONFIRM_MS = 5000   # how long a first press of a Clear in the History w
 RECORDINGS_CONFIRM_MS = 5000  # how long a first press of a recording's Delete waits for the second (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
+BOOKMARK_NAME = '#bm-list input[data-field="name"]'     # the name's field of the bookmark being edited
+BOOKMARK_FREQUENCY = '#bm-list input[data-field="freq"]'     # and its frequency's
+BOOKMARK_FREQUENCY_NOTE = "Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz, from 1 Hz to 100 GHz."
+# The Radio menu's tuning steps, in their order (index.html).
+STEPS = ["Automatic", "1 Hz", "10 Hz", "50 Hz", "100 Hz", "500 Hz", "1 kHz", "5 kHz", "6.25 kHz", "8.33 kHz",
+         "9 kHz", "10 kHz", "12.5 kHz", "25 kHz", "50 kHz", "100 kHz"]
 PHONE = {"viewport": {"width": 390, "height": 844}, "has_touch": True}     # a phone in portrait, with touch input
 PHONE_ON_ITS_SIDE = {"viewport": {"width": 844, "height": 390}, "has_touch": True}    # the same, in landscape
 NARROW = {"viewport": {"width": 500, "height": 800}}       # a narrow window, with a mouse: the menu in one column
@@ -155,6 +161,16 @@ ANTENNA_PROBE = """async () => {
     edges: [0, -1, NaN, Infinity, 0.99996, 999.96, 0.0004].map(formatLength),
   };
 }"""
+# How frequency.js writes frequencies, and what it reads in typed ones: a
+# frequency in Hz, or null for a text that is not one.
+FREQUENCY_PROBE = """async () => {
+  const { formatFrequency, parseFrequency } = await import(new URL('frequency.js', document.baseURI).href);
+  return {
+    written: [145.5e6, 145612500, 145612550, 7074001, 1, 100e9, 145600000.4, 25000 / 3, NaN].map(formatFrequency),
+    read: ['145.5', '145,6125', ' 145.61255 MHz ', '145612550', '7074 k', '7.074kHz', '1 GHz', '10489.5M', '12 hz',
+      '.5', '99999', '100000', '0', '0.4 Hz', '100.1 GHz', '', 'abc', '145.5 x', '1e6', '-1', '10.489,5 M'].map(parseFrequency),
+  };
+}"""
 # The fill and the stroke of each path of a logo, its text's colour where
 # a browser gives the keyword currentcolor.
 LOGO_PAINT = """(logo) => [...logo.querySelectorAll('path')].map((path) => {
@@ -203,6 +219,12 @@ def overlap(first: dict, second: dict) -> bool:
     """Whether two boxes, as Playwright gives them, cover a common area."""
     return (first["x"] < second["x"] + second["width"] and second["x"] < first["x"] + first["width"]
             and first["y"] < second["y"] + second["height"] and second["y"] < first["y"] + first["height"])
+
+
+def mhz(frequency_hz: int) -> str:
+    """A frequency as the interface writes it (frequency.js): in MHz, with 3
+    to 6 decimals, the zeros at the end beyond the third dropped."""
+    return re.sub(r"0{1,3}\Z", "", f"{frequency_hz // 1_000_000}.{frequency_hz % 1_000_000:06d}")
 
 
 def kept_channel(frequency_hz: int, last_s: float) -> dict:
@@ -612,7 +634,7 @@ class BrowserTest(unittest.TestCase):
                 icon.focus()        # from the keyboard, as the Receiver menu lies over the readout
                 first.keyboard.press("Enter")
                 expect(dialog).to_be_visible()
-                expect(first.locator("#antenna-for")).to_have_text(f"145.6000 MHz {DOT} 2 m amateur")
+                expect(first.locator("#antenna-for")).to_have_text(f"145.600 MHz {DOT} 2 m amateur")
                 expect(first.locator(".lengths dd")).to_have_text(["2.06 m", "97.8 cm", "48.9 cm", "48.9 cm", "48.9 cm"])
                 first.keyboard.press("ArrowRight")
                 expect(first.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
@@ -651,6 +673,111 @@ class BrowserTest(unittest.TestCase):
                     ],
                     "edges": ["\N{EM DASH}"] * 4 + ["1.00 m", "1.00 km", "0.400 mm"],
                 })
+
+    def test_frequencies_are_written_exactly_and_typed_with_a_unit(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.assertEqual(page.evaluate(FREQUENCY_PROBE), {
+                    "written": ["145.500", "145.6125", "145.61255", "7.074001", "0.000001", "100000.000", "145.600",
+                                "0.008333", "\N{EM DASH}"],
+                    "read": [145_500_000, 145_612_500, 145_612_550, 145_612_550, 7_074_000, 7_074, 1_000_000_000,
+                             10_489_500_000, 12, 500_000, 99_999_000_000, 100_000] + [None] * 9,
+                })
+                self.assertEqual([mhz(hz) for hz in (145_500_000, 145_612_500, 145_612_550, 7_074_001)],
+                                 ["145.500", "145.6125", "145.61255", "7.074001"])     # as this test writes them
+                self.open_menu(page, "radio")
+                expect(page.locator("#dm-step option")).to_have_text(STEPS)
+
+    def test_a_typed_frequency_tunes_exactly_and_one_left_unchanged_moves_nothing(self):
+        # The entry opens with the whole frequency; Enter tunes there, off the
+        # step's grid, and leaving it unchanged sends nothing. A frequency
+        # beyond the receiver's reach, here the simulated band's span, or a
+        # text that is not one, tunes nothing and the status line says why.
+        url = self.serve()      # the simulated band, from 143.8 to 146.2 MHz, the VFO on 145.6 MHz
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                freq, entry = page.locator("#freq"), page.locator("#freq input")
+                freq.dblclick()
+                expect(entry).to_have_value("145.600")
+                expect(entry).to_be_focused()
+                entry.fill("145.61255")
+                entry.press("Enter")
+                expect(freq).to_have_attribute("aria-valuenow", "145612550")
+                expect(freq).to_have_attribute("aria-valuetext", "145.61255 MHz")
+                tuned = len([m for m in map(json.loads, self.sent[page]) if m.get("type") == "demod"])
+                freq.dblclick()
+                expect(entry).to_have_value("145.61255")
+                entry.blur()                        # unchanged: nothing moves, nothing is sent
+                expect(entry).to_have_count(0)
+                expect(freq).to_have_attribute("aria-valuenow", "145612550")
+                freq.dblclick()
+                entry.fill("144,3 M")
+                entry.press("Enter")
+                expect(freq).to_have_attribute("aria-valuenow", "144300000")
+                self.assertEqual(len([m for m in map(json.loads, self.sent[page]) if m.get("type") == "demod"]), tuned + 1)
+                freq.dblclick()
+                entry.fill("5 GHz")
+                entry.press("Enter")
+                expect(page.locator("#status")).to_contain_text(
+                    f"5000.000 MHz is beyond this receiver's range (143.800 to 146.200 MHz) {DOT} Synthetic source")
+                expect(freq).to_have_attribute("aria-valuenow", "144300000")
+                freq.dblclick()
+                entry.fill("abc")
+                entry.press("Enter")
+                expect(page.locator("#status")).to_contain_text(
+                    f"Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz {DOT} Synthetic source")
+                expect(freq).to_have_attribute("aria-valuenow", "144300000")
+
+    def test_a_digit_dragged_or_under_the_wheel_changes_and_opens_no_entry(self):
+        # Dragged up or down, a digit changes by one for each 16 px, off the
+        # step's grid; a drag never opens the entry. Here the 1 kHz digit,
+        # from 145.6 MHz.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                freq = page.locator("#freq")
+                box = page.locator('#freq .d[data-m="1000"]').bounding_box()
+                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x, y - 40, steps=8)        # two steps up
+                expect(freq).to_have_attribute("aria-valuenow", "145602000")
+                page.mouse.move(x, y + 40, steps=16)       # then two below where it started
+                expect(freq).to_have_attribute("aria-valuenow", "145598000")
+                page.mouse.up()
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x, y - 5)                  # a press that moves less than 8 px changes nothing
+                page.mouse.up()
+                expect(freq).to_have_attribute("aria-valuenow", "145598000")
+                expect(page.locator("#freq input")).to_have_count(0)
+                box = page.locator('#freq .d[data-m="10"]').bounding_box()
+                page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                page.mouse.wheel(0, -100)                  # a notch up: 10 Hz more
+                expect(freq).to_have_attribute("aria-valuenow", "145598010")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_digit_that_leaves_the_span_moves_it(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # 2.4 MHz around 145 MHz, the VFO on 145.6
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                freq = page.locator("#freq")
+                for expected in ("146600000", "147600000"):
+                    box = page.locator('#freq .d[data-m="1000000"]').bounding_box()
+                    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    page.mouse.wheel(0, -100)
+                    expect(freq).to_have_attribute("aria-valuenow", expected)
+                self.open_menu(page, "receiver")    # the span moved once, for 146.6 MHz, and holds 147.6 MHz
+                expect(page.locator("#src-center")).to_have_value("146.525")
+                expect(freq).to_have_attribute("aria-valuenow", "147600000")
 
     def test_the_antenna_icon_takes_a_finger_beside_the_frequency(self):
         # On a touch screen the icon's target is at least 40 px across and
@@ -760,7 +887,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#bm-list .empty")).to_have_text("No bookmarks")
                 first.locator("#bm-add").click()
                 expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
-                name = first.locator('#bm-list input[type="text"]')
+                name = first.locator(BOOKMARK_NAME)
                 expect(name).to_be_focused()
                 expect(name).to_have_value("Bookmark 1")
                 name.fill("Not kept")
@@ -779,7 +906,7 @@ class BrowserTest(unittest.TestCase):
                 expect(edit).to_be_focused()
                 self.open_menu(second, "bookmarks")
                 second.locator("#bm-list button[data-edit]").click()
-                second.locator('#bm-list input[type="text"]').fill("FM calling")
+                second.locator(BOOKMARK_NAME).fill("FM calling")
                 second.locator("#bm-filter").click()       # leaving the row saves the name
                 for page in (first, second):
                     expect(page.locator("#bm-list .item .name")).to_have_text(["FM calling"])
@@ -814,19 +941,64 @@ class BrowserTest(unittest.TestCase):
                 tick.check()
                 expect(second.locator('#bm-list input[aria-label="Scan SSB calling"]')).to_be_checked()
                 first.locator("#bm-add").click()        # at the VFO, in its mode
-                name = first.locator('#bm-list input[type="text"]')
+                name = first.locator(BOOKMARK_NAME)
                 expect(name).to_be_focused()
                 expect(name).to_have_value("Bookmark 1")
                 self.assertEqual(name.evaluate("(field) => [field.selectionStart, field.selectionEnd]"), [0, 10])
-                expect(first.locator("#bm-list li").first.locator('input[type="text"]')).to_have_count(1)
+                expect(first.locator("#bm-list li").first.locator('input[data-field="name"]')).to_have_count(1)
                 expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1", "SSB calling", "FM calling"])
-                expect(second.locator('#bm-list input[type="text"]')).to_have_count(0)     # open where added only
+                expect(second.locator(BOOKMARK_NAME)).to_have_count(0)     # open where added only
                 first.keyboard.type("Net")      # in place of the selected name
                 first.keyboard.press("Enter")
                 for page in (first, second):
                     expect(page.locator("#bm-list .item .name")).to_have_text(["Net", "SSB calling", "FM calling"])
                     expect(page.locator("#bm-list .item .tag")).to_have_text(["USB", "USB", "NFM"])
                 expect(first.locator("#bm-list button[data-edit]").first).to_be_focused()
+
+    def test_a_bookmark_s_frequency_is_edited_beside_its_name(self):
+        # Edit opens the frequency, whole, beside the name: a new one moves
+        # the bookmark for every interface, exactly, and one that is not a
+        # frequency keeps the row open, its field marked, with a note.
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            Store(directory).save(BOOKMARKS_FILE, {"bookmarks": [
+                {"frequency_hz": 145_500_000, "name": "FM calling", "mode": "NFM", "scan": False}]})
+            url = self.serve(store=Store(directory))    # the simulated band
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "bookmarks")
+                    expect(page.locator("#bm-list .item .num")).to_have_text(["145.500"])
+                first.locator("#bm-list button[data-edit]").click()
+                field = first.locator(BOOKMARK_FREQUENCY)
+                expect(field).to_have_value("145.500")
+                expect(field).to_have_accessible_name("Frequency of FM calling")
+                field.fill("145.61255")
+                field.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .num")).to_have_text(["145.61255"])
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["FM calling"])
+                first.locator("#bm-list button.item").click()     # a bookmark tunes off the step's grid
+                for page in (first, second):
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145612550")
+                first.locator("#bm-list button[data-edit]").click()
+                field.fill("145.6 MHz and more")
+                field.press("Enter")
+                expect(first.locator("#bm-list li[data-editing]")).to_have_count(1)
+                expect(field).to_have_attribute("aria-invalid", "true")
+                expect(first.locator("#bm-note")).to_have_text(BOOKMARK_FREQUENCY_NOTE)
+                first.locator(BOOKMARK_NAME).fill("Calling")
+                field.fill("145,5")
+                first.locator("#bm-filter").click()       # leaving the row saves both
+                for page in (first, second):
+                    expect(page.locator("#bm-list .item .num")).to_have_text(["145.500"])
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["Calling"])
+                expect(first.locator("#bm-note")).to_be_hidden()
+                first.locator("#bm-list button[data-edit]").click()
+                field.fill("0")
+                field.press("Escape")                     # cancels, note and all
+                expect(first.locator("#bm-list li[data-editing]")).to_have_count(0)
+                expect(first.locator("#bm-note")).to_be_hidden()
+                expect(second.locator("#bm-list .item .num")).to_have_text(["145.500"])
 
     def test_the_s_meter_sets_the_squelch_with_the_wheel_a_click_or_a_tap(self):
         # A notch of the wheel moves the threshold 1 dB, up raising it, and a
@@ -1104,14 +1276,14 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     self.open_menu(page, "scan")
                     page.locator('#scan-tabs button[data-tab="sweep"]').click()
-                    expect(page.locator("#sw-to")).to_have_value("440.0000")
+                    expect(page.locator("#sw-to")).to_have_value("440.000")
                     expect(page.locator("#sw-state")).to_have_text("Stopped")
                 field = first.locator("#sw-from")
                 field.fill("1240")      # above the range's end: the whole range moves
                 field.press("Enter")
                 for page in (first, second):
-                    expect(page.locator("#sw-from")).to_have_value("1240.0000")
-                    expect(page.locator("#sw-to")).to_have_value("1250.0000")
+                    expect(page.locator("#sw-from")).to_have_value("1240.000")
+                    expect(page.locator("#sw-to")).to_have_value("1250.000")
                 first.locator("#sw-window").press("ArrowRight")
                 for page in (first, second):
                     expect(page.locator("#sw-window-v")).to_have_text("0.75 s")
@@ -1633,7 +1805,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertAlmostEqual(low, 143.8, delta=0.01)
                 self.assertAlmostEqual(high, 146.2, delta=0.01)
                 expect(page.locator("#span-fit")).to_be_hidden()
-                expect(page.locator("#src-center")).to_have_value("145.0000")    # the view alone moved
+                expect(page.locator("#src-center")).to_have_value("145.000")     # the view alone moved
                 expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
@@ -1662,7 +1834,7 @@ class BrowserTest(unittest.TestCase):
                 centre = (vfo - 75_000) / 1e6       # a 32nd of the span below the VFO
                 for page in (first, second):
                     expect(page.locator("#freq")).to_have_attribute("aria-valuenow", str(vfo))
-                    expect(page.locator("#src-center")).to_have_value(f"{centre:.4f}")
+                    expect(page.locator("#src-center")).to_have_value(mhz(vfo - 75_000))
                 expect(first.locator("#span-next")).to_be_hidden()
                 low, high = self.view_edges(first)  # a view looking elsewhere stays
                 self.assertAlmostEqual(low, view[0], delta=0.001)
@@ -1707,7 +1879,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertNotIn(" dB", self.waterfall_readout_at(page, 146.7, age))
                 self.assertRegex(self.waterfall_readout_at(page, 145.5, age), rf"^145\.\d+ MHz {DOT} -?\d+ dB {DOT} \d+ s ago")
                 # One move, 75 kHz below the step that went past: the steps made meanwhile add up.
-                expect(page.locator("#src-center")).to_have_value("146.0250")
+                expect(page.locator("#src-center")).to_have_value("146.025")
                 expect(freq).to_have_attribute("aria-valuenow", "146600000")
                 centres = [message["centre_hz"] for message in map(json.loads, self.sent[page]) if "centre_hz" in message]
                 self.assertEqual(centres, [146_025_000])
@@ -1762,8 +1934,8 @@ class BrowserTest(unittest.TestCase):
                 page.mouse.up()
                 vfo = int(page.locator("#freq").get_attribute("aria-valuenow"))
                 back = page.locator("#vfo-return")
-                expect(back).to_have_text(f"{vfo / 1e6:.4f} MHz \N{RIGHTWARDS ARROW}")
-                expect(back).to_have_attribute("aria-label", f"Show the VFO, at {vfo / 1e6:.4f} MHz")
+                expect(back).to_have_text(f"{mhz(vfo)} MHz \N{RIGHTWARDS ARROW}")
+                expect(back).to_have_attribute("aria-label", f"Show the VFO, at {mhz(vfo)} MHz")
                 back.click()
                 expect(back).to_be_hidden()
                 low, high = self.view_edges(page)   # around the VFO, at the same zoom

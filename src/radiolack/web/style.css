@@ -39,7 +39,8 @@ html, body {
   font: 10px/12px system-ui, sans-serif; color: rgba(230, 235, 240, 0.75); text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
 }
 .wf-stamp::before { content: ""; position: absolute; left: 0; top: 0; width: 7px; height: 1px; background: rgba(255, 255, 255, 0.6); }
-#band { position: relative; background: #0d1015; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: ns-resize; touch-action: none; }
+#band { position: relative; background: #0d1015; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: ns-resize; touch-action: none;
+  -webkit-user-select: none; user-select: none; }
 
 #vfo, #vfo-line, #xline { position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2; will-change: transform; }
 #vfo { background: rgba(89, 167, 255, 0.11); border-left: 1px solid rgba(89, 167, 255, 0.5); border-right: 1px solid rgba(89, 167, 255, 0.5); }
@@ -83,7 +84,8 @@ html, body {
   width: max-content; max-width: calc(100% - 128px); text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); pointer-events: none;
 }
 #freq {
-  display: inline-block; pointer-events: auto; padding: 0 4px; border-radius: 6px; cursor: ns-resize;
+  display: inline-block; pointer-events: auto; padding: 0 4px; border-radius: 6px; cursor: ns-resize; touch-action: none;
+  -webkit-user-select: none; user-select: none;
   font-size: 28px; font-weight: 500; line-height: 1.15; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
 }
 #freq .d { border-radius: 3px; }
@@ -294,6 +296,8 @@ input:disabled, select:disabled { opacity: 0.45; }
 .list li.bm > input[type="checkbox"] { flex: none; margin: 0 2px 0 6px; accent-color: var(--accent); cursor: pointer; }
 .list li.bm[data-editing] { padding: 2px 0 2px 6px; }
 .list li.bm[data-editing] > input { flex: 1; min-width: 0; }
+.list li.bm[data-editing] > input[data-field="freq"] { flex: 0 1 8.5em; font-variant-numeric: tabular-nums; }
+input[aria-invalid="true"] { border-color: var(--warn); }
 .list li.group { padding: 8px 6px 2px; font-size: 11px; color: var(--muted); }
 .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
