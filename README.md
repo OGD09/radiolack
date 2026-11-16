@@ -206,8 +206,8 @@ eight menus beside the one it shows:
 
 - Radio: the mode, the band plan's mode and step, the squelch, the volume,
   the filter width and the tuning step.
-- Bookmarks: the bookmarks, the band plan's ranges in the span and the
-  memory scan ([Settings and bookmarks](#settings-and-bookmarks)).
+- Bookmarks: the bookmarks, the band plan's ranges and known frequencies
+  in view and the memory scan ([Settings and bookmarks](#settings-and-bookmarks)).
 - Scan: the signals found, the sweep and the History, in three tabs
   ([Scanners](#scanners)).
 - Record: the recordings and, on this computer, their folder
@@ -215,7 +215,8 @@ eight menus beside the one it shows:
 - Receiver: the source and its settings
   ([RTL-SDR receivers](#rtl-sdr-receivers)).
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
-  plan and bookmarks on the spectrum.
+  plan, the bookmarks and the channels and known frequencies on the
+  spectrum.
 - Settings: the interface's behaviour, the storage, remote access and the
   gestures and keys.
 - About: the version that runs, on every device; on this computer, the
@@ -606,8 +607,13 @@ spacing where the band plan gives one, such as 12.5 kHz on the 2 m
 repeaters or 9 kHz on medium wave, while the view shows two channels or
 more; elsewhere it follows the view's width: 100 kHz from 200 MHz wide,
 10 kHz from 20 MHz, 1 kHz from 2 MHz, 100 Hz from 200 kHz, 10 Hz from
-20 kHz, and 1 Hz in a narrower view. The line under the frequency shows the
-step in use. A
+20 kHz, and 1 Hz in a narrower view. Beside a set of numbered channels
+([Band plan](#band-plan)), Automatic goes from channel to channel, wherever
+they lie: a click lands on the nearest channel, and a step past the set's
+last channel, or into a gap of more than two channels, moves by the spacing.
+The line under the frequency names the known frequency or the channel the
+VFO is on, else its range, and shows the step in use: "PMR446 · ch 3 ·
+step 12.5 kHz". A
 click, dragging the filter, the wheel, the arrow keys and the − and +
 buttons land on the step's grid, and Shift with an arrow key steps ten
 times as far; a typed frequency, a bookmark and a digit do not.
@@ -1260,8 +1266,35 @@ its colour, named in full, by a short name or not at all as room allows,
 and clicking it zooms to the band. With Radio > "Mode
 and step from the band plan", tuning into a range selects its usual mode.
 The Automatic tuning step takes the channel spacing of the ranges that have
-channels ([Demodulation and audio](#demodulation-and-audio)). The Bookmarks menu lists the
-ranges of the received span. Display > "Band plan" hides the strip.
+channels ([Demodulation and audio](#demodulation-and-audio)).
+
+The plan also numbers channels and names known frequencies. Its channel
+sets are those that a regulation or the IARU Region 1 plans number across
+Europe: CB, PMR446, maritime VHF, the amateur FM and repeater channels of
+10 m, 6 m, 2 m, 70 cm and 23 cm, the DAB blocks of Band III, the UHF
+television channels and DECT. Its known frequencies are the distress and
+safety frequencies, the time signals and standard frequencies, the radio
+astronomy lines, Galileo's carriers and the amateur centres of activity and
+calling frequencies. No broadcaster, operator, local repeater or national
+plan is named. Zoomed in, the strip draws a set's channels as ticks along
+its lower edge once they lie 6 px apart, with their numbers once they lie
+28 px apart, and each known frequency as a small mark along its upper edge,
+with its name where it fits; the ranges' names come first, then the known
+frequencies', then the numbers. Hovering a tick or a mark names it, and
+clicking or tapping it tunes there, in the known frequency's or the set's
+mode, within the receiver's reach: the marks answer in the strip's upper
+half, the ticks in its lower half, and a name or a number anywhere it is
+drawn; elsewhere the click zooms to the range. Display > "Channels and
+known frequencies" hides the ticks, the marks and their names; the line
+under the frequency still names them. A bookmark added on a channel or a
+known frequency takes its name.
+
+The Bookmarks menu lists the ranges in view, each with the known
+frequencies inside it; a click on a range frames it, and a click on a known
+frequency tunes there in its mode. Its filter also searches the whole
+plan's ranges, channel sets and known frequencies, and a click on a set
+frames it. The list holds at most 200 rows: zoom in or refine the filter
+for the others. Display > "Band plan" hides the strip.
 
 The plan is a detailed guide for Europe (ITU Region 1), not a legal
 reference: it is written by hand from the ITU Radio Regulations, the CEPT's

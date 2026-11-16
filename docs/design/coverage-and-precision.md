@@ -648,6 +648,71 @@ Display, with one strip, as the owner chose:
 - **The Automatic step** takes a set's spacing as the range's channel
   spacing.
 
+As built, where this section left a choice open or a rule had to bend
+([`band-plan.md`](band-plan.md) has the sources, what was left out and the
+second reading):
+
+- 16 channel sets (680 channels) and 141 known frequencies, below the 25
+  sets and the 150 spots this section expected: the short-range devices at
+  433 MHz and the Wi-Fi channels are left out, as no source read numbers
+  them, and so are the 4 m and 10 m FM simplex channels, which the IARU
+  plans space but do not number. Band III television is left out as a set
+  because the DAB blocks take its range, and sets do not overlap.
+- **"Inside one band" became "inside the plan".** Maritime VHF's channels
+  run from the ship stations' 156.025 MHz to the coast stations' 162.025
+  MHz and AIS 2, across four bands of the plan (maritime VHF, land mobile,
+  the coast stations' range and AIS): one set must span them, as its
+  numbers do. A set now lies inside the plan and may span several bands;
+  sets still do not overlap, and a set's channels lie at least its spacing
+  apart, so that a frequency is on one channel at most. The display assumes
+  no set's band: it finds sets by frequency, and the Automatic step reads
+  the set beside the VFO, not the range's.
+- **The Automatic step on a set** applies where one of the set's channels
+  lies less than one spacing from the VFO, while the view shows two
+  channels or more: between maritime VHF's ship and coast channels, the
+  range's own step applies. There, a click lands on the nearest channel
+  rather than on a multiple of the spacing, and the step keys go from
+  channel to channel, as CB's channels sit 5 kHz past the 10 kHz, PMR446's
+  6.25 kHz past the 12.5 kHz and the DAB blocks 1.712 MHz apart with gaps.
+  Past a gap of more than two spacings, or past the set's last channel, the
+  keys move by the spacing. CB, PMR446 and maritime VHF lost the step of
+  their ranges (5, 6.25 and 25 kHz, unsourced) to their sets' spacings.
+- **The line under the frequency** shows the known frequency or the
+  channel in place of the range's name: "PMR446 · ch 3 · step 12.5 kHz",
+  "2 m FM · RV48 · step 12.5 kHz". A known frequency's name comes after its
+  band's, as names repeat from band to band: "2 m amateur · SSB centre".
+  The same full names go to the tooltips, the filtered plan list and new
+  bookmarks; the strip writes the short name.
+- **On the strip**, the ranges' names keep their places first, then the
+  known frequencies' names, then the channels' numbers, each left out
+  where it would touch one already placed. A number is the channel's
+  designator alone ("RV48", "5A", "3"). A press lands on a known
+  frequency's mark in the strip's upper half or a channel's tick in its
+  lower half, within 4 px for a mouse or 10 px for a finger, a tick only
+  while ticks lie at least twice that apart, so that a press never falls
+  between two; a name or a number answers wherever it is drawn. Elsewhere
+  the press frames the range, as before, and dragging the strip still sets
+  the spectrum's height. The strip is drawn at every change of the view:
+  sets and spots in view are found by bisection, and a set's channels are
+  visited only once they lie 6 px apart, so at most one channel every 6 px
+  of the strip and the 141 spots.
+- **The plan list**, without a filter, lists the ranges in view with the
+  known frequencies inside them, the bands' names over their ranges; a
+  range comes with its known frequencies or not at all, so the list may
+  stop a row or two short of 200. With a filter, it lists the ranges (by
+  their names or their bands'), the channel sets and the known frequencies
+  (by their full names) of the whole plan, in frequency order; a set's row
+  says how many channels it has, and a click frames it. The filter is the
+  Bookmarks menu's one field, which now filters both lists ("Filter the
+  bookmarks and the band plan"). The list follows the view only while the
+  menu shows, and is rebuilt only when its rows change.
+- **A new bookmark**: Add current frequency, the spectrum's menu and the
+  History's mark name it after the known frequency or the channel at its
+  frequency, else "Bookmark n" as before; the spectrum's menu and the
+  History also take the known frequency's or the set's mode.
+- PMR446's channels are numbered 1 to 16 in frequency order: ECC Decision
+  (15)05 and EN 303 405 give the raster, not the numbers.
+
 ### 13. The tuner's PLL, measured
 
 On the owner's receiver, and only when the owner asks for it in that
