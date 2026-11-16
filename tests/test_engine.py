@@ -5,6 +5,7 @@ bookmarks and preferences, update checks, saved settings, detection, the
 memory scan and its windows, the sweep, clean stop."""
 
 import asyncio
+import functools
 import contextlib
 import errno
 import json
@@ -19,7 +20,7 @@ from unittest import mock
 import numpy as np
 
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
-from radiolack import __version__, recordings
+from radiolack import __version__, r82xx, recordings
 from radiolack.engine import Engine, Source, Subscription
 from radiolack.recordings import meta_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
@@ -708,6 +709,26 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         settings = await self.saved(
             SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["ppm"] == 2)
         self.assertNotIn("bias_tee", settings["receivers"]["rtl_tcp"]["source"])
+
+    async def test_a_receiver_keeps_its_driver_s_computation_but_never_the_grid(self):
+        # The grid stays on at every start: a hand-written file cannot turn it off.
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"driver_pll": "truncating",
+                                                                         "tuner_grid": False}}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        self.assertEqual((engine.state()["driver_pll"], engine.state()["tuner_grid"]), ("truncating", True))
+        engine.configure({"driver_pll": "rounding", "tuner_grid": False})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["driver_pll"] == "rounding")
+        self.assertNotIn("tuner_grid", settings["receivers"]["rtl_tcp"]["source"])
+        await self.stop(engine)
+        engine = self.engine(RtlTcpSource())
+        self.assertEqual((engine.state()["driver_pll"], engine.state()["tuner_grid"]), ("rounding", True))
+
+    async def test_a_saved_driver_s_computation_that_is_refused_stays_unknown(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"driver_pll": "2.0.2", "ppm": -4}}}})
+        with self.assertLogs("radiolack.engine", "WARNING"):
+            engine = self.engine(RtlTcpSource())
+        self.assertEqual((engine.state()["driver_pll"], engine.state()["ppm"]), ("unknown", -4))
 
     async def test_a_source_without_antenna_power_refuses_to_turn_it_on(self):
         engine = self.engine()
@@ -2875,8 +2896,10 @@ class CarrierTest(unittest.IsolatedAsyncioTestCase):
     computes from it, which brings the carrier to its true frequency."""
 
     async def start(self, carriers: dict[float, float], *, crystal_ppb: int = 0, rate_hz: float = 1_024_000.0,
-                    centre_hz: float = 145_000_000.0, **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
-        fake = FakeRtlTcp(carriers=carriers, crystal_ppb=crystal_ppb, chunk_bytes=16_384, interval_s=0.004)
+                    centre_hz: float = 145_000_000.0, tuner_pll=None,
+                    **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
+        fake = FakeRtlTcp(carriers=carriers, crystal_ppb=crystal_ppb, chunk_bytes=16_384, interval_s=0.004,
+                          tuner_pll=tuner_pll)
         await fake.__aenter__()
         self.addAsyncCleanup(fake.__aexit__, None, None, None)
         source = RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1)
@@ -2950,6 +2973,61 @@ class CarrierTest(unittest.IsolatedAsyncioTestCase):
                     self.assertAlmostEqual(after["frequency_hz"], air_hz, delta=1.0)
                     engine.close()          # the next path's receiver alone streams
                     fake.sending = False
+
+    # Two or three centres for each divider of the tuner at 240 kS/s (IF 2.125 MHz): 64 up to an
+    # oscillator of 55.3 MHz, then 32, 16, 8, 4 and 2. None where the VCO is a multiple of 57.6 MHz.
+    GRID_CENTRES_HZ = {64: (30_100_000, 47_000_000), 32: (70_000_000, 99_000_000),
+                       16: (120_000_000, 145_000_000, 200_000_000), 8: (230_000_000, 433_000_000),
+                       4: (500_000_000, 860_000_000), 2: (1_000_000_000, 1_296_000_000, 1_700_000_000)}
+
+    async def carriers_on_the_grid(self, computation: str, driver_pll: str, crystal_ppb: int = 0
+                                   ) -> dict[int, list[tuple[float, float]]]:
+        """The carrier measured, and where it is on the air, at every centre
+        of GRID_CENTRES_HZ, by divider, the tuner following ``computation``
+        and Radiolack labelling by ``driver_pll``, its crystal
+        ``crystal_ppb`` off and corrected."""
+        rate = 240_000
+        tuned = functools.partial(r82xx.tuned_hz, computation)
+        engine, subscription, fake = await self.start({}, crystal_ppb=crystal_ppb, rate_hz=float(rate),
+                                                       tuner_pll=tuned, ppm=crystal_ppb / 1000,
+                                                       driver_pll=driver_pll)
+        source = engine.source
+        measures: dict[int, list[tuple[float, float]]] = {}
+        for divider, centres in self.GRID_CENTRES_HZ.items():
+            for centre_hz in centres:
+                air_hz = centre_hz + 30_000.4
+                fake.carriers = {air_hz: 0.2}
+                engine.configure({"centre_hz": centre_hz})
+                engine.configure_demod({"frequency_hz": round(air_hz), "mode": "AM"})
+                in_use = source.centre_in_use(centre_hz)
+                self.assertLessEqual(abs(in_use - centre_hz), 58_000)
+                # The oscillator on the grid nearest the centre in use: the tuner errs by far less.
+                oscillator = round((in_use / (1 + crystal_ppb / 1e9) + r82xx.rate_if_hz(rate)) / 112_500) * 112_500
+                self.assertEqual(r82xx.mix_divider(oscillator), divider)
+                await eventually(lambda: engine._capture is not None and engine._capture[1][0] == in_use
+                                 and fake.frequency_hz + r82xx.rate_if_hz(rate) == oscillator)
+                self.assertEqual(engine.state()["centre_in_use_hz"], in_use)    # what the source reports
+                result = await self.measure(engine, subscription, centre_hz)
+                self.assertIsNone(result["reason"], centre_hz)
+                measures.setdefault(divider, []).append((result["frequency_hz"], air_hz))
+        engine.close()
+        fake.sending = False
+        return measures
+
+    async def test_on_the_grid_a_carrier_measures_where_it_is_once_the_driver_is_known(self):
+        for computation, crystal_ppb in (("truncating", 0), ("rounding", -23_450)):
+            with self.subTest(computation=computation):
+                measures = await self.carriers_on_the_grid(computation, computation, crystal_ppb)
+                for divider, found in measures.items():
+                    for measured_hz, air_hz in found:
+                        self.assertAlmostEqual(measured_hz, air_hz, delta=1.0, msg=f"divider {divider}")
+
+    async def test_on_the_grid_the_older_driver_unknown_sits_one_constant_off_in_each_divider(self):
+        measures = await self.carriers_on_the_grid("truncating", "unknown")
+        # The tuner sits that far low, so the carrier shows that far high: 1757.8 Hz over the divider.
+        for divider, found in measures.items():
+            for measured_hz, air_hz in found:
+                self.assertAlmostEqual(measured_hz - air_hz, 1757.8 / divider, delta=1.0, msg=f"divider {divider}")
 
     async def test_says_why_it_gives_no_frequency(self):
         air_hz = 145_010_000.0

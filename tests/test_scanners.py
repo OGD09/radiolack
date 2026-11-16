@@ -13,10 +13,11 @@ from unittest import mock
 
 import numpy as np
 
+from radiolack import r82xx
 from radiolack.bookmarks import Bookmark
 from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
                                 MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch, Detection, Detector,
-                                MemoryScan, MemoryTour, Signals, Sweep, SweepWindows, checked_frequency,
+                                MemoryScan, MemoryTour, Placement, Signals, Sweep, SweepWindows, checked_frequency,
                                 checked_resume, checked_sweep_range, checked_threshold, checked_window, find_signals,
                                 local_noise, memory_window, memory_windows, search_blocks, sweep_windows,
                                 watched_channels)
@@ -467,6 +468,39 @@ class MemoryWindowsTest(unittest.TestCase):
         self.assertIsNone(memory_window(1767e6, rate, *R820T_HZ))
         self.assertEqual(memory_windows([10e6, 145.5e6, 2400e6], rate, *R820T_HZ), (146.46e6,))
         self.assertEqual(memory_windows([10e6, 2400e6], rate, *R820T_HZ), ())
+
+    def test_on_a_tuner_s_grid_each_frequency_lies_in_the_searched_part_of_a_placed_window(self):
+        rng = np.random.default_rng(8)
+        frequencies = sorted([145e6 + n * 6_250 for n in range(0, 400, 3)]
+                             + list(np.round(rng.uniform(25e6, 1765e6, 150))))
+        scale = 1 + 12.5e-6        # a crystal 12.5 ppm fast: the grid on the air moves with it
+        for rate in (240_000.0, 300_000.0, 1_024_000.0, 2_400_000.0):
+            intermediate = r82xx.rate_if_hz(int(rate))
+
+            def place(centre_hz: float) -> float:
+                request = r82xx.on_grid(round(centre_hz / scale), intermediate, *R820T_HZ)
+                return request * scale
+
+            placement = Placement(place, r82xx.GRID_HZ * scale)
+            with self.subTest(rate=rate):
+                centres = memory_windows(frequencies, rate, *R820T_HZ, placement)
+                in_use = [place(centre) for centre in centres]
+                within = [frequency for frequency in frequencies
+                          if memory_window(frequency, rate, *R820T_HZ, placement) is not None]
+                for frequency in within:
+                    self.assertTrue(watching(frequency, in_use, rate), frequency)
+                left_out = set(frequencies) - set(within)
+                if rate >= 300_000:
+                    self.assertEqual(left_out, set())
+                else:
+                    # Below 289 kS/s, a grid point's DC gap lies beyond its neighbours' reach.
+                    for frequency in left_out:
+                        self.assertLessEqual(abs(frequency - place(frequency)), DC_GAP_HZ, frequency)
+                # Without the placement, the windows asked would not all hold them.
+                if rate == 2_400_000.0:
+                    unplaced = memory_windows(frequencies, rate, *R820T_HZ)
+                    self.assertFalse(all(watching(frequency, [place(centre) for centre in unplaced], rate)
+                                         for frequency in frequencies))
 
 
 class MemoryTourTest(unittest.TestCase):

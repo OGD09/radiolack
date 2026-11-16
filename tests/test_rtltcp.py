@@ -783,6 +783,152 @@ class TunerRestartTest(SourceTest):
         self.assertEqual((self.fake.direct_sampling, self.fake.tuner_state, self.fake.gain_tenths), (0, "rate", 297))
 
 
+def on_grid(frequency_hz: float, rate_hz: int, low_hz: float = 24e6) -> int:
+    """Where an R820T's request goes on its grid at ``rate_hz``."""
+    return r82xx.on_grid(frequency_hz, r82xx.rate_if_hz(rate_hz), low_hz, 1766e6)
+
+
+class GridTest(SourceTest):
+    """An R820T or R828D on its tuner, placed on its grid: the oscillator a
+    multiple of 112.5 kHz, the samples labelled where the tuner sits, the
+    whole of the correction Radiolack's."""
+
+    async def start(self, fake: FakeRtlTcp | None = None, **options) -> RtlTcpSource:
+        return await super().start(fake, grid=True, **options)
+
+    async def commands_after(self, count: int) -> list[tuple[int, int]]:
+        """The commands sent from the ``count``-th on, once they stop coming."""
+        await asyncio.sleep(0.1)
+        return self.fake.commands[count:]
+
+    async def test_places_the_centre_where_the_oscillator_is_on_the_grid_at_every_rate(self):
+        source = await self.start(gain_db=30)
+        self.assert_labelled(source, await self.read(source))
+        # 2.5 kHz below 145 MHz at 2.4 MS/s, whose IF is 1.815 MHz.
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 144_997_500, 297))
+        state = source.describe()
+        self.assertEqual((state["centre_hz"], state["centre_in_use_hz"], state["tuner_grid"]),
+                         (145e6, 144_997_500.0, True))
+        self.assertEqual((source.centre_hz, source.exact_centre_hz, source.grid_hz), (145e6, 144_997_500.0, 112_500))
+        for rate in (1_024_000, 240_000, 300_000, 2_400_000):
+            with self.subTest(rate=rate):
+                source.configure({"sample_rate_hz": rate})       # the IF follows the rate: so does the grid
+                self.assert_labelled(source, await self.read(source))
+                request = self.fake.frequency_hz
+                self.assertEqual((request + r82xx.rate_if_hz(rate)) % 112_500, 0)
+                self.assertLessEqual(abs(request - 145e6), 56_250)
+                self.assertEqual((source.exact_centre_hz, source.describe()["centre_in_use_hz"]),
+                                 (request, request))
+        self.assertEqual(source.centre_in_use(433e6), on_grid(433e6, 2_400_000))
+        # Off the grid, every centre is asked as it is.
+        sent = len(self.fake.commands)
+        source.configure({"tuner_grid": False})
+        self.assertEqual(await self.commands_after(sent), [(0x01, 145_000_000)])
+        self.assertEqual((source.describe()["centre_in_use_hz"], source.grid_hz), (145e6, 0.0))
+
+    async def test_labels_by_the_driver_s_computation_without_retuning(self):
+        source = await self.start(centre_hz=433_000_000)
+        await self.read(source)
+        request = on_grid(433e6, 2_400_000)
+        sent = len(self.fake.commands)
+        for driver in ("truncating", "rounding", "unknown"):
+            with self.subTest(driver=driver):
+                source.configure({"driver_pll": driver})
+                self.assert_labelled(source, await self.read(source))
+                tuned = request if driver == "unknown" else r82xx.tuned_hz(driver, request, 2_400_000)
+                self.assertEqual(source.exact_centre_hz, tuned)
+                self.assertEqual(source.describe()["driver_pll"], driver)
+        # One constant low by the truncating computation, none by the rounding one, on the grid.
+        self.assertAlmostEqual(r82xx.tuned_hz("truncating", request, 2_400_000) - request, -219.7, delta=0.1)
+        self.assertEqual(r82xx.tuned_hz("rounding", request, 2_400_000), request)
+        self.assertEqual(await self.commands_after(sent), [])      # nothing asked of the receiver
+        # Off the grid, the computation labels each centre with its own error.
+        source.configure({"driver_pll": "truncating", "tuner_grid": False})
+        await self.read(source)
+        self.assertEqual(source.exact_centre_hz, r82xx.tuned_hz("truncating", 433_000_000, 2_400_000))
+
+    async def test_takes_the_whole_correction_itself_and_scales_the_rate(self):
+        ppm = 12.5
+        scale = 1 + ppm / 1e6
+        air_hz = 145_020_000.0
+        fake = FakeRtlTcp(carriers={air_hz: 0.5}, noise=0.01, chunk_bytes=8000, crystal_ppb=12_500,
+                          tuner_pll=functools.partial(r82xx.tuned_hz, "rounding"))
+        source = await self.start(fake, ppm=ppm, gain_db=30, idle_s=10.0)
+        source.configure({"driver_pll": "rounding"})
+        samples = await self.read(source, 48_000)
+        request = on_grid(round(145e6 / scale), 2_400_000)
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, request, 297))     # 0x05 with 0
+        self.assertEqual(source.rate_scale, scale)
+        self.assertAlmostEqual(source.exact_centre_hz, request * scale, places=4)
+        # The carrier, measured in samples at the rate asked, lies a rate_scale nearer.
+        offset = carrier_hz(samples, source.sample_rate_hz, (air_hz - source.exact_centre_hz) / scale)
+        self.assertAlmostEqual(source.exact_centre_hz + offset * scale, air_hz, delta=0.2)
+        # A correction that keeps the request on the same point of the grid retunes nothing.
+        sent = len(self.fake.commands)
+        source.configure({"ppm": 12.6})
+        self.assertEqual(await self.commands_after(sent), [])
+        await self.read(source)
+        self.assertAlmostEqual(source.exact_centre_hz, request * (1 + 12.6e-6), places=4)
+
+    async def test_leaves_direct_sampling_other_tuners_and_an_upconverting_v4_unplaced(self):
+        cases = (
+            # A tuner other than an R820T or R828D: the correction's whole part is its own.
+            ("E4000", FakeRtlTcp(tuner_type=1, gain_count=14), {"ppm": 3}, 145_000_000, 3),
+            ("direct sampling", FakeRtlTcp(), {"hf_input": "q", "centre_hz": 7_100_000}, 7_100_000, 0),
+            # Below 28.8 MHz an RTL-SDR Blog V4 adds 28.8 MHz in its driver: not computed.
+            ("R828D below 28.8 MHz", FakeRtlTcp(tuner_type=6), {"hf_input": "tuner", "centre_hz": 14_200_000},
+             14_200_000, 0),
+            # Below 27.66 MHz the oscillator lies under the VCO's range over 64: not computed either.
+            ("R820T at 24 MHz", FakeRtlTcp(), {"centre_hz": 24_000_000}, 24_000_000, 0),
+        )
+        for name, fake, settings, request, whole in cases:
+            with self.subTest(name=name):
+                source = await self.start(fake, gain_db=None)
+                source.configure({**settings, "driver_pll": "truncating"})
+                self.assert_labelled(source, await self.read(source))
+                self.assertEqual(self.fake.frequency_hz, request)
+                self.assertEqual(self.fake.correction_ppm, whole)
+                self.assertEqual(source.describe()["centre_in_use_hz"], request)
+                self.assertEqual(source.grid_hz, 0.0 if name == "E4000" else 112_500)
+                source.close()
+        # The same R828D at 145 MHz is placed.
+        source = await self.start(FakeRtlTcp(tuner_type=6))
+        await self.read(source)
+        self.assertEqual(self.fake.frequency_hz, 144_997_500)
+
+    async def test_a_converter_places_the_receiver_s_own_frequency(self):
+        cases = (("up", 125_000_000, 20_000_000, lambda tuned: tuned - 125e6),
+                 ("down_inverted", 5_150_000_000, 3_800_000_000, lambda tuned: 5150e6 - tuned))
+        for converter, lo_hz, air_hz, air in cases:
+            with self.subTest(converter=converter):
+                source = await self.start()
+                source.configure({"converter": converter, "converter_lo_hz": lo_hz, "centre_hz": air_hz})
+                await self.read(source)
+                request = self.fake.frequency_hz
+                self.assertEqual((request + r82xx.rate_if_hz(2_400_000)) % 112_500, 0)
+                self.assertEqual(source.exact_centre_hz, air(request))
+                self.assertEqual(source.centre_hz, air_hz)
+                self.assertEqual(source.centre_in_use(air_hz), air(request))
+                source.close()
+
+    async def test_places_within_the_range_at_its_top(self):
+        source = await self.start(centre_hz=1_766_000_000)
+        await self.read(source)
+        # The highest oscillator on the grid within the range: 102.5 kHz below its top.
+        self.assertEqual(self.fake.frequency_hz, 1_765_897_500)
+        self.assertEqual(source.describe()["centre_in_use_hz"], 1_765_897_500)
+
+    async def test_refuses_invalid_driver_and_grid_settings(self):
+        source = await self.start()
+        await self.read(source)
+        before = source.describe()
+        for change in ({"driver_pll": "newer"}, {"driver_pll": None}, {"driver_pll": 1},
+                       {"tuner_grid": "yes"}, {"tuner_grid": 1}, {"tuner_grid": None}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                source.configure(change)
+        self.assertEqual(source.describe(), before)
+
+
 class AntennaPowerTest(SourceTest):
     async def test_starts_off_is_sent_at_each_connection_and_when_it_changes(self):
         source = await self.start()
