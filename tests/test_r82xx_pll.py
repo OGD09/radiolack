@@ -5,8 +5,8 @@ on values derived by hand from the driver's arithmetic: a 28.8 MHz crystal,
 import unittest
 
 from tests import r82xx_pll
-from tests.r82xx_pll import (driver_xtal_hz, intermediate_hz, mix_divider, rounding_lo_hz, truncating_lo_hz,
-                             tuned_hz)
+from tests.r82xx_pll import (driver_xtal_hz, intermediate_hz, mix_divider, oscillator_hz, rate_if_hz,
+                             rounding_lo_hz, truncating_lo_hz, tuned_hz)
 
 
 class OscillatorTest(unittest.TestCase):
@@ -73,11 +73,22 @@ class DriverTest(unittest.TestCase):
         # + 1.7) / 2 = 1.815 MHz. At 1.024 MS/s: no step, the 1.2 MHz
         # filter: 2.3 − 0.6 = 1.7 MHz. At 240 kS/s, below every filter, the
         # narrowest, 350 kHz: 2.125 MHz.
-        self.assertEqual(intermediate_hz(2_560_000), 3_570_000)
-        self.assertEqual(intermediate_hz(2_400_000), 1_815_000)
-        self.assertEqual(intermediate_hz(1_024_000), 1_700_000)
-        self.assertEqual(intermediate_hz(240_000), 2_125_000)
-        self.assertEqual(intermediate_hz(8_000_000), 4_570_000)
+        self.assertEqual(rate_if_hz(2_560_000), 3_570_000)
+        self.assertEqual(rate_if_hz(2_400_000), 1_815_000)
+        self.assertEqual(rate_if_hz(1_024_000), 1_700_000)
+        self.assertEqual(rate_if_hz(240_000), 2_125_000)
+        self.assertEqual(rate_if_hz(8_000_000), 4_570_000)
+        self.assertEqual(intermediate_hz(2_400_000), 1_815_000)     # with the rate's bandwidth by default
+
+    def test_a_tuner_just_started_again_runs_at_3_57_mhz_whatever_the_rate(self):
+        # r82xx_init's r82xx_set_tv_standard, until the next sample rate.
+        for rate in (240_000, 1_024_000, 2_400_000, 2_560_000):
+            with self.subTest(rate=rate):
+                self.assertEqual(intermediate_hz(rate, "started"), 3_570_000)
+                self.assertEqual(oscillator_hz(145_000_000, rate, "started"), 148_570_000)
+        self.assertEqual(oscillator_hz(145_000_000, 2_400_000), 146_815_000)
+        with self.assertRaisesRegex(ValueError, "rate, started"):
+            intermediate_hz(2_400_000, "asleep")
 
     def test_the_driver_takes_the_crystal_as_corrected(self):
         self.assertEqual(driver_xtal_hz(0), 28_800_000)
@@ -89,6 +100,8 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(tuned_hz("truncating", asked, 2_560_000), asked - 96)
         self.assertEqual(tuned_hz("rounding", asked, 2_560_000), asked + 13.86328125)
         self.assertEqual(tuned_hz("rounding", 144_000_000 - 1_815_000, 2_400_000), 144_000_000 - 1_815_000)
+        # Just started again, the tuner takes 3.57 MHz at 2.4 MS/s too.
+        self.assertEqual(tuned_hz("truncating", asked, 2_400_000, state="started"), asked - 96)
 
 
 if __name__ == "__main__":

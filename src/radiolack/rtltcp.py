@@ -42,6 +42,19 @@ it. ``tuner`` is for a dongle whose tuner covers shortwave by itself, such
 as an RTL-SDR Blog V4: the centre frequency simply goes lower. No tuner
 says when it cannot reach a frequency: rtl_tcp checks no command's result.
 
+Command 0x09 with 0, the tuner, starts the tuner again in librtlsdr,
+whether direct sampling was on or not (``rtlsdr_set_direct_sampling``
+calls the tuner's init): an R820T or R828D forgets its gain, back to
+automatic, and the bandwidth and the intermediate frequency that the
+sample rate gave it, back to DVB-T's widest filter and 3.57 MHz. Whenever
+the source sends it, at each connection and on leaving direct sampling,
+the frequency follows, then the sample rate, which gives the tuner the
+bandwidth and the intermediate frequency of the rate again, then the
+gain. The frequency goes first for the RTL-SDR Blog fork: there, 0x09
+with 0 means automatic direct sampling below 24 MHz, so that it may go
+back to direct sampling on the frequency it was left on, and the next
+frequency on the tuner starts the tuner again.
+
 A converter in front of the receiver (``converter`` and
 ``converter_lo_hz``, converter.py) moves the frequencies: the source's
 centre frequency is the one on the air, and only the command it sends is
@@ -457,6 +470,8 @@ class RtlTcpSource:
             return
         connection = self._connection
         if connection is not None and connection.tuner is not None:
+            # Leaving direct sampling starts the tuner again (module docstring).
+            restarted = bool(old_input) and not new_input
             # The tuner sleeps while sampling directly: its gain waits.
             if new.gain_db != old.gain_db and not old_input and not new_input:
                 _send_gain(connection, new.gain_db)
@@ -464,16 +479,14 @@ class RtlTcpSource:
             whole = self._whole_ppm(new)
             if whole != self._whole_ppm(old):
                 connection.send(_SET_FREQUENCY_CORRECTION, whole)
-            if new.sample_rate_hz != old.sample_rate_hz:
+            if new.sample_rate_hz != old.sample_rate_hz and not restarted:
                 connection.send(_SET_SAMPLE_RATE, int(new.sample_rate_hz))
             if new_input != old_input:
                 connection.send(_SET_DIRECT_SAMPLING, new_input)
                 if not old_input and new.rtl_agc:
                     connection.send(_SET_RTL_AGC, 1)
-                if not new_input:
-                    if old.rtl_agc:
-                        connection.send(_SET_RTL_AGC, 0)
-                    _send_gain(connection, new.gain_db)     # the tuner forgot it
+                if restarted and old.rtl_agc:
+                    connection.send(_SET_RTL_AGC, 0)
             elif new_input and new.rtl_agc != old.rtl_agc:
                 connection.send(_SET_RTL_AGC, int(new.rtl_agc))
             if new.bias_tee != old.bias_tee:
@@ -484,6 +497,8 @@ class RtlTcpSource:
                 # librtlsdr version; after 0x05, which retuned to the
                 # previous request with the new whole part.
                 connection.send(_SET_FREQUENCY, _requested_hz(new, connection.tuner, whole))
+            if restarted:
+                _send_forgotten(connection, new)
         if retuned:
             self._new_setting()
         self._notify()
@@ -585,8 +600,9 @@ class RtlTcpSource:
     def _header_received(self, connection: _Connection) -> None:
         """rtl_tcp answered: fit the settings to its tuner and send them all,
         direct sampling and the RTL2832's AGC included, which rtl_tcp keeps
-        from its previous client. The gain goes last: leaving direct
-        sampling wakes the tuner up without it."""
+        from its previous client. The frequency, the sample rate and the
+        gain follow direct sampling: 0x09 with 0 starts the tuner again
+        without them (module docstring)."""
         tuner = connection.tuner
         assert tuner is not None
         self.tuner = tuner
@@ -594,12 +610,13 @@ class RtlTcpSource:
         direct = _direct_input(settings, tuner)
         whole = self._whole_ppm(settings)
         connection.send(_SET_FREQUENCY_CORRECTION, whole)
-        connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
         connection.send(_SET_DIRECT_SAMPLING, direct)
         connection.send(_SET_RTL_AGC, int(bool(direct) and settings.rtl_agc))
         connection.send(_SET_FREQUENCY, _requested_hz(settings, tuner, whole))
-        if not direct:
-            _send_gain(connection, settings.gain_db)
+        if direct:
+            connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
+        else:
+            _send_forgotten(connection, settings)
         connection.send(_SET_BIAS_TEE, int(settings.bias_tee))
         self._new_setting()
         self._set_status("streaming", "")
@@ -900,6 +917,15 @@ def _send_gain(connection: _Connection, gain_db: float | None) -> None:
     else:
         connection.send(_SET_GAIN_MODE, 1)
         connection.send(_SET_GAIN, round(gain_db * 10))
+
+
+def _send_forgotten(connection: _Connection, settings: Settings) -> None:
+    """Send again what the tuner forgot when command 0x09 with 0 started it
+    again, after the frequency (module docstring): the sample rate, which
+    gives it the bandwidth and the intermediate frequency of the rate, then
+    the gain."""
+    connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
+    _send_gain(connection, settings.gain_db)
 
 
 def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | None) -> Settings:

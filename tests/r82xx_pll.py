@@ -25,9 +25,21 @@ for it, so a carrier moves by as much in the samples.
   so within 439 Hz / mix_div of the frequency asked, and exact when the
   oscillator is a multiple of 112.5 kHz on a 28.8 MHz crystal.
 
-The IF follows the tuner's bandwidth, which librtlsdr sets to the sample
-rate it truly runs at whenever the sample rate changes: 3.57 MHz above
-2.43 MS/s, 1.815 MHz at 2.4 MS/s, 1.7 MHz at 1.024 MS/s (``intermediate_hz``).
+The IF depends on what librtlsdr did to the tuner last, its two states
+(``TUNER_STATES``):
+
+- ``rate``: the bandwidth of the sample rate. ``rtlsdr_set_sample_rate``
+  (rtl_tcp's command 0x02) gives the tuner a bandwidth equal to the rate
+  it truly runs at, and ``r82xx_set_bandwidth`` sets the IF from it:
+  3.57 MHz above 2.43 MS/s, 1.815 MHz at 2.4 MS/s, 1.7 MHz at 1.024 MS/s
+  (``rate_if_hz``).
+- ``started``: just started again. ``rtlsdr_set_direct_sampling`` with 0
+  (command 0x09 with 0, whether direct sampling was on or not) calls the
+  tuner's init, ``r82xx_init``, whose ``r82xx_set_tv_standard`` puts the
+  IF back to 3.57 MHz and the filter back to the widest, DVB-T's 6 MHz,
+  and gives the RTL2832 that IF (``STARTED_IF_HZ``), until the next 0x02.
+  The init also writes the tuner's registers afresh, its gain included:
+  automatic again.
 
 Ported from rtl-sdr, read on its GitHub mirrors on 2026-11-16:
 
@@ -45,6 +57,12 @@ Ported from rtl-sdr, read on its GitHub mirrors on 2026-11-16:
   computes as v2.0.1 does, only its VCO current differs: ``truncating``.
 - ``r82xx_set_bandwidth`` and ``rtlsdr_set_sample_rate`` are the same in
   all of them.
+- The tuner's two states: ``rtlsdr_set_direct_sampling`` (in the Blog
+  fork, ``_rtlsdr_set_direct_sampling``) in ``src/librtlsdr.c``, and
+  ``r82xx_init`` and ``r82xx_set_tv_standard`` in ``src/tuner_r82xx.c``,
+  at osmocom's 2659e2d (Debian 12's 0.6.0), v2.0.1 and v2.0.2 and the
+  Blog fork's master, read again on 2026-11-16: each starts the tuner again
+  with an IF of 3.57 MHz.
 
 Left out, as they do not move the frequency: the registers written, the
 VCO's fine tune, which changes the divider's register but not the VCO
@@ -85,6 +103,10 @@ XTAL_HZ = 28_800_000        # the crystal of an R820T, and of the RTL-SDR Blog V
 VCO_MIN_KHZ = 1_770_000     # the VCO's range, in kHz, as the driver checks it
 VCO_MAX_KHZ = 2 * VCO_MIN_KHZ
 SDM_STEPS = 65_536          # the PLL's fraction: sdm / 65536
+# The tuner's states: with the bandwidth of the sample rate, or just started
+# again, until the next sample rate (the docstring above).
+TUNER_STATES = ("rate", "started")
+STARTED_IF_HZ = 3_570_000   # r82xx_set_tv_standard's IF, which r82xx_init sets
 
 # r82xx_set_bandwidth: the IF filter's widths, and the high-pass steps.
 _LOW_PASS_HZ = (1_700_000, 1_600_000, 1_550_000, 1_450_000, 1_200_000, 900_000, 700_000, 550_000, 450_000,
@@ -160,9 +182,10 @@ def real_rate_hz(rate_hz: int, rtl_xtal_hz: int = XTAL_HZ) -> int:
     return int(rtl_xtal_hz * 2.0**22 / real_ratio)
 
 
-def intermediate_hz(rate_hz: int) -> int:
-    """The tuner's IF at the sample rate ``rate_hz``: r82xx_set_bandwidth
-    for the bandwidth that librtlsdr gives it, the rate it truly runs at."""
+def rate_if_hz(rate_hz: int) -> int:
+    """The tuner's IF with the bandwidth of the sample rate ``rate_hz``:
+    r82xx_set_bandwidth for the bandwidth that librtlsdr gives it, the rate
+    it truly runs at."""
     bandwidth = real_rate_hz(rate_hz)
     if bandwidth > 6_000_000:
         return 4_570_000
@@ -183,24 +206,35 @@ def intermediate_hz(rate_hz: int) -> int:
     return int_freq - real_bw // 2
 
 
+def intermediate_hz(rate_hz: int, state: str = "rate") -> int:
+    """The tuner's IF at the sample rate ``rate_hz`` in ``state``, one of
+    ``TUNER_STATES``."""
+    if state == "rate":
+        return rate_if_hz(rate_hz)
+    if state == "started":
+        return STARTED_IF_HZ
+    raise ValueError(f"the tuner's state must be one of: {', '.join(TUNER_STATES)}")
+
+
 def driver_xtal_hz(correction_ppm: int) -> int:
     """The crystal frequency that librtlsdr gives the tuner's driver with
     the correction ``correction_ppm`` (rtl_tcp's command 0x05)."""
     return int(XTAL_HZ * (1.0 + correction_ppm / 1e6))
 
 
-def oscillator_hz(frequency_hz: int, rate_hz: int) -> int:
+def oscillator_hz(frequency_hz: int, rate_hz: int, state: str = "rate") -> int:
     """The oscillator that librtlsdr asks of the tuner for ``frequency_hz``
-    at the sample rate ``rate_hz``."""
-    return frequency_hz + intermediate_hz(rate_hz)
+    at the sample rate ``rate_hz``, the tuner in ``state``."""
+    return frequency_hz + intermediate_hz(rate_hz, state)
 
 
-def tuned_hz(computation: str, frequency_hz: int, rate_hz: int, correction_ppm: int = 0) -> float:
+def tuned_hz(computation: str, frequency_hz: int, rate_hz: int, correction_ppm: int = 0,
+             state: str = "rate") -> float:
     """The frequency that the tuner truly brings to 0 Hz when librtlsdr is
     asked for ``frequency_hz`` at ``rate_hz`` with ``correction_ppm``, by
-    the driver's ``computation``, in units of the crystal as the driver
-    takes it to run: a crystal that truly runs elsewhere scales it, as it
-    scales every frequency."""
-    intermediate = intermediate_hz(rate_hz)
+    the driver's ``computation``, the tuner in ``state``, in units of the
+    crystal as the driver takes it to run: a crystal that truly runs
+    elsewhere scales it, as it scales every frequency."""
+    intermediate = intermediate_hz(rate_hz, state)
     lo_hz = COMPUTATIONS[computation](frequency_hz + intermediate, driver_xtal_hz(correction_ppm))
     return lo_hz - intermediate

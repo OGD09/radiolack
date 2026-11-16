@@ -50,7 +50,7 @@ def pll(computation: str):
 def alternating(error_hz: float):
     """A tuner that errs by ``error_hz`` on every other step of 1.234 kHz,
     as neither computation does."""
-    return lambda frequency_hz, rate_hz, correction_ppm: frequency_hz + error_hz * ((frequency_hz // 1234) % 2)
+    return lambda frequency_hz, rate_hz, correction_ppm, state: frequency_hz + error_hz * ((frequency_hz // 1234) % 2)
 
 
 class ArithmeticTest(unittest.TestCase):

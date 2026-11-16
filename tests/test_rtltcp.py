@@ -2,6 +2,7 @@
 ephemeral port, and a fake rtl_tcp program that never opens a receiver."""
 
 import asyncio
+import functools
 import os
 import shutil
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource, parse_address, tuner_for
+from tests import r82xx_pll
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcp, FakeRtlTcpRuns, fake_codes, free_port, sample_codes
 
 FAST = {"settle_s": 0.15, "idle_s": 1.0, "read_wait_s": 0.2, "timeout_s": 0.5, "retry_s": (0.05, 0.2)}
@@ -39,10 +41,11 @@ CONNECTION = 7
 
 def connection_commands(ppm: int, rate_hz: int, centre_hz: int, gain_tenths: int | None = None,
                         direct: int = 0, rtl_agc: int = 0, bias_tee: int = 0) -> list[tuple[int, int]]:
-    """What the source sends at each connection: the correction, the sample
-    rate, direct sampling, the RTL2832's AGC, the frequency, the gain,
-    unless sampling directly, then the antenna power."""
-    commands = [(0x05, ppm % 2**32), (0x02, rate_hz), (0x09, direct), (0x08, rtl_agc), (0x01, centre_hz)]
+    """What the source sends at each connection: the correction, direct
+    sampling, the RTL2832's AGC, the frequency, the sample rate, the gain,
+    unless sampling directly, then the antenna power. The sample rate and
+    the gain follow 0x09 with 0, which starts the tuner again."""
+    commands = [(0x05, ppm % 2**32), (0x09, direct), (0x08, rtl_agc), (0x01, centre_hz), (0x02, rate_hz)]
     if not direct:
         commands += [(0x03, 0)] if gain_tenths is None else [(0x03, 1), (0x04, gain_tenths)]
     return [*commands, (0x0e, bias_tee)]
@@ -361,7 +364,7 @@ class ShortwaveTest(SourceTest):
         sent = len(self.fake.commands)
         source.configure({"centre_hz": 24_000_000})          # the tuner's lowest frequency
         self.assertEqual(await self.commands_after(sent),
-                         [(0x09, 0), (0x03, 1), (0x04, 402), (0x01, 24_000_000)])
+                         [(0x09, 0), (0x01, 24_000_000), (0x02, 2_400_000), (0x03, 1), (0x04, 402)])
         self.assert_labelled(source, await self.read(source))
         self.assertFalse(source.describe()["direct"])
         self.assertEqual((self.fake.direct_sampling, self.fake.gain_tenths), (0, 402))
@@ -372,7 +375,18 @@ class ShortwaveTest(SourceTest):
         source.configure({"centre_hz": 145_000_000})
         self.assertEqual(await self.commands_after(sent), [
             (0x09, 1), (0x08, 1), (0x01, 23_999_999),
-            (0x09, 0), (0x08, 0), (0x03, 1), (0x04, 402), (0x01, 145_000_000)])
+            (0x09, 0), (0x08, 0), (0x01, 145_000_000), (0x02, 2_400_000), (0x03, 1), (0x04, 402)])
+
+        # A new sample rate while sampling directly goes once, after the tuner started again.
+        sent = len(self.fake.commands)
+        source.configure({"centre_hz": 7_100_000})
+        source.configure({"sample_rate_hz": 1_024_000})
+        source.configure({"sample_rate_hz": 2_048_000, "centre_hz": 145_000_000})
+        self.assertEqual(await self.commands_after(sent), [
+            (0x09, 1), (0x08, 1), (0x01, 7_100_000), (0x02, 1_024_000), (0x01, 7_100_000),
+            (0x09, 0), (0x08, 0), (0x01, 145_000_000), (0x02, 2_048_000), (0x03, 1), (0x04, 402)])
+        self.assertEqual((self.fake.sample_rate_hz, self.fake.gain_tenths, self.fake.tuner_state),
+                         (2_048_000, 402, "rate"))
 
     async def test_the_reach_follows_the_input_and_the_sample_rate(self):
         source = await self.start()
@@ -487,7 +501,8 @@ class ConverterTest(SourceTest):
         self.assertEqual((state["direct"], state["range_hz"]), (True, [121.2e6, 1886e6]))
         sent = len(self.fake.commands)
         source.configure({"centre_hz": 145_000_000})        # 25 MHz: the tuner
-        self.assertEqual(await self.commands_after(sent), [(0x09, 0), (0x03, 0), (0x01, 25_000_000)])
+        self.assertEqual(await self.commands_after(sent),
+                         [(0x09, 0), (0x01, 25_000_000), (0x02, 2_400_000), (0x03, 0)])
         self.assertFalse(source.describe()["direct"])
         # Inverted: 22.9 MHz on the air is 7.1 MHz behind an oscillator of 30 MHz.
         sent = len(self.fake.commands)
@@ -652,13 +667,13 @@ class CorrectionTest(SourceTest):
         # An unknown tuner: the command's 32 bits are the limit.
         source = await self.start(FakeRtlTcp(tuner_type=9), centre_hz=0xFFFF_FFFF, ppm=-0.4)
         await self.read(source)
-        self.assertEqual(self.fake.commands[-3], (0x01, 0xFFFF_FFFF))
+        self.assertEqual(self.fake.commands[-4], (0x01, 0xFFFF_FFFF))
         await self.fake.__aexit__(None, None, None)
         # An R820T: kept within 24 to 1766 MHz on its tuner, so that the
         # RTL-SDR Blog driver does not switch to direct sampling below it.
         source = await self.start(centre_hz=24_000_000, ppm=0.4)
         await self.read(source)
-        self.assertEqual(self.fake.commands[-3], (0x01, 24_000_000))
+        self.assertEqual(self.fake.commands[-4], (0x01, 24_000_000))
         cases = (({"centre_hz": 24_000_001}, 24_000_000), ({"centre_hz": 30_000_000}, 29_999_988),
                  ({"centre_hz": 1_766_000_000, "ppm": -0.4}, 1_766_000_000),
                  ({"centre_hz": 1_765_000_000}, 1_765_000_706),
@@ -705,6 +720,50 @@ class CorrectionTest(SourceTest):
                     await self.fake.__aexit__(None, None, None)
 
 
+class TunerRestartTest(SourceTest):
+    """librtlsdr starts the tuner again on command 0x09 with 0, which the
+    source sends at each connection and on leaving direct sampling: the
+    tuner then runs at r82xx_init's IF until the next sample rate. With a
+    tuner that follows the driver's PLL computation, a carrier sits where
+    the IF of the sample rate puts it, as it would not if the sample rate
+    came before 0x09."""
+
+    CENTRE_HZ = 145_000_000
+    OFFSET_HZ = 10_000.0
+
+    def expected_hz(self, rate_hz: int, state: str) -> float:
+        """Where the carrier shows from the centre frequency, the tuner in ``state``."""
+        return self.OFFSET_HZ - (r82xx_pll.tuned_hz("truncating", self.CENTRE_HZ, rate_hz, 0, state) - self.CENTRE_HZ)
+
+    async def measure(self, source: RtlTcpSource) -> float:
+        samples = await self.read(source, 48_000)
+        return carrier_hz(samples, source.sample_rate_hz, self.OFFSET_HZ)
+
+    async def test_the_carrier_follows_the_if_of_the_sample_rate(self):
+        # At this centre the IF of each rate and r82xx_init's put the carrier tens of hertz apart.
+        for rate in (2_400_000, 1_024_000):
+            self.assertGreater(abs(self.expected_hz(rate, "rate") - self.expected_hz(rate, "started")), 40)
+        fake = FakeRtlTcp(carriers={self.CENTRE_HZ + self.OFFSET_HZ: 0.5}, noise=0.01, chunk_bytes=8000,
+                          tuner_pll=functools.partial(r82xx_pll.tuned_hz, "truncating"))
+        source = await self.start(fake, centre_hz=self.CENTRE_HZ, gain_db=30, idle_s=10.0)
+        source.configure({"hf_input": "q"})
+
+        # At connection, after 0x09 with 0.
+        self.assertAlmostEqual(await self.measure(source), self.expected_hz(2_400_000, "rate"), delta=2.0)
+
+        # After a new sample rate.
+        source.configure({"sample_rate_hz": 1_024_000})
+        self.assertAlmostEqual(await self.measure(source), self.expected_hz(1_024_000, "rate"), delta=2.0)
+
+        # After direct sampling, entered and left.
+        source.configure({"centre_hz": 7_100_000})
+        await self.read(source)
+        await eventually(lambda: self.fake.direct_sampling == 2)
+        source.configure({"centre_hz": self.CENTRE_HZ})
+        self.assertAlmostEqual(await self.measure(source), self.expected_hz(1_024_000, "rate"), delta=2.0)
+        self.assertEqual((self.fake.direct_sampling, self.fake.tuner_state, self.fake.gain_tenths), (0, "rate", 297))
+
+
 class AntennaPowerTest(SourceTest):
     async def test_starts_off_is_sent_at_each_connection_and_when_it_changes(self):
         source = await self.start()
@@ -715,7 +774,8 @@ class AntennaPowerTest(SourceTest):
         await eventually(lambda: self.fake.commands[-1] == (0x0e, 1))
         self.assertTrue(source.describe()["bias_tee"])
         self.fake.drop()        # a reconnection applies the state in use
-        await eventually(lambda: self.fake.connections == 2 and source.status == "streaming")
+        # The fake receives the commands a moment after the source sends them.
+        await eventually(lambda: self.fake.connections == 2 and len(self.fake.commands) == 2 * CONNECTION + 1)
         self.assertEqual(self.fake.commands[-CONNECTION:],
                          connection_commands(0, 2_400_000, 145_000_000, bias_tee=1))
         source.configure({"bias_tee": False})

@@ -134,8 +134,16 @@ class FakeRtlTcp:
     ``noise`` (full-scale units, in I and in Q). It records the commands it
     receives, and applies a frequency, sample rate, direct sampling input
     or RTL2832 AGC only after ``apply_delay_s``, as samples of the old
-    setting still arrive for a while from a real receiver. Like librtlsdr,
-    leaving direct sampling wakes the tuner up in automatic gain.
+    setting still arrive for a while from a real receiver.
+
+    Like librtlsdr, command 0x09 with 0 starts the tuner again, whether
+    direct sampling was on or not (``rtlsdr_set_direct_sampling`` in
+    src/librtlsdr.c calls the tuner's init, ``r82xx_init`` in
+    src/tuner_r82xx.c for an R820T or R828D, in rtl-sdr 0.6.0 to 2.0.2 and
+    the RTL-SDR Blog fork alike): the tuner forgets its gain, automatic
+    again, and its bandwidth, its state becoming ``started`` until the next
+    sample rate (0x02) gives it the bandwidth of the rate again, ``rate``
+    (``tuner_state``, r82xx_pll.TUNER_STATES).
 
     ``crystal_ppb`` is how far its crystal is off, in parts per billion,
     which moves the carriers as a real crystal would: librtlsdr takes the
@@ -145,17 +153,18 @@ class FakeRtlTcp:
     sampling alike, and samples at the rate asked times the same factor.
 
     ``tuner_pll``, off by default, is the tuner's PLL: given the frequency
-    asked, the sample rate and the correction, the frequency the tuner
-    truly sets, in units of the crystal as librtlsdr takes it to run, such
-    as one of the driver's computations in r82xx_pll.py. The crystal's
-    error then scales it; it does not apply in direct sampling.
+    asked, the sample rate, the correction and the tuner's state, the
+    frequency the tuner truly sets, in units of the crystal as librtlsdr
+    takes it to run, such as one of the driver's computations in
+    r82xx_pll.py, whose IF depends on that state. The crystal's error then
+    scales it; it does not apply in direct sampling.
     """
 
     def __init__(self, *, port: int = 0, magic: bytes = b"RTL0", tuner_type: int = 5,
                  gain_count: int = 29, header: bool = True, chunk_bytes: int = 1000,
                  interval_s: float = 0.002, apply_delay_s: float = 0.05,
                  carriers: dict[float, float] | None = None, noise: float = 0.02,
-                 crystal_ppb: int = 0, tuner_pll: Callable[[int, int, int], float] | None = None) -> None:
+                 crystal_ppb: int = 0, tuner_pll: Callable[[int, int, int, str], float] | None = None) -> None:
         self.port = port
         self.magic = magic
         self.tuner_type = tuner_type
@@ -172,6 +181,7 @@ class FakeRtlTcp:
         self.frequency_hz = 100_000_000     # left by a previous client
         self.sample_rate_hz = 2_048_000
         self.direct_sampling = 0        # command 0x09: 0 the tuner, 1 the I input, 2 the Q input
+        self.tuner_state = "rate"       # rtl_tcp set the sample rate after opening the receiver
         self.rtl_agc = 0                # command 0x08
         self.gain_tenths: int | None = None     # None: automatic gain
         self.correction_ppm = 0         # command 0x05, signed
@@ -236,6 +246,7 @@ class FakeRtlTcp:
             self.frequency_hz = value
         elif command == 0x02:
             self.sample_rate_hz = value
+            self.tuner_state = "rate"
         elif command == 0x03:
             self.gain_tenths = None if value == 0 else self.gain_tenths or 0
         elif command == 0x04:
@@ -245,8 +256,10 @@ class FakeRtlTcp:
         elif command == 0x08:
             self.rtl_agc = value
         elif command == 0x09:
-            if self.direct_sampling and not value:
-                self.gain_tenths = None     # the tuner wakes up with its defaults
+            if not value:
+                # The tuner starts again with its defaults.
+                self.gain_tenths = None
+                self.tuner_state = "started"
             self.direct_sampling = value
 
     async def _send(self, writer: asyncio.StreamWriter) -> None:
@@ -283,7 +296,7 @@ class FakeRtlTcp:
         scale = (1 + self.crystal_ppb / 1e9) / (1 + self.correction_ppm / 1e6)
         tuned_hz = float(self.frequency_hz)
         if self.tuner_pll is not None and not self.direct_sampling:
-            tuned_hz = self.tuner_pll(self.frequency_hz, self.sample_rate_hz, self.correction_ppm)
+            tuned_hz = self.tuner_pll(self.frequency_hz, self.sample_rate_hz, self.correction_ppm, self.tuner_state)
         rate = float(self.sample_rate_hz)
         t = (self._sent + np.arange(count)) / (rate * scale)
         self._sent += count
