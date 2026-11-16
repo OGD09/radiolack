@@ -1875,11 +1875,11 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#src-center")).to_have_value("20.000")
                     expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "20600000")    # the same signal
                     expect(page.locator("#src-converter-note")).to_contain_text("an upconverter")
-                # An upconverter of 9750 MHz would put the receiver's 145 MHz below 0 Hz: refused, as it was.
+                # Behind an upconverter of 9750 MHz, all the tuner reaches is below 0 Hz: refused, as it was.
                 oscillator.fill("9750 MHz")
                 oscillator.press("Enter")
                 expect(first.locator("#src-note")).to_contain_text(
-                    "Change refused: through this converter the receiver's centre frequency would be -9605 MHz")
+                    "Change refused: through this converter the receiver reaches nothing on the air from 1.2 MHz")
                 expect(oscillator).to_have_value("125.000")
                 converter.select_option("down")
                 oscillator.fill("9750")
