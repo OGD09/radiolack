@@ -565,6 +565,48 @@ frequency goes with the DC removal, and the dialog says so.
 - AGENTS.md's rule becomes "a detailed guide, not a legal reference", and
   README.md's Band plan section follows.
 
+As built, where this section left a choice open or a rule had to bend
+([`band-plan.md`](band-plan.md) has the sources and the second reading):
+
+- 252 bands and 130 segments, from the ECA of 9 October 2026, the Radio
+  Regulations of 2024 and the IARU Region 1 plans. The ECA's edges are
+  followed more closely than format 1 did: radiolocation, off-route
+  aviation, the ISM bands at 6.78, 13.56 and 40.68 MHz and the ITS band
+  have their own ranges.
+- IARU Region 1 had published no new band plan edition after its Vienna
+  conference of September 2026 when this was written: the plan keeps the
+  HF plan of 2020 and the VHF Handbook 10.03, and the conference's final
+  plenary minutes were read instead. None of its adopted changes moves an
+  edge used here; its supplementary 23 cm plan applies only where ECC
+  Decision (25)01 is implemented, a national matter, and is left out.
+- The amateur bands are shown over the uses they share their range with,
+  as the 3 cm band is: 13 cm up to 2450 MHz, 9 cm (3400 to 3410 MHz) and
+  6 cm (5650 to 5850 MHz) are new, with Wi-Fi, mobile networks and
+  short-range devices named around them.
+- Two ranges of format 1 had edges that no source gives and are gone: the
+  77 to 78 kHz time signal band, whose frequency the ECA names and pull
+  request 12 adds as a known frequency, and the 1030 MHz interrogation
+  segment, as ICAO Annex 10 was not read. ADS-B keeps the 1087.7 to
+  1092.3 MHz of the Radio Regulations' footnote 5.328AA.
+- Names that named a station, an operator or a use no source gives were
+  rewritten: the time signal's call sign, satellite operators, "Military
+  aviation HF" (now "Aeronautical HF (off-route)", as the allocation says)
+  and "ISS" (now "Space communication", the IARU plan's words).
+- The steps outside the amateur bands are kept from format 1 without a
+  source: pull request 12's channel sets bring their spacings.
+- The second reading found no edge that its sources contradict and ten
+  points of naming and detail; eight were corrected, and two are kept with
+  their reasons in `band-plan.md`: "Wi-Fi" for the ECA's RLAN, the word a
+  listener knows and the one section 12 uses, and the 1.5 GHz band named
+  after its harmonised use without the T-DAB of some countries.
+- "Not allocated" has a type of its own, `unallocated`.
+- `bandplan.js` returns the channel sets with every channel, a regular set
+  expanded, and the spots, each sorted by frequency; the format also
+  requires at least one channel per set, every channel inside its set, a
+  spacing above 0 and `reference` only as `true`.
+- The legal notice (About and README.md) still says "the band plan follows
+  a simplified European table": it is the owner's text, unchanged here.
+
 ### 12. Named channels and known frequencies
 
 Data:

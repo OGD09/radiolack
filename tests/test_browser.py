@@ -713,11 +713,11 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 self.assertEqual(page.evaluate(ANTENNA_PROBE), {
                     "lengths": [
-                        ["33.3 km", "15.8 km", "7.91 km"],    # 9 kHz, where the band plan starts
+                        ["33.3 km", "15.8 km", "7.91 km"],    # 9 kHz
                         ["42.2 m", "20.1 m", "10.0 m"],       # 7.1 MHz
                         ["3.00 m", "1.42 m", "71.2 cm"],      # 100 MHz
                         ["69.2 cm", "32.8 cm", "16.4 cm"],    # 433.5 MHz
-                        ["4.67 cm", "2.22 cm", "1.11 cm"],    # 6.425 GHz, where it ends
+                        ["4.67 cm", "2.22 cm", "1.11 cm"],    # 6.425 GHz
                     ],
                     "edges": ["\N{EM DASH}"] * 4 + ["1.00 m", "1.00 km", "0.400 mm"],
                 })

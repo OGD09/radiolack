@@ -131,7 +131,7 @@ const S = {
   autoHide: true,
 };
 const view = { f0: 0, f1: 0 };
-let plan = { name: '', ranges: [], bands: [] };    // band plan, empty until loaded
+let plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
 let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan }
 let namingBookmark = null;  // { name, f, before }: the bookmark Add sent, until the engine's list brings it
@@ -2229,7 +2229,7 @@ function renderPlanList() {
     note.textContent = planState === 'failed' ? 'The band plan could not be loaded.' : '';
     return;
   }
-  note.textContent = `Ranges in the received span. ${plan.name}, simplified: national tables are the reference.`;
+  note.textContent = `Ranges in the received span. ${plan.name}, a guide: national tables are the reference.`;
   const lo = fStart(), hi = fEnd(), shown = [];
   let html = '', group = null;
   plan.ranges.forEach((r, i) => {

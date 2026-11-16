@@ -158,7 +158,7 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], FILE_TYPES[".json"])
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
-        self.assertEqual(json.loads(body)["format"], 1)
+        self.assertEqual(json.loads(body)["format"], 2)
 
     def test_serves_the_audio_worklet_the_interface_loads(self):
         name = WORKLET_URL.search(get(self.server, "/audio.js")[2].decode("utf-8")).group(1)

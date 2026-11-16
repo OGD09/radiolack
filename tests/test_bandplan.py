@@ -11,9 +11,14 @@ MODES = {"NFM", "AM", "USB", "LSB", "CW", "WFM"}
 COLOUR = re.compile(r"#[0-9a-f]{6}")
 REQUIRED_KEYS = {"from", "to", "name", "type"}
 BAND_KEYS = REQUIRED_KEYS | {"short", "mode", "step", "segments"}
-LOWEST_HZ = 9_000               # where the ITU allocation table starts
-HIGHEST_HZ = 6_425_000_000      # above the 6 GHz of the highest receivers in scope
+CHANNEL_SET_KEYS = {"name", "from", "to", "label", "spacing", "mode", "first", "count", "number", "list"}
+CHANNEL_KEYS = {"n", "f", "note"}
+SPOT_KEYS = {"f", "name", "type", "mode", "reference"}
+LOWEST_HZ = 0
+HIGHEST_HZ = 10_500_000_000     # keeps the 3 cm amateur band whole
+ALLOCATION_TABLE_HZ = 8_300     # where the ITU allocation table starts: "Not allocated" below
 LONGEST_NAME = 40               # names show in the readout's single line
+LARGEST_FILE = 150_000          # bytes: the interface loads the whole plan at start
 LONGEST_SHORT_NAME = 12         # short names stand in where a band's name does not fit in the band strip
 # A step is a range's channel spacing, never a default: broadcast's 9 and
 # 5 kHz, CB's 5 kHz, PMR446's 6.25 kHz grid, the airband's 25 kHz / 3, the
@@ -24,10 +29,19 @@ CHANNEL_SPACINGS = {5_000, 6_250, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 
 
+def plan_path():
+    """The band plan file that main.js loads."""
+    return WEB_DIR / BAND_PLAN_URL.search((WEB_DIR / "main.js").read_text(encoding="utf-8")).group(1)
+
+
 def load_plan() -> dict:
     """Read the band plan file that main.js loads."""
-    name = BAND_PLAN_URL.search((WEB_DIR / "main.js").read_text(encoding="utf-8")).group(1)
-    return json.loads((WEB_DIR / name).read_text(encoding="utf-8"))
+    return json.loads(plan_path().read_text(encoding="utf-8"))
+
+
+def band_at(bands: list, hz: int) -> dict | None:
+    """The band that holds a frequency, or None outside the plan."""
+    return next((band for band in bands if band["from"] <= hz < band["to"]), None)
 
 
 class BandPlanTest(unittest.TestCase):
@@ -38,8 +52,8 @@ class BandPlanTest(unittest.TestCase):
         cls.entries = [entry for band in cls.bands for entry in (band, *band.get("segments", ()))]
 
     def test_header(self):
-        self.assertEqual(set(self.plan), {"format", "name", "types", "bands"})
-        self.assertEqual(self.plan["format"], 1)
+        self.assertEqual(set(self.plan), {"format", "name", "types", "bands", "channels", "spots"})
+        self.assertEqual(self.plan["format"], 2)
         self.assertTrue(self.plan["name"].strip())
         for name, colour in self.plan["types"].items():
             with self.subTest(type=name):
@@ -52,6 +66,28 @@ class BandPlanTest(unittest.TestCase):
         for previous, band in zip(self.bands, self.bands[1:]):
             with self.subTest(band=band["name"], from_hz=band["from"]):
                 self.assertEqual(band["from"], previous["to"])
+
+    def test_nothing_is_allocated_below_the_table(self):
+        self.assertEqual((self.bands[0]["to"], self.bands[0]["name"]), (ALLOCATION_TABLE_HZ, "Not allocated"))
+        self.assertNotIn("Not allocated", [band["name"] for band in self.bands[1:]])
+
+    def test_the_3_cm_band_is_whole_with_its_satellite_segment(self):
+        band = band_at(self.bands, 10_400_000_000)
+        self.assertEqual((band["from"], band["to"], band["type"]), (10_000_000_000, HIGHEST_HZ, "amateur"))
+        satellites = band["segments"][-1]
+        self.assertEqual((satellites["from"], satellites["to"], satellites["type"]),
+                         (10_450_000_000, HIGHEST_HZ, "satellite"))
+
+    def test_one_entry_per_line(self):
+        # Bands and segments are written one per line, which keeps a change's
+        # diff to the entries it touches.
+        for line in plan_path().read_text(encoding="utf-8").splitlines():
+            with self.subTest(line=line):
+                self.assertLessEqual(line.count('"from"'), 1)
+                self.assertLessEqual(line.count('"f"'), 1)
+
+    def test_the_file_stays_small(self):
+        self.assertLessEqual(plan_path().stat().st_size, LARGEST_FILE)
 
     def test_segments_stay_in_order_inside_their_band(self):
         for band in self.bands:
@@ -71,9 +107,7 @@ class BandPlanTest(unittest.TestCase):
                 self.assertIs(type(entry["from"]), int)
                 self.assertIs(type(entry["to"]), int)
                 self.assertLess(entry["from"], entry["to"])
-                name = entry["name"]
-                self.assertTrue(name and name == name.strip() and name.isascii(), name)
-                self.assertLessEqual(len(name), LONGEST_NAME)
+                self.assert_name(entry["name"])
                 self.assertIn(entry["type"], self.plan["types"])
                 if "mode" in entry:
                     self.assertIn(entry["mode"], MODES)
@@ -98,7 +132,69 @@ class BandPlanTest(unittest.TestCase):
                 self.assertLessEqual(len(short), LONGEST_SHORT_NAME)
 
     def test_every_type_is_used(self):
-        self.assertEqual({entry["type"] for entry in self.entries}, set(self.plan["types"]))
+        used = {entry["type"] for entry in self.entries} | {spot["type"] for spot in self.plan["spots"]}
+        self.assertEqual(used, set(self.plan["types"]))
+
+    def test_channel_sets_are_well_formed(self):
+        sets = sorted(self.plan["channels"], key=lambda channel_set: channel_set["from"])
+        for previous, channel_set in zip(sets, sets[1:]):
+            with self.subTest(channel_set=channel_set["name"]):
+                self.assertGreaterEqual(channel_set["from"], previous["to"])     # sets do not overlap
+        for channel_set in sets:
+            with self.subTest(channel_set=channel_set.get("name")):
+                self.assertLessEqual({"name", "from", "to", "label", "spacing"}, set(channel_set))
+                self.assertLessEqual(set(channel_set), CHANNEL_SET_KEYS)
+                self.assert_name(channel_set["name"])
+                for key in ("from", "to", "spacing"):
+                    self.assertIs(type(channel_set[key]), int)
+                self.assertLess(channel_set["from"], channel_set["to"])
+                self.assertGreater(channel_set["spacing"], 0)
+                band = band_at(self.bands, channel_set["from"])
+                self.assertLessEqual(channel_set["to"], band["to"])           # inside one band
+                self.assertIn("{n}", channel_set["label"])
+                if "mode" in channel_set:
+                    self.assertIn(channel_set["mode"], MODES)
+                regular = {"first", "count", "number"}
+                if "list" in channel_set:
+                    self.assertFalse(regular & set(channel_set))
+                    self.assertTrue(channel_set["list"])
+                    centres = []
+                    for channel in channel_set["list"]:
+                        self.assertLessEqual({"n", "f"}, set(channel))
+                        self.assertLessEqual(set(channel), CHANNEL_KEYS)
+                        self.assertTrue(channel["n"].strip() and channel["n"].isascii())
+                        self.assertIs(type(channel["f"]), int)
+                        if "note" in channel:
+                            self.assert_name(channel["note"])
+                        centres.append(channel["f"])
+                else:
+                    self.assertLessEqual(regular, set(channel_set))
+                    for key in regular:
+                        self.assertIs(type(channel_set[key]), int)
+                    self.assertGreater(channel_set["count"], 0)
+                    centres = [channel_set["first"] + i * channel_set["spacing"] for i in range(channel_set["count"])]
+                for centre in centres:
+                    self.assertGreaterEqual(centre, channel_set["from"])
+                    self.assertLess(centre, channel_set["to"])
+
+    def test_spots_are_well_formed(self):
+        for spot in self.plan["spots"]:
+            with self.subTest(spot=spot.get("name"), f=spot.get("f")):
+                self.assertLessEqual({"f", "name", "type"}, set(spot))
+                self.assertLessEqual(set(spot), SPOT_KEYS)
+                self.assertIs(type(spot["f"]), int)
+                self.assertIsNotNone(band_at(self.bands, spot["f"]))
+                self.assert_name(spot["name"])
+                self.assertIn(spot["type"], self.plan["types"])
+                if "mode" in spot:
+                    self.assertIn(spot["mode"], MODES)
+                if "reference" in spot:
+                    self.assertIs(spot["reference"], True)
+
+    def assert_name(self, name):
+        self.assertIs(type(name), str)
+        self.assertTrue(name and name == name.strip() and name.isascii(), name)
+        self.assertLessEqual(len(name), LONGEST_NAME)
 
 
 if __name__ == "__main__":

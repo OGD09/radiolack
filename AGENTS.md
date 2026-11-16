@@ -348,10 +348,13 @@ the history under the tag `v0.1.0`.
   are waiting states, not errors.
 - Keep the server compatible with aiohttp 3.8 (Debian 12) and the latest
   release (CI).
-- The band plan is a simplified guide, not a legal reference: keep
-  `bandplan-europe.json` generic, sourced (docs/design/band-plan.md), one
-  entry per line and in English (ASCII); `tests/test_bandplan.py` checks its
-  structure.
+- The band plan is a detailed guide, not a legal reference: keep
+  `bandplan-europe.json` generic (no operators, broadcasters, call signs,
+  places or local data), sourced from the primary documents that
+  docs/design/band-plan.md names, every edge and name from a document read,
+  names written for Radiolack and nothing copied from another program's
+  band plan, one entry per line and in English (ASCII);
+  `tests/test_bandplan.py` checks its structure.
 - Update README.md, and docs/design/ when relevant, with every user-facing
   change.
 - Radiolack is GPL-3.0-or-later (`LICENSE`): a new dependency, or code or
