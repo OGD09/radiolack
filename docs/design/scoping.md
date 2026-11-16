@@ -97,6 +97,7 @@ radio program, only on receiver drivers.
 | 2026-11-16 | The band plan becomes a detailed guide, still not a legal reference, as the owner chose: from 0 Hz to 10.5 GHz, which keeps the 3 cm amateur band whole, for Europe as before, with two new layers, named channels (CB, PMR446, maritime VHF and others that a regulation or a convention numbers) and known frequencies (distress, time signals, amateur conventions and others that are public and stable), on the one strip, which shows them as the zoom gives room, and in the line under the frequency. It is written by hand from the primary documents, with names of Radiolack's own, nothing copied from another program or extracted in bulk from a database, and read a second time against its sources. This replaces "simplified" in the decision of 2026-11-09 and in AGENTS.md's rule, and "9 kHz to 6.425 GHz". Set aside: a strip of two rows, and a table of every allocation by service. |
 | 2026-11-16 | The milestones up to v4, in this order, as the owner chose, each designed now in [`later-milestones.md`](later-milestones.md), with a spike first wherever a choice needs a measure, and the rule that reads its result fixed beforehand: Any receiver (SoapySDR, for the owner's HackRF One, with an overall gain and one per stage, and only the local USB drivers searched, so that no search reaches the network); Listening tools (a zoom that goes on into a fine spectrum of the VFO's channel, which the owner chose over an inset, synchronous AM, an automatic notch, a noise blanker); Automatic calibration (on the standard-frequency stations of the band plan, on demand); Band plans for other regions (the Americas, Asia-Pacific and France, the region being the engine's setting); Several receivers at once (each interface shows one, the others go on scanning and recording); DRM; Logarithmic overview (a bar that shows the whole plan, which the owner chose over a logarithmic axis for every view). The owner asked for all of them to be planned rather than set aside. Transmitting stays out, by the decision of 2026-11-08: with a HackRF, which can transmit, Radiolack opens reception only. |
 | 2026-11-16 | DRM may bring a compiled component, as the owner chose, since its decoding is too heavy for Python alone. It ships as a second, architecture-specific package, `radiolack-drm`, so that the main package stays independent of the architecture, built as it is and reproducible. The milestone starts with a spike on the audio codings' libraries and licences and on real-time decoding, and closes on its report if either fails. |
+| 2026-11-16 | The tuner's PLL, after its measure (spike 6), as the owner chose: the grid and the compensation. The measure found the error, 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz. Radiolack places the tuner's oscillator on multiples of 112.5 kHz, where that error is the same at every centre frequency, and takes it off once it knows which of the driver's two computations runs: a setting of each receiver, which Calibrate identifies by a short measure and checks again at each calibration. Pull request 14 of Coverage and precision becomes two, 14a and 14b ([`coverage-and-precision.md`](coverage-and-precision.md)). |
 
 ## Scope
 
@@ -406,7 +407,10 @@ Pull requests, in this order:
 11. The band plan from 0 Hz to 10.5 GHz, in format 2, read a second time.
 12. Named channels and known frequencies, and their display.
 13. The tuner's PLL, measured on the owner's receiver when the owner asks.
-14. PLL-exact centre frequencies, only if 13 says so.
+14. The tuner on its grid, labelled where it sits: the centre frequencies
+    placed where the tuner's error is the same everywhere (14a), and the
+    driver's computation identified by Calibrate, so that Radiolack takes
+    that error off (14b).
 
 Done when, on the owner's computers with the RTL-SDR Blog V3 and its
 shortwave antenna: Radiolack tunes from 500 kHz to 30 MHz by direct
@@ -420,7 +424,9 @@ band strip names what is there, and a click beyond the receiver's reach
 tunes nothing and says why; the line under the frequency names a channel
 and a known frequency; the correction takes hundredths of ppm, and
 Calibrate brings a known carrier within 2 Hz of its frequency; the PLL's
-measure is recorded with what it decided; and every test passes in CI.
+measure is recorded with what it decided, and measured again with the grid
+and the computation identified it reports a spread under 10 Hz; and every
+test passes in CI.
 Antenna power is checked with the owner's antenna if it takes it; the
 RTL-SDR Blog V4 setting and the converter are not checked on hardware.
 
@@ -525,7 +531,7 @@ band.
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Decided on 2026-11-11: a local authority limited by name constraints (see Decisions); to check on the owner's iPhone. |
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
-| 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: what to build is to decide. |
+| 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
 | 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Any receiver, first pull request. |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Listening tools, first pull request. |
 | 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
@@ -610,7 +616,9 @@ is 16, the one it uses at 145 MHz.
   112.5 kHz. Since the computation predicts the tuner to a fraction of a
   hertz, Radiolack could instead compute where the tuner truly sits and
   label its samples with that; it would have to know which computation
-  the driver in use runs. What to build is the owner's to decide.
+  the driver in use runs. Decided the same day: the grid, which makes the
+  error the same at every centre frequency, and that compensation
+  (coverage-and-precision.md, pull request 14).
 
 The first sweep, the centre frequency counted from the first one, and
 where each computation puts the carrier with the oscillator at the centre
