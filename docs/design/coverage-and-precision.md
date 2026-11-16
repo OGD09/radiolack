@@ -712,6 +712,11 @@ second reading):
   History also take the known frequency's or the set's mode.
 - PMR446's channels are numbered 1 to 16 in frequency order: ECC Decision
   (15)05 and EN 303 405 give the raster, not the numbers.
+- The second reading found no frequency, channel number or designator
+  wrong, and fourteen points of wording, scope and detail: six names and
+  notes were corrected, the others are kept with their reasons, and the
+  channels and frequencies it listed as missing are left for later, all in
+  `band-plan.md`.
 
 ### 13. The tuner's PLL, measured
 

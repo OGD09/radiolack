@@ -130,7 +130,7 @@ from a database extracted in bulk.
   0 at 1897.344 MHz down to 9 at 1881.792 MHz.
 - A **known frequency** (spot) is a single frequency a source names: the
   GMDSS frequencies of Appendix 15, the aeronautical emergency and search
-  and rescue frequencies, the distress beacons' 243 MHz (the ECA), the
+  and rescue frequencies, survival craft's 243 MHz (footnote 5.256), the
   time signals and standard frequencies whose carriers TF.768's
   attachment lists for Europe or the Radio Regulations allocate, the
   spectral lines of RA.314, Galileo's carriers, and the amateur centres of
@@ -230,7 +230,7 @@ Found, and corrected:
 Found, and kept:
 
 - "Wi-Fi" for the ECA's RLAN, at 2.4, 5 and 6 GHz: the word a listener
-  knows, and the one pull request 12's Wi-Fi channels use.
+  knows, and the one the milestone's design uses.
 - 1452 to 1479.5 MHz, "Mobile networks (1.5 GHz)": the ECA's harmonised
   use is mobile networks' downlinks; T-DAB there is a national
   arrangement, which this plan leaves out.
@@ -245,6 +245,85 @@ Could not be checked by the reviewer either:
   ETSI standards that give them (see above).
 - The IARU plans' usage notes inside a segment, which are not segments
   here.
+
+### Channel sets and known frequencies
+
+On 2026-11-16, a second reviewer who had not seen the author's notes read
+the channel sets and known frequencies of pull request 12 against the
+sources named above, given only the file, the list of sources and their
+texts, and compared whole tables by script.
+
+Checked, and found right: every channel of the 16 sets (680) and every
+known frequency (141). CB's 40 channels against EN 300 433's table 1, with
+channels 23 to 25 out of order, its edges and spacing against ECC Decision
+(11)03; maritime VHF's 93 entries against Appendix 18, each "Ship station"
+and "Coast station" note on its side of its channel; the DAB blocks, UHF TV
+channels and DECT carriers against GE06 and EN 300 175-2; the 461 amateur
+channels against the VHF Handbook's numbering; every centre of activity of
+the HF plan and every centre or calling frequency of the VHF Handbook from
+50 MHz to 10.5 GHz; Appendix 15's 32 entries; 121.5 and 123.1 MHz; RA.314's
+12 lines below 10.5 GHz; Galileo's five carriers; `reference` on the 12
+time signals and standard frequencies alone; no duplicate, no call sign,
+place or operator. No frequency, number or designator was found wrong.
+
+Found, and corrected:
+
+- 490 kHz was "NAVTEX (national languages)": no source read says so (the
+  Radio Regulations name NAVTEX on 490 kHz, footnote 5.79A). Now "NAVTEX
+  (490 kHz)".
+- 243 MHz was "Distress (243 MHz)": footnote 5.256 names survival craft
+  stations. Now "Survival craft (243 MHz)".
+- Maritime channel 06 noted search and rescue with aircraft alone:
+  Appendix 18 gives it for inter-ship use first. Now "Inter-ship; aircraft
+  search and rescue".
+- 23 cm SM20 was "FM calling": the VHF Handbook says FM centre of
+  activity. Now "FM centre of activity".
+- 50.050 MHz was "CW centre (future)": the plan says international. Now
+  "CW international centre (future)".
+- 2400.500 MHz was "Narrow band centre": it is the centre of the
+  alternative segment for countries without 2320 MHz. Now "Narrow band
+  centre (alternative)".
+
+Found, and kept:
+
+- The 70 cm repeater inputs and outputs with a 7.6 MHz shift lie in the
+  VHF Handbook's sub-regional block; the plan labels them "Repeater Input
+  Region 1" and IARU Region 1 endorses the system, so they stay.
+- The time signals at 60, 77.5 and 162 kHz and the standard frequencies of
+  4.996, 9.996 and 14.996 MHz come from one station each, and some HF
+  standard frequencies from stations outside Europe: their names are
+  generic, their frequencies those of TF.768's attachment and the Radio
+  Regulations' allocations, and a listener in Europe may hear them, so
+  they stay.
+- Galileo is a system's name, not an operator's; 1575.42 and 1176.45 MHz
+  are also GPS's, whose interface document was not read.
+- PMR446 numbered 1 to 16 by order, as no source numbers its channels.
+- "CW QRP centre" and "CW QRS centre", where the HF plan says QRP or QRS
+  centre of activity in its CW segments: the word tells them from the SSB
+  QRP centres.
+- Maritime VHF's mode is NFM for the whole set, its digital channels
+  included; the DAB set's spacing is the 1.712 MHz between blocks of one
+  television channel, while the list gives every block where it lies; the
+  23 cm RS designators repeat in the VHF Handbook itself at 1242 and
+  1270 MHz, which are left out.
+
+Listed by the reviewer as given by the sources and not in the file, left
+for later: Appendix 18's single-frequency and VDES numbers whose
+frequencies other numbers already carry; the 70 cm repeater inputs of
+432.600 to 432.975 MHz with a 2 MHz shift and the Internet voice gateways
+of 433.950 to 434.050 MHz; the 6 m gateways of 50.540 to 50.580 MHz; the
+4 m FM and digital channels; the 2 m DV gateways of 144.8125 to
+144.8625 MHz; the 23 cm repeaters R20 to R68 and the 25 kHz channels of
+1299.775 to 1299.975 MHz; UHF TV channels 49 to 69 (694 to 790 MHz, still
+shared with broadcasting in the ECA); PMR446's digital 6.25 kHz raster;
+8364 kHz; the standard-frequency allocations at 20 kHz and 400.1 MHz; and
+TF.768's single European stations at 20.5 to 25.5, 66 2/3, 198 and
+225 kHz.
+
+Could not be checked by the reviewer either: whether the HF standard
+frequencies are on the air and heard in Europe; the IMO's use of 490 kHz;
+the modes, which the sources give only for 121.5, 123.1 MHz and 2182 kHz;
+the Vienna conference's changes beyond its minutes.
 
 ## File format (version 2)
 
