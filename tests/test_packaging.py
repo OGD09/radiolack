@@ -273,6 +273,15 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(again.name, self.package.name)
             self.assertEqual(again.read_bytes(), self.package.read_bytes())
 
+    def test_dpkg_debs_settings_in_the_environment_change_nothing(self):
+        # dpkg-deb reads its compressor, its level and its threads from the
+        # environment too (dpkg-deb(1), ENVIRONMENT): the build gives the
+        # first two, and the number of threads does not change xz's output.
+        settings = {"DPKG_DEB_COMPRESSOR_TYPE": "gzip", "DPKG_DEB_COMPRESSOR_LEVEL": "9", "DPKG_DEB_THREADS_MAX": "1"}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, settings):
+            again = build_deb.build(Path(folder), maintainer="A Name <a@example.org>")
+            self.assertEqual(again.read_bytes(), self.package.read_bytes())
+
     def test_the_packaged_radiolack_passes_the_smoke_test(self):
         # Radiolack from the package's files, on an ephemeral port, in a settings folder of the smoke test's own.
         environment = {**os.environ, "PYTHONPATH": str(self.tree / "usr/lib/python3/dist-packages")}

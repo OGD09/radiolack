@@ -25,7 +25,8 @@ The build is reproducible: every file in the package carries the date of
 the checkout's last commit, or SOURCE_DATE_EPOCH when it is set, as for
 Debian's own packages, so that two builds of a commit with the same
 maintainer and the same dpkg are identical, byte for byte, and anyone can
-check a published package against its source.
+check a published package against its source. dpkg-deb's own settings in
+the environment, such as DPKG_DEB_COMPRESSOR_LEVEL, change nothing.
 """
 
 from __future__ import annotations
@@ -341,8 +342,11 @@ def build(output: Path, maintainer: str) -> Path:
         tree = Path(temporary) / "tree"
         stage(tree, version, maintainer, epoch)
         # xz rather than zstd: every dpkg of the supported releases reads it.
-        # SOURCE_DATE_EPOCH dates the archive's own members.
-        result = subprocess.run([dpkg_deb, "--root-owner-group", "-Zxz", "--build", str(tree), str(package)],
+        # Its level is dpkg-deb's default, 6, given here so that
+        # DPKG_DEB_COMPRESSOR_LEVEL in the environment changes nothing, as
+        # -Z overrides DPKG_DEB_COMPRESSOR_TYPE; DPKG_DEB_THREADS_MAX does not
+        # change xz's output. SOURCE_DATE_EPOCH dates the archive's own members.
+        result = subprocess.run([dpkg_deb, "--root-owner-group", "-Zxz", "-z6", "--build", str(tree), str(package)],
                                 capture_output=True, text=True, timeout=300,
                                 env={**os.environ, "SOURCE_DATE_EPOCH": str(epoch)})
     if result.returncode != 0:

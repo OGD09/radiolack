@@ -116,7 +116,8 @@ the history under the tag `v0.1.0`.
   `tests/test_legal_notice.py` checks (scoping.md, 2026-11-16).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
   Python package as it is; reproducible: every file carries the last
-  commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose
+  commit's date, or SOURCE_DATE_EPOCH, and dpkg-deb's own settings in the
+  environment change nothing), `radiolack.1` (manual page, whose
   version and date the build fills in; the tests check that it documents
   every option of `cli.build_parser()` and no other), `smoke_test.py`
   (checks a Radiolack from the outside: listening on 127.0.0.1 only, Host

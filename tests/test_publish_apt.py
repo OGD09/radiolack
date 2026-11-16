@@ -103,8 +103,12 @@ class PublishTest(unittest.TestCase):
 
     @classmethod
     def build(cls, folder):
+        # As the release's workflow builds it: without SOURCE_DATE_EPOCH, so
+        # that the package carries the last commit's date, whatever the
+        # environment of the test run.
+        environment = {name: value for name, value in os.environ.items() if name != "SOURCE_DATE_EPOCH"}
         output = run(sys.executable, str(cls.source / "packaging" / "build_deb.py"), "--maintainer", MAINTAINER,
-                     "--output", str(cls.folder / folder)).stdout
+                     "--output", str(cls.folder / folder), env=environment).stdout
         return Path(output.strip())
 
     def setUp(self):
@@ -195,6 +199,15 @@ class PublishTest(unittest.TestCase):
         self.assertIn("Nothing was signed", errors)
         self.assertEqual((self.head(), self.questions), (None, []))
         self.assertEqual(self.pinentry_log.read_text().count("asked") if self.pinentry_log.exists() else 0, asked)
+
+    def test_builds_with_the_tags_date_when_source_date_epoch_is_set(self):
+        # The owner's shell may export SOURCE_DATE_EPOCH, here a date long
+        # before the tagged commit's: the release's workflow sets none, so the
+        # tag builds here the package that it builds there all the same.
+        with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
+            status, output, errors = self.publish()
+        self.assertEqual(status, 0, output + errors)
+        self.assertEqual(self.pages()[f"pool/main/r/radiolack/{NAME}"], self.package.read_bytes())
 
     def test_refuses_a_package_that_its_checksums_do_not_list(self):
         data = self.package.read_bytes()
