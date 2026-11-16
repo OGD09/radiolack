@@ -442,6 +442,27 @@ No converter is checked on hardware.
 - The fake rtl_tcp gains a crystal error, in parts per billion: with the
   correction set to it, a carrier shows at its frequency within 1 Hz.
 
+As built, where this section left a choice open or a rule had to bend:
+
+- The split lives in `correction.py`, with the source's
+  `hardware_correction` saying whether it takes a whole part itself; the
+  value is kept as hundredths, and w is rounded half away from zero (0.5
+  gives 1, −0.5 gives −1, 99.5 gives 100), within the range whatever the
+  value.
+- On the tuner, the frequency asked stays within the tuner's range and
+  32 bits, an exception to "within 0.5 Hz": a scaled request just below
+  24 MHz would make the RTL-SDR Blog driver, which takes 0x09 = 0 as
+  automatic, switch to direct sampling by itself, and one just above the
+  tuner's top may not lock. Within half a ppm of an edge, the samples'
+  label may then be off by as much: 12 Hz at 24 MHz, 883 Hz at 1766 MHz.
+  Direct sampling, chosen by 0x09 beforehand, and a tuner that covers
+  shortwave keep the scaled request. Whether the receiver samples directly
+  is decided on the frequency it truly tunes, as the reach is.
+- An interface older than this pull request checks that `ppm` is whole,
+  and drops a source state that holds hundredths until it is reloaded:
+  a page left open across an upgrade. Protocol version 6 stays, as the
+  section asks; raising it would have refused those pages outright.
+
 Limits: the sample rate keeps the rest, at most 0.5 ppm: 0.6 Hz at the edge
 of a 2.4 MS/s span. The RTL2832's mixer rounds direct sampling's frequency
 down by up to 6.9 Hz.

@@ -16,6 +16,7 @@ import { OSCILLATOR_NOTE, conversionMoved, convertedFrequency, converterView, os
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
 import { modeRateNote } from './rates.js';
+import { ppmText, typedPpm } from './correction.js';
 import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
@@ -1895,7 +1896,7 @@ function syncSource() {
   agcEl.checked = Boolean(source && source.settable.includes('gain_db') && auto);
   agcEl.disabled = !gainSettable;
   const ppmEl = $('#src-ppm');
-  if (!typingIn.has(ppmEl)) ppmEl.value = String(source?.ppm ?? 0);
+  if (!typingIn.has(ppmEl)) ppmEl.value = ppmText(source?.ppm ?? 0);
   ppmEl.disabled = !settable.has('ppm');
   const dcEl = $('#src-dc');
   dcEl.checked = Boolean(source?.dcRemoval);
@@ -1970,12 +1971,12 @@ $('#src-agc').addEventListener('change', (e) => {
 });
 $('#src-ppm').addEventListener('change', (e) => {
   const el = e.target;
-  // Whole ppm within the field's range, as the receiver takes them.
-  const ppm = clamp(Math.round(el.valueAsNumber), Number(el.min), Number(el.max));
+  // Hundredths of a ppm within the field's range, as the engine takes them.
+  const ppm = typedPpm(el.valueAsNumber, Number(el.min), Number(el.max));
   if (source && Number.isFinite(ppm) && ppm !== source.ppm && stream.sendSource({ ppm })) {
-    el.value = String(ppm);
+    el.value = ppmText(ppm);
   } else {
-    el.value = String(source?.ppm ?? 0);
+    el.value = ppmText(source?.ppm ?? 0);
     syncSource();
   }
 });

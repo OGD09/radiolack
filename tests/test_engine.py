@@ -633,6 +633,24 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["address"] == "192.0.2.20:1234")
         self.assertEqual(settings["receivers"]["rtl_tcp"]["source"]["ppm"], -4)
 
+    async def test_an_rtl_tcp_receiver_keeps_its_correction_to_the_hundredth(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"ppm": 37.42}}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        self.assertEqual(engine.state()["ppm"], 37.42)
+        engine.configure({"ppm": -52.73})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["ppm"] == -52.73)
+        self.assertEqual(settings["receivers"]["rtl_tcp"]["source"]["centre_hz"], 145e6)    # as asked
+
+    async def test_a_saved_correction_that_is_not_valid_is_not_used(self):
+        for value in ("5", True, None, 100.5, float("nan")):
+            with self.subTest(value=value):
+                self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"ppm": value, "centre_hz": 433e6}}}})
+                with self.assertLogs("radiolack.engine", "WARNING"):
+                    engine = self.engine(RtlTcpSource())
+                self.assertEqual((engine.state()["ppm"], engine.state()["centre_hz"]), (0, 433e6))
+                await self.stop(engine)
+
     async def test_an_rtl_tcp_receiver_keeps_its_shortwave_input(self):
         saved = {"centre_hz": 7_100_000.0, "hf_input": "q", "rtl_agc": True}    # in any order
         self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": saved}}})

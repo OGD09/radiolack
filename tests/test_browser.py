@@ -1755,7 +1755,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(errors, [])
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
-    def test_the_frequency_correction_is_whole_and_shared(self):
+    def test_the_frequency_correction_takes_hundredths_and_is_shared(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
         for browser in BROWSERS:
@@ -1764,7 +1764,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                 expect(first.locator("#src-address")).to_be_hidden()   # the source picks its own address
                 field = first.locator("#src-ppm")
-                for typed, shown in (("-2.6", "-3"), ("150", "100"), ("0", "0")):
+                for typed, shown in (("-2.6", "-2.60"), ("1.234", "1.23"), ("150", "100.00"), ("0", "0.00")):
                     field.fill(typed)
                     field.blur()        # the change applies when the field loses the focus
                     for page in (first, second):

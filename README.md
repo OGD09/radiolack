@@ -313,13 +313,14 @@ With either option:
   rate (0.240 and 0.300 MS/s, or 1.024 to 2.88 MS/s), the gain and the
   frequency correction. "Tuner
   AGC" gives automatic gain; otherwise the gain is one of those the tuner
-  offers. The frequency correction, in whole ppm from -100 to +100, makes up
-  for a receiver whose clock is off, which shifts every signal by as many
-  millionths of its frequency (10 ppm: 1.45 kHz at 145 MHz): set it so that
-  a known signal sits on its frequency. A change shows in every open
-  interface. Once you press Enter or leave a field, it shows the setting in
-  use: as the receiver took it, a whole ppm for instance, or the previous one
-  when the change is refused, such as a frequency the tuner cannot reach,
+  offers. The frequency correction, in ppm from -100.00 to +100.00 to the
+  hundredth, makes up for a receiver whose clock is off, which shifts every
+  signal by as many millionths of its frequency (10 ppm: 1.45 kHz at
+  145 MHz): set it so that a known signal sits on its frequency
+  ([Frequency correction](#frequency-correction)). A change shows in every
+  open interface. Once you press Enter or leave a field, it shows the
+  setting in use: as the receiver took it, a correction rounded to the
+  hundredth for instance, or the previous one when the change is refused, such as a frequency the tuner cannot reach,
   with the reason in the menu.
 - "Remove the DC spike", on when Radiolack starts, takes the receiver's
   constant offset off the samples before the spectrum is computed; without
@@ -481,6 +482,41 @@ Limits:
   gives: power it through a bias tee of its own, and keep the dongle's
   antenna power off.
 - No converter has been checked on hardware.
+
+### Frequency correction
+
+The receiver's crystal sets every frequency it tunes and its sample rate:
+a crystal 10 ppm fast shows a signal 1.45 kHz too low at 145 MHz, and
+71 Hz too low at 7.1 MHz. The Receiver menu's "Frequency correction (ppm)"
+takes it to the hundredth of a ppm, from -100.00 to +100.00: a hundredth
+is worth 0.07 Hz at 7 MHz and 1.45 Hz at 145 MHz, where a whole ppm was
+145 Hz. A correction saved by an earlier Radiolack, a whole number, reads
+as it is.
+
+librtlsdr takes whole ppm only: the receiver gets the nearest whole number,
+-3 for -2.6, as before, and Radiolack corrects the rest itself by asking
+the receiver for a slightly different frequency, so that it truly tunes the
+one shown. A change of the hundredths alone retunes the receiver like a
+change of centre frequency. This applies on the tuner, in direct sampling
+and through a converter alike, to the frequency the receiver itself tunes:
+the converter's oscillator is taken as typed.
+
+Limits:
+
+- The sample rate keeps the rest, at most half a ppm: a signal at the edge
+  of a 2.4 MS/s span shows up to 0.6 Hz off.
+- In direct sampling, the RTL2832's mixer tunes in steps of 6.87 Hz,
+  rounded down: up to 6.9 Hz below the frequency asked.
+- Within half a ppm of the tuner's range's edges, the frequency asked
+  stays within the range, so that the receiver does not switch to direct
+  sampling by itself or lose its lock: a centre frequency there may be up
+  to 12 Hz off at 24 MHz and 883 Hz off at 1766 MHz.
+- A crystal drifts with temperature, by up to 1 ppm (145 Hz at 145 MHz)
+  as the receiver warms up: hundredths hold only after a calibration on a
+  known signal, once the receiver is warm, and the next calibration may
+  differ.
+- The tuner's own PLL may add an error of its own, fixed for each centre
+  frequency, which the correction does not include.
 
 ## Demodulation and audio
 
@@ -1513,6 +1549,8 @@ src/radiolack/
                 and their raw samples for an I/Q recording
   converter.py  a converter in front of a receiver: frequencies on the air
                 and for the receiver
+  correction.py the frequency correction in hundredths of ppm, split between
+                the receiver and Radiolack
   sources.py    opens each kind of source, for the Receiver list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
