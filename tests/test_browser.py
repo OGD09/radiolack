@@ -683,7 +683,7 @@ class BrowserTest(unittest.TestCase):
                 first.keyboard.press("Enter")
                 expect(dialog).to_be_visible()
                 expect(first.locator("#antenna-for")).to_have_text(f"145.600 MHz {DOT} 2 m amateur")
-                expect(first.locator(".lengths dd")).to_have_text(["2.06 m", "97.8 cm", "48.9 cm", "48.9 cm", "48.9 cm"])
+                expect(dialog.locator(".lengths dd")).to_have_text(["2.06 m", "97.8 cm", "48.9 cm", "48.9 cm", "48.9 cm"])
                 first.keyboard.press("ArrowRight")
                 expect(first.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
                 second.keyboard.press("ArrowRight")     # a step of 12.5 kHz, from the other interface
