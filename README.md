@@ -334,8 +334,11 @@ With either option:
   the frequency sits a 32nd of the span above its centre, 75 kHz at
   2.4 MS/s, with the channel at least 5 kHz from the centre: clear of the
   receiver's DC spike. The frequency shows at once, and the VFO goes there
-  once frames come from the new span. Beyond the receiver's reach nothing
-  tunes, and the status line says why.
+  once frames come from the new span. An R820T or R828D puts the span's
+  centre on its grid, up to 56.25 kHz away ([The tuner's
+  grid](#the-tuners-grid)); when that would bring the channel within 5 kHz
+  of the centre, the span goes to the grid's point below. Beyond the
+  receiver's reach nothing tunes, and the status line says why.
 - Stepping (the wheel, the arrow keys, the − and + buttons) moves the span
   by the same rule when a step would enter the outer tenth of the span on
   either side, which the receiver's filter dims: about every megahertz at
@@ -502,10 +505,20 @@ change of centre frequency. This applies on the tuner, in direct sampling
 and through a converter alike, to the frequency the receiver itself tunes:
 the converter's oscillator is taken as typed.
 
+An R820T or R828D, the tuner of most dongles, gets no correction at all,
+since a corrected crystal would move its grid ([The tuner's
+grid](#the-tuners-grid)): Radiolack takes the whole of it, by the frequency
+it asks for, by where it says the samples were taken, and by the VFO's
+distance from the centre frequency, scaled as the receiver's sample rate is.
+
 Limits:
 
 - The sample rate keeps the rest, at most half a ppm: a signal at the edge
-  of a 2.4 MS/s span shows up to 0.6 Hz off.
+  of a 2.4 MS/s span shows up to 0.6 Hz off. With an R820T or R828D it
+  keeps the whole correction, which Radiolack makes up for at the VFO
+  only: elsewhere in the span, a signal shows up to the correction times
+  its distance from the centre off, 72 Hz at the edge of a 2.4 MS/s span
+  for a crystal 60 ppm off.
 - In direct sampling, the RTL2832's mixer tunes in steps of 6.87 Hz,
   rounded down: up to 6.9 Hz below the frequency asked.
 - Within half a ppm of the tuner's range's edges, the frequency asked
@@ -517,7 +530,71 @@ Limits:
   known signal ([Calibration](#calibration)), once the receiver is warm,
   and the next calibration may differ.
 - The tuner's own PLL may add an error of its own, fixed for each centre
-  frequency, which the correction does not include.
+  frequency, which the correction does not include: an R820T's or R828D's
+  is the same at every centre frequency of a range on its grid, and gone
+  once its driver is set ([The tuner's grid](#the-tuners-grid)).
+
+### The tuner's grid
+
+The PLL of an R820T or R828D cannot set every frequency exactly, and how
+far it misses depends on the driver behind rtl_tcp: rtl-sdr up to 2.0.1
+(Debian 12's 0.6.0) and the RTL-SDR Blog driver err by another amount at
+each centre frequency, from -172 to +78 Hz at 2 m and from -1376 to
++621 Hz at 23 cm, so that a signal moved each time the span did. Where the
+tuner's oscillator, the frequency asked plus 1.815 MHz at 2.4 MS/s, is a
+multiple of 112.5 kHz, both drivers come out the same at every centre
+frequency: rtl-sdr 2.0.2 and later exactly, the older ones one constant low,
+110 Hz from 111 to 221 MHz, 220 Hz up to 442 MHz and 879 Hz above 885 MHz.
+
+So Radiolack asks such a tuner for the nearest centre frequency on that
+grid, at most 56.25 kHz from the one you set, and shows it under the
+Receiver menu's centre frequency ("In use: 144.9975 MHz, where the tuner
+sits"). The spectrum, the VFO, the scans and the recordings follow it: you
+tune as before.
+
+The Receiver menu's "rtl-sdr driver" tells Radiolack which driver runs,
+and Radiolack saves it with the receiver:
+
+- "Unknown", the default: Radiolack takes the tuner as exact on its grid.
+  With an older driver, every signal then shows the same amount high at
+  every centre frequency of a range, 110 Hz at 2 m, which a calibration
+  takes in.
+- "rtl-sdr up to 2.0.1, RTL-SDR Blog": Radiolack takes that constant off
+  everywhere.
+- "rtl-sdr 2.0.2 and later": the tuner sits where Radiolack places it.
+
+The rtl-sdr package that provides rtl_tcp gives the version; the RTL-SDR
+Blog driver computes as 2.0.1 does. Calibrate will identify the driver in a
+later version. A choice changes only where Radiolack says the samples were
+taken: nothing is asked of the receiver.
+
+A converter changes nothing: it is the frequency the receiver itself tunes
+that goes on the grid.
+
+Limits:
+
+- Not on the grid, and taken as exact: direct sampling, other tuners, any
+  R828D below 28.8 MHz, where an RTL-SDR Blog V4's driver adds 28.8 MHz,
+  and an oscillator below 27.66 MHz, a centre frequency below about
+  25.8 MHz at 2.4 MS/s.
+- At the very edges of the tuner's range, the centre frequency may move by
+  up to 112.5 kHz, 102.5 kHz at 1766 MHz.
+- At 0.240 MS/s, the part of a span that the scans search, 96 kHz on
+  either side of its centre, falls short of the grid's next point: the
+  sweep and the memory scan cannot search 3 kHz on either side of each
+  point of the grid, every 112.5 kHz. From 0.300 MS/s they search everything.
+- The constant comes from the driver's code, read for rtl-sdr 2.0.1 and
+  2.0.2 and the RTL-SDR Blog fork and measured on one RTL-SDR Blog V3 with
+  rtl-sdr 0.6.0 at 2 m. A driver that computes otherwise keeps the error
+  it has, and a driver changed without changing the setting may put
+  signals up to twice the constant off.
+
+For developers, `tools/measure_pll.py`, run from a checkout, measures how
+well a Radiolack already running on such a receiver labels its samples: it
+moves the centre frequency for a few minutes, off the grid and on it,
+measures one steady carrier at each, and says whether the driver set holds
+or which to choose. Its `--help` says what it needs; the Debian package does
+not install it.
 
 ### Calibration
 
@@ -550,6 +627,9 @@ measure, and a CW signal that keys on and off moves between measures.
 Calibrate in direct sampling ([Shortwave](#shortwave)) to measure the
 crystal alone: on the tuner, the result also takes in the tuner's own error
 at that centre frequency, which another centre frequency does not share.
+An R820T's or R828D's own error is the same at every centre frequency of a
+range on its grid, and none is left once its driver is set ([The tuner's
+grid](#the-tuners-grid)).
 
 The dialog says why it shows no frequency: nothing received at the VFO, no
 line standing 20 dB above the noise within the filter, two lines of nearly
@@ -568,7 +648,9 @@ Limits:
   the correction is the receiver's own.
 - The receiver corrects its sample rate by whole ppm only: a carrier far
   from the centre frequency measures up to half a ppm of that distance off,
-  0.6 Hz at the edge of a 2.4 MS/s span.
+  0.6 Hz at the edge of a 2.4 MS/s span. An R820T or R828D corrects none of
+  it, but Radiolack scales the VFO's distance from the centre: the carrier
+  measured at the VFO keeps no more.
 
 ## Demodulation and audio
 
@@ -1634,7 +1716,10 @@ src/radiolack/
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you,
-                and their raw samples for an I/Q recording
+                an R820T's or R828D's grid, and their raw samples for an I/Q
+                recording
+  r82xx.py      rtl-sdr's two computations of an R820T's PLL, ported from
+                rtl-sdr (GPL-2.0-or-later), and the tuner's grid
   converter.py  a converter in front of a receiver: frequencies on the air
                 and for the receiver
   correction.py the frequency correction in hundredths of ppm, split between
@@ -1651,6 +1736,8 @@ src/radiolack/
                 and opens GitHub's page for a new issue in the web browser
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
+tools/          measure_pll.py: measures how well Radiolack labels an
+                R820T's samples, run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,

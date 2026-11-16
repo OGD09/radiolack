@@ -940,6 +940,85 @@ Two pull requests.
   older computation and the setting unknown, it sits the same constant
   low at every centre frequency.
 
+As built, where this section left a choice open or a rule had to bend:
+
+- **The port's place.** `tests/r82xx_pll.py` became
+  `src/radiolack/r82xx.py`, with its notice and a line saying that the port
+  is under the GPL version 3 or later, as rtl-sdr's "or later" allows; it
+  gains `GRID_HZ`, `UPCONVERSION_HZ` and `on_grid`. `packaging/copyright`
+  gives the file a stanza of its own, with rtl-sdr's copyright holders and
+  that comment; `LICENSE` stays the GPL version 3, which covers the whole.
+  The tests, the fake rtl_tcp and `tools/measure_pll.py` import it.
+- **Three centres.** The centre asked (`centre_hz`, saved, which the scans
+  compare, as it names a setting's samples whatever its label), the request
+  (command 0x01) and the centre in use (`centre_in_use_hz`, a float), which
+  labels the samples: the frames, the carrier's measure, the VFO's shift,
+  the noise estimate and the I/Q recordings' captures. An I/Q recording's
+  name keeps the centre asked; its metadata gives the centre in use.
+- **The grid.** The request is the centre asked over the correction
+  (`correction.corrected_hz` with no whole part), then the frequency whose
+  oscillator, plus the IF of the sample rate, is the nearest multiple of
+  112.5 kHz between the tuner's range's start, or 28.8 MHz on an R828D,
+  and its end: by 56.25 kHz at most inside, up to 112.5 kHz at the ends,
+  102.5 kHz at 1766 MHz. A new sample rate moves the grid with its IF.
+- **Not placed**, the request as before and the label within half a hertz
+  of the centre asked: direct sampling; tuners other than an R820T or
+  R828D; an R828D below 28.8 MHz, whatever the shortwave input, since
+  rtl_tcp announces a V4 as any R828D and the RTL-SDR Blog driver's
+  `r82xx_set_freq` adds 28.8 MHz below that on a V4 or V4L (read on its
+  master, aed0ea1); and an oscillator below 27.66 MHz, where the VCO over
+  64 cannot lock and the port raises.
+- **The correction.** Command 0x05 sends 0 for an R820T or R828D at every
+  connection, direct sampling included, so that entering or leaving it
+  changes nothing there; the scale `1 + ppm / 10⁶` divides the centre
+  asked, multiplies the label, and divides the VFO's distance from the
+  centre in use (`rate_scale`), as the receiver samples that much faster.
+  The spectrum's other frequencies keep the scale's error, as section 14's
+  limits say.
+- **What retunes.** The request, the sample rate, the whole correction,
+  direct sampling and the converter, as before: a change of `driver_pll`,
+  or of `ppm` within the same point of the grid, changes the label only,
+  and sends nothing.
+- **`tuner_grid`**, a setting this section did not name: true at each
+  start, never saved, settable but not shown, so that the tool and 14b can
+  reach the centres off the grid; there, a known computation labels each
+  centre with its own error.
+- **The scans.** The sweep's windows stay as they were: their spacing
+  holds a centre moved by 15% of the rate from 375 kS/s, and the grid's
+  points from 300 kS/s. The memory scan computes its windows with the
+  source's placement (`scanners.Placement`), so that the bookmarks lie in
+  the searched part around the centre in use. At 240 kS/s, 3 kHz on either
+  side of each point of the grid escape both.
+- **The interface's retune** waits for frames from the centre in use that
+  the source state gives for the centre it asked, and ends at once when
+  frames already come from there. When the grid would bring the VFO's
+  channel within 5 kHz of that centre, it asks for the grid's point below
+  instead (`tunerpll.js`), which this section did not foresee: without it,
+  a retune at 1.024 MS/s, or in WFM at 2.4 MS/s, could put the channel on
+  the DC spike.
+- **The Receiver menu** shows "rtl-sdr driver" for an R820T or R828D, with
+  "Unknown", "rtl-sdr up to 2.0.1, RTL-SDR Blog" and "rtl-sdr 2.0.2 and
+  later", a note on what each does, which says that Calibrate will
+  identify the driver in a later version (14b), and "In use: …, where the
+  tuner sits" under the centre frequency when the two differ by a hertz or
+  more.
+- **The sign.** With the older computation and the setting unknown, the
+  tuner sits the constant low, so a carrier measures that much high:
+  1757.8 Hz over the divider, as the tests check at two or three centres of
+  each divider. With the setting right, within 1 Hz.
+- **The tool.** `tools/measure_pll.py` now measures a Radiolack with this
+  pull request only (it needs `tuner_grid` and `driver_pll`): its first
+  sweep turns the grid off, so that its steps of 1.234 kHz reach centres
+  where each computation errs by another amount; its second turns the
+  grid on and asks for points of the grid, as Radiolack places them. It
+  checks each label Radiolack reports against its own, predicts the
+  carrier from the label and each computation, with the IF of the sample
+  rate alone, and gives three verdicts: under 10 Hz, the labels hold, which
+  is the "done when" below once the driver is set; 30 Hz or more following
+  one computation, the menu's choice to make; otherwise the table. The rule
+  near 145 MHz goes, as the predictions hold at every divider. It restores
+  the centre and the grid.
+
 #### 14b. Calibrate identifies the computation
 
 - When Calibrate measures a carrier on such a receiver, the engine checks

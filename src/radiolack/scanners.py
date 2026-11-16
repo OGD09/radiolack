@@ -42,7 +42,10 @@ at most a quarter of the rate apart, so that every frequency of the range
 lies in the part of some window that detection searches, its centre and its
 edges included, even with the receiver's centre off by 15% of the rate:
 an R820T's grid moves it by 56.25 kHz at most, within that from 375 kS/s,
-and by up to 112.5 kHz at the very ends of its range.
+and by up to 112.5 kHz at the very ends of its range. Below, the grid's
+points still lie within each other's searched part at 300 kS/s; at
+240 kS/s they do not, and 3 kHz on either side of each, every 112.5 kHz,
+escape the sweep and the memory scan alike.
 ``Sweep`` follows its progress: once the samples of a window come, it reads
 there the blocks of SWEEP_SEARCHES searches, so that a signal found in two
 of them is listed without the next window's help, then asks for the next
