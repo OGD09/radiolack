@@ -15,6 +15,8 @@ import { POWER_CONFIRM_MS, powerPress, powerView } from './power.js';
 import { OSCILLATOR_NOTE, conversionMoved, convertedFrequency, converterView, oscillatorChange } from './converter.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
+import { PLAN_LIST_MAX, planRows } from './planlist.js';
+import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, startingTrueText } from './calibration.js';
@@ -125,7 +127,7 @@ const S = {
   vfo: 145.5e6, mode: 'NFM', bw: 10000, autoMode: true, step: 'auto',
   avg: 0.6, fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
-  showPlan: true, showMarks: true, split: 0.4,
+  showPlan: true, showMarks: true, showChannels: true, split: 0.4,
   sql: -80, sqlAuto: true, volume: 70,
   peakMarks: true,
   autoHide: true,
@@ -143,15 +145,30 @@ const segmentAt = (f) => rangeAt(plan.ranges, f);
 const bandAt = (f) => rangeAt(plan.bands, f);
 // Strip tooltip: a segment of a band also names its band.
 const rangeTitle = (r) => (r.kind === 'segment' ? `${r.band} · ${r.name}` : r.name);
+// The channel set the Automatic step follows at f: the set beside f's
+// channels, where the view shows two of them or more (channels.js).
+function stepSet(f) {
+  if (S.step !== 'auto') return null;
+  const set = stepSetAt(plan.channels, f);
+  return set && view.f1 - view.f0 >= 2 * set.spacing ? set : null;
+}
 // A fixed step applies whatever the zoom; Automatic follows the view's
-// width, and the channel spacing of f's range where the view shows two
-// channels or more.
+// width, and the channel spacing of f's set or range where the view shows
+// two channels or more.
 function stepAt(f) {
   if (S.step !== 'auto') return Number(S.step);
+  const set = stepSet(f);
+  if (set) return set.spacing;
   const seg = segmentAt(f);
   return automaticStep(view.f1 - view.f0, seg ? seg.step : null);
 }
-const snapAt = (f) => { const st = stepAt(f); return Math.round(f / st) * st; };
+// Where a click on f tunes: a set's nearest channel, else the nearest multiple of the step.
+function snapAt(f) {
+  const set = stepSet(f);
+  if (set) return snapToChannel(set, f);
+  const st = stepAt(f);
+  return Math.round(f / st) * st;
+}
 // Where the VFO shows: where a retune on its way puts it, else where it is.
 const shownVfo = () => (pendingTune ? pendingTune.f : S.vfo);
 function passband(f = S.vfo) {
@@ -894,12 +911,18 @@ function stripItemAt(f) {
 }
 // Clipped to the strip, in its px: a range can be thousands of times wider than the view.
 const stripExtent = (item) => [Math.max(fToX(item.from) * DPR, 0), Math.min(fToX(item.to) * DPR, bandCanvas.width)];
+// Where the ranges' names lie on the strip, px: the channels' numbers and the spots' names keep clear of them.
+let stripTaken = [];
+// What the strip shows of the channels and spots (channels.js), for the pointer: none while hidden.
+let stripMarks = null;
 // The first of the names that fits between a and b, if one does; whether one did.
 function drawStripLabel(ctx, a, b, names) {
   const name = names.find((n) => n && ctx.measureText(n).width + 8 * DPR < b - a);
   if (!name) return false;
+  const w = ctx.measureText(name).width;
   ctx.fillStyle = 'rgba(230,235,240,0.85)';
   ctx.fillText(name, (a + b) / 2, bandCanvas.height / 2 - DPR);
+  stripTaken.push([(a + b - w) / 2, (a + b + w) / 2]);
   return true;
 }
 function drawStripBlock(ctx, item, names) {
@@ -913,6 +936,8 @@ function drawStripBlock(ctx, item, names) {
 function drawBandStrip() {
   const ctx = bandCtx;
   ctx.clearRect(0, 0, bandCanvas.width, bandCanvas.height);
+  stripTaken = [];
+  stripMarks = null;
   if (!S.showPlan) return;
   ctx.font = `${10 * DPR}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
@@ -929,6 +954,36 @@ function drawBandStrip() {
     // Ranges too narrow for their names: the band's name goes over them.
     if (!named) drawStripLabel(ctx, ...stripExtent(band), [band.name, band.short]);
   }
+  if (S.showChannels) drawStripChannels(ctx);
+}
+// The channels as ticks along the strip's lower edge, with their numbers
+// where they fit, and the known frequencies as marks along its upper edge,
+// with their names: at most one tick every few px, laid out by channels.js.
+function drawStripChannels(ctx) {
+  const H = bandCanvas.height, d = DPR;
+  stripMarks = stripLayout(plan, view.f0, view.f1, bandCanvas.width, d, (text) => ctx.measureText(text).width, stripTaken);
+  ctx.fillStyle = 'rgba(230,235,240,0.6)';
+  for (const { x } of stripMarks.ticks) ctx.fillRect(Math.round(x - d / 2), H - 5 * d, d, 3 * d);   // under the names' baseline
+  for (const { x, spot } of stripMarks.spots) {
+    ctx.fillStyle = `rgb(${spot.rgb})`;
+    ctx.beginPath();
+    ctx.moveTo(x - 3 * d, 0);
+    ctx.lineTo(x + 3 * d, 0);
+    ctx.lineTo(x, 4 * d);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(230,235,240,0.85)';
+  for (const { x, item } of stripMarks.names) ctx.fillText(item.spot.name, x, H / 2 - d);
+  ctx.fillStyle = 'rgba(230,235,240,0.6)';
+  for (const { x, item } of stripMarks.numbers) ctx.fillText(item.channel.n, x, H / 2 - d);
+}
+// The spot or channel a press lands on, if the strip shows one there: marks
+// answer in its upper half, ticks in its lower half, names and numbers anywhere.
+function stripHitAt(e) {
+  if (!stripMarks) return null;
+  const box = bandEl.getBoundingClientRect(), upper = e.clientY - box.top < box.height / 2;
+  return stripHit(plan.bands, stripMarks, e.clientX * DPR, upper, (e.pointerType === 'mouse' ? 4 : 10) * DPR);
 }
 
 function renderMarks() {
@@ -975,10 +1030,11 @@ function renderFreq() {
 }
 
 // The line under the frequency, which a zoom changes with the Automatic step:
-// a text is written only when it changes, as rewriting it repaints in WebKitGTK.
+// the known frequency or the channel the VFO is on, else its range. A text is
+// written only when it changes, as rewriting it repaints in WebKitGTK.
 function updateMeta() {
   const vfo = shownVfo(), seg = segmentAt(vfo), step = `step ${fmtBw(stepAt(vfo))}`;
-  const where = seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState];
+  const where = nameAt(plan, vfo) ?? (seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState]);
   for (const [sel, text] of [['#m-mode', S.mode], ['#m-bw', fmtBw(S.bw)], ['#m-seg', where ? `${where} · ${step}` : step]]) {
     const el = $(sel);
     if (el.textContent !== text) el.textContent = text;
@@ -1033,6 +1089,7 @@ function updateOverlays() {
   updateMeta();
   renderFreq();
   syncAntenna();
+  if (openName === 'bookmarks') renderPlanList();
 }
 
 // The lengths of an antenna for the frequency the VFO shows, while their
@@ -1371,7 +1428,8 @@ function tune(f, opts = {}) {
 // click outside it would. One move at a time: while the span settles, steps
 // add up within the span on its way.
 function stepTune(dir, mult = 1) {
-  const from = shownVfo(), f = snapAt(from) + dir * stepAt(from) * mult;
+  const from = shownVfo(), set = stepSet(from);
+  const f = set ? stepChannels(set, from, dir * mult) : snapAt(from) + dir * stepAt(from) * mult;
   if (streamState === 'open' && sourceTunes()) {
     const [lo, hi] = targetSpan(), edge = (hi - lo) * EDGE_SHARE;
     if (pendingTune) {
@@ -1777,7 +1835,7 @@ function showMenu(name) {
   for (const s of $$('#menu section[data-menu]')) s.hidden = s.dataset.menu !== name;
   $('#menu-title').textContent = menuTitle(name);
   openMenuCard();
-  if (name === 'bookmarks') renderBookmarks();
+  if (name === 'bookmarks') { renderBookmarks(); renderPlanList(); }
   if (name === 'scan') syncScanTabs();
   if (name === 'record') { renderRecordings(); askRecordings(); }
   liveUi();
@@ -2218,33 +2276,50 @@ bindRange('wf-speed', 'wfSpeed', (v) => `${v} lines/s`);
 bindCheck('wf-time', 'timestamps', rebuildStamps);
 bindCheck('ov-plan', 'showPlan', drawBandStrip);
 bindCheck('ov-marks', 'showMarks', renderMarks);
+bindCheck('ov-channels', 'showChannels', drawBandStrip);
 bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
 
 // Bookmarks and the band plan
 // The band plan list shows the ranges the engine captures, segments under their band.
+// The band plan under the bookmarks follows the view, or the filter across
+// the whole plan (planlist.js); rebuilt only when its rows change.
+let planListKey = null, planListRows = [];
 function renderPlanList() {
   const list = $('#plan-list'), note = $('#plan-note');
   if (planState !== 'ready') {
+    planListKey = null;
     list.textContent = '';
     note.textContent = planState === 'failed' ? 'The band plan could not be loaded.' : '';
     return;
   }
-  note.textContent = `Ranges in the received span. ${plan.name}, a guide: national tables are the reference.`;
-  const lo = fStart(), hi = fEnd(), shown = [];
-  let html = '', group = null;
-  plan.ranges.forEach((r, i) => {
-    if (r.kind === 'gap' || r.to <= lo || r.from >= hi) return;
-    const g = r.kind === 'segment' ? r.band : null;
-    if (g !== null && g !== group) html += `<li class="group">${escapeHtml(g)}</li>`;
-    group = g;
-    html += `<li><button type="button" class="item" data-range="${i}"><span class="sw"></span>`
-      + `<span class="name">${escapeHtml(r.name)}</span><span class="num">${formatFrequency(r.from)}–${formatFrequency(r.to)}</span></button></li>`;
-    shown.push(r);
+  const query = $('#bm-filter').value.trim();
+  const { rows, more } = planRows(plan, view.f0, view.f1, query);
+  const key = `${query ? 'q' : 'v'} ${more} ${rows.map(rowKey).join(' ')}`;
+  if (key === planListKey) return;
+  planListKey = key;
+  planListRows = rows;
+  const where = query ? 'Ranges, channels and known frequencies that match, across the plan.' : 'Ranges and known frequencies in view.';
+  const cut = more ? ` The first ${PLAN_LIST_MAX} rows: ${query ? 'refine the filter' : 'zoom in'} to see the others.` : '';
+  note.textContent = `${where}${cut} ${plan.name}, a guide: national tables are the reference.`;
+  let html = '';
+  const swatches = [];
+  rows.forEach((row, i) => {
+    if (row.kind === 'group') { html += `<li class="group">${escapeHtml(row.name)}</li>`; return; }
+    const [name, num, rgb, cls] = row.kind === 'range'
+      ? [query ? rangeTitle(row.range) : row.range.name, `${formatFrequency(row.range.from)}–${formatFrequency(row.range.to)}`, row.range.rgb, '']
+      : row.kind === 'set'
+        ? [`${row.set.name} · ${row.set.channels.length} channels`, `${formatFrequency(row.set.from)}–${formatFrequency(row.set.to)}`, null, '']
+        : [query ? spotName(plan.bands, row.spot) : row.spot.name, formatFrequency(row.spot.f), row.spot.rgb, query ? '' : ' sub'];
+    html += `<li><button type="button" class="item${cls}" data-row="${i}"><span class="sw"></span>`
+      + `<span class="name">${escapeHtml(name)}</span><span class="num">${num}</span></button></li>`;
+    swatches.push(rgb);
   });
-  list.innerHTML = html || '<li class="empty">No band plan entry in the received span</li>';
+  list.innerHTML = html || `<li class="empty">${query ? 'No band plan entry matches' : 'No band plan entry in view'}</li>`;
   // Set through the CSSOM: the Content-Security-Policy blocks inline style attributes.
-  list.querySelectorAll('.sw').forEach((sw, i) => { sw.style.background = `rgb(${shown[i].rgb})`; });
+  list.querySelectorAll('.sw').forEach((sw, i) => { if (swatches[i]) sw.style.background = `rgb(${swatches[i]})`; else sw.classList.add('set'); });
 }
+const rowKey = (row) => (row.kind === 'group' ? `g${row.name}` : row.kind === 'range' ? `r${row.index}`
+  : row.kind === 'set' ? `c${row.set.from}` : `s${row.spot.f}`);
 function loadPlan() {
   loadBandPlan(BAND_PLAN_URL, MODE_ORDER).then((loaded) => {
     plan = loaded;
@@ -2418,11 +2493,15 @@ function syncBookmarkNote() {
 function bookmarksChanged() { renderBookmarks(); renderMarks(); syncMem(); }
 // A new bookmark is named "Bookmark" and the first number no other one
 // uses: the name, once sent, or null.
+// A bookmark on a known frequency or a channel takes its name, else the first free "Bookmark n".
 function addBookmark(f, mode) {
   const names = new Set(bookmarks.map((b) => b.name));
-  let n = 1;
-  while (names.has(`Bookmark ${n}`)) n += 1;
-  const name = `Bookmark ${n}`;
+  let name = nameAt(plan, f);
+  if (name === null || name.length > BOOKMARK_NAME_MAX) {
+    let n = 1;
+    while (names.has(`Bookmark ${n}`)) n += 1;
+    name = `Bookmark ${n}`;
+  }
   return sendBookmark(() => stream.addBookmark({ frequencyHz: Math.round(f), name, mode })) ? name : null;
 }
 // The bookmark that Add made, once the engine's list brings it, opens with
@@ -2437,8 +2516,15 @@ function nameNewBookmark() {
   namingBookmark = null;
   if (openName === 'bookmarks' && !editing) editing = editingOf(b);
 }
-$('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
-$('#bm-filter').addEventListener('input', renderBookmarks);
+// A range or a channel set frames itself; a known frequency tunes there with its mode.
+$('#plan-list').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-row]'), row = b && planListRows[Number(b.dataset.row)];
+  if (!row) return;
+  if (row.kind === 'range') zoomToSegment(row.range);
+  else if (row.kind === 'set') zoomToSegment(row.set);
+  else if (row.kind === 'spot') tuneAnywhere(row.spot.f, row.spot.mode ? { mode: row.spot.mode } : {});
+});
+$('#bm-filter').addEventListener('input', () => { renderBookmarks(); renderPlanList(); });
 $('#bm-add').addEventListener('click', () => {
   if (editing) finishEdit(true, false);
   const f = Math.round(S.vfo), before = new Set(bookmarks.map((b) => b.id));
@@ -2503,7 +2589,7 @@ $('#hist-body').addEventListener('click', (e) => {
   if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
   else if (b.dataset.mark) {
     const f = Number(b.dataset.mark), seg = segmentAt(f);
-    const name = addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
+    const name = addBookmark(f, modeAt(plan, f) ?? (seg && seg.mode ? seg.mode : S.mode));
     setHistoryNote(name ? `${fmtMHz(f)} MHz added to the bookmarks as ${name}.` : notConnected('no bookmark was added'));
   } else if (b.dataset.clear) {
     const f = Number(b.dataset.clear);
@@ -2936,7 +3022,7 @@ function syncStorage() {
 // gives its own. They leave out the engine's settings (VFO, mode, filter,
 // squelch, receiver, remote access) and which menu shows.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
-  'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'split', 'volume',
+  'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'showChannels', 'split', 'volume',
   'peakMarks', 'autoHide'];
 const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
 const PREFERENCES_SAVE_MS = 1000;
@@ -3045,7 +3131,7 @@ ctxEl.addEventListener('click', (e) => {
   if (!b || b.disabled) return;
   const f = snapAt(ctxF), seg = segmentAt(ctxF);
   if (b.dataset.cmd === 'tune') tuneAnywhere(f);
-  else if (b.dataset.cmd === 'bookmark') addBookmark(f, seg && seg.mode ? seg.mode : S.mode);
+  else if (b.dataset.cmd === 'bookmark') addBookmark(f, modeAt(plan, f) ?? (seg && seg.mode ? seg.mode : S.mode));
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
   else if (b.dataset.cmd === 'ignore') sendScanner(() => stream.ignoreFrequency(f));
@@ -3205,19 +3291,26 @@ bandEl.addEventListener('pointerdown', (e) => {
 bandEl.addEventListener('pointermove', (e) => {
   poke();
   showHover(e, 'band');
-  const item = stripItemAt(xToF(e.clientX));
-  bandEl.title = item ? `${rangeTitle(item)} · ${formatFrequency(item.from)}–${formatFrequency(item.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+  const hit = stripHitAt(e), item = stripItemAt(xToF(e.clientX));
+  const title = hit ? [hit.name, `${formatFrequency(hit.f)} MHz`, hit.note, hit.mode].filter(Boolean).join(' · ')
+    : item ? `${rangeTitle(item)} · ${formatFrequency(item.from)}–${formatFrequency(item.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+  if (bandEl.title !== title) bandEl.title = title;
+  bandEl.classList.toggle('on-mark', hit !== null);
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
   if (bandDrag.moved) { S.split = clamp((bandDrag.h0 + dy) / (window.innerHeight - bandHeight()), 0.12, 0.8); layoutPending = true; }
 });
 bandEl.addEventListener('pointerup', (e) => {
-  if (bandDrag && !bandDrag.moved) zoomToSegment(stripItemAt(xToF(e.clientX)));
+  if (bandDrag && !bandDrag.moved) {
+    const hit = stripHitAt(e);
+    if (hit) tuneAnywhere(hit.f, hit.mode ? { mode: hit.mode } : {});
+    else zoomToSegment(stripItemAt(xToF(e.clientX)));
+  }
   bandDrag = null;
 });
 bandEl.addEventListener('pointercancel', () => { bandDrag = null; });
-bandEl.addEventListener('pointerleave', hideHover);
+bandEl.addEventListener('pointerleave', () => { hideHover(); bandEl.classList.remove('on-mark'); });
 
 let editingFreq = false;
 function editFreq() {

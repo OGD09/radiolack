@@ -126,7 +126,11 @@ the history under the tag `v0.1.0`.
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
   input), `power.js` (the antenna power's second press), `converter.js`
   (the Receiver menu's converter, and the view that follows its change), `tuning.js` (the
-  Automatic step), `rates.js` (what a mode needs of the sample rate),
+  Automatic step), `channels.js` (the band plan's channels and known
+  frequencies: what the VFO is on, the Automatic step along a set's
+  channels, what the band strip draws of them and what a press there lands
+  on), `planlist.js` (the Bookmarks menu's band plan list: the view, or the
+  filter across the plan, at most 200 rows), `rates.js` (what a mode needs of the sample rate),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
   `correction.js` (the frequency correction's field) and `calibration.js`

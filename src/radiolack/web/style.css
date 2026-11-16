@@ -41,6 +41,7 @@ html, body {
 .wf-stamp::before { content: ""; position: absolute; left: 0; top: 0; width: 7px; height: 1px; background: rgba(255, 255, 255, 0.6); }
 #band { position: relative; background: #0d1015; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: ns-resize; touch-action: none;
   -webkit-user-select: none; user-select: none; }
+#band.on-mark { cursor: pointer; }
 
 #vfo, #vfo-line, #xline { position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; z-index: 2; will-change: transform; }
 #vfo { background: rgba(89, 167, 255, 0.11); border-left: 1px solid rgba(89, 167, 255, 0.5); border-right: 1px solid rgba(89, 167, 255, 0.5); }
@@ -304,6 +305,9 @@ input[aria-invalid="true"] { border-color: var(--warn); }
 .list li.group { padding: 8px 6px 2px; font-size: 11px; color: var(--muted); }
 .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
+/* A channel set's row, which has no colour of its own; a known frequency's, under its range. */
+.sw.set { box-sizing: border-box; border: 1px solid var(--muted); }
+.list .item.sub { padding-left: 20px; }
 .tag { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .link { background: transparent; border: 0; color: var(--accent); font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
 a.link, a.btn { display: inline-flex; align-items: center; text-decoration: none; }
