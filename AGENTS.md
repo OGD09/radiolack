@@ -165,7 +165,8 @@ the history under the tag `v0.1.0`.
   (needs Node.js).
 - Browser tests: `RADIOLACK_BROWSER_TESTS=1 python3 -m unittest tests.test_browser -v`,
   with the `browser` extra (Playwright, pinned in pyproject.toml) and its
-  browsers installed (README.md, Tests).
+  browsers installed (README.md, Tests); `RADIOLACK_BROWSERS=firefox`
+  (comma-separated) keeps them to some browsers.
 - Run without installing: `PYTHONPATH=src python3 -m radiolack` (window) or
   `--ui none` (address only). The server reads `web/` at start: restart it
   to see a change there.
@@ -198,9 +199,9 @@ the history under the tag `v0.1.0`.
   and fails a year before the real key's signing subkey expires.
 - CI (GitHub Actions, `.github/workflows/`): `tests.yml` runs the unittest
   command against the package installed with pip on Python 3.11 and 3.15;
-  `interface.yml` runs the type check and the browser tests when the
-  package, the tests or pyproject.toml change; `package.yml` builds the
-  Debian package twice and compares the builds, puts it in an APT
+  `interface.yml` runs the type check and the browser tests, one job per
+  browser, when the package, the tests or pyproject.toml change; `package.yml`
+  builds the Debian package twice and compares the builds, puts it in an APT
   repository signed with a key made for the run, then installs it from
   there, checks that apt reads its APT source, runs it (`smoke_test.py
   --window --check-updates --remote` under Xvfb: its update check reads the

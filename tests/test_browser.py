@@ -8,6 +8,8 @@ They launch browsers, so they run only when the RADIOLACK_BROWSER_TESTS
 environment variable is 1, as in CI, and then need Playwright and its
 browsers (README.md, Tests). Each interface opens in its own browser
 context, like a separate device, and any error in its page fails the test.
+RADIOLACK_BROWSERS, such as "firefox" or "chromium,webkit", keeps them to
+some of the browsers, as CI runs one job per browser.
 """
 
 from __future__ import annotations
@@ -16,10 +18,11 @@ import contextlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from unittest import mock
 
@@ -35,7 +38,21 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
-BROWSERS = ("chromium", "firefox", "webkit")
+DRIVEN = ("chromium", "firefox", "webkit")      # the browsers that the tests drive
+
+
+def chosen_browsers(names: str) -> tuple[str, ...]:
+    """The browsers that ``names`` lists, separated by commas, each once and
+    in its order; all those the tests drive when it lists none. A name that
+    the tests do not drive fails, rather than leave a browser untested."""
+    chosen = tuple(dict.fromkeys(name.strip() for name in names.split(",") if name.strip()))
+    unknown = [name for name in chosen if name not in DRIVEN]
+    if unknown:
+        raise ValueError(f"RADIOLACK_BROWSERS lists browsers that the tests do not drive: {', '.join(unknown)}")
+    return chosen or DRIVEN
+
+
+BROWSERS = chosen_browsers(os.environ.get("RADIOLACK_BROWSERS", ""))
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
 MENU_BUTTON = "#menu-button"
 # The classes that show a dot on the menu's icon: red while a recording runs,
@@ -81,6 +98,25 @@ WRONG_CODE_REFUSAL = "Failed to load resource: the server responded with a statu
 # renderer: this preference lifts that refusal. Firefox then also needs a
 # display, which xvfb-run gives where there is none.
 FIREFOX_PREFS = {"webgl.force-enabled": True}
+# Chromium draws WebGL2 through the system's EGL: on the GPU where there is
+# one, otherwise with Mesa's software renderer, llvmpipe, which drew two
+# interfaces three times as many frames a second as Chromium's own,
+# SwiftShader (2026-11-16), and Playwright waits for frames before its
+# actions. Chromium refuses WebGL2 on llvmpipe unless it ignores its GPU
+# blocklist, and its EGL did not start with the display variables of a
+# desktop session, which a browser without a window does not need. Without
+# EGL, Chromium falls back to SwiftShader.
+CHROMIUM_ARGS = ["--use-angle=gl-egl", "--ignore-gpu-blocklist"]
+DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "EGL_PLATFORM")
+# A page's WebGL2 renderer as the page reads it, which the log gives for each
+# browser, as the tests' durations depend on it. In WebKit, a page reads
+# Apple GPU whatever draws.
+WEBGL_RENDERER = """() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  if (!gl) return 'nothing: no WebGL2';
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  return gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+}"""
 # Draws lines in a waterfall view of its own, 8 bins wide and 2 lines high,
 # whose colour table gives each level code as its red: the red of each pixel,
 # newest line first, after each move of the span.
@@ -147,7 +183,20 @@ MENU_OVERFLOW = """() => {
 }"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
-    from playwright.sync_api import Error as PlaywrightError, Locator, Page, expect, sync_playwright
+    from playwright.sync_api import Browser, Error as PlaywrightError, Locator, Page, expect, sync_playwright
+
+
+def launch_options(name: str, environment: Mapping[str, str]) -> dict:
+    """Playwright's options to launch the browser ``name`` from
+    ``environment``: Chromium draws WebGL2 through EGL, in that environment
+    without its display variables; Firefox forces WebGL2 on, and like WebKit
+    keeps the environment, display included."""
+    if name == "chromium":
+        return {"args": CHROMIUM_ARGS,
+                "env": {key: value for key, value in environment.items() if key not in DISPLAY_VARIABLES}}
+    if name == "firefox":
+        return {"firefox_user_prefs": FIREFOX_PREFS}
+    return {}
 
 
 def overlap(first: dict, second: dict) -> bool:
@@ -165,9 +214,44 @@ def kept_channel(frequency_hz: int, last_s: float) -> dict:
             "active_s": 30.0, "margin_db": 20.0, "hours": hours}
 
 
+class ChosenBrowsersTest(unittest.TestCase):
+    """RADIOLACK_BROWSERS, read without launching any browser."""
+
+    def test_every_browser_unless_some_are_listed(self):
+        for names in ("", " ", ",", " , "):
+            self.assertEqual(chosen_browsers(names), ("chromium", "firefox", "webkit"), repr(names))
+
+    def test_the_browsers_listed_each_once_in_their_order(self):
+        self.assertEqual(chosen_browsers("firefox"), ("firefox",))
+        self.assertEqual(chosen_browsers(" webkit, chromium ,webkit,"), ("webkit", "chromium"))
+
+    def test_a_browser_that_the_tests_do_not_drive_fails(self):
+        for names in ("safari", "firefox,Webkit", "chrome"):
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, "do not drive"):
+                chosen_browsers(names)
+
+
+class LaunchOptionsTest(unittest.TestCase):
+    """Each browser's launch options, read without launching any browser."""
+
+    def test_chromium_draws_through_egl_without_the_display_variables(self):
+        environment = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-0", "EGL_PLATFORM": "wayland",
+                       "HOME": "/home/user", "XDG_CONFIG_HOME": "/tmp/config"}
+        options = launch_options("chromium", environment)
+        self.assertEqual(options["args"], ["--use-angle=gl-egl", "--ignore-gpu-blocklist"])
+        self.assertEqual(options["env"], {"HOME": "/home/user", "XDG_CONFIG_HOME": "/tmp/config"})
+        self.assertEqual(environment["DISPLAY"], ":99")     # the tests' own environment stays as it is
+
+    def test_firefox_and_webkit_keep_the_display(self):
+        # Without a GPU, Firefox draws WebGL2 only on a display, such as xvfb-run's.
+        self.assertEqual(launch_options("firefox", {"DISPLAY": ":99"}), {"firefox_user_prefs": {"webgl.force-enabled": True}})
+        self.assertEqual(launch_options("webkit", {"DISPLAY": ":99"}), {})
+
+
 @unittest.skipUnless(ENABLED, "browser tests run only with RADIOLACK_BROWSER_TESTS=1")
 class BrowserTest(unittest.TestCase):
-    """Each test runs in every browser in turn."""
+    """Each test runs in every browser in turn, or in those of
+    RADIOLACK_BROWSERS."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -175,11 +259,23 @@ class BrowserTest(unittest.TestCase):
         cls.addClassCleanup(playwright.stop)
         cls.browsers = {}
         for name in BROWSERS:
-            options = {"firefox_user_prefs": FIREFOX_PREFS} if name == "firefox" else {}
-            browser = getattr(playwright, name).launch(**options)   # headless
+            browser = getattr(playwright, name).launch(**launch_options(name, os.environ))   # headless
             cls.addClassCleanup(browser.close)
             cls.browsers[name] = browser
+            renderer = cls.webgl_renderer(browser)
+            print(f"{name} {browser.version}: WebGL2 renderer as a page reads it: {renderer}", file=sys.stderr, flush=True)
         expect.set_options(timeout=TIMEOUT_MS)
+
+    @staticmethod
+    def webgl_renderer(browser: Browser) -> str:
+        """The WebGL2 renderer that a blank page in ``browser`` reads."""
+        page = browser.new_page()
+        try:
+            return page.evaluate(WEBGL_RENDERER)
+        except PlaywrightError as error:
+            return f"unknown ({error.message})"
+        finally:
+            page.close()
 
     def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
               sources: Sources | None = None, updates: FakeUpdates | None = None,
