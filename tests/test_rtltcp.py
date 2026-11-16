@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource, parse_address, tuner_for
-from tests import r82xx_pll
+from radiolack import r82xx
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcp, FakeRtlTcpRuns, fake_codes, free_port, sample_codes
 
 FAST = {"settle_s": 0.15, "idle_s": 1.0, "read_wait_s": 0.2, "timeout_s": 0.5, "retry_s": (0.05, 0.2)}
@@ -90,11 +90,17 @@ def running(pid: int) -> bool:
 class SourceTest(unittest.IsolatedAsyncioTestCase):
     """One source on one fake server; each test closes its own server."""
 
-    async def start(self, fake: FakeRtlTcp | None = None, **options) -> RtlTcpSource:
+    async def start(self, fake: FakeRtlTcp | None = None, *, grid: bool = False, **options) -> RtlTcpSource:
+        """A source on ``fake``, an R820T unless given another. The tests of
+        the connection, the settings and the correction ask the frequencies
+        as they are: off the R820T's grid unless ``grid``, which GridTest
+        tests."""
         self.fake = fake if fake is not None else FakeRtlTcp()
         await self.fake.__aenter__()
         self.addAsyncCleanup(self.fake.__aexit__, None, None, None)
         source = RtlTcpSource(LOOPBACK, self.fake.port, **{**FAST, **options})
+        if not grid:
+            source.configure({"tuner_grid": False})
         self.addCleanup(source.close)
         self.changes = 0
 
@@ -115,9 +121,10 @@ class SourceTest(unittest.IsolatedAsyncioTestCase):
         return samples
 
     def assert_labelled(self, source: RtlTcpSource, samples: np.ndarray) -> None:
-        """The samples were taken with the setting the source gives them."""
+        """The samples were taken with the setting the source gives them:
+        the centre in use, which the source labels them with."""
         i_codes, q_codes = sample_codes(samples)
-        i_code, q_code = fake_codes(source.centre_hz, source.sample_rate_hz)
+        i_code, q_code = fake_codes(round(source.exact_centre_hz), source.sample_rate_hz)
         self.assertEqual((i_codes, q_codes), ({i_code}, {q_code}))
 
 
@@ -146,12 +153,13 @@ class StreamingTest(SourceTest):
         self.assertEqual(state, {
             "kind": "rtl_tcp", "status": "streaming", "detail": "",
             "address": f"{LOOPBACK}:{self.fake.port}", "tuner": "Rafael Micro R820T",
-            "centre_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
+            "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
             "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": False,
             "rtl_agc": False, "bias_tee": False, "converter": "none", "converter_lo_hz": 125e6,
+            "driver_pll": "unknown", "tuner_grid": False,
             "settable": ["address", "hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz",
-                         "gain_db", "ppm", "rtl_agc", "bias_tee"],
+                         "gain_db", "ppm", "driver_pll", "tuner_grid", "rtl_agc", "bias_tee"],
         })
         # One set of settings whatever the address, which was given here.
         self.assertEqual((source.settings_key, source.given), ("rtl_tcp", frozenset({"address"})))
@@ -233,7 +241,8 @@ class SettingsTest(SourceTest):
         self.assertEqual(source.describe()["gain_db"], -1.0)
 
     async def test_a_frequency_correction_retunes_and_drops_the_samples_on_their_way(self):
-        source = await self.start(ppm=5)
+        # An E4000 takes the whole part itself (an R820T's tests: GridTest).
+        source = await self.start(FakeRtlTcp(tuner_type=1, gain_count=14), ppm=5)
         await self.read(source)
         self.assertEqual(self.fake.commands, connection_commands(5, 2_400_000, 145_000_000))
         changed = time.monotonic()
@@ -620,9 +629,14 @@ class ConverterTest(SourceTest):
 
 
 class CorrectionTest(SourceTest):
-    """The correction in hundredths of ppm: the receiver takes its nearest
-    whole number by command 0x05, and the source asks for a frequency
-    scaled for the rest, labelling the samples with the one on the air."""
+    """The correction in hundredths of ppm: a receiver other than an R820T
+    or R828D, here an E4000, takes its nearest whole number by command
+    0x05, and the source asks for a frequency scaled for the rest,
+    labelling the samples with the one on the air. An R820T takes none
+    (GridTest)."""
+
+    async def start(self, fake: FakeRtlTcp | None = None, **options) -> RtlTcpSource:
+        return await super().start(fake or FakeRtlTcp(tuner_type=1, gain_count=14), **options)
 
     async def commands_after(self, count: int) -> list[tuple[int, int]]:
         """The commands sent from the ``count``-th on, once they stop coming."""
@@ -632,7 +646,7 @@ class CorrectionTest(SourceTest):
     async def test_a_whole_correction_sends_what_it_always_did(self):
         source = await self.start(ppm=7, gain_db=40)
         await self.read(source)
-        self.assertEqual(self.fake.commands, connection_commands(7, 2_400_000, 145_000_000, 402))
+        self.assertEqual(self.fake.commands, connection_commands(7, 2_400_000, 145_000_000, 420))
         for ppm in (12, -100, 100, 0):
             with self.subTest(ppm=ppm):
                 sent = len(self.fake.commands)
@@ -671,10 +685,11 @@ class CorrectionTest(SourceTest):
         await self.fake.__aexit__(None, None, None)
         # An R820T: kept within 24 to 1766 MHz on its tuner, so that the
         # RTL-SDR Blog driver does not switch to direct sampling below it.
-        source = await self.start(centre_hz=24_000_000, ppm=0.4)
+        source = await self.start(FakeRtlTcp(), centre_hz=24_000_000, ppm=0.4)
         await self.read(source)
         self.assertEqual(self.fake.commands[-4], (0x01, 24_000_000))
-        cases = (({"centre_hz": 24_000_001}, 24_000_000), ({"centre_hz": 30_000_000}, 29_999_988),
+        # A centre whose request stays the same retunes nothing (None).
+        cases = (({"centre_hz": 24_000_001}, None), ({"centre_hz": 30_000_000}, 29_999_988),
                  ({"centre_hz": 1_766_000_000, "ppm": -0.4}, 1_766_000_000),
                  ({"centre_hz": 1_765_000_000}, 1_765_000_706),
                  # A tuner that covers shortwave goes below 24 MHz by itself.
@@ -686,7 +701,11 @@ class CorrectionTest(SourceTest):
             with self.subTest(changes=changes):
                 sent = len(self.fake.commands)
                 source.configure(changes)
-                self.assertEqual((await self.commands_after(sent))[-1], (0x01, requested))
+                commands = await self.commands_after(sent)
+                if requested is None:
+                    self.assertEqual(commands, [])
+                else:
+                    self.assertEqual(commands[-1], (0x01, requested))
         self.assertTrue(source.describe()["direct"])
         self.assertEqual(self.fake.direct_sampling, 2)
 
@@ -733,7 +752,7 @@ class TunerRestartTest(SourceTest):
 
     def expected_hz(self, rate_hz: int, state: str) -> float:
         """Where the carrier shows from the centre frequency, the tuner in ``state``."""
-        return self.OFFSET_HZ - (r82xx_pll.tuned_hz("truncating", self.CENTRE_HZ, rate_hz, 0, state) - self.CENTRE_HZ)
+        return self.OFFSET_HZ - (r82xx.tuned_hz("truncating", self.CENTRE_HZ, rate_hz, 0, state) - self.CENTRE_HZ)
 
     async def measure(self, source: RtlTcpSource) -> float:
         samples = await self.read(source, 48_000)
@@ -744,7 +763,7 @@ class TunerRestartTest(SourceTest):
         for rate in (2_400_000, 1_024_000):
             self.assertGreater(abs(self.expected_hz(rate, "rate") - self.expected_hz(rate, "started")), 40)
         fake = FakeRtlTcp(carriers={self.CENTRE_HZ + self.OFFSET_HZ: 0.5}, noise=0.01, chunk_bytes=8000,
-                          tuner_pll=functools.partial(r82xx_pll.tuned_hz, "truncating"))
+                          tuner_pll=functools.partial(r82xx.tuned_hz, "truncating"))
         source = await self.start(fake, centre_hz=self.CENTRE_HZ, gain_db=30, idle_s=10.0)
         source.configure({"hf_input": "q"})
 
@@ -835,7 +854,8 @@ class AddressTest(SourceTest):
                          (f"{LOOPBACK}:{other.port}", "connecting", None))
         self.assert_labelled(source, await self.read(source))
         self.assertEqual(source.status, "streaming")
-        self.assertEqual(other.commands, connection_commands(-4, 2_400_000, 433_000_000, 402))
+        # An R820T: the whole correction by the frequency asked.
+        self.assertEqual(other.commands, connection_commands(0, 2_400_000, 433_001_732, 402))
         await eventually(lambda: self.fake.open_connections == 0)
         self.assertEqual(self.fake.connections, 1)
 
@@ -1197,7 +1217,8 @@ class RtlSdrSourceTest(SourceTest):
         state = source.describe()
         self.assertIsNone(state["address"])
         self.assertEqual(state["settable"], ["hf_input", "converter_lo_hz", "converter", "sample_rate_hz",
-                                             "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee"])
+                                             "centre_hz", "gain_db", "ppm", "driver_pll", "tuner_grid",
+                                             "rtl_agc", "bias_tee"])
         with self.assertRaisesRegex(ValueError, "unknown setting: address"):
             source.configure({"address": "192.0.2.10"})
 

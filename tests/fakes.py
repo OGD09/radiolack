@@ -143,7 +143,7 @@ class FakeRtlTcp:
     the RTL-SDR Blog fork alike): the tuner forgets its gain, automatic
     again, and its bandwidth, its state becoming ``started`` until the next
     sample rate (0x02) gives it the bandwidth of the rate again, ``rate``
-    (``tuner_state``, r82xx_pll.TUNER_STATES).
+    (``tuner_state``, r82xx.TUNER_STATES).
 
     ``crystal_ppb`` is how far its crystal is off, in parts per billion,
     which moves the carriers as a real crystal would: librtlsdr takes the
@@ -156,7 +156,7 @@ class FakeRtlTcp:
     asked, the sample rate, the correction and the tuner's state, the
     frequency the tuner truly sets, in units of the crystal as librtlsdr
     takes it to run, such as one of the driver's computations in
-    r82xx_pll.py, whose IF depends on that state. The crystal's error then
+    r82xx.py, whose IF depends on that state. The crystal's error then
     scales it; it does not apply in direct sampling.
     """
 

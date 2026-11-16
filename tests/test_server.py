@@ -870,20 +870,23 @@ class RtlTcpStreamTest(unittest.IsolatedAsyncioTestCase):
             for ws in (first, second):
                 self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
                 self.assertEqual((await ws.receive_json(timeout=5))["kind"], "rtl_tcp")
-                self.assertEqual(await next_frame_centre(ws), 145e6)
+                # The R820T sits on its grid, 2.5 kHz below 145 MHz at 2.4 MS/s: the frames say so.
+                self.assertEqual(await next_frame_centre(ws), 144_997_500)
             await first.send_json({"type": "source", "centre_hz": 433_000_000, "gain_db": 30, "ppm": -3,
                                    "dc_removal": False})
             for ws in (first, second):
-                while (state := await next_text(ws))["centre_hz"] != 433e6:
+                while (state := await next_text(ws))["centre_hz"] != 433e6 or state["status"] != "streaming":
                     pass
                 self.assertEqual(
-                    (state["status"], state["tuner"], state["gain_db"], state["ppm"], state["dc_removal"]),
-                    ("streaming", "Rafael Micro R820T", 29.7, -3, False))
-                while await next_frame_centre(ws) != 433e6:
+                    (state["tuner"], state["gain_db"], state["ppm"], state["dc_removal"], state["driver_pll"]),
+                    ("Rafael Micro R820T", 29.7, -3, False, "unknown"))
+                # Radiolack corrects the whole of the error itself, on the grid's point.
+                self.assertAlmostEqual(state["centre_in_use_hz"], 432_996_201.0075, places=3)
+                while await next_frame_centre(ws) != state["centre_in_use_hz"]:
                     pass
-            self.assertIn((0x01, 433_000_000), self.fake.commands)
+            self.assertIn((0x01, 432_997_500), self.fake.commands)
             self.assertIn((0x04, 297), self.fake.commands)
-            self.assertIn((0x05, 2**32 - 3), self.fake.commands)
+            self.assertNotIn((0x05, 2**32 - 3), self.fake.commands)     # the driver corrects nothing
 
     async def test_an_interface_moves_the_receiver_to_another_address_for_all(self):
         other = FakeRtlTcp(chunk_bytes=8000)
@@ -892,15 +895,18 @@ class RtlTcpStreamTest(unittest.IsolatedAsyncioTestCase):
         address = f"{LOOPBACK_HOST}:{other.port}"
         async with self.connect() as first, self.connect() as second:
             for ws in (first, second):
-                self.assertEqual(await next_frame_centre(ws), 145e6)
+                self.assertEqual(await next_frame_centre(ws), 144_997_500)
             await first.send_json({"type": "source", "address": str(other.port), "ppm": -3})
             for ws in (first, second):
                 while (state := await next_text(ws))["address"] != address or state["status"] != "streaming":
                     pass
                 self.assertEqual((state["centre_hz"], state["ppm"]), (145e6, -3))
-                self.assertEqual(await next_frame_centre(ws), 145e6)
+                self.assertAlmostEqual(state["centre_in_use_hz"], 144_997_065.0075, places=3)
+                while await next_frame_centre(ws) != state["centre_in_use_hz"]:
+                    pass
             self.assertEqual(other.connections, 1)
-            self.assertIn((0x05, 2**32 - 3), other.commands)
+            self.assertIn((0x01, 144_997_500), other.commands)
+            self.assertNotIn((0x05, 2**32 - 3), other.commands)
             deadline = time.monotonic() + 5
             while self.fake.open_connections:
                 self.assertLess(time.monotonic(), deadline, "the first rtl_tcp is still connected")
@@ -935,7 +941,7 @@ class RtlSdrStreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
             state = await ws.receive_json(timeout=5)
             self.assertEqual((state["kind"], state["address"]), ("rtl_sdr", None))
-            self.assertEqual(await next_frame_centre(ws), 145e6)
+            self.assertEqual(await next_frame_centre(ws), 144_997_500)     # the R820T's grid
             [(pid, _)] = self.runs.started()
             await asyncio.to_thread(self.server.stop)
         self.assertEqual(self.runs.stopping(), {pid})

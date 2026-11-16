@@ -24,7 +24,7 @@ from radiolack.engine import Engine, Source, Subscription
 from radiolack.recordings import meta_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
-from radiolack.scanners import VISIT_S, memory_windows, sweep_windows
+from radiolack.scanners import VISIT_S, Placement, memory_windows, sweep_windows
 from radiolack.spectrum import FLAG_SQUELCH_OPEN, FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
@@ -160,10 +160,11 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         subscription = self.engine.subscribe()
         self.assertEqual(subscription.get_nowait(), {
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
-            "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
+            "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "centre_in_use_hz": FAKE_CENTRE_HZ,
+            "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
             "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
-            "converter": None, "converter_lo_hz": None,
+            "converter": None, "converter_lo_hz": None, "driver_pll": None, "tuner_grid": None,
             "dc_removal": True, "settable": ["dc_removal"], "kinds": [],    # this engine has one source only
         })
         self.assertEqual(subscription.get_nowait(), {
@@ -1763,11 +1764,13 @@ class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):
         engine.configure_scanner({"sweep_low_hz": low, "sweep_high_hz": high, "sweep_window_s": 0.25})
         await eventually(lambda: engine.state()["status"] == "streaming")
         home = (engine.state()["centre_hz"], engine.demod_state()["frequency_hz"])
+        await eventually(lambda: fake.frequency_hz != 100_000_000)     # left by a previous client
+        home_request = fake.frequency_hz        # on the R820T's grid
         engine.configure_scanner({"scan": "sweep"})
         await asyncio.wait_for(next_peaks(subscription, until=lambda peaks: found_all(peaks, carriers)), 30)
         engine.configure_scanner({"scan": None})
         self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["frequency_hz"]), home)
-        await eventually(lambda: fake.frequency_hz == HOME_HZ)
+        await eventually(lambda: fake.frequency_hz == home_request)
         engine.configure_scanner({"scan": "sweep"})
         await next_scanner(subscription, until=at_window(1))
         engine.configure({"centre_hz": 145_350_000})    # before its samples come
@@ -1943,7 +1946,8 @@ class MemoryScanWindowsTest(unittest.IsolatedAsyncioTestCase):
         async def on_the_second_window() -> None:
             engine.configure_scanner({"scan": "memory"})
             await next_scanner(subscription, until=at_memory_window(1))
-            await eventually(lambda: engine._capture == (self.WINDOWS[1], FAKE_RATE_HZ))
+            await eventually(lambda: engine._capture is not None
+                             and engine._capture[0] == (self.WINDOWS[1], FAKE_RATE_HZ))
 
         await on_the_second_window()
         vfo = engine.demod_state()["frequency_hz"] + 1_000
@@ -1974,7 +1978,6 @@ class RtlTcpMemoryScanTest(unittest.IsolatedAsyncioTestCase):
     async def listen(self, rate: float) -> None:
         # The same places in the span whatever the rate: 100 kHz, 1.8 and 2 MHz at 1.024 MS/s.
         near, quiet, on_air = (HOME_HZ + round(rate * fraction) for fraction in (0.0977, 1.7578, 1.9531))
-        windows = memory_windows([near, quiet, on_air], rate, 24e6, 1766e6)     # two
         fake = FakeRtlTcp(carriers={on_air: 0.2}, chunk_bytes=16_384, interval_s=0.004)
         await fake.__aenter__()
         self.addAsyncCleanup(fake.__aexit__, None, None, None)
@@ -1994,12 +1997,16 @@ class RtlTcpMemoryScanTest(unittest.IsolatedAsyncioTestCase):
                                    "scan": True})
         ids = {entry["name"]: entry["id"] for entry in engine.bookmarks_state()["bookmarks"]}
         await eventually(lambda: engine.state()["status"] == "streaming")
+        # Where the R820T is placed on its grid, from the centre in use.
+        windows = memory_windows([near, quiet, on_air], rate, 24e6, 1766e6,
+                                 Placement(source.centre_in_use, source.grid_hz))     # two
+        self.assertEqual(len(windows), 2)
         self.assertEqual(engine.scanner_state()["memory"]["windows"], len(windows))
         engine.configure_scanner({"scan": "memory"})
         state = await asyncio.wait_for(next_scanner(subscription, until=in_state("listening")), 30)
         self.assertEqual(state["memory"]["bookmark_id"], ids["On the air"])
         self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["frequency_hz"]), (windows[1], on_air))
-        await eventually(lambda: fake.frequency_hz == windows[1])
+        await eventually(lambda: fake.frequency_hz == round(source.centre_in_use(windows[1])))
 
 
 def heard(engine: Engine, frequency_hz: float) -> bool:
@@ -2619,12 +2626,14 @@ class IQRecordingTest(RecordingCase):
                                               "core:version": "1.0.0", "core:hw": "RTL-SDR, Rafael Micro R820T",
                                               "core:recorder": f"Radiolack {__version__}"})
         captures = metadata["captures"]
-        self.assertEqual([capture["core:frequency"] for capture in captures], [145_000_000, 433_000_000, 433_000_000])
+        # 145 and 433 MHz lie on the R820T's grid at 1.024 MS/s; the correction keeps the
+        # tuner on its grid point, which it moves on the air by 3 ppm: the samples' label.
+        self.assertEqual([capture["core:frequency"] for capture in captures], [145_000_000, 433_000_000, 433_001_299])
         # Each capture holds the samples of its setting, as rtl_tcp sent them.
         starts = [capture["core:sample_start"] for capture in captures] + [len(data) // 2]
-        for capture, start, end in zip(captures, starts, starts[1:]):
+        for tuned_hz, start, end in zip((145_000_000, 433_000_000, 433_000_000), starts, starts[1:]):
             segment = data[2 * start:2 * end]
-            i_code, q_code = fake_codes(capture["core:frequency"], 1_024_000)
+            i_code, q_code = fake_codes(tuned_hz, 1_024_000)
             self.assertTrue(segment)
             self.assertEqual((set(segment[0::2]), set(segment[1::2])), ({i_code}, {q_code}))
 
@@ -2826,10 +2835,11 @@ class ConverterTest(RecordingCase):
         self.assertEqual(metadata["global"]["core:hw"], "RTL-SDR, Rafael Micro R820T, behind a downconverter that "
                                                         "inverts the spectrum with its oscillator at 5150 MHz")
         captures = metadata["captures"]
-        self.assertEqual([capture["core:frequency"] for capture in captures], [3_800_000_000, 3_700_000_000])
-        # The receiver tuned 1350 then 1450 MHz; I and Q come swapped, as on the air.
+        self.assertEqual([capture["core:frequency"] for capture in captures], [3_800_012_500, 3_700_000_000])
+        # The receiver tuned 1350 MHz placed on its grid, then 1450 MHz, on it; I and Q come
+        # swapped, as on the air. The file's name came before the tuner was known.
         starts = [capture["core:sample_start"] for capture in captures] + [len(data) // 2]
-        for tuned_hz, start, end in zip((1_350_000_000, 1_450_000_000), starts, starts[1:]):
+        for tuned_hz, start, end in zip((1_349_987_500, 1_450_000_000), starts, starts[1:]):
             segment = data[2 * start:2 * end]
             i_code, q_code = fake_codes(tuned_hz, 1_024_000)
             self.assertTrue(segment)
