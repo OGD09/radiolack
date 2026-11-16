@@ -147,7 +147,7 @@ MENU_OVERFLOW = """() => {
 }"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
-    from playwright.sync_api import Locator, Page, expect, sync_playwright
+    from playwright.sync_api import Error as PlaywrightError, Locator, Page, expect, sync_playwright
 
 
 def overlap(first: dict, second: dict) -> bool:
@@ -427,12 +427,24 @@ class BrowserTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "no new list of signals came")
             page.wait_for_timeout(100)      # lets Playwright deliver the page's events
 
-    @staticmethod
-    def press(page: Page, target: Locator) -> list[float]:
+    def press(self, page: Page, target: Locator) -> list[float]:
         """Press the mouse's main button at the centre of ``target`` and keep
-        it pressed: the point pressed, [x, y]."""
-        target.scroll_into_view_if_needed()
-        box = target.bounding_box()
+        it pressed: the point pressed, [x, y]. A list rebuilt while the point
+        is sought takes the element found out of the page: it is then found
+        again, and a list rebuilt after that leaves the press to the element
+        in its place."""
+        deadline = time.monotonic() + TIMEOUT_MS / 1000
+        while True:
+            try:
+                target.scroll_into_view_if_needed()
+                box = target.bounding_box()     # None once out of the page
+            except PlaywrightError as error:
+                if "not attached to the DOM" not in error.message:
+                    raise
+                box = None
+            if box is not None:
+                break
+            self.assertLess(time.monotonic(), deadline, "the element to press kept leaving the page")
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
         page.mouse.move(x, y)
         page.mouse.down()
