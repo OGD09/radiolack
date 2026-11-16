@@ -711,7 +711,7 @@ Format 1's fields stay, with `step` as the channel spacing alone. Added:
 | Field | Meaning |
 | --- | --- |
 | `channels[].name` | The set's name: English, ASCII, at most 40 characters. |
-| `channels[].from`, `to` | Where the set applies, in whole Hz, inside one band; sets do not overlap. |
+| `channels[].from`, `to` | Where the set applies, in whole Hz, inside the plan; sets do not overlap. As built in pull request 12, a set may span several bands (maritime VHF). |
 | `channels[].label` | A channel's label, `{n}` being its number. |
 | `channels[].spacing` | Whole Hz between channels: the VFO is on a channel within half of it, and the Automatic step takes it. |
 | `channels[].first`, `count`, `number` | A regular set: its first channel's centre, how many, and the first one's number. |
@@ -723,7 +723,7 @@ Format 1's fields stay, with `step` as the channel spacing alone. Added:
 
 The numbers above show the format; the data comes from the sources.
 `tests/test_bandplan.py` checks the bands from 0 to 10.5 GHz without gaps,
-each set inside one band, each spot inside the plan, the names and the
+each set inside the plan, each spot inside the plan, the names and the
 file's size, at most 150 kB.
 
 ## Limits that remain after this milestone

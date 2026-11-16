@@ -48,7 +48,8 @@ const COLOUR = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
  */
 
 /**
- * A set of channels that a regulation or a convention numbers, inside one band.
+ * A set of channels that a regulation or a convention numbers. A set lies
+ * inside the plan and may span several bands; sets do not overlap.
  * @typedef {object} ChannelSet
  * @property {string} name
  * @property {number} from          lower edge of where the set applies, Hz
@@ -205,7 +206,8 @@ function readEntry(item, colours, modes) {
 
 /**
  * A channel set as the file gives it, regular (`first`, `count`, `number`)
- * or listed (`list`), with every channel inside where the set applies.
+ * or listed (`list`), with every channel inside where the set applies and at
+ * least the spacing from the next.
  * @param {unknown} item
  * @param {readonly PlanBand[]} bands
  * @param {readonly string[]} modes
@@ -216,8 +218,7 @@ function readChannelSet(item, bands, modes) {
   const name = text(item.name, 'channel set name');
   const { from, to, spacing } = item;
   if (!isHz(from) || !isHz(to) || from >= to) fail(`${name}: from and to must be whole Hz, from below to`);
-  const band = rangeAt(bands, from);
-  if (band === null || to > band.to) fail(`${name}: a channel set must lie inside one band`);
+  if (bands.length === 0 || from < bands[0].from || to > bands[bands.length - 1].to) fail(`${name}: a channel set must lie inside the plan`);
   const label = text(item.label, `${name}: the label`);
   if (!label.includes('{n}')) fail(`${name}: the label must hold {n}`);
   if (!isHz(spacing) || spacing === 0) fail(`${name}: the spacing must be whole Hz above 0`);
@@ -243,8 +244,10 @@ function readChannelSet(item, bands, modes) {
     }
     channels.sort((a, b) => a.f - b.f);
   }
-  for (const channel of channels) {
+  for (const [i, channel] of channels.entries()) {
     if (channel.f < from || channel.f >= to) fail(`${name}: channel ${channel.n} lies outside the set`);
+    // A frequency is on a channel within half the spacing: two channels closer than it would share it.
+    if (i > 0 && channel.f - channels[i - 1].f < spacing) fail(`${name}: channel ${channel.n} lies less than the spacing from the one below`);
   }
   return { name, from, to, label, spacing, mode, channels };
 }

@@ -20,12 +20,15 @@ ALLOCATION_TABLE_HZ = 8_300     # where the ITU allocation table starts: "Not al
 LONGEST_NAME = 40               # names show in the readout's single line
 LARGEST_FILE = 150_000          # bytes: the interface loads the whole plan at start
 LONGEST_SHORT_NAME = 12         # short names stand in where a band's name does not fit in the band strip
+MOST_CHANNEL_SETS = 60          # coverage-and-precision.md, pull request 12
+MOST_SPOTS = 400
+SPOT_TOLERANCE_HZ = 50          # a frequency within this of a spot is on it (channels.js)
 # A step is a range's channel spacing, never a default: broadcast's 9 and
-# 5 kHz, CB's 5 kHz, PMR446's 6.25 kHz grid, the airband's 25 kHz / 3, the
-# 10 m and 6 m FM channels' 10 kHz, the 12.5 and 25 kHz channels, and FM
-# broadcast's and the VOR's 50 kHz. Elsewhere the Automatic step follows the
-# zoom (tuning.js).
-CHANNEL_SPACINGS = {5_000, 6_250, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
+# 5 kHz, the airband's 25 kHz / 3, the 10 m and 6 m FM channels' 10 kHz, the
+# 12.5 and 25 kHz channels, and FM broadcast's and the VOR's 50 kHz. A channel
+# set's spacing takes its place where the set gives one (CB, PMR446, maritime
+# VHF). Elsewhere the Automatic step follows the zoom (tuning.js).
+CHANNEL_SPACINGS = {5_000, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
 BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 
 
@@ -137,6 +140,7 @@ class BandPlanTest(unittest.TestCase):
 
     def test_channel_sets_are_well_formed(self):
         sets = sorted(self.plan["channels"], key=lambda channel_set: channel_set["from"])
+        self.assertLessEqual(len(sets), MOST_CHANNEL_SETS)
         for previous, channel_set in zip(sets, sets[1:]):
             with self.subTest(channel_set=channel_set["name"]):
                 self.assertGreaterEqual(channel_set["from"], previous["to"])     # sets do not overlap
@@ -149,8 +153,9 @@ class BandPlanTest(unittest.TestCase):
                     self.assertIs(type(channel_set[key]), int)
                 self.assertLess(channel_set["from"], channel_set["to"])
                 self.assertGreater(channel_set["spacing"], 0)
-                band = band_at(self.bands, channel_set["from"])
-                self.assertLessEqual(channel_set["to"], band["to"])           # inside one band
+                # Inside the plan, over one band or several: maritime VHF spans four.
+                self.assertGreaterEqual(channel_set["from"], LOWEST_HZ)
+                self.assertLessEqual(channel_set["to"], HIGHEST_HZ)
                 self.assertIn("{n}", channel_set["label"])
                 if "mode" in channel_set:
                     self.assertIn(channel_set["mode"], MODES)
@@ -176,8 +181,24 @@ class BandPlanTest(unittest.TestCase):
                 for centre in centres:
                     self.assertGreaterEqual(centre, channel_set["from"])
                     self.assertLess(centre, channel_set["to"])
+                # A frequency is on a channel within half the spacing: channels lie at least a spacing apart.
+                centres.sort()
+                for lower, upper in zip(centres, centres[1:]):
+                    self.assertGreaterEqual(upper - lower, channel_set["spacing"], (lower, upper))
+
+    def test_a_set_spanning_several_bands_holds(self):
+        maritime = next(channel_set for channel_set in self.plan["channels"] if channel_set["name"] == "Maritime VHF")
+        spanned = [band["name"] for band in self.bands if band["to"] > maritime["from"] and band["from"] < maritime["to"]]
+        self.assertGreater(len(spanned), 1)
+        channels = {channel["n"]: channel["f"] for channel in maritime["list"] if channel.get("note") != "Coast station"}
+        self.assertEqual(channels["16"], 156_800_000)       # RR Appendix 18
+        self.assertEqual(channels["AIS 2"], 162_025_000)
 
     def test_spots_are_well_formed(self):
+        self.assertLessEqual(len(self.plan["spots"]), MOST_SPOTS)
+        frequencies = sorted(spot["f"] for spot in self.plan["spots"])
+        for lower, upper in zip(frequencies, frequencies[1:]):
+            self.assertGreater(upper - lower, 2 * SPOT_TOLERANCE_HZ, (lower, upper))     # one spot at a time
         for spot in self.plan["spots"]:
             with self.subTest(spot=spot.get("name"), f=spot.get("f")):
                 self.assertLessEqual({"f", "name", "type"}, set(spot))
@@ -190,6 +211,25 @@ class BandPlanTest(unittest.TestCase):
                     self.assertIn(spot["mode"], MODES)
                 if "reference" in spot:
                     self.assertIs(spot["reference"], True)
+                    self.assertEqual(spot["type"], "science")
+
+    def test_spots_do_not_repeat_a_channel(self):
+        # The line under the frequency names a spot before a channel: a spot on
+        # a channel would hide the channel's name.
+        for spot in self.plan["spots"]:
+            for channel_set in self.plan["channels"]:
+                if not channel_set["from"] <= spot["f"] < channel_set["to"]:
+                    continue
+                if "list" in channel_set:
+                    centres = [channel["f"] for channel in channel_set["list"]]
+                else:
+                    centres = [channel_set["first"] + i * channel_set["spacing"] for i in range(channel_set["count"])]
+                with self.subTest(spot=spot["name"], f=spot["f"]):
+                    self.assertGreater(min(abs(centre - spot["f"]) for centre in centres), channel_set["spacing"] / 2)
+
+    def test_the_standard_frequencies_are_references(self):
+        references = {spot["f"] for spot in self.plan["spots"] if spot.get("reference")}
+        self.assertLessEqual({77_500, 10_000_000}, references)
 
     def assert_name(self, name):
         self.assertIs(type(name), str)
