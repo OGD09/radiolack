@@ -172,6 +172,17 @@ class ReceiverLineTest(unittest.TestCase):
                                  f"rtl_sdr, streaming, tuner R820T{shown}, 2.4 MS/s")
 
 
+    def test_the_converter_without_its_oscillator_s_frequency(self):
+        state = {"kind": "rtl_tcp", "status": "streaming", "detail": "", "address": "192.0.2.10:1234",
+                 "tuner": "R820T", "centre_hz": 10_489_500_000, "sample_rate_hz": 2_400_000,
+                 "hf_input": "none", "direct": False, "converter": "down", "converter_lo_hz": 9_750_000_000}
+        line = report.receiver_line(state)
+        self.assertEqual(line, "rtl_tcp, streaming, tuner R820T, converter down, 2.4 MS/s")
+        for converter in ("none", None, "sideways"):
+            with self.subTest(converter=converter):
+                state["converter"] = converter
+                self.assertEqual(report.receiver_line(state), "rtl_tcp, streaming, tuner R820T, 2.4 MS/s")
+
 class CheckPageTest(unittest.TestCase):
     def test_takes_a_line_of_text(self):
         for page in ("", "a browser; WebGL2 views; 1280x800 at 1x", "x" * report.MAX_PAGE):

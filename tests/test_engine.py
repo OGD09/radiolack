@@ -163,6 +163,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
             "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
+            "converter": None, "converter_lo_hz": None,
             "dc_removal": True, "settable": ["dc_removal"], "kinds": [],    # this engine has one source only
         })
         self.assertEqual(subscription.get_nowait(), {
@@ -643,7 +644,39 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["hf_input"] == "i")
         source = settings["receivers"]["rtl_tcp"]["source"]
         self.assertEqual((source["centre_hz"], source["rtl_agc"]), (7.1e6, True))
-        self.assertEqual(list(source)[:3], ["address", "hf_input", "sample_rate_hz"])
+        self.assertEqual(list(source)[:5], ["address", "hf_input", "converter_lo_hz", "converter", "sample_rate_hz"])
+
+    async def test_an_rtl_tcp_receiver_keeps_its_converter_with_its_centre_frequency(self):
+        # One at a time, the converter would first meet the default 145 MHz: -45 MHz on the air.
+        saved = {"centre_hz": 50e6, "converter": "down_inverted", "converter_lo_hz": 100e6}
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": saved, "demod": {"frequency_hz": 50_100_000}}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        state = engine.state()
+        self.assertEqual((state["converter"], state["converter_lo_hz"], state["centre_hz"]),
+                         ("down_inverted", 100e6, 50e6))
+        self.assertEqual(engine.demod_state()["frequency_hz"], 50_100_000)      # as saved
+        engine.configure({"ppm": 1})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"].get("ppm") == 1)
+        source = settings["receivers"]["rtl_tcp"]["source"]
+        self.assertEqual({name: source[name] for name in saved}, saved)
+
+    async def test_a_receiver_saved_before_the_converter_has_none(self):
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"centre_hz": 433e6, "ppm": -4}}}})
+        engine = self.engine(RtlTcpSource())
+        state = engine.state()
+        self.assertEqual((state["converter"], state["converter_lo_hz"], state["centre_hz"], state["ppm"]),
+                         ("none", 125e6, 433e6, -4))
+
+    async def test_a_saved_converter_that_is_refused_leaves_the_other_settings(self):
+        saved = {"converter": "sideways", "converter_lo_hz": 0, "centre_hz": 433e6, "ppm": -4}
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": saved}}})
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine = self.engine(RtlTcpSource())
+        state = engine.state()
+        self.assertEqual((state["converter"], state["converter_lo_hz"], state["centre_hz"], state["ppm"]),
+                         ("none", 125e6, 433e6, -4))
+        self.assertEqual(len(logs.output), 2)       # the converter and its oscillator
 
     async def test_the_antenna_power_is_never_saved_nor_restored(self):
         # A hand-written file cannot turn it on either.
@@ -2684,3 +2717,83 @@ class IQRecordingTest(RecordingCase):
         self.assertGreaterEqual((self.folder / iq).stat().st_size, state["iq"]["bytes"])
         metadata = json.loads((self.folder / meta_name(iq)).read_text(encoding="ascii"))
         self.assertEqual(len(metadata["captures"]), 1)
+
+
+class ConverterTest(RecordingCase):
+    """A converter in front of an rtl_tcp receiver, which stays where it is
+    tuned when the converter changes: the VFO and the signals stay on what
+    they were on, at their new frequencies; a scan and an I/Q recording,
+    whose frequencies move, stop."""
+
+    async def receiver(self, carriers: dict[float, float] | None = None, **options) -> RtlTcpSource:
+        """An rtl_tcp receiver: the fake rtl_tcp, on 145 MHz."""
+        self.fake = FakeRtlTcp(carriers=carriers, chunk_bytes=16_384, interval_s=0.004)
+        await self.fake.__aenter__()
+        self.addAsyncCleanup(self.fake.__aexit__, None, None, None)
+        return RtlTcpSource(LOOPBACK, self.fake.port, settle_s=0.1, **options)
+
+    async def test_the_vfo_stays_on_its_signal_at_its_new_frequency(self):
+        engine = self.engine(RtlTcpSource(LOOPBACK, free_port()), run=False)
+        self.assertEqual(engine.demod_state()["frequency_hz"], 145_600_000)
+        for changes, centre_hz, vfo_hz in (({"converter": "up"}, 20e6, 20.6e6),
+                                           ({"converter": "down_inverted", "converter_lo_hz": 1_000_000_000},
+                                            855e6, 854.4e6),
+                                           ({"converter": "none"}, 145e6, 145.6e6)):
+            with self.subTest(changes=changes):
+                engine.configure(changes)
+                self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["frequency_hz"]),
+                                 (centre_hz, vfo_hz))
+        with self.assertRaisesRegex(ValueError, "would be -20 MHz on the air"):
+            engine.configure({"converter": "down_inverted", "converter_lo_hz": 125_000_000})
+        self.assertEqual((engine.state()["converter"], engine.demod_state()["frequency_hz"]), ("none", 145.6e6))
+
+    async def test_a_scan_stops_and_the_signals_found_are_found_again_at_their_new_frequency(self):
+        carrier_hz = 145_300_000.0
+        engine = self.engine(await self.receiver(carriers={carrier_hz: 0.2}))
+        subscription = engine.subscribe()
+        await asyncio.wait_for(next_peaks(subscription, until=lambda peaks: found_all(peaks, [carrier_hz])), 15)
+        engine.configure_scanner({"sweep_low_hz": 144e6, "sweep_high_hz": 146e6})
+        engine.configure_scanner({"scan": "sweep"})
+        engine.configure({"converter": "down", "converter_lo_hz": 9_750_000_000})
+        self.assertEqual(engine.scanner_state()["stopped"], "tuned")
+        self.assertEqual(engine.peaks_state()["peaks"], [])     # found through the previous converter
+        engine.configure({"centre_hz": 9_895_000_000})          # 145 MHz for the receiver, as before the sweep
+        await asyncio.wait_for(
+            next_peaks(subscription, until=lambda peaks: found_all(peaks, [carrier_hz + 9_750_000_000])), 15)
+
+    async def test_an_iq_recording_stops_and_its_metadata_gives_the_frequencies_on_the_air(self):
+        engine = self.engine(await self.receiver(sample_rate_hz=1_024_000))
+        engine.configure({"converter": "down_inverted", "converter_lo_hz": 5_150_000_000, "centre_hz": 3.8e9})
+        subscription = engine.subscribe()
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription, lambda state: with_iq_file(state) and state["iq"]["bytes"] >= 50_000)
+        iq = state["iq"]
+        self.assertRegex(iq["file"], r"_3800\.000000MHz_1\.024000MSps\.sigmf-data$")
+        engine.configure({"centre_hz": 3.7e9})          # a retune goes on recording
+        await next_recording(subscription, lambda state: self.iq_bytes(state) >= iq["bytes"] + 200_000)
+        engine.configure({"converter_lo_hz": 5_150_000_000})     # the one in use: nothing changes
+        self.assertIsNotNone(engine.recording_state()["iq"])
+        with self.assertLogs("radiolack.engine", "WARNING") as logs:
+            engine.configure({"converter_lo_hz": 5_150_001_000})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "converter", "detail": ""}))
+        self.assertIn("stopped: the converter in front of the receiver changed", logs.output[0])
+        await self.stopped(engine)
+        data = (self.folder / iq["file"]).read_bytes()
+        metadata = json.loads((self.folder / meta_name(iq["file"])).read_text(encoding="ascii"))
+        self.assertEqual(metadata["global"]["core:hw"], "RTL-SDR, Rafael Micro R820T, behind a downconverter that "
+                                                        "inverts the spectrum with its oscillator at 5150 MHz")
+        captures = metadata["captures"]
+        self.assertEqual([capture["core:frequency"] for capture in captures], [3_800_000_000, 3_700_000_000])
+        # The receiver tuned 1350 then 1450 MHz; I and Q come swapped, as on the air.
+        starts = [capture["core:sample_start"] for capture in captures] + [len(data) // 2]
+        for tuned_hz, start, end in zip((1_350_000_000, 1_450_000_000), starts, starts[1:]):
+            segment = data[2 * start:2 * end]
+            i_code, q_code = fake_codes(tuned_hz, 1_024_000)
+            self.assertTrue(segment)
+            self.assertEqual((set(segment[0::2]), set(segment[1::2])), ({q_code}, {i_code}))
+
+    @staticmethod
+    def iq_bytes(state: dict) -> int:
+        """How much the I/Q recording that runs was given; -1 when none runs."""
+        return state["iq"]["bytes"] if state["iq"] is not None else -1

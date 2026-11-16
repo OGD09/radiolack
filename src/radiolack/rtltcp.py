@@ -35,6 +35,13 @@ it. ``tuner`` is for a dongle whose tuner covers shortwave by itself, such
 as an RTL-SDR Blog V4: the centre frequency simply goes lower. No tuner
 says when it cannot reach a frequency: rtl_tcp checks no command's result.
 
+A converter in front of the receiver (``converter`` and
+``converter_lo_hz``, converter.py) moves the frequencies: the source's
+centre frequency is the one on the air, and only the command it sends is
+converted. The converter applies on top of the tuner and of direct sampling
+alike. One that mirrors the spectrum has I and Q swapped as the samples
+arrive, before the reader and the tap.
+
 Antenna power (``bias_tee``, command 0x0e) puts 4.5 V on the antenna
 socket of an RTL-SDR Blog V3 or V4. It starts off, is sent at each
 connection, since rtl_tcp keeps it from its previous client, and is never
@@ -66,6 +73,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
+
+from .converter import DEFAULT_LO_HZ, HIGHEST_HZ, Conversion, checked_converter, checked_lo, mhz
 
 DEFAULT_ADDRESS = ("127.0.0.1", 1234)  # where rtl_tcp listens unless told otherwise
 DEFAULT_CENTRE_HZ = 145_000_000.0      # the 2 m band, until the user tunes elsewhere
@@ -107,9 +116,12 @@ POWER_OFF_S = 0.3       # an rtl_tcp that RtlSdrSource stops first applies the p
 HF_INPUTS = ("none", "q", "i", "tuner")
 _DIRECT_INPUTS = {"q": 2, "i": 1}   # the value of command 0x09 for each input
 DIRECT_SAMPLING_HZ = 28_800_000.0   # the RTL2832's own rate: what direct sampling covers
-# In the order the engine restores them: the input and the rate before the
-# centre frequency, whose reach depends on them.
-_SETTINGS = ("hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee")
+# In the order the engine restores them: the input, the converter and the
+# rate before the centre frequency, whose reach depends on them; the
+# converter's oscillator before the converter, which keeps the receiver
+# where it is tuned.
+_SETTINGS = ("hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db", "ppm",
+             "rtl_agc", "bias_tee")
 # Full-scale value of each unsigned 8-bit sample.
 _LEVELS = (np.arange(256, dtype=np.float32) - np.float32(127.5)) / np.float32(127.5)
 
@@ -223,6 +235,8 @@ class Settings:
     hf_input: str = "none"          # one of HF_INPUTS
     rtl_agc: bool = False           # the RTL2832's AGC, while sampling directly
     bias_tee: bool = False          # antenna power, never saved
+    converter: str = "none"         # one of converter.CONVERTERS
+    converter_lo_hz: float = DEFAULT_LO_HZ  # the converter's oscillator, in whole hertz
 
 
 class RtlTcpSource:
@@ -305,8 +319,11 @@ class RtlTcpSource:
     @property
     def hardware(self) -> str:
         """The receiver, for a recording's metadata: with its tuner once
-        rtl_tcp named it, such as "RTL-SDR, Rafael Micro R820T"."""
-        return "RTL-SDR" if self.tuner is None else f"RTL-SDR, {self.tuner.name}"
+        rtl_tcp named it, such as "RTL-SDR, Rafael Micro R820T", and the
+        converter in front of it."""
+        name = "RTL-SDR" if self.tuner is None else f"RTL-SDR, {self.tuner.name}"
+        converter = _conversion(self._settings).text()
+        return f"{name}, behind {converter}" if converter else name
 
     def tap(self, receiver: SampleTap | None) -> None:
         """Hand ``receiver`` every sample that arrives from now on, as rtl_tcp
@@ -315,8 +332,10 @@ class RtlTcpSource:
         they were taken with, and whether they follow those it received
         before without a gap. They come in the event loop as they arrive,
         whether the engine reads them or not: those the source drops for a
-        reader that falls behind included. A new connection, and a change of
-        frequency, rate or correction, whose samples are dropped while the
+        reader that falls behind included. The centre frequency is the one
+        on the air, and I and Q come swapped behind a converter that
+        mirrors the spectrum. A new connection, and a change of frequency,
+        rate, correction or converter, whose samples are dropped while the
         receiver settles, leave a gap. None stops."""
         self._tap = receiver
         self._tap_next = None
@@ -350,14 +369,18 @@ class RtlTcpSource:
         data = self._buffer[:size]
         del self._buffer[:size]
         # The buffer only ever holds samples of the current setting.
-        self.centre_hz = self._settings.centre_hz
-        self.sample_rate_hz = self._settings.sample_rate_hz
-        return _LEVELS[np.frombuffer(data, np.uint8)].view(np.complex64)
+        settings = self._settings
+        self.centre_hz = settings.centre_hz
+        self.sample_rate_hz = settings.sample_rate_hz
+        pairs = _LEVELS[np.frombuffer(data, np.uint8)].reshape(-1, 2)
+        if _conversion(settings).inverted:
+            pairs = np.ascontiguousarray(pairs[:, ::-1])     # Q, I: the band as it is on the air
+        return pairs.ravel().view(np.complex64)
 
     def describe(self) -> dict[str, Any]:
         """The receiver's settings and the connection state, as JSON values."""
         settings, tuner = self._settings, self.tuner
-        ranges = _centre_ranges(settings, tuner)
+        ranges = _reach(settings, tuner)
         return {
             "kind": self.kind,
             "status": self.status,
@@ -375,18 +398,24 @@ class RtlTcpSource:
             "direct": _direct_input(settings, tuner) != 0,
             "rtl_agc": settings.rtl_agc,
             "bias_tee": settings.bias_tee,
+            "converter": settings.converter,
+            "converter_lo_hz": settings.converter_lo_hz,
             "settable": self._settable(),
         }
 
     def configure(self, changes: Mapping[str, object]) -> None:
         """Change ``address`` (as ``parse_address`` reads it), ``centre_hz``,
         ``sample_rate_hz``, ``gain_db`` (``None`` for automatic gain),
-        ``ppm``, ``hf_input`` (one of ``HF_INPUTS``), ``rtl_agc`` and
-        ``bias_tee``, then call ``on_change``.
+        ``ppm``, ``hf_input`` (one of ``HF_INPUTS``), ``rtl_agc``,
+        ``bias_tee``, ``converter`` (one of ``converter.CONVERTERS``) and
+        ``converter_lo_hz``, then call ``on_change``.
 
         Raises ValueError, changing nothing, when a setting is unknown or
         invalid. A gain becomes the nearest the tuner offers. Another input
         or sample rate brings the centre frequency within the new reach.
+        Another converter or oscillator, without a centre frequency in the
+        same change, keeps the receiver where it is tuned: the centre
+        frequency on the air moves, and is refused beyond the new reach.
         Changes made while disconnected apply at the next connection.
         Another address hangs up, and the next read connects there with the
         same settings; its tuner is unknown until it answers.
@@ -405,8 +434,8 @@ class RtlTcpSource:
         new = _changed(old, changes, tuner)
         self._settings = new
         old_input, new_input = _direct_input(old, tuner), _direct_input(new, tuner)
-        retuned = ((new.centre_hz, new.sample_rate_hz, new.ppm, new_input)
-                   != (old.centre_hz, old.sample_rate_hz, old.ppm, old_input))
+        retuned = ((new.centre_hz, new.sample_rate_hz, new.ppm, new_input, _conversion(new).key)
+                   != (old.centre_hz, old.sample_rate_hz, old.ppm, old_input, _conversion(old).key))
         if address is not None:
             self._power_off(old)    # the receiver left behind
             self.host, self.port = address
@@ -439,9 +468,10 @@ class RtlTcpSource:
             if new.bias_tee != old.bias_tee:
                 connection.send(_SET_BIAS_TEE, int(new.bias_tee))
             if retuned:
-                # Also after a change of rate, correction or input, so that
-                # the receiver applies it whatever the librtlsdr version.
-                connection.send(_SET_FREQUENCY, int(new.centre_hz))
+                # Also after a change of rate, correction, input or
+                # converter, so that the receiver applies it whatever the
+                # librtlsdr version.
+                connection.send(_SET_FREQUENCY, _command_hz(new))
         if retuned:
             self._new_setting()
         self._notify()
@@ -554,7 +584,7 @@ class RtlTcpSource:
         connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
         connection.send(_SET_DIRECT_SAMPLING, direct)
         connection.send(_SET_RTL_AGC, int(bool(direct) and settings.rtl_agc))
-        connection.send(_SET_FREQUENCY, int(settings.centre_hz))
+        connection.send(_SET_FREQUENCY, _command_hz(settings))
         if not direct:
             _send_gain(connection, settings.gain_db)
         connection.send(_SET_BIAS_TEE, int(settings.bias_tee))
@@ -597,6 +627,10 @@ class RtlTcpSource:
             data = data[:whole]
         settings, joined = self._settings, self._tap_joined
         self._tap_joined = True
+        if _conversion(settings).inverted:
+            swapped = bytearray(len(data))      # Q, I: the band as it is on the air
+            swapped[0::2], swapped[1::2] = data[1::2], data[0::2]
+            data = bytes(swapped)
         try:
             self._tap(data, settings.centre_hz, settings.sample_rate_hz, joined)
         except Exception:
@@ -855,10 +889,17 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
     """``settings`` with ``changes``; raises ValueError for any invalid change.
     Without a known tuner, any frequency, gain and input pass until it is
     known. A new input or sample rate without a new centre frequency brings
-    the centre within the new reach."""
+    the centre within the new reach; a new converter or oscillator keeps
+    the receiver where it is tuned, and is refused when that is out of the
+    new reach on the air."""
     unknown = sorted(set(changes) - set(_SETTINGS))
     if unknown:
         raise ValueError(f"unknown setting: {', '.join(unknown)}")
+    before = settings
+    if "converter_lo_hz" in changes:
+        settings = replace(settings, converter_lo_hz=checked_lo(changes["converter_lo_hz"]))
+    if "converter" in changes:
+        settings = replace(settings, converter=checked_converter(changes["converter"]))
     if "hf_input" in changes:
         value = changes["hf_input"]
         offered = hf_inputs(tuner)
@@ -881,11 +922,17 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
             ranges = " or ".join(f"from {low / 1e6:g} to {high / 1e6:g}" for low, high in SAMPLE_RATES_HZ)
             raise ValueError(f"the sample rate must be {ranges} MS/s")
         settings = replace(settings, sample_rate_hz=rate)
+    reach = _reach(settings, tuner)
     if "centre_hz" in changes:
         centre = float(round(_number(changes["centre_hz"], "the centre frequency")))
-        ranges = _centre_ranges(settings, tuner)
-        if not any(low <= centre <= high for low, high in ranges):
-            raise ValueError(_reach_text(ranges))
+        if not _within(centre, reach):
+            raise ValueError(_reach_text(reach, settings))
+        settings = replace(settings, centre_hz=centre)
+    elif _conversion(settings).key != _conversion(before).key:
+        # The receiver stays where it is tuned: the signals stay, their frequencies change.
+        centre = _conversion(settings).air(_command_hz(before))
+        if not _within(centre, reach):
+            raise ValueError(_conversion_text(centre, reach, settings))
         settings = replace(settings, centre_hz=centre)
     elif "hf_input" in changes or "sample_rate_hz" in changes:
         settings = _within_reach(settings, tuner)
@@ -908,51 +955,89 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
 
 def _fitted(settings: Settings, tuner: Tuner) -> Settings:
     """``settings`` brought within what ``tuner`` can do: an input it does
-    not offer becomes ``none``."""
+    not offer becomes ``none``, as does a converter through which it would
+    reach nothing on the air."""
     if settings.hf_input not in hf_inputs(tuner):
         settings = replace(settings, hf_input="none")
+    if not _reach(settings, tuner):
+        log.warning("the converter is not used: through it, the %s reaches nothing on the air", tuner.name)
+        settings = replace(settings, converter="none")
     gain = settings.gain_db
     if gain is not None:
         gain = _nearest(tuner.gains_db, gain) if tuner.gains_db else None
     return replace(_within_reach(settings, tuner), gain_db=gain)
 
 
-def _centre_ranges(settings: Settings, tuner: Tuner | None) -> list[tuple[float, float]]:
+def _conversion(settings: Settings) -> Conversion:
+    return Conversion(settings.converter, settings.converter_lo_hz)
+
+
+def _command_hz(settings: Settings) -> int:
+    """The frequency asked of the receiver for ``settings``' centre
+    frequency on the air: within 32 bits, as the centre is within reach."""
+    return int(_conversion(settings).tuned(settings.centre_hz))
+
+
+def _centre_ranges(settings: Settings, tuner: Tuner | None) -> list[tuple[float, float, str]]:
     """The centre frequencies the receiver tunes with ``settings``' input
-    and sample rate, as one or two ranges, lowest first. Direct sampling's
-    span stays within 0 to 28.8 MHz, and a tuner that covers shortwave goes
-    down to a span that starts at 0 Hz; with a tuner whose range starts above
-    what direct sampling reaches, the frequencies in between are out of
-    reach."""
+    and sample rate, as one or two ranges, lowest first, each with how it
+    tunes them when there are two. Direct sampling's span stays within 0 to
+    28.8 MHz, and a tuner that covers shortwave goes down to a span that
+    starts at 0 Hz; with a tuner whose range starts above what direct
+    sampling reaches, the frequencies in between are out of reach."""
     if tuner is None:
-        return [_ANY_FREQUENCY_HZ]
+        return [(*_ANY_FREQUENCY_HZ, "")]
     low, high = tuner.range_hz
     half = float(math.ceil(settings.sample_rate_hz / 2))    # whole hertz, as the centre is
     if settings.hf_input == "tuner":
-        return [(min(half, low), high)]
+        return [(min(half, low), high, "")]
     if settings.hf_input in _DIRECT_INPUTS:
         top = DIRECT_SAMPLING_HZ - half
         if top >= low:
-            return [(min(half, low), high)]
-        return [(half, top), (low, high)]
-    return [(low, high)]
+            return [(min(half, low), high, "")]
+        return [(half, top, "by direct sampling"), (low, high, "with its tuner")]
+    return [(low, high, "")]
 
 
-def _reach_text(ranges: list[tuple[float, float]]) -> str:
-    """Why a centre frequency outside ``ranges`` is refused."""
-    if len(ranges) == 1:
-        (low, high), = ranges
-        return f"the receiver tunes from {low / 1e6:g} to {high / 1e6:g} MHz"
-    (direct_low, direct_high), (low, high) = ranges
-    return (f"the receiver tunes from {direct_low / 1e6:g} to {direct_high / 1e6:g} MHz by direct "
-            f"sampling and from {low / 1e6:g} to {high / 1e6:g} MHz with its tuner")
+def _reach(settings: Settings, tuner: Tuner | None) -> list[tuple[float, float, str]]:
+    """The centre frequencies on the air within reach, through the converter
+    if there is one: none when it leaves nothing."""
+    return _conversion(settings).reach(_centre_ranges(settings, tuner), settings.sample_rate_hz)
+
+
+def _within(centre_hz: float, reach: list[tuple[float, float, str]]) -> bool:
+    return any(low <= centre_hz <= high for low, high, _ in reach)
+
+
+def _reach_text(reach: list[tuple[float, float, str]], settings: Settings) -> str:
+    """Why a centre frequency outside ``reach`` is refused."""
+    through = " through its converter" if _conversion(settings).active else ""
+    if not reach:
+        return (f"through this converter the receiver reaches nothing on the air from "
+                f"{mhz(math.ceil(settings.sample_rate_hz / 2))} MHz, half the sample rate, "
+                f"to {HIGHEST_HZ / 1e9:g} GHz")
+    ranges = " and ".join(f"from {mhz(low)} to {mhz(high)} MHz" + (f" {label}" if label else "")
+                          for low, high, label in reach)
+    return f"the receiver tunes {ranges}{through}"
+
+
+def _conversion_text(centre_hz: float, reach: list[tuple[float, float, str]], settings: Settings) -> str:
+    """Why a converter that would put the centre frequency at ``centre_hz``
+    on the air is refused."""
+    if not reach:
+        return _reach_text(reach, settings)
+    return (f"through this converter the receiver's centre frequency would be {mhz(centre_hz)} MHz "
+            f"on the air, out of reach: {_reach_text(reach, settings)}")
 
 
 def _within_reach(settings: Settings, tuner: Tuner | None) -> Settings:
     """``settings`` with the centre frequency brought to the nearest one the
-    receiver tunes."""
+    receiver tunes; raises ValueError when it reaches none."""
     centre = settings.centre_hz
-    nearest = min((min(max(centre, low), high) for low, high in _centre_ranges(settings, tuner)),
+    reach = _reach(settings, tuner)
+    if not reach:
+        raise ValueError(_reach_text(reach, settings))
+    nearest = min((min(max(centre, low), high) for low, high, _ in reach),
                   key=lambda candidate: abs(candidate - centre))
     return replace(settings, centre_hz=nearest)
 
@@ -961,7 +1046,7 @@ def _direct_input(settings: Settings, tuner: Tuner | None) -> int:
     """Command 0x09's value for ``settings``: the direct sampling input in
     use below the tuner's range, 0 for the tuner, and while the tuner is
     unknown."""
-    if tuner is None or settings.centre_hz >= tuner.range_hz[0]:
+    if tuner is None or _command_hz(settings) >= tuner.range_hz[0]:
         return 0
     return _DIRECT_INPUTS.get(settings.hf_input, 0)
 

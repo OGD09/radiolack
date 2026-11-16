@@ -12,6 +12,7 @@ import { loadBandPlan, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
 import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
 import { POWER_CONFIRM_MS, powerPress, powerView } from './power.js';
+import { OSCILLATOR_NOTE, conversionMoved, convertedFrequency, converterView, oscillatorChange } from './converter.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
 import { modeRateNote } from './rates.js';
@@ -238,7 +239,7 @@ let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
 let pendingTune = null;     // { centre, before, f, opts }: where the VFO goes once frames come from centre;
                             // before lists the centres the engine may report on the way
-let newSource = false;      // the next frames come from another receiver: every buffer starts again
+let newSource = false;      // the next frames come from another receiver, or another converter: every buffer starts again
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
 
@@ -306,13 +307,23 @@ const stream = new EngineStream({
   onFrame,
   onAudio: (frame) => audio.play(frame),
   onSource: (state) => {
-    const limits = viewLimits();
+    const limits = viewLimits(), before = source;
     if (source && (state.kind !== source.kind || state.address !== source.address)) newSource = true;
+    // Another converter: the receiver stays where it is tuned, and every
+    // frequency moves. The buffers start again, and the view moves with the
+    // signals it shows.
+    const converted = before !== null && !newSource && conversionMoved(before, state);
+    if (converted) newSource = true;
     source = state;
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
     if (pendingTune && state.centreHz !== pendingTune.centre && !pendingTune.before.includes(state.centreHz)) dropPendingTune();
-    if (viewLimits() !== limits) setView(view.f0, view.f1);     // the view's limits follow the source's
+    if (converted) {
+      const f0 = convertedFrequency(view.f0, before, state), f1 = convertedFrequency(view.f1, before, state);
+      setView(Math.min(f0, f1), Math.max(f0, f1));
+    } else if (viewLimits() !== limits) {
+      setView(view.f0, view.f1);      // the view's limits follow the source's
+    }
     syncSource();
     syncSweep();          // whether the receiver tunes, as the sweep needs,
     syncMem();            // and as the memory scan's list tells
@@ -1852,6 +1863,16 @@ function syncSource() {
   hfEl.value = shortwave.value;
   hfEl.disabled = !settable.has('hf_input');
   $('#src-hf-note').textContent = shortwave.note;
+  const converter = converterView(source);
+  $('#src-converter-field').hidden = $('#src-converter-lo-field').hidden = !converter.shown;
+  const converterEl = $('#src-converter');
+  converterEl.value = converter.value;
+  converterEl.disabled = !settable.has('converter');
+  $('#src-converter-note').textContent = converter.note;
+  const oscillatorEl = $('#src-converter-lo');
+  if (!typingIn.has(oscillatorEl)) oscillatorEl.value = converter.oscillator;
+  oscillatorEl.disabled = !settable.has('converter_lo_hz');
+  $('#src-converter-lo-note').textContent = converter.shown ? OSCILLATOR_NOTE : '';
   $('#src-rtl-agc-row').hidden = !shortwave.shown;
   const rtlAgcEl = $('#src-rtl-agc');
   rtlAgcEl.checked = shortwave.rtlAgc;
@@ -1917,7 +1938,7 @@ const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] 
 // then shows as the engine took it, or the one in use if refused, focus or
 // not; leaving without a change shows the engine's value again. These run
 // before each field's own change handler, which may sync.
-for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm')]) {
+for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-converter-lo')]) {
   el.addEventListener('input', () => typingIn.add(el));
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
@@ -1965,6 +1986,16 @@ $('#src-hf').addEventListener('change', (e) => {
   if (!source || hfInput === source.hfInput || !stream.sendSource({ hfInput })) syncSource();
 });
 $('#src-rtl-agc').addEventListener('change', (e) => { if (!stream.sendSource({ rtlAgc: e.target.checked })) syncSource(); });
+// Another converter or oscillator: the receiver stays where it is tuned, and
+// the engine refuses one that would put it beyond its reach on the air.
+$('#src-converter').addEventListener('change', (e) => {
+  const converter = e.target.value;
+  if (!source || converter === source.converter || !stream.sendSource({ converter })) syncSource();
+});
+$('#src-converter-lo').addEventListener('change', (e) => {
+  const hz = source ? oscillatorChange(e.target.value, source.converterLoHz) : null;
+  if (hz === null || !stream.sendSource({ converterLoHz: hz })) syncSource();
+});
 
 // Tune to f. Outside the span, with a source that tunes, the engine moves the
 // span first, and the VFO goes to f once frames come from there. Beyond the
@@ -2482,6 +2513,7 @@ const REC_STOPPED = {
   source: 'the simulated band was chosen',
   sample_rate: "the receiver's sample rate changed",
   receiver: 'another receiver was chosen',
+  converter: 'the converter in front of the receiver changed',
   space: 'less than 2 GiB is free on its disk',
   full: 'its file reached the WAV limit of 4 GiB',
   disk: 'a disk error',

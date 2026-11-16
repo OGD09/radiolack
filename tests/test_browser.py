@@ -1858,6 +1858,43 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#src-rtl-agc")).to_be_disabled()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_converter_moves_the_frequencies_shown_and_the_receiver_stays_where_it_is_tuned(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                converter, oscillator = first.locator("#src-converter"), first.locator("#src-converter-lo")
+                expect(converter).to_have_value("none")
+                expect(oscillator).to_have_value("125.000")
+                expect(first.locator("#src-converter-note")).to_have_text("Nothing between the antenna and the receiver.")
+                expect(first.locator("#src-converter-lo-note")).to_contain_text("such as 125 MHz or 9750 MHz")
+                converter.select_option("up")
+                for page in (first, second):
+                    expect(page.locator("#src-converter")).to_have_value("up")
+                    expect(page.locator("#src-center")).to_have_value("20.000")
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "20600000")    # the same signal
+                    expect(page.locator("#src-converter-note")).to_contain_text("an upconverter")
+                # Behind an upconverter of 9750 MHz, all the tuner reaches is below 0 Hz: refused, as it was.
+                oscillator.fill("9750 MHz")
+                oscillator.press("Enter")
+                expect(first.locator("#src-note")).to_contain_text(
+                    "Change refused: through this converter the receiver reaches nothing on the air from 1.2 MHz")
+                expect(oscillator).to_have_value("125.000")
+                converter.select_option("down")
+                oscillator.fill("9750")
+                oscillator.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#src-converter-lo")).to_have_value("9750.000")
+                    expect(page.locator("#src-center")).to_have_value("9895.000")
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "9895600000")
+                    expect(page.locator("#src-converter-note")).to_contain_text("13 to 18 V")
+                second.locator("#src-converter").select_option("none")
+                for page in (first, second):
+                    expect(page.locator("#src-center")).to_have_value("145.000")
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_receiver_list_switches_the_source_for_every_interface(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"

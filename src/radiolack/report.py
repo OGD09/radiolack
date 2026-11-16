@@ -177,8 +177,8 @@ _DIRECT_INPUTS = {"q": "direct sampling, Q input", "i": "direct sampling, I inpu
 def receiver_line(state: Mapping[str, Any]) -> str:
     """The receiver's kind and state from its source state, such as
     "rtl_tcp, waiting, tuner R820T, 2.048 MS/s (no answer)", with the input
-    in use for shortwave once one is chosen: neither its address nor its
-    frequency."""
+    in use for shortwave once one is chosen and the converter in front of
+    it: neither its address nor a frequency, its oscillator's included."""
     parts = [str(state.get("kind")), str(state.get("status"))]
     if state.get("tuner"):
         parts.append(f"tuner {state['tuner']}")
@@ -186,6 +186,8 @@ def receiver_line(state: Mapping[str, Any]) -> str:
     if hf_input in ("q", "i", "tuner"):
         in_use = _DIRECT_INPUTS.get(hf_input, "the tuner") if state.get("direct") else "the tuner"
         parts.append(f"shortwave input {hf_input}, using {in_use}")
+    if state.get("converter") in ("up", "down", "down_inverted"):
+        parts.append(f"converter {state['converter']}")
     rate = state.get("sample_rate_hz")
     if isinstance(rate, (int, float)) and rate > 0:
         parts.append(f"{rate / 1e6:g} MS/s")

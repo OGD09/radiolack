@@ -107,6 +107,7 @@ import numpy as np
 
 from . import __version__
 from .bookmarks import Bookmark, Bookmarks
+from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
                     noise_clearance_hz)
 from .observations import Observations
@@ -146,6 +147,7 @@ LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this compu
 # Why a recording stopped by itself, as the output tells it.
 _RECORDING_STOPS = {"rate": "the audio rate changed, into or out of WFM", "source": "the simulated band was chosen",
                     "sample_rate": "the receiver's sample rate changed", "receiver": "another receiver was chosen",
+                    "converter": "the converter in front of the receiver changed",
                     "space": "less than 2 GiB is free on its disk", "full": "its file reached the WAV limit of 4 GiB",
                     "disk": "a disk error"}
 
@@ -241,7 +243,7 @@ class FixedSource:
                 "tuner": None, "centre_hz": centre, "sample_rate_hz": self.sample_rate_hz,
                 "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [centre, centre],
                 "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
-                "settable": []}
+                "converter": None, "converter_lo_hz": None, "settable": []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
         raise ValueError(f"the {self.kind} source cannot change its settings")
@@ -552,7 +554,17 @@ class Engine:
         source. Raises ValueError, changing nothing, when one is refused.
         Every client then receives the new state. A new centre frequency or
         sample rate stops a scan, before the receiver's samples show it; a
-        new sample rate or address stops an I/Q recording."""
+        new sample rate or address stops an I/Q recording. Another converter
+        in front of the receiver does all of these, which its change of
+        frequencies calls for, and the VFO and the signals found follow it:
+        the VFO stays on the signal it was on, and the signals found
+        through the previous converter are forgotten."""
+        self._configure(changes, restoring=False)
+
+    def _configure(self, changes: Mapping[str, object], *, restoring: bool) -> None:
+        """``configure``; when ``restoring`` the settings saved for a
+        receiver, the VFO, whose own saved value comes next, and the signals
+        found do not follow a converter."""
         if "kind" in changes:
             if len(changes) > 1:
                 raise ValueError("the kind of source changes on its own, without other settings")
@@ -563,15 +575,22 @@ class Engine:
             raise ValueError("DC removal must be true or false")
         source_changes = {name: value for name, value in changes.items() if name != "dc_removal"}
         if source_changes:
-            span, address = self._span(), self.source.describe()["address"]
+            before = self.source.describe()
+            span, address, conversion = self._span(), before["address"], _conversion(before)
             self.source.configure(source_changes)
-            if self._span() != span:
+            converted = _conversion(self.source.describe()).key != conversion.key
+            if self._span() != span or converted:
                 self._stop_scan("tuned")
-            # An I/Q recording keeps one sample rate, from one receiver.
+            # An I/Q recording keeps one sample rate, from one receiver,
+            # behind one converter, which its metadata describes.
             if self._span()[1] != span[1]:
                 self._stop_recording("iq", "sample_rate")
             elif self.source.describe()["address"] != address:
                 self._stop_recording("iq", "receiver")
+            elif converted:
+                self._stop_recording("iq", "converter")
+            if converted and not restoring:
+                self._follow_conversion(conversion, _conversion(self.source.describe()))
         self._dc_removal = dc_removal
         self._source_changed()
 
@@ -1632,17 +1651,26 @@ class Engine:
         return {"source": source, "demod": demod}
 
     def _restore_source(self, saved: object) -> None:
-        """Apply the source settings saved for this receiver one at a time,
-        apart from those the source was given: one that the receiver refuses
-        keeps its default."""
+        """Apply the source settings saved for this receiver, apart from
+        those the source was given: all at once, as they hold together, such
+        as a centre frequency beyond a converter; when the receiver refuses
+        that, one at a time, in the order of ``settable``, and one that the
+        receiver refuses keeps its default."""
         if not isinstance(saved, dict):
             return
         settable = self.state()["settable"]
-        for name, value in saved.items():
-            if name not in settable or name in self.source.given or name in UNSAVED_SETTINGS:
-                continue
+        restored = {name: saved[name] for name in settable
+                    if name in saved and name not in self.source.given and name not in UNSAVED_SETTINGS}
+        if not restored:
+            return
+        try:
+            self._configure(restored, restoring=True)
+            return
+        except ValueError:
+            pass
+        for name, value in restored.items():
             try:
-                self.configure({name: value})
+                self._configure({name: value}, restoring=True)
             except ValueError as error:
                 log.warning("the saved setting %s is not used: %s", name, error)
 
@@ -1765,6 +1793,20 @@ class Engine:
             for subscription in self._clients:
                 subscription.changed("storage")
 
+    def _follow_conversion(self, old: Conversion, new: Conversion) -> None:
+        """Another converter in front of the receiver, which stays where it
+        is tuned: the VFO moves with the frequencies so as to stay on the
+        same signal, and the signals found through the old one are
+        forgotten. A VFO that would leave Radiolack's frequencies stays,
+        and the span's edge takes it once the new samples come."""
+        frequency = new.air(old.tuned(self._demod.frequency_hz))
+        if 1 <= frequency <= HIGHEST_HZ:
+            self._demod = dataclasses.replace(self._demod, frequency_hz=float(frequency))
+            self._demod_changed()
+        self._signals.clear()
+        if self._signals.changed(time.monotonic()):
+            self._peaks_changed(at_once=True)
+
     def _keep_vfo_in(self, centre_hz: float, rate_hz: float) -> None:
         """A new span: a VFO left outside it moves to its nearest edge."""
         low, high = math.ceil(centre_hz - rate_hz / 2), math.floor(centre_hz + rate_hz / 2)
@@ -1885,3 +1927,10 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     else:
         levels = watch.levels(power, centre_hz, rate_hz, bands, analyzer.enbw)
     return power, analyzer.codes(power), meter, pcm, detections, levels
+
+
+def _conversion(described: Mapping[str, Any]) -> Conversion:
+    """The converter in front of a source, from its state: none for a
+    source without one."""
+    kind, lo_hz = described.get("converter"), described.get("converter_lo_hz")
+    return Conversion(kind, lo_hz) if isinstance(kind, str) and isinstance(lo_hz, float) else Conversion()

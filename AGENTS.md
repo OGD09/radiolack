@@ -88,7 +88,12 @@ the history under the tag `v0.1.0`.
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; direct sampling below the tuner's range for shortwave;
   the antenna power, off at each connection unless turned on, never saved,
-  turned off before the source closes; hands the raw samples to an I/Q recording's tap),
+  turned off before the source closes; the converter in front of the
+  receiver, converting only the frequency it sends and swapping I and Q
+  behind an inverted one; hands the raw samples to an I/Q recording's tap),
+  `converter` (a converter in front of a receiver: its kinds and
+  oscillator, the frequency the receiver tunes for one on the air and the
+  other way round, the reach on the air),
   `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
@@ -109,7 +114,8 @@ the history under the tag `v0.1.0`.
   (band plan loader), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
-  input), `power.js` (the antenna power's second press), `tuning.js` (the
+  input), `power.js` (the antenna power's second press), `converter.js`
+  (the Receiver menu's converter, and the view that follows its change), `tuning.js` (the
   Automatic step), `rates.js` (what a mode needs of the sample rate) and
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) carry JSDoc
