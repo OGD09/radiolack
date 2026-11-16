@@ -1,8 +1,8 @@
 # Interface checks, when the package, the tests or this file change, and for
 # each release (release.yml): the type check of the interface's JavaScript,
 # and the browser tests, which drive the interface in headless Chromium,
-# Firefox and WebKit (Playwright) against a server on the runner. No secrets,
-# services or radio hardware.
+# Firefox and WebKit (Playwright) against a server on the runner, one job per
+# browser. No secrets, services or radio hardware.
 name: Interface
 
 on:
@@ -57,10 +57,17 @@ jobs:
         timeout-minutes: 3
         run: npx --yes --package="typescript@${TYPESCRIPT_VERSION}" -- tsc -p jsconfig.json
 
+  # One job per browser, side by side: in a single job, the three browsers'
+  # tests took up to 8 minutes of the step's 10 (2026-11-16, 43 tests), the
+  # runners' speed varying by up to 1.7 times.
   browsers:
-    name: Browser tests
+    name: Browser tests (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false      # each browser's results, whatever the others'
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,44 +85,51 @@ jobs:
         timeout-minutes: 5
         run: python -m pip install --disable-pip-version-check --no-input ".[browser]"
 
-      # Not cached, as Playwright advises: restoring the browsers takes about
-      # as long as downloading them, and a cache could outlive the runner's
-      # system.
-      - name: Download the browsers
+      # Not cached, as Playwright advises: restoring the browser takes about
+      # as long as downloading it, and a cache could outlive the runner's
+      # system. --only-shell concerns Chromium alone.
+      - name: Download the browser
         timeout-minutes: 5
-        run: python -m playwright install --only-shell chromium firefox webkit
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: python -m playwright install --only-shell "$BROWSER"
 
       # The runners' Ubuntu mirror is at times very slow (about 100 kB/s,
-      # while the other downloads run at full speed): its 139 MB of packages
-      # then outlast the step below. So the packages are cached, one set per
-      # runner image, and a newer image starts from the previous set.
-      - name: Name the runner image
+      # while the other downloads run at full speed): its packages then
+      # outlast the step below. So the packages are cached, one set per
+      # browser and runner image, and a newer image starts from the previous
+      # set. The processor goes to the log, as the runners' speed varies and
+      # the tests' durations with it.
+      - name: Name the runner image and its processor
         id: image
         timeout-minutes: 1
         run: |
           echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
           echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Processor:$(grep -m 1 '^model name' /proc/cpuinfo | cut -d : -f 2-), $(nproc) threads"
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-archives
-          key: apt-${{ steps.image.outputs.os }}-${{ steps.image.outputs.version }}-${{ hashFiles('pyproject.toml', '.github/workflows/interface.yml') }}
-          restore-keys: apt-${{ steps.image.outputs.os }}-
+          key: apt-${{ matrix.browser }}-${{ steps.image.outputs.os }}-${{ steps.image.outputs.version }}-${{ hashFiles('pyproject.toml', '.github/workflows/interface.yml') }}
+          restore-keys: apt-${{ matrix.browser }}-${{ steps.image.outputs.os }}-
 
       # Xvfb gives headless Firefox the display it needs for WebGL2 on a
       # runner without a GPU (FIREFOX_PREFS in tests/test_browser.py), and
       # PulseAudio the sound output it needs for audio on a runner without a
-      # sound card. apt takes the cached packages instead of downloading
-      # them, then the current ones are kept for the next runs.
-      - name: Install the browsers' system libraries, Xvfb and PulseAudio
+      # sound card; every browser runs with both, as it always has. apt
+      # takes the cached packages instead of downloading them, then the
+      # current ones are kept for the next runs.
+      - name: Install the browser's system libraries, Xvfb and PulseAudio
         timeout-minutes: 5
         env:
+          BROWSER: ${{ matrix.browser }}
           DEBIAN_FRONTEND: noninteractive
           NEEDRESTART_MODE: a
         run: |
           mkdir -p ~/apt-archives
           sudo find ~/apt-archives -name '*.deb' -exec cp -t /var/cache/apt/archives {} +
-          python -m playwright install-deps chromium firefox webkit
+          python -m playwright install-deps "$BROWSER"
           sudo -E apt-get install -y --no-install-recommends xvfb xauth pulseaudio
           sudo apt-get autoclean
           rm -rf ~/apt-archives
@@ -131,10 +145,11 @@ jobs:
           pulseaudio --start --exit-idle-time=-1 -n --load=module-native-protocol-unix --load=module-null-sink
           pactl info
 
-      # Only the browser tests: the Tests workflow runs the others. They take
-      # from 3.5 to over 5 minutes, as the runners' speed varies.
+      # Only the browser tests, in this job's browser: the Tests workflow runs
+      # the others.
       - name: Run the browser tests
         timeout-minutes: 10
         env:
           RADIOLACK_BROWSER_TESTS: "1"
+          RADIOLACK_BROWSERS: ${{ matrix.browser }}
         run: xvfb-run -a python -m unittest tests.test_browser -v

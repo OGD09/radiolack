@@ -1047,6 +1047,10 @@ pins Playwright's version, in the virtual environment of
 RADIOLACK_BROWSER_TESTS=1 .venv/bin/python -m unittest tests.test_browser -v
 ```
 
+`RADIOLACK_BROWSERS` keeps them to some of the browsers, separated by
+commas, such as `RADIOLACK_BROWSERS=firefox` or `chromium,webkit`: CI runs
+one job per browser.
+
 On a computer without a display or a GPU, such as a server, run the last
 command under `xvfb-run -a` (Debian and Ubuntu: `sudo apt install xvfb`):
 headless Firefox then needs a display to draw with WebGL2.
@@ -1089,8 +1093,9 @@ services or radio hardware:
 
 - Tests: the tests above, against Radiolack installed with pip, on Python
   3.11 and 3.15, for every push to `main` and every pull request.
-- Interface: the type check and the browser tests, under Xvfb and with that
-  silent output, when the package, the tests or `pyproject.toml` change.
+- Interface: the type check and the browser tests, one job per browser,
+  under Xvfb and with that silent output, when the package, the tests or
+  `pyproject.toml` change.
 - Package: builds the Debian package twice and compares the builds, and
   puts it in an APT repository signed with a key made for the run; installs
   it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and

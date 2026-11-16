@@ -8,6 +8,8 @@ They launch browsers, so they run only when the RADIOLACK_BROWSER_TESTS
 environment variable is 1, as in CI, and then need Playwright and its
 browsers (README.md, Tests). Each interface opens in its own browser
 context, like a separate device, and any error in its page fails the test.
+RADIOLACK_BROWSERS, such as "firefox" or "chromium,webkit", keeps them to
+some of the browsers, as CI runs one job per browser.
 """
 
 from __future__ import annotations
@@ -35,7 +37,21 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
-BROWSERS = ("chromium", "firefox", "webkit")
+DRIVEN = ("chromium", "firefox", "webkit")      # the browsers that the tests drive
+
+
+def chosen_browsers(names: str) -> tuple[str, ...]:
+    """The browsers that ``names`` lists, separated by commas, each once and
+    in its order; all those the tests drive when it lists none. A name that
+    the tests do not drive fails, rather than leave a browser untested."""
+    chosen = tuple(dict.fromkeys(name.strip() for name in names.split(",") if name.strip()))
+    unknown = [name for name in chosen if name not in DRIVEN]
+    if unknown:
+        raise ValueError(f"RADIOLACK_BROWSERS lists browsers that the tests do not drive: {', '.join(unknown)}")
+    return chosen or DRIVEN
+
+
+BROWSERS = chosen_browsers(os.environ.get("RADIOLACK_BROWSERS", ""))
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
 MENU_BUTTON = "#menu-button"
 # The classes that show a dot on the menu's icon: red while a recording runs,
@@ -165,9 +181,27 @@ def kept_channel(frequency_hz: int, last_s: float) -> dict:
             "active_s": 30.0, "margin_db": 20.0, "hours": hours}
 
 
+class ChosenBrowsersTest(unittest.TestCase):
+    """RADIOLACK_BROWSERS, read without launching any browser."""
+
+    def test_every_browser_unless_some_are_listed(self):
+        for names in ("", " ", ",", " , "):
+            self.assertEqual(chosen_browsers(names), ("chromium", "firefox", "webkit"), repr(names))
+
+    def test_the_browsers_listed_each_once_in_their_order(self):
+        self.assertEqual(chosen_browsers("firefox"), ("firefox",))
+        self.assertEqual(chosen_browsers(" webkit, chromium ,webkit,"), ("webkit", "chromium"))
+
+    def test_a_browser_that_the_tests_do_not_drive_fails(self):
+        for names in ("safari", "firefox,Webkit", "chrome"):
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, "do not drive"):
+                chosen_browsers(names)
+
+
 @unittest.skipUnless(ENABLED, "browser tests run only with RADIOLACK_BROWSER_TESTS=1")
 class BrowserTest(unittest.TestCase):
-    """Each test runs in every browser in turn."""
+    """Each test runs in every browser in turn, or in those of
+    RADIOLACK_BROWSERS."""
 
     @classmethod
     def setUpClass(cls) -> None:
