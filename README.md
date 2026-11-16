@@ -332,8 +332,8 @@ With either option:
   the frequency sits a 32nd of the span above its centre, 75 kHz at
   2.4 MS/s, with the channel at least 5 kHz from the centre: clear of the
   receiver's DC spike. The frequency shows at once, and the VFO goes there
-  once frames come from the new span. A click beyond the receiver's reach
-  tunes to the nearest frequency it reaches.
+  once frames come from the new span. Beyond the receiver's reach nothing
+  tunes, and the status line says why.
 - Stepping (the wheel, the arrow keys, the − and + buttons) moves the span
   by the same rule when a step would enter the outer tenth of the span on
   either side, which the receiver's filter dims: about every megahertz at
@@ -527,18 +527,31 @@ again, as the 0 key does. Settings lists every gesture and shortcut. The
 readout at the window's bottom right gives the frequency and the level under
 the pointer.
 
-With a receiver that tunes, the view also goes past the span, out to ten
-times its width; zooming out holds at the span's width before it goes on.
-Nothing is measured outside the span, and the view shows no level there:
-the span stands out like a lit window whose light fades away from it, the
-grid goes on, blurred, and the band plan's colours tint the background.
-Beyond the receiver's reach the background is hatched. The readout says
-"outside the span" or "out of reach" there. The simulated band, which does
-not tune, keeps the view within its span.
+The view also goes past the span, whatever the receiver, the simulated band
+included: zooming out holds at the span's width, then goes on out to the
+whole band plan, from 0 Hz to its end, or to the end of the receiver's
+reach where that is higher. Nothing is measured outside the span, and the
+view shows no level there: the span stands out like a lit window whose
+light fades away from it, the grid goes on, blurred, and the band plan's
+colours tint the background. Beyond the receiver's reach the background is
+hatched, under a band strip that stays readable. The readout says "outside
+the span" or "out of reach" there. Seen from far, where the span would be
+narrower than 3 pixels, a marker 2 pixels wide shows its place in the
+spectrum and the waterfall. The frequency scale drops its decimals as the
+view widens, down to whole megahertz.
 
-Clicking outside the span tunes there ([RTL-SDR receivers](#rtl-sdr-receivers)).
-With a mouse, an outline first shows where the span would go, and a tip says
-what the click does and whether it stops a scan. Until frames come from
+Clicking outside the span, within the receiver's reach, tunes there
+([RTL-SDR receivers](#rtl-sdr-receivers)); the simulated band, which does
+not tune, reaches its span alone. Beyond the reach nothing tunes: a click,
+a tap, a typed frequency, a bookmark, a signal found or a channel of the
+History there leaves the VFO where it is, and the status line says why,
+with the receiver's range. With a mouse, a tip says so before the click.
+Right-clicking there, or a long press, disables Tune here and Ignore in the
+scanner, and keeps Add to bookmarks, for another receiver, Centre the view
+here and Zoom to the segment.
+
+Within reach, with a mouse, an outline first shows where the span would go,
+and a tip says what the click does and whether it stops a scan. Until frames come from
 there, a dashed outline marks the new span and the old span's spectrum
 dims. Then a view that showed the whole span shows the new one; another view
 stays where it is if it shows the VFO, and otherwise follows it at the same

@@ -16,7 +16,8 @@ import { COVER_VERTEX_SHADER, createDataTexture, createProgram, getContext, unif
 // stands as a lit window whose light fades away from its edges into a darker
 // background, where the grid goes on out of focus and fades too, and the
 // band plan's colours rise faintly from the band strip. Nothing stands where
-// the trace would be. Beyond the receiver's reach, hatching as well.
+// the trace would be. Beyond the receiver's reach, hatching as well. A span
+// too narrow to see shows as a marker, which holds no measurement either.
 const PLOT_SHADER = `#version 300 es
 precision highp float;
 precision highp int;
@@ -33,6 +34,7 @@ uniform vec2 u_span;                // x of the span's edges, px: the data lies 
 uniform vec2 u_reach;               // x of the edges of the receiver's reach, px
 uniform float u_scale;              // px per CSS px
 uniform float u_fade;               // 0 to 1: how far the span's data fades while the receiver moves
+uniform vec2 u_marker;              // x of the edges of the marker that stands for a narrow span, px; empty without one
 out vec4 colour;
 
 const vec3 BACKGROUND = vec3(10.0, 12.0, 15.0) / 255.0;
@@ -48,6 +50,7 @@ const float GLOW_ALPHA = 0.08;
 const vec3 AREA = vec3(89.0, 167.0, 255.0) / 255.0;
 const vec4 PEAK = vec4(242.0 / 255.0, 179.0 / 255.0, 61.0 / 255.0, 0.55);
 const vec3 TRACE = vec3(214.0, 222.0, 232.0) / 255.0;
+const float MARKER_ALPHA = 0.5;     // the marker: the trace's colour over the decor
 
 int lastColumn() { return textureSize(u_columns, 0).x - 1; }
 
@@ -121,6 +124,7 @@ void main() {
     if (floor(y) == u_plotHeight) c = mix(c, vec3(1.0), BASELINE_ALPHA);
   } else {
     c = edges(x, inside ? plot(x, y, c) : decor(x, y));
+    if (x >= u_marker.x && x < u_marker.y) c = mix(c, TRACE, MARKER_ALPHA);
   }
   colour = vec4(c, 1.0);
 }`;
@@ -140,9 +144,10 @@ void main() { colour = u_colour; }`;
 
 /** Most peak markers drawn at once. */
 export const MAX_MARKERS = 256;
+const NO_MARKER = [0, 0];
 const MARKER_COLOUR = [60 / 255, 207 / 255, 154 / 255, 0.9];
 const PLOT_UNIFORMS = /** @type {const} */ (['u_columns', 'u_glow', 'u_height', 'u_plotHeight', 'u_traceWidth', 'u_peakWidth', 'u_fill',
-  'u_grid', 'u_span', 'u_reach', 'u_scale', 'u_fade']);
+  'u_grid', 'u_span', 'u_reach', 'u_scale', 'u_fade', 'u_marker']);
 const MARKER_UNIFORMS = /** @type {const} */ (['u_size', 'u_colour']);
 
 /**
@@ -158,6 +163,7 @@ const MARKER_UNIFORMS = /** @type {const} */ (['u_size', 'u_colour']);
  * @property {number} markerCount    triangles to draw
  * @property {[number, number]} span   x of the span's edges; outside them, the decor
  * @property {[number, number]} reach  x of the edges of the receiver's reach; hatched beyond
+ * @property {[number, number] | null} marker  x of the edges of the marker that stands for a span too narrow to see
  * @property {number} scale          px per CSS px
  * @property {number} fade           0 to 1: how far the span's data fades
  * @property {Uint8Array} glow       RGBA for each column: its band's colour, alpha 0 without one
@@ -252,6 +258,7 @@ export class SpectrumView {
     gl.uniform2f(u.u_reach, scene.reach[0], scene.reach[1]);
     gl.uniform1f(u.u_scale, scene.scale);
     gl.uniform1f(u.u_fade, scene.fade);
+    gl.uniform2fv(u.u_marker, scene.marker || NO_MARKER);
     gl.bindVertexArray(res.coverArray);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 

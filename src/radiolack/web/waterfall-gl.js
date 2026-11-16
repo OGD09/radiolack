@@ -4,6 +4,7 @@
  * covers, coloured through a 256-entry table: palette, contrast and zoom
  * recolour the whole history at once. Each line also keeps where it lies in
  * the span, so that a span that moves keeps the lines at their frequencies.
+ * A span too narrow to see shows as a marker the height of the view.
  */
 import { COVER_VERTEX_SHADER, createDataTexture, createProgram, getContext, uniformLocations, watchContext } from './gl.js';
 
@@ -20,11 +21,18 @@ uniform int u_lines;                // lines in the history
 uniform float u_firstTexel;         // texel position of the left edge
 uniform float u_texelsPerPixel;
 uniform float u_binsPerTexel;
+uniform vec2 u_marker;              // x of the edges of the marker that stands for a narrow span, px; empty without one
 out vec4 colour;
+
+const vec4 MARKER = vec4(vec3(214.0, 222.0, 232.0) / 255.0 * 0.5, 1.0);    // the spectrum's marker, over black
 
 const int MAX_TAPS = 64;            // texel reads per pixel; wider columns skip texels evenly
 
 void main() {
+  if (gl_FragCoord.x >= u_marker.x && gl_FragCoord.x < u_marker.y) {
+    colour = MARKER;
+    return;
+  }
   ivec2 size = textureSize(u_history, 0);
   int age = int(u_height - gl_FragCoord.y);
   if (age >= u_lines) {
@@ -51,7 +59,9 @@ void main() {
 
 const UNIFORMS = /** @type {const} */ ([
   'u_history', 'u_offsets', 'u_colours', 'u_height', 'u_head', 'u_lines', 'u_firstTexel', 'u_texelsPerPixel', 'u_binsPerTexel',
+  'u_marker',
 ]);
+const NO_MARKER = [0, 0];
 const NO_OFFSET = new Float32Array(1);
 
 /**
@@ -62,6 +72,7 @@ const NO_OFFSET = new Float32Array(1);
  * @property {number} lines         lines in the history
  * @property {number} firstBin      bin position of the left edge
  * @property {number} binsPerPixel
+ * @property {[number, number] | null} [marker]  x of the edges of the marker that stands for a span too narrow to see, px
  */
 
 /**
@@ -214,6 +225,7 @@ export class WaterfallView {
     gl.uniform1f(u.u_firstTexel, scene.firstBin / this.#group);
     gl.uniform1f(u.u_texelsPerPixel, scene.binsPerPixel / this.#group);
     gl.uniform1f(u.u_binsPerTexel, this.#group);
+    gl.uniform2fv(u.u_marker, scene.marker || NO_MARKER);
     gl.bindVertexArray(res.coverArray);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
