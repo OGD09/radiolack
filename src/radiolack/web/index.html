@@ -48,7 +48,7 @@
   </button>
   <div id="menu-scrim" hidden></div>
   <div id="menu" role="dialog" aria-label="Menu" data-level="content" hidden>
-    <!-- Listening first, then the receiver's and the interface's settings: the keys 1 to 7 open them in this order. -->
+    <!-- Listening first, then the receiver's and the interface's settings, then About: the keys 1 to 8 open them in this order. -->
     <nav aria-label="Menus">
       <button type="button" data-menu="radio" aria-keyshortcuts="1" title="Radio (1)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12c1.5-4.6 3-4.6 4.5 0s3 4.6 4.5 0 3-4.6 4.5 0 3 4.6 4.5 0"/></svg><span>Radio</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="bookmarks" aria-keyshortcuts="2" title="Bookmarks (2)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10a1 1 0 0 1 1 1v16l-6-4.2-6 4.2v-16a1 1 0 0 1 1-1z"/></svg><span>Bookmarks</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
@@ -58,6 +58,8 @@
       <button type="button" data-menu="receiver" aria-keyshortcuts="5" title="Receiver (5)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 11v10M8.5 21h7M8.8 7.8a4.5 4.5 0 0 1 6.4 0M6.3 5.3a8 8 0 0 1 11.4 0"/><circle cx="12" cy="11" r="1.4" class="fill"/></svg><span>Receiver</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="display" aria-keyshortcuts="6" title="Display (6)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19.5h18M4 17l3.5-4 2.5 2.5 3.5-10 3.5 10 2-2 1.5 3.5"/></svg><span>Display</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="settings" aria-keyshortcuts="7" title="Settings (7)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Settings</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
+      <hr>
+      <button type="button" data-menu="about" aria-keyshortcuts="8" title="About (8)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r="1.1" class="fill"/></svg><span>About</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
     </nav>
     <div class="menu-content">
       <div class="menu-head">
@@ -243,16 +245,11 @@
       <section data-menu="settings" hidden>
         <div class="menu-scroll">
           <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
-          <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, the recordings folder, updates and remote access are set on the computer, which also reports problems.</p>
-          <!-- The engine sends these three sections' states to this computer's interfaces only. -->
+          <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, the recordings folder and remote access are set on the computer.</p>
+          <!-- The engine sends these two sections' states to this computer's interfaces only. -->
           <div id="st-storage-section" hidden>
             <h3>Storage</h3>
             <p class="note" id="st-storage" role="status"></p>
-          </div>
-          <div id="st-update-section" hidden>
-            <h3>Updates</h3>
-            <label class="check"><input id="st-update-start" type="checkbox"> Check for a newer version at start</label>
-            <div class="row"><button type="button" class="btn" id="st-update-check">Check now</button><span class="note" id="st-update" role="status"></span></div>
           </div>
           <div id="st-remote-section" hidden>
             <h3>Remote access</h3>
@@ -268,12 +265,6 @@
             <div class="field"><span class="label">Paired devices</span><ul class="list" id="st-remote-devices"></ul></div>
             <div class="field" id="st-remote-fp-field" hidden><span class="label">Certificate fingerprint (SHA-256)</span><span class="value fingerprint" id="st-remote-fingerprint"></span></div>
             <p class="note">Off at each start, unless Radiolack starts with --remote. Local network only; set on this computer only.</p>
-          </div>
-          <!-- On this computer's interfaces only, as the engine sends the report to no other. -->
-          <div id="st-report-section" hidden>
-            <h3>Problems</h3>
-            <p class="note">A report of what Radiolack runs on and of its latest warnings, to read, then share on GitHub or copy. Radiolack sends nothing by itself.</p>
-            <div class="row"><button type="button" class="btn" id="st-report">Report a problem</button><span class="note" id="st-report-msg" role="status"></span></div>
           </div>
           <!-- The device's own gestures come first: a touch screen's, or the mouse's and the keys' (style.css). -->
           <div class="keys-lists">
@@ -291,7 +282,7 @@
                 <dt>← →</dt><dd>Step (Shift: ×10)</dd>
                 <dt>+ − 0</dt><dd>Zoom, whole span</dd>
                 <dt>M</dt><dd>Next mode</dd>
-                <dt>1 to 7</dt><dd>Menus</dd>
+                <dt>1 to 8</dt><dd>Menus</dd>
                 <dt>Esc</dt><dd>Close</dd>
                 <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
               </dl>
@@ -309,7 +300,32 @@
               </dl>
             </div>
           </div>
-          <p class="note" id="st-version" hidden></p>
+        </div>
+      </section>
+
+      <section data-menu="about" hidden>
+        <div class="menu-scroll">
+          <!-- Every interface: the hello gives the version that runs. -->
+          <p class="about-version" id="ab-version" hidden></p>
+          <p class="note" id="ab-remote-client" hidden>This device reaches Radiolack through remote access: the computer checks for updates and reports problems.</p>
+          <!-- The engine sends the update state to this computer's interfaces only. -->
+          <div id="ab-update-section" hidden>
+            <h3>Updates</h3>
+            <label class="check"><input id="ab-update-start" type="checkbox"> Check for a newer version at start</label>
+            <div class="row"><button type="button" class="btn" id="ab-update-check">Check now</button><span class="note" id="ab-update" role="status"></span></div>
+          </div>
+          <!-- Radiolack's pages on GitHub, which the desktop window opens in the web browser (window.py). -->
+          <h3>Feedback</h3>
+          <div class="row"><a class="btn" id="ab-idea" href="https://github.com/OGD09/radiolack/issues/new" target="_blank" rel="noopener noreferrer">Suggest an idea</a><a class="btn" id="ab-project" href="https://github.com/OGD09/radiolack" target="_blank" rel="noopener noreferrer">Radiolack on GitHub</a></div>
+          <p class="note">GitHub opens in the web browser: ideas, questions and problems are posted there with a GitHub account.</p>
+          <!-- On this computer's interfaces only, as the engine sends the report to no other. -->
+          <div id="ab-report-section" hidden>
+            <div class="row"><button type="button" class="btn" id="ab-report">Report a problem</button><span class="note" id="ab-report-msg" role="status"></span></div>
+            <p class="note">A report of what Radiolack runs on and of its latest warnings, to read, then share on GitHub or copy. Radiolack sends nothing by itself.</p>
+          </div>
+          <h3>Legal</h3>
+          <p class="note">© 2026 OGD09 · Free software under the GNU GPL, version 3 or later, with no warranty.</p>
+          <div class="row"><button type="button" class="btn" id="ab-legal" aria-haspopup="dialog">Legal notice</button></div>
         </div>
       </section>
     </div>
@@ -360,6 +376,45 @@
       <p class="note" id="report-about">Read the report first: its warnings may name files, folders, frequencies or addresses. On GitHub, describe the problem above it, then submit the issue.</p>
       <textarea id="report-text" readonly spellcheck="false" aria-label="Report"></textarea>
       <div class="row"><a class="btn primary" id="report-issue" href="#" target="_blank" rel="noopener noreferrer">Open a GitHub issue</a><button type="button" class="btn" id="report-copy">Copy</button><span class="note" id="report-msg" role="status"></span></div>
+    </div>
+  </dialog>
+
+  <dialog id="legal-dialog" aria-labelledby="legal-title">
+    <div class="dialog-body">
+      <div class="dialog-head"><h2 id="legal-title">Legal notice</h2><button type="button" class="close" aria-label="Close the legal notice">×</button></div>
+      <!-- README.md's Legal notice says the same: tests/test_legal_notice.py checks that they agree. -->
+      <div class="legal-text" id="legal-text" tabindex="0">
+        <h3>Licence</h3>
+        <p>Radiolack is free software, copyright 2026 OGD09. You may run it for any purpose, study it, share it and modify it under the terms of the GNU General Public License, version 3 or, at your option, any later version. If you distribute Radiolack or a modified version of it, you must do so under the same licence and make its source code available. This notice explains the licence and your responsibilities: it adds no condition to the licence, which prevails over it. <a href="https://github.com/OGD09/radiolack/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Read the licence</a>.</p>
+        <h3>No warranty</h3>
+        <p>Radiolack is provided "as is", without warranty of any kind, express or implied, including the warranties of merchantability, fitness for a particular purpose, accuracy and non-infringement. The author does not warrant that it works without errors or interruption, or that what it shows, plays, records or calculates is accurate or complete: frequencies, levels, measurements, audio, detected signals, the History and calculations may be wrong. Do not rely on it where an error could harm people or property, such as for safety of life, distress or emergency communications, or navigation.</p>
+        <h3>Limitation of liability</h3>
+        <p>To the fullest extent permitted by applicable law, the author and the contributors are not liable for any damage arising from the use of Radiolack or from the inability to use it, whether direct, indirect, incidental, special or consequential, including loss of data or recordings, damage to equipment or property, interference, fines, penalties, legal costs and claims by third parties, even if advised of the possibility of such damage.</p>
+        <h3>Your responsibility</h3>
+        <p>Radio is regulated differently from one country to another, and sometimes within a country. You alone are responsible for making sure that the way you install and use Radiolack, your receiver, your antennas and any other equipment complies with every law and regulation that applies to you, including those on:</p>
+        <ul>
+          <li>the use of radio frequencies and radio equipment, to receive or to transmit, and the licences, certificates, call signs and conditions that some uses require, such as the frequencies, power, modes and identification allowed;</li>
+          <li>the reception of some services, which some countries restrict or forbid;</li>
+          <li>the secrecy of communications: intercepting communications not intended for the general public, or recording, using, publishing or disclosing their content, or even their existence;</li>
+          <li>privacy and personal data;</li>
+          <li>harmful interference to other users of the radio spectrum.</li>
+        </ul>
+        <p>Where the law forbids something, do not do it with Radiolack. The author does not encourage or endorse any unlawful use.</p>
+        <h3>Guidance, not a reference</h3>
+        <p>The band plan, the modes and steps it suggests, the antenna lengths and every other piece of guidance in Radiolack are simplified, and may be incomplete, outdated or wrong where you are: the band plan follows a simplified European table. They are not legal references. The frequency allocation tables, licence conditions and regulations of your country, and its radio authority, are.</p>
+        <h3>Equipment and safety</h3>
+        <p>Installing and using antennas and radio equipment can be dangerous. Keep antennas and masts well away from power lines, protect your installation against lightning, follow the instructions of your equipment's makers and the local rules on installations and, wherever equipment transmits, the limits on exposure to radio-frequency fields.</p>
+        <h3>Other people's communications and data</h3>
+        <p>What you receive, record or keep, such as recordings and the History, may contain other people's communications, voices or personal data. You are responsible for keeping, using, sharing and deleting them lawfully.</p>
+        <h3>Remote access</h3>
+        <p>You choose the devices you let in, and you are responsible for what is done through them. Keep the access code to yourself, and reach Radiolack from outside your local network only through a private network that you control, such as your own VPN.</p>
+        <h3>Privacy</h3>
+        <p>Radiolack has no telemetry and no account. It connects only to your receiver, to the devices you let in and, for its update check, which you can turn off, to its APT repository. Links to GitHub open in your web browser, where GitHub's terms and privacy statement apply. A problem report leaves only if you send it yourself. Your settings, bookmarks, History and recordings stay on the computer that runs Radiolack, unless you download them.</p>
+        <h3>Third parties</h3>
+        <p>Radiolack is not affiliated with, or endorsed by, the makers of the receivers and software it works with, radio authorities, amateur radio organisations or GitHub. Names such as RTL-SDR, Debian, Ubuntu and GitHub belong to their owners.</p>
+        <h3>Your rights</h3>
+        <p>Some countries do not allow some of the exclusions and limitations above, or give rights that cannot be waived, to consumers in particular. There, they apply only as far as the law allows, and nothing in this notice limits those rights. If a court holds part of this notice unenforceable, the rest still applies.</p>
+      </div>
     </div>
   </dialog>
 </div>

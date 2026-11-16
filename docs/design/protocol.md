@@ -21,9 +21,13 @@ preferences apart from this computer's.
 1. First, one JSON text message:
 
    ```json
-   {"type": "hello", "protocol": 6, "remote": false, "scanners": ["peaks", "memory", "history", "sweep"],
-    "recording": ["audio", "iq"]}
+   {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
+    "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]}
    ```
+
+   `version` is the version of the Radiolack that runs, which About shows on
+   every interface, remote clients included; an engine older than About
+   sends none.
 
    `remote` is true for a remote client. `scanners` lists the scanners that
    the engine runs: `peaks`, which finds the signals in the span (the
@@ -994,7 +998,8 @@ and later.
   I/Q recording's stop as a plain stop of its recording and lists an I/Q
   recording as one of mode `I/Q`, which it downloads as its data file. On
   2026-11-15, the problem report: the `report` messages, which an older
-  interface never sends, and so never receives.
+  interface never sends, and so never receives. On 2026-11-16, the hello's
+  `version`, which an older interface ignores.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

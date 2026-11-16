@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 
-from radiolack import __version__
+from radiolack import PROJECT_URL, __version__
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
@@ -42,9 +42,9 @@ MENU_BUTTON = "#menu-button"
 # green while the memory scan or the sweep does.
 RECORDING = re.compile(r"(^|\s)recording(\s|$)")
 SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
-# The menus, in the order of the keys 1 to 7, with their titles (index.html).
+# The menus, in the order of the keys 1 to 8, with their titles (index.html).
 MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receiver",
-         "display": "Display", "settings": "Settings"}
+         "display": "Display", "settings": "Settings", "about": "About"}
 # The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md).
 REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-notch", "#dm-nb", '#src-device option[value="soapy"]',
                     '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
@@ -352,7 +352,7 @@ class BrowserTest(unittest.TestCase):
                         self.assertEqual(page.evaluate(ICONS_PROBE),
                                          {"favicon.svg": "loaded", "apple-touch-icon.png": [180, 180]})
 
-    def test_a_newer_version_shows_until_closed_and_settings_check_again(self):
+    def test_a_newer_version_shows_until_closed_and_about_checks_again(self):
         updates = FakeUpdates(UpdateResult("available", latest="9.9.9"))
         url = self.serve(updates=updates)
         text = "Radiolack 9.9.9 is available: install it with the system's software updates."
@@ -365,29 +365,29 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#notice")).to_be_hidden()
                 expect(second.locator("#notice")).to_be_visible()       # closed on its own page only
                 for page in (first, second):
-                    self.open_menu(page, "settings")
-                    expect(page.locator("#st-update")).to_have_text(text)
-                    expect(page.locator("#st-update-start")).to_be_checked()
-                first.locator("#st-update-start").uncheck()
-                expect(second.locator("#st-update-start")).not_to_be_checked()
-                second.locator("#st-update-start").check()
-                expect(first.locator("#st-update-start")).to_be_checked()
+                    self.open_menu(page, "about")
+                    expect(page.locator("#ab-update")).to_have_text(text)
+                    expect(page.locator("#ab-update-start")).to_be_checked()
+                first.locator("#ab-update-start").uncheck()
+                expect(second.locator("#ab-update-start")).not_to_be_checked()
+                second.locator("#ab-update-start").check()
+                expect(first.locator("#ab-update-start")).to_be_checked()
                 checks = updates.checks
-                first.locator("#st-update-check").click()
+                first.locator("#ab-update-check").click()
                 deadline = time.monotonic() + TIMEOUT_MS / 1000
                 while updates.checks == checks:
                     self.assertLess(time.monotonic(), deadline, "Check now did not check")
                     time.sleep(0.05)
-                expect(first.locator("#st-update")).to_have_text(text)
-                expect(first.locator("#st-update-check")).to_be_enabled()
+                expect(first.locator("#ab-update")).to_have_text(text)
+                expect(first.locator("#ab-update-check")).to_be_enabled()
                 expect(first.locator("#notice")).to_be_hidden()         # the same version stays closed
 
-    def test_settings_report_a_problem_to_read_then_share_or_copy(self):
+    def test_about_reports_a_problem_to_read_then_share_or_copy(self):
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
-                self.open_menu(page, "settings")
-                page.locator("#st-report").click()
+                self.open_menu(page, "about")
+                page.locator("#ab-report").click()
                 dialog = page.locator("#report-dialog")
                 expect(dialog).to_be_visible()
                 text = page.locator("#report-text")
@@ -400,7 +400,39 @@ class BrowserTest(unittest.TestCase):
                     re.compile(r"^Report (copied|selected: copy it with Ctrl\+C)\.$"))
                 page.keyboard.press("Escape")       # closes the dialog alone
                 expect(dialog).to_be_hidden()
-                expect(page.locator('#menu section[data-menu="settings"]')).to_be_visible()
+                expect(page.locator('#menu section[data-menu="about"]')).to_be_visible()
+
+    def test_about_shows_the_version_the_links_and_the_legal_notice(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "about")
+                expect(page.locator("#ab-version")).to_have_text(f"Radiolack {__version__}")
+                # Radiolack's pages on GitHub, which the desktop window opens in the web browser: never followed here.
+                for link, href in (("#ab-idea", f"{PROJECT_URL}/issues/new"), ("#ab-project", PROJECT_URL)):
+                    expect(page.locator(link)).to_have_attribute("href", href)
+                    expect(page.locator(link)).to_have_attribute("target", "_blank")
+                button, dialog = page.locator("#ab-legal"), page.locator("#legal-dialog")
+                text = page.locator("#legal-text")
+                button.click()
+                expect(dialog).to_be_visible()
+                expect(text).to_contain_text("Radiolack is free software, copyright 2026 OGD09.")
+                expect(dialog.locator(f'a[href="{PROJECT_URL}/blob/main/LICENSE"]')).to_have_attribute("target", "_blank")
+                # The notice scrolls under its title, whose close button stays in sight.
+                self.assertGreater(text.evaluate("e => e.scrollHeight - e.clientHeight"), 0)
+                text.evaluate("e => { e.scrollTop = e.scrollHeight; }")
+                expect(text.get_by_text("If a court holds part of this notice unenforceable")).to_be_in_viewport()
+                expect(dialog.locator(".close")).to_be_in_viewport()
+                page.keyboard.press("Escape")       # closes the dialog alone, the focus back on its button
+                expect(dialog).to_be_hidden()
+                expect(page.locator('#menu section[data-menu="about"]')).to_be_visible()
+                expect(button).to_be_focused()
+                button.click()                      # again from its start
+                expect(dialog).to_be_visible()
+                self.assertEqual(text.evaluate("e => e.scrollTop"), 0)
+                dialog.locator(".close").click()
+                expect(dialog).to_be_hidden()
+                expect(button).not_to_be_focused()  # closed with the pointer
 
     def test_a_change_in_one_interface_shows_in_the_others(self):
         url = self.serve()
@@ -765,10 +797,10 @@ class BrowserTest(unittest.TestCase):
                 expect(phone.locator("#dm-sql")).to_have_value(MID_SCALE)
 
     def test_keys_open_and_close_each_menu_and_the_icon_opens_the_last_one(self):
-        # Keys 1 to 7 open the menus, in their order, or close the one that
+        # Keys 1 to 8 open the menus, in their order, or close the one that
         # shows, except in a field or with Ctrl, Alt or Meta. Escape, a click
         # outside the menu and its close button close it, and nothing behind
-        # it takes that click. The version that runs ends Settings.
+        # it takes that click. About shows the version that runs.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
@@ -782,12 +814,13 @@ class BrowserTest(unittest.TestCase):
                     expect(title).to_have_text(MENUS[name])
                     expect(page.locator("#menu section:not([hidden])")).to_have_attribute("data-menu", name)
                     expect(page.locator('#menu nav button[aria-current="true"]')).to_have_attribute("data-menu", name)
-                expect(page.locator("#st-version")).to_have_text(f"Radiolack {__version__}")
-                expect(page.locator('#menu section[data-menu="settings"]')).to_contain_text("1 to 7")
+                expect(page.locator("#ab-version")).to_have_text(f"Radiolack {__version__}")
+                page.keyboard.press("7")
+                expect(page.locator('#menu section[data-menu="settings"]')).to_contain_text("1 to 8")
                 page.keyboard.press("7")        # the menu that shows: closes it
                 expect(menu).to_be_hidden()
                 expect(icon).to_have_attribute("aria-expanded", "false")
-                for key in ("8", "9", "Control+2", "Alt+2", "Meta+2"):
+                for key in ("9", "Control+2", "Alt+2", "Meta+2"):
                     page.keyboard.press(key)
                     expect(menu).to_be_hidden()
                 page.keyboard.press("2")
@@ -1294,9 +1327,14 @@ class BrowserTest(unittest.TestCase):
                     expect(device.locator("#status")).to_contain_text(REMOTE_FRAME_RATE)     # half the frames
                     self.open_menu(device, "settings")
                     expect(device.locator("#st-remote-client")).to_be_visible()
-                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section",
-                                    "#st-report-section", "#st-version"):
+                    for section in ("#st-storage-section", "#st-remote-section"):
                         expect(device.locator(section)).to_be_hidden()
+                    self.open_menu(device, "about")       # the version, without the updates or a report
+                    expect(device.locator("#ab-remote-client")).to_be_visible()
+                    expect(device.locator("#ab-version")).to_have_text(f"Radiolack {__version__}")
+                    for section in ("#ab-update-section", "#ab-report-section"):
+                        expect(device.locator(section)).to_be_hidden()
+                    expect(device.locator("#ab-legal")).to_be_visible()
                     expect(device.locator("#status")).not_to_contain_text("remote access")
                     self.open_menu(device, "record")      # the recordings, not their folder
                     expect(device.locator("#rec-folder-section")).to_be_hidden()

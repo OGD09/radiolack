@@ -43,6 +43,7 @@ from typing import Any
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
+from . import __version__
 from .engine import LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener, Subscription, UpdateChecker
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
                      is_private, issue_server_certificate, remote_urls, server_context)
@@ -235,8 +236,9 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
     ``device`` named by its id: the hello, then the engine's messages one way
     and the interface's commands the other, until either side ends it."""
     try:
-        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "remote": device is not None,
-                            "scanners": list(SCANNERS), "recording": list(RECORDING_KINDS)})
+        await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "version": __version__,
+                            "remote": device is not None, "scanners": list(SCANNERS),
+                            "recording": list(RECORDING_KINDS)})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)

@@ -11,8 +11,9 @@ process, which draws the page, ends on its own, after a crash in WebKitGTK
 for instance, it loads the page again, at most once a minute: a page that
 ends again sooner gives way to a message with a button that reloads it.
 WebKit paints the page on the CPU, unless WEBKIT_SKIA_ENABLE_CPU_RENDERING
-is set already: see CPU_PAINTING. GitHub's page for a new issue, with a
-problem report (report.py), opens in the user's web browser.
+is set already: see CPU_PAINTING. Radiolack's pages on GitHub
+(PROJECT_URL), such as the page for a new issue with a problem report
+(report.py), open in the user's web browser; no other page does.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ import os
 import signal
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-from . import report
+from . import PROJECT_URL, report
 from .store import shown_path
 
 log = logging.getLogger(__name__)
@@ -170,8 +171,8 @@ def _origin(uri: str) -> tuple[str, str, int | None]:
 
 
 def _stay_on_origin(_view, decision, decision_type, origin, WebKit2) -> bool:
-    """Refuse new windows and navigation away from the interface: GitHub's
-    page for a new issue opens in the user's web browser instead.
+    """Refuse new windows and navigation away from the interface: Radiolack's
+    pages on GitHub open in the user's web browser instead.
 
     Without an address bar there is no way back, for example after a file is
     dropped on the window.
@@ -181,17 +182,27 @@ def _stay_on_origin(_view, decision, decision_type, origin, WebKit2) -> bool:
     uri = decision.get_navigation_action().get_request().get_uri()
     if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION and _origin(uri) == origin:
         return False
-    if _is_issue_page(uri):
+    if _is_project_page(uri):
         _open_outside(uri)
     decision.ignore()
     return True
 
 
-def _is_issue_page(uri: str) -> bool:
-    """Whether ``uri`` is GitHub's page for a new issue of Radiolack, with or
-    without its description."""
-    parts, page = urlsplit(uri), urlsplit(report.ISSUES_URL)
-    return (parts.scheme, parts.netloc, parts.path, parts.fragment) == (page.scheme, page.netloc, page.path, "")
+def _is_project_page(uri: str) -> bool:
+    """Whether ``uri`` is one of Radiolack's pages on GitHub, under
+    PROJECT_URL: its page, its licence or the page for a new issue, with or
+    without a description. GitHub's own address over HTTPS only, and no dot
+    segment, which a web browser would resolve to a page elsewhere."""
+    # Web browsers drop tabs and line breaks from an address, which could join dots.
+    if any(character.isspace() or not character.isprintable() for character in uri):
+        return False
+    parts, project = urlsplit(uri), urlsplit(PROJECT_URL)
+    if (parts.scheme, parts.netloc) != (project.scheme, project.netloc):
+        return False
+    if parts.path != project.path and not parts.path.startswith(f"{project.path}/"):
+        return False
+    segments = unquote(parts.path).replace("\\", "/").split("/")
+    return not any(segment in (".", "..") for segment in segments)
 
 
 def _open_outside(uri: str) -> None:

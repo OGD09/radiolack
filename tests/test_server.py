@@ -251,7 +251,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_sends_hello_then_the_states_then_spectrum_frames(self):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
-                             {"type": "hello", "protocol": 6, "remote": False,
+                             {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
                               "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback

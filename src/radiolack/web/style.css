@@ -102,18 +102,30 @@ html, body {
   width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1;
   stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
 }
-/* The lengths themselves, and the problem report, in modal dialogs dressed as the menu. */
-#antenna-dialog, #report-dialog {
+/* The lengths themselves, the problem report and the legal notice, in modal dialogs dressed as the menu. */
+#antenna-dialog, #report-dialog, #legal-dialog {
   width: 320px; max-width: calc(100% - 32px); padding: 0; color: var(--text); background: var(--panel);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   font-size: 12.5px; user-select: text; -webkit-user-select: text;
 }
-#report-dialog { width: 560px; }
+#report-dialog, #legal-dialog { width: 560px; }
 /* No custom properties: older engines do not pass them to ::backdrop. */
-#antenna-dialog::backdrop, #report-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }
+#antenna-dialog::backdrop, #report-dialog::backdrop, #legal-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }
 /* Fills the dialog: a press on the dialog itself is on the backdrop. */
-#antenna-dialog .dialog-body, #report-dialog .dialog-body { padding: 10px 14px 12px; }
-#antenna-dialog h2, #report-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+#antenna-dialog .dialog-body, #report-dialog .dialog-body, #legal-dialog .dialog-body { padding: 10px 14px 12px; }
+#antenna-dialog h2, #report-dialog h2, #legal-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+/* The legal notice scrolls under its title, which keeps the close button in sight. */
+#legal-dialog[open] { display: flex; flex-direction: column; max-height: calc(100% - 32px); }
+#legal-dialog .dialog-body { display: flex; flex-direction: column; min-height: 0; }
+.legal-text {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -14px -12px; padding: 0 14px 12px;
+  font-size: 12px; line-height: 1.5;
+}
+.legal-text:focus-visible { outline-offset: -2px; }
+.legal-text h3 { margin: 12px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.legal-text p, .legal-text ul { margin: 4px 0; }
+.legal-text ul { padding-left: 18px; }
+.legal-text a { color: var(--accent); }
 #report-text {
   display: block; width: 100%; height: 240px; max-height: 50vh; margin: 8px 0; resize: vertical;
   font: 11px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
@@ -249,6 +261,8 @@ body.idle #hoverinfo { opacity: 0; }
 .menu-dock .field { margin: 6px 0 0; }
 #menu h2 { margin: 0; font-size: 13px; font-weight: 600; }
 #menu h3 { margin: 14px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+/* About opens with the version that runs. */
+.about-version { margin: 4px 0; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
 /* The device's own gestures first: the mouse's and the keys', or a touch screen's (below). */
 .keys-lists { display: flex; flex-direction: column; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
