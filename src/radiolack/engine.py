@@ -1275,8 +1275,8 @@ class Engine:
             return
         folder = self._recording_folder()
         source = self.source
-        # Named after the centre in use, to the hertz; its metadata gives it as the samples are labelled.
-        centre_hz, rate_hz = float(round(source.describe()["centre_in_use_hz"])), self._span()[1]
+        # Named after the centre asked; its metadata gives the centre in use, as the samples are labelled.
+        centre_hz, rate_hz = self._span()
         recording = IQRecording(folder, time.time(), centre_hz, rate_hz, hardware=source.hardware,
                                 make_folder=folder == self._default_recordings, report=self._reporter())
         source.tap(functools.partial(self._record_iq, recording))

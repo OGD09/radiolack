@@ -2858,7 +2858,7 @@ class ConverterTest(RecordingCase):
         captures = metadata["captures"]
         self.assertEqual([capture["core:frequency"] for capture in captures], [3_800_012_500, 3_700_000_000])
         # The receiver tuned 1350 MHz placed on its grid, then 1450 MHz, on it; I and Q come
-        # swapped, as on the air. The file's name came before the tuner was known.
+        # swapped, as on the air. The file is named after the centre asked.
         starts = [capture["core:sample_start"] for capture in captures] + [len(data) // 2]
         for tuned_hz, start, end in zip((1_349_987_500, 1_450_000_000), starts, starts[1:]):
             segment = data[2 * start:2 * end]
