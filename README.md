@@ -1059,8 +1059,9 @@ Chromium draws WebGL2 through the system's EGL: on the GPU where there is
 one, otherwise with Mesa's software renderer, llvmpipe (Debian and Ubuntu:
 `sudo apt install libegl1 libegl-mesa0 libgl1-mesa-dri`), which draws the
 interface about three times as fast as Chromium's own, SwiftShader. Without
-them, Chromium falls back to SwiftShader. The tests' log names what draws
-each browser's WebGL2, as their durations depend on it.
+them, Chromium falls back to SwiftShader. The tests' log gives each
+browser's WebGL2 renderer as a page reads it, as their durations depend on
+it (in WebKit, a page always reads Apple GPU).
 
 Firefox plays audio only through a sound server, PipeWire or PulseAudio:
 without one, as on a server, its audio test fails. PulseAudio with only a

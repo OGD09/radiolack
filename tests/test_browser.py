@@ -108,8 +108,9 @@ FIREFOX_PREFS = {"webgl.force-enabled": True}
 # EGL, Chromium falls back to SwiftShader.
 CHROMIUM_ARGS = ["--use-angle=gl-egl", "--ignore-gpu-blocklist"]
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "EGL_PLATFORM")
-# What draws a page's WebGL2, which the log names for each browser, as the
-# tests' durations depend on it.
+# A page's WebGL2 renderer as the page reads it, which the log gives for each
+# browser, as the tests' durations depend on it. In WebKit, a page reads
+# Apple GPU whatever draws.
 WEBGL_RENDERER = """() => {
   const gl = document.createElement('canvas').getContext('webgl2');
   if (!gl) return 'nothing: no WebGL2';
@@ -261,12 +262,13 @@ class BrowserTest(unittest.TestCase):
             browser = getattr(playwright, name).launch(**launch_options(name, os.environ))   # headless
             cls.addClassCleanup(browser.close)
             cls.browsers[name] = browser
-            print(f"{name} {browser.version}: WebGL2 drawn by {cls.webgl_renderer(browser)}", file=sys.stderr, flush=True)
+            renderer = cls.webgl_renderer(browser)
+            print(f"{name} {browser.version}: WebGL2 renderer as a page reads it: {renderer}", file=sys.stderr, flush=True)
         expect.set_options(timeout=TIMEOUT_MS)
 
     @staticmethod
     def webgl_renderer(browser: Browser) -> str:
-        """What draws WebGL2 in ``browser``, as a blank page reads it."""
+        """The WebGL2 renderer that a blank page in ``browser`` reads."""
         page = browser.new_page()
         try:
             return page.evaluate(WEBGL_RENDERER)
