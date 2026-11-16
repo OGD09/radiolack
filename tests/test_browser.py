@@ -76,6 +76,10 @@ RECORDINGS_CONFIRM_MS = 5000  # how long a first press of a recording's Delete w
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 BOOKMARK_NAME = '#bm-list input[data-field="name"]'     # the name's field of the bookmark being edited
+# A new bookmark on a channel or a known frequency takes its name.
+RV48_NAME = f"2 m FM {DOT} RV48"                    # 145.6 MHz, where the simulated band starts
+V40_NAME = f"2 m FM {DOT} V40"                      # 145.5 MHz
+SSB_CENTRE_NAME = f"2 m amateur {DOT} SSB centre"   # 144.3 MHz
 BOOKMARK_FREQUENCY = '#bm-list input[data-field="freq"]'     # and its frequency's
 BOOKMARK_FREQUENCY_NOTE = "Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz, from 1 Hz to 100 GHz."
 # The Radio menu's tuning steps, in their order (index.html).
@@ -846,6 +850,91 @@ class BrowserTest(unittest.TestCase):
                 page.keyboard.press("0")
                 expect(meta).to_have_text(re.compile(rf" {DOT} step 25 kHz$"))
 
+    def strip_point(self, page: Page, frequency_mhz: float, part: float) -> tuple[float, float]:
+        """The point of the band strip over ``frequency_mhz``, which the view
+        shows, at ``part`` of its height from its top."""
+        low, high = self.view_edges(page)
+        spec, band = page.locator("#specwrap").bounding_box(), page.locator("#band").bounding_box()
+        x = spec["x"] + 1 + (spec["width"] - 2) * (frequency_mhz - low) / (high - low)
+        return x, band["y"] + band["height"] * part
+
+    def test_the_channels_and_known_frequencies_show_on_the_line_and_the_strip(self):
+        # The line under the frequency names the channel the VFO is on, and
+        # the step keys go from channel to channel. On the strip, a channel's
+        # tick, in its lower half, tunes there, and a known frequency's mark,
+        # in its upper half, tunes there in its mode; Display hides them.
+        url = self.serve()      # the simulated band, the VFO on 145.6 MHz in NFM
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                meta, freq, band = page.locator("#m-seg"), page.locator("#freq"), page.locator("#band")
+                expect(meta).to_have_text(f"{RV48_NAME} {DOT} step 12.5 kHz")
+                freq.focus()
+                freq.press("ArrowUp")
+                expect(freq).to_have_attribute("aria-valuenow", "145612500")
+                expect(meta).to_have_text(f"2 m FM {DOT} RV49 {DOT} step 12.5 kHz")
+                for _ in range(4):                  # 474 kHz wide: the channels lie 33 px apart
+                    page.keyboard.press("+")
+                x, y = self.strip_point(page, 145.65, 0.8)
+                page.mouse.move(x, y)
+                expect(band).to_have_attribute("title", f"2 m FM {DOT} RV52 {DOT} 145.650 MHz {DOT} NFM")
+                page.mouse.down()
+                page.mouse.up()
+                expect(freq).to_have_attribute("aria-valuenow", "145650000")
+                expect(meta).to_have_text(f"2 m FM {DOT} RV52 {DOT} step 12.5 kHz")
+                page.keyboard.press("0")            # the whole span, 2.4 MHz
+                x, y = self.strip_point(page, 144.75, 0.2)
+                page.mouse.move(x, y)
+                expect(band).to_have_attribute("title", f"2 m amateur {DOT} ATV talkback {DOT} 144.750 MHz {DOT} USB")
+                page.mouse.down()
+                page.mouse.up()
+                expect(freq).to_have_attribute("aria-valuenow", "144750000")
+                expect(page.locator("#m-mode")).to_have_text("USB")
+                expect(meta).to_have_text(re.compile(rf"^2 m amateur {DOT} ATV talkback {DOT} step "))
+                self.open_menu(page, "display")
+                page.locator("#ov-channels").uncheck()
+                page.keyboard.press("Escape")
+                x, y = self.strip_point(page, 144.75, 0.2)
+                page.mouse.move(x, y)
+                expect(band).to_have_attribute("title", re.compile(rf"^2 m amateur {DOT} .* {DOT} drag: spectrum height$"))
+                expect(meta).to_have_text(re.compile(rf"^2 m amateur {DOT} ATV talkback {DOT} step "))   # the line still names it
+
+    def test_the_band_plan_list_follows_the_view_and_the_filter(self):
+        # Under the bookmarks, the band plan lists the ranges in view with the
+        # known frequencies inside them, at most 200 rows; filtered, the
+        # ranges, channel sets and known frequencies of the whole plan. A set
+        # frames itself, a known frequency tunes there.
+        url = self.serve()      # the simulated band, the VFO on 145.6 MHz
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                plan, note = page.locator("#plan-list"), page.locator("#plan-note")
+                self.open_menu(page, "bookmarks")
+                expect(plan.locator(".item.sub .name", has_text="APRS")).to_have_count(1)
+                page.keyboard.press("Escape")
+                for _ in range(4):                  # 474 kHz around the VFO: 144.8 MHz out of view
+                    page.keyboard.press("+")
+                self.open_menu(page, "bookmarks")
+                expect(plan.locator(".item .name", has_text="Repeater outputs")).to_have_count(1)
+                expect(plan.locator(".item .name", has_text="APRS")).to_have_count(0)
+                page.keyboard.press("Escape")
+                for _ in range(30):                 # the whole plan
+                    page.keyboard.press("-")
+                self.open_menu(page, "bookmarks")
+                expect(note).to_contain_text("The first 200 rows: zoom in to see the others.")
+                self.assertLessEqual(plan.locator("li").count(), 200)     # a range comes with its known frequencies, or not at all
+                page.locator("#bm-filter").fill("APRS")
+                expect(plan.locator(".item .name")).to_have_text([f"2 m amateur {DOT} APRS", f"70 cm amateur {DOT} APRS"])
+                plan.locator(".item", has_text=f"2 m amateur {DOT} APRS").click()
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "144800000")
+                page.locator("#bm-filter").fill("PMR446")
+                plan.locator("button.item", has=page.locator(".sw.set")).click()
+                page.keyboard.press("Escape")
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(low, 446.0 - 0.016, delta=0.002)
+                self.assertAlmostEqual(high, 446.2 + 0.016, delta=0.002)
+
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_digit_that_leaves_the_span_moves_it(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
@@ -971,13 +1060,13 @@ class BrowserTest(unittest.TestCase):
                 self.open_menu(first, "bookmarks")
                 expect(first.locator("#bm-list .empty")).to_have_text("No bookmarks")
                 first.locator("#bm-add").click()
-                expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
+                expect(second.locator("#bm-list .item .name")).to_have_text([RV48_NAME])
                 name = first.locator(BOOKMARK_NAME)
                 expect(name).to_be_focused()
-                expect(name).to_have_value("Bookmark 1")
+                expect(name).to_have_value(RV48_NAME)
                 name.fill("Not kept")
                 name.press("Escape")        # cancels the new name, and leaves the menu open
-                expect(first.locator("#bm-list .item .name")).to_have_text(["Bookmark 1"])
+                expect(first.locator("#bm-list .item .name")).to_have_text([RV48_NAME])
                 expect(first.locator("#menu")).to_be_visible()
                 edit = first.locator("#bm-list button[data-edit]")
                 expect(edit).to_be_focused()
@@ -1028,10 +1117,10 @@ class BrowserTest(unittest.TestCase):
                 first.locator("#bm-add").click()        # at the VFO, in its mode
                 name = first.locator(BOOKMARK_NAME)
                 expect(name).to_be_focused()
-                expect(name).to_have_value("Bookmark 1")
-                self.assertEqual(name.evaluate("(field) => [field.selectionStart, field.selectionEnd]"), [0, 10])
+                expect(name).to_have_value(SSB_CENTRE_NAME)
+                self.assertEqual(name.evaluate("(field) => [field.selectionStart, field.selectionEnd]"), [0, len(SSB_CENTRE_NAME)])
                 expect(first.locator("#bm-list li").first.locator('input[data-field="name"]')).to_have_count(1)
-                expect(second.locator("#bm-list .item .name")).to_have_text(["Bookmark 1", "SSB calling", "FM calling"])
+                expect(second.locator("#bm-list .item .name")).to_have_text([SSB_CENTRE_NAME, "SSB calling", "FM calling"])
                 expect(second.locator(BOOKMARK_NAME)).to_have_count(0)     # open where added only
                 first.keyboard.type("Net")      # in place of the selected name
                 first.keyboard.press("Enter")
@@ -1410,8 +1499,8 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):    # the VFO is shared
                     expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145500000")
                 first.locator('#hist-body button[data-mark="145500000"]').click()
-                expect(first.locator("#hist-note")).to_have_text("145.5000 MHz added to the bookmarks as Bookmark 1.")
-                expect(first.locator("#marks .mark")).to_have_text(["Bookmark 1"])
+                expect(first.locator("#hist-note")).to_have_text(f"145.5000 MHz added to the bookmarks as {V40_NAME}.")
+                expect(first.locator("#marks .mark")).to_have_text([V40_NAME])
                 clear = first.locator('#hist-body button[data-clear="433500000"]')
                 clear.click()       # a first press asks for a second one
                 expect(clear).to_have_text("Confirm")
@@ -1450,7 +1539,7 @@ class BrowserTest(unittest.TestCase):
                 self.press(page, page.locator('#hist-body button[data-mark="145500000"]'))
                 page.wait_for_timeout(HISTORY_CONFIRM_MS + 500)     # the Clear turns back meanwhile
                 page.mouse.up()
-                expect(page.locator("#hist-note")).to_have_text("145.5000 MHz added to the bookmarks as Bookmark 1.")
+                expect(page.locator("#hist-note")).to_have_text(f"145.5000 MHz added to the bookmarks as {V40_NAME}.")
                 expect(clear).to_have_text("Clear")
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
