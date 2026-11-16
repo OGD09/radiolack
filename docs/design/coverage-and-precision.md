@@ -812,8 +812,8 @@ Measured on 2026-11-16, on the owner's V3 with rtl-sdr 0.6.0
   carrier followed neither prediction; the figures were computed again
   from its table with the oscillator that was truly set.
 - By the rule, pull request 14 is built; as the second point above says,
-  its premise does not hold for this computation, so what it becomes is
-  the owner's to decide.
+  its premise does not hold for this computation. The owner decided the
+  same day what it becomes: section 14.
 
 Done after the measure, in a pull request of its own, before pull
 request 14:
@@ -881,26 +881,93 @@ request 14:
   predictions, 170 to 220 Hz over a first sweep near 111 MHz under either
   IF, the tuner's divider being 16 under both.
 
-### 14. PLL-exact centre frequencies, only if 13 says so
+### 14. The tuner on its grid, labelled where it sits
 
-- For an R820T or R828D on a 28.8 MHz crystal, the source moves each
-  centre frequency it is asked for, by 56 kHz at most, to one whose
-  oscillator frequency is a multiple of 112.5 kHz, where both computations
-  of the driver come out exact, which the tests prove with the two ported
-  computations across the range. The source reports the centre in use.
-- The driver's own correction then stays at 0, since a corrected reference
-  breaks the exactness: Radiolack corrects the whole of `ppm` itself, labels
-  the samples with the frequency they are truly centred on, constant
-  offset of the RTL2832's mixer included, and scales the shift to the VFO
-  by the same factor.
-- The sweep, the memory scan's windows and the interface's pending retune
-  compare with the centre that the source reports, not with the one they
-  asked (`scanners.py:549`, `:566`, `:650`).
+Decided on 2026-11-16, after the measure (`scoping.md`, spike 6): the
+owner chose the grid and the compensation. This section first had the
+grid alone, on the premise that both of the driver's computations come out
+exact where the tuner's oscillator is a multiple of 112.5 kHz. The port
+and the measure showed otherwise:
 
-Limits: it rests on the driver's internals, so a fork that computes
-otherwise falls back to the error it has today, silently; the sample rate's
-error is no longer corrected by the receiver, at most 72 Hz at the edge of
-a span for a crystal 60 ppm off.
+- The newer computation (rtl-sdr 2.0.2 and later) is exact there.
+- The older one (up to 2.0.1, and the RTL-SDR Blog fork), which the
+  owner's two computers run, sits one constant low for each divider of
+  the tuner there: 1757.8 Hz over the divider, 54.9 Hz in the FM broadcast
+  band, 109.9 Hz from 111 to 221 MHz, 219.7 Hz up to 442 MHz, 439.5 Hz up
+  to 885 MHz and 878.9 Hz above. Only where the tuner's VCO is a multiple
+  of 57.6 MHz, one oscillator in 32 on the grid, is it exact too.
+- Off the grid, it errs by another amount at each centre frequency, as
+  measured: from -172 to +78 Hz at 2 m, from -1376 to +621 Hz at 23 cm.
+
+So the grid makes the error the same at every centre frequency, which
+ends the jumps from one centre to the next, and Radiolack takes the
+constant off once it knows which computation the driver runs. The
+oscillator is the frequency asked of the tuner plus the intermediate
+frequency of the sample rate, as Radiolack's commands leave it since the
+fix that followed the measure (section 13).
+
+Two pull requests.
+
+#### 14a. The grid, and the samples labelled where the tuner sits
+
+- The driver's two computations move from `tests/r82xx_pll.py` into the
+  package, as the source now needs them, with their licence notice; the
+  tests and `tools/measure_pll.py` take them from there.
+- For an R820T or R828D behind rtl_tcp, on its tuner: the source moves
+  each centre frequency it is asked for to the nearest whose oscillator
+  is a multiple of 112.5 kHz, by 56.25 kHz at most, and reports the
+  centre in use. The sweep, the memory scan's windows and the interface's
+  pending retune compare with the centre that the source reports, not
+  with the one they asked.
+- The driver's own correction stays at 0, since a corrected reference
+  moves the grid: Radiolack corrects the whole of `ppm` itself, by the
+  frequency it asks for and by the labels of its samples, and scales the
+  shift to the VFO by the same factor.
+- **A setting of each receiver, the driver's computation**: unknown, the
+  default, older or newer. Once it is known, the source labels its samples
+  with the centre the tuner truly sits on, which the ported computation
+  gives, not a table of constants; unknown, it labels them as if the tuner
+  were exact, as the newer computation is on the grid.
+- The Receiver menu shows the setting and lets the user choose it; the
+  source state carries it and the centre in use. Protocol version 6, as
+  only fields are added.
+- Not placed on the grid: direct sampling, another tuner, a source that
+  is not an RTL-SDR. A converter changes nothing: it is the receiver's own
+  frequency that is placed.
+- The tests, on the fake rtl_tcp whose tuner follows either computation:
+  with the setting right, a carrier measures within 1 Hz of its true
+  frequency at many centre frequencies across each divider; with the
+  older computation and the setting unknown, it sits the same constant
+  low at every centre frequency.
+
+#### 14b. Calibrate identifies the computation
+
+- When Calibrate measures a carrier on such a receiver, the engine checks
+  the computation: it measures the carrier at two or three centre
+  frequencies off the grid, chosen where the two computations put the
+  carrier at least 40 Hz apart, then returns to the centre in use. The
+  carrier within 5 Hz of one computation at every point names it; anything
+  else leaves it unknown, and the dialog says so.
+- The result is saved with the receiver and shown in the dialog. Every
+  calibration checks again, so that a driver upgraded since is noticed: a
+  different answer replaces the saved one, and the dialog says it.
+- The check moves the centre frequency for a few seconds: not while a
+  scan runs or an I/Q recording is made, which the dialog says.
+- Once the computation is known, Calibrate's correction is the crystal's
+  alone on the tuner too, and the dialog's note about the tuner's own
+  error goes.
+
+Done when, on the owner's V3: `tools/measure_pll.py`, with the grid and
+the computation identified, reports a spread under 10 Hz.
+
+Limits: it rests on the driver's internals, so a driver that computes
+otherwise is left unknown by the check and keeps the error it has; a
+driver changed without a new calibration keeps the old setting until the
+next one, and may sit up to twice the constant off meanwhile; the sample
+rate's error is no longer corrected by the receiver, at most 72 Hz at the
+edge of a span for a crystal 60 ppm off. Measured on one V3 with rtl-sdr
+0.6.0 at one divider: rtl-sdr 2.0.1 and 2.0.2, the fork and an RTL-SDR
+Blog V4 are read from their source.
 
 ## Band plan file, format 2
 
