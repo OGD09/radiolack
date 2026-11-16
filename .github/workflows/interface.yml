@@ -117,10 +117,12 @@ jobs:
       # Xvfb gives headless Firefox the display it needs for WebGL2 on a
       # runner without a GPU (FIREFOX_PREFS in tests/test_browser.py), and
       # PulseAudio the sound output it needs for audio on a runner without a
-      # sound card; every browser runs with both, as it always has. apt
-      # takes the cached packages instead of downloading them, then the
-      # current ones are kept for the next runs.
-      - name: Install the browser's system libraries, Xvfb and PulseAudio
+      # sound card; every browser runs with both, as it always has. Mesa's
+      # EGL and its software renderer, llvmpipe, draw Chromium's WebGL2
+      # (CHROMIUM_ARGS), faster than Chromium's own. apt takes the cached
+      # packages instead of downloading them, then the current ones are kept
+      # for the next runs.
+      - name: Install the browser's system libraries, Xvfb, PulseAudio and Mesa's EGL
         timeout-minutes: 5
         env:
           BROWSER: ${{ matrix.browser }}
@@ -130,7 +132,7 @@ jobs:
           mkdir -p ~/apt-archives
           sudo find ~/apt-archives -name '*.deb' -exec cp -t /var/cache/apt/archives {} +
           python -m playwright install-deps "$BROWSER"
-          sudo -E apt-get install -y --no-install-recommends xvfb xauth pulseaudio
+          sudo -E apt-get install -y --no-install-recommends xvfb xauth pulseaudio libegl1 libegl-mesa0 libgl1-mesa-dri
           sudo apt-get autoclean
           rm -rf ~/apt-archives
           mkdir ~/apt-archives

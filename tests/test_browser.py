@@ -18,10 +18,11 @@ import contextlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from unittest import mock
 
@@ -97,6 +98,24 @@ WRONG_CODE_REFUSAL = "Failed to load resource: the server responded with a statu
 # renderer: this preference lifts that refusal. Firefox then also needs a
 # display, which xvfb-run gives where there is none.
 FIREFOX_PREFS = {"webgl.force-enabled": True}
+# Chromium draws WebGL2 through the system's EGL: on the GPU where there is
+# one, otherwise with Mesa's software renderer, llvmpipe, which drew two
+# interfaces three times as many frames a second as Chromium's own,
+# SwiftShader (2026-11-16), and Playwright waits for frames before its
+# actions. Chromium refuses WebGL2 on llvmpipe unless it ignores its GPU
+# blocklist, and its EGL did not start with the display variables of a
+# desktop session, which a browser without a window does not need. Without
+# EGL, Chromium falls back to SwiftShader.
+CHROMIUM_ARGS = ["--use-angle=gl-egl", "--ignore-gpu-blocklist"]
+DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "EGL_PLATFORM")
+# What draws a page's WebGL2, which the log names for each browser, as the
+# tests' durations depend on it.
+WEBGL_RENDERER = """() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  if (!gl) return 'nothing: no WebGL2';
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  return gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+}"""
 # Draws lines in a waterfall view of its own, 8 bins wide and 2 lines high,
 # whose colour table gives each level code as its red: the red of each pixel,
 # newest line first, after each move of the span.
@@ -163,7 +182,20 @@ MENU_OVERFLOW = """() => {
 }"""
 
 if ENABLED:     # without Playwright, the tests then fail instead of being skipped
-    from playwright.sync_api import Error as PlaywrightError, Locator, Page, expect, sync_playwright
+    from playwright.sync_api import Browser, Error as PlaywrightError, Locator, Page, expect, sync_playwright
+
+
+def launch_options(name: str, environment: Mapping[str, str]) -> dict:
+    """Playwright's options to launch the browser ``name`` from
+    ``environment``: Chromium draws WebGL2 through EGL, in that environment
+    without its display variables; Firefox forces WebGL2 on, and like WebKit
+    keeps the environment, display included."""
+    if name == "chromium":
+        return {"args": CHROMIUM_ARGS,
+                "env": {key: value for key, value in environment.items() if key not in DISPLAY_VARIABLES}}
+    if name == "firefox":
+        return {"firefox_user_prefs": FIREFOX_PREFS}
+    return {}
 
 
 def overlap(first: dict, second: dict) -> bool:
@@ -198,6 +230,23 @@ class ChosenBrowsersTest(unittest.TestCase):
                 chosen_browsers(names)
 
 
+class LaunchOptionsTest(unittest.TestCase):
+    """Each browser's launch options, read without launching any browser."""
+
+    def test_chromium_draws_through_egl_without_the_display_variables(self):
+        environment = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-0", "EGL_PLATFORM": "wayland",
+                       "HOME": "/home/user", "XDG_CONFIG_HOME": "/tmp/config"}
+        options = launch_options("chromium", environment)
+        self.assertEqual(options["args"], ["--use-angle=gl-egl", "--ignore-gpu-blocklist"])
+        self.assertEqual(options["env"], {"HOME": "/home/user", "XDG_CONFIG_HOME": "/tmp/config"})
+        self.assertEqual(environment["DISPLAY"], ":99")     # the tests' own environment stays as it is
+
+    def test_firefox_and_webkit_keep_the_display(self):
+        # Without a GPU, Firefox draws WebGL2 only on a display, such as xvfb-run's.
+        self.assertEqual(launch_options("firefox", {"DISPLAY": ":99"}), {"firefox_user_prefs": {"webgl.force-enabled": True}})
+        self.assertEqual(launch_options("webkit", {"DISPLAY": ":99"}), {})
+
+
 @unittest.skipUnless(ENABLED, "browser tests run only with RADIOLACK_BROWSER_TESTS=1")
 class BrowserTest(unittest.TestCase):
     """Each test runs in every browser in turn, or in those of
@@ -209,11 +258,22 @@ class BrowserTest(unittest.TestCase):
         cls.addClassCleanup(playwright.stop)
         cls.browsers = {}
         for name in BROWSERS:
-            options = {"firefox_user_prefs": FIREFOX_PREFS} if name == "firefox" else {}
-            browser = getattr(playwright, name).launch(**options)   # headless
+            browser = getattr(playwright, name).launch(**launch_options(name, os.environ))   # headless
             cls.addClassCleanup(browser.close)
             cls.browsers[name] = browser
+            print(f"{name} {browser.version}: WebGL2 drawn by {cls.webgl_renderer(browser)}", file=sys.stderr, flush=True)
         expect.set_options(timeout=TIMEOUT_MS)
+
+    @staticmethod
+    def webgl_renderer(browser: Browser) -> str:
+        """What draws WebGL2 in ``browser``, as a blank page reads it."""
+        page = browser.new_page()
+        try:
+            return page.evaluate(WEBGL_RENDERER)
+        except PlaywrightError as error:
+            return f"unknown ({error.message})"
+        finally:
+            page.close()
 
     def serve(self, source: RtlTcpSource | None = None, store: Store | None = None,
               sources: Sources | None = None, updates: FakeUpdates | None = None,

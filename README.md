@@ -1055,6 +1055,13 @@ On a computer without a display or a GPU, such as a server, run the last
 command under `xvfb-run -a` (Debian and Ubuntu: `sudo apt install xvfb`):
 headless Firefox then needs a display to draw with WebGL2.
 
+Chromium draws WebGL2 through the system's EGL: on the GPU where there is
+one, otherwise with Mesa's software renderer, llvmpipe (Debian and Ubuntu:
+`sudo apt install libegl1 libegl-mesa0 libgl1-mesa-dri`), which draws the
+interface about three times as fast as Chromium's own, SwiftShader. Without
+them, Chromium falls back to SwiftShader. The tests' log names what draws
+each browser's WebGL2, as their durations depend on it.
+
 Firefox plays audio only through a sound server, PipeWire or PulseAudio:
 without one, as on a server, its audio test fails. PulseAudio with only a
 null sink gives it a silent output (Debian and Ubuntu:
@@ -1094,8 +1101,8 @@ services or radio hardware:
 - Tests: the tests above, against Radiolack installed with pip, on Python
   3.11 and 3.15, for every push to `main` and every pull request.
 - Interface: the type check and the browser tests, one job per browser,
-  under Xvfb and with that silent output, when the package, the tests or
-  `pyproject.toml` change.
+  under Xvfb, with that silent output and Mesa's EGL, when the package, the
+  tests or `pyproject.toml` change.
 - Package: builds the Debian package twice and compares the builds, and
   puts it in an APT repository signed with a key made for the run; installs
   it with apt from that repository on Debian 12 and 13 and Ubuntu 24.04 and
