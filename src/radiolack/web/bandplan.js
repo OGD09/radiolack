@@ -4,10 +4,11 @@
  * file's bands and segments become one sorted list of ranges for the band
  * strip, the readouts and the automatic mode and step, and the bands stay
  * whole beside it, for the band strip when a band's segments are too narrow
- * to read.
+ * to read. Its channel sets and known frequencies (spots) are checked and
+ * kept in frequency order, each set with every one of its channels.
  */
 
-export const BAND_PLAN_FORMAT = 1;
+export const BAND_PLAN_FORMAT = 2;
 const COLOUR = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
 
 /**
@@ -39,10 +40,42 @@ const COLOUR = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
  */
 
 /**
+ * One channel of a set.
+ * @typedef {object} Channel
+ * @property {string} n             its number or name
+ * @property {number} f             its centre, Hz
+ * @property {string | null} note
+ */
+
+/**
+ * A set of channels that a regulation or a convention numbers, inside one band.
+ * @typedef {object} ChannelSet
+ * @property {string} name
+ * @property {number} from          lower edge of where the set applies, Hz
+ * @property {number} to            upper edge, Hz, excluded
+ * @property {string} label         a channel's label, `{n}` standing for its number
+ * @property {number} spacing       Hz between channels
+ * @property {string | null} mode   demodulator the set names, if any
+ * @property {Channel[]} channels   every channel, sorted by frequency
+ */
+
+/**
+ * A known frequency.
+ * @typedef {object} Spot
+ * @property {number} f             Hz
+ * @property {string} name
+ * @property {string} rgb           colour of its type, as "r,g,b"
+ * @property {string | null} mode   demodulator a click selects, if any
+ * @property {boolean} reference    a standard-frequency carrier
+ */
+
+/**
  * @typedef {object} BandPlan
  * @property {string} name
  * @property {PlanRange[]} ranges   sorted by frequency, without overlaps
  * @property {PlanBand[]} bands     sorted by frequency, without overlaps
+ * @property {ChannelSet[]} channels  sorted by frequency, without overlaps
+ * @property {Spot[]} spots         sorted by frequency
  */
 
 /**
@@ -116,7 +149,14 @@ export function parseBandPlan(data, modes) {
     if (band.segments.length && cursor < band.to) ranges.push(toRange({ ...band, from: cursor, to: band.to }, band.name, 'gap'));
     bands.push({ from: band.from, to: band.to, name: band.name, short: band.short, rgb: band.rgb, first, count: ranges.length - first });
   }
-  return { name, ranges, bands };
+  if (!Array.isArray(data.channels)) fail('channels must be a list');
+  if (!Array.isArray(data.spots)) fail('spots must be a list');
+  const channels = data.channels.map((item) => readChannelSet(item, bands, modes)).sort((a, b) => a.from - b.from);
+  for (let i = 1; i < channels.length; i++) {
+    if (channels[i].from < channels[i - 1].to) fail(`${channels[i].name}: channel sets overlap`);
+  }
+  const spots = data.spots.map((item) => readSpot(item, bands, colours, modes)).sort((a, b) => a.f - b.f);
+  return { name, ranges, bands, channels, spots };
 }
 
 /**
@@ -151,12 +191,7 @@ function readEntry(item, colours, modes) {
   if (!isHz(from) || !isHz(to) || from >= to) fail(`${name}: from and to must be whole Hz, from below to`);
   const rgb = colours.get(String(item.type));
   if (rgb === undefined) fail(`${name}: unknown type ${String(item.type)}`);
-  /** @type {string | null} */
-  let mode = null;
-  if (item.mode !== undefined) {
-    if (typeof item.mode !== 'string' || !modes.includes(item.mode)) fail(`${name}: unknown mode ${String(item.mode)}`);
-    mode = item.mode;
-  }
+  const mode = readMode(item.mode, name, modes);
   /** @type {number | null} */
   let step = null;
   if (item.step !== undefined) {
@@ -166,6 +201,83 @@ function readEntry(item, colours, modes) {
   const segments = item.segments ?? [];
   if (!Array.isArray(segments)) fail(`${name}: segments must be a list`);
   return { from, to, name, short, rgb, mode, step, segments };
+}
+
+/**
+ * A channel set as the file gives it, regular (`first`, `count`, `number`)
+ * or listed (`list`), with every channel inside where the set applies.
+ * @param {unknown} item
+ * @param {readonly PlanBand[]} bands
+ * @param {readonly string[]} modes
+ * @returns {ChannelSet}
+ */
+function readChannelSet(item, bands, modes) {
+  if (!isObject(item)) fail('channel sets must be objects');
+  const name = text(item.name, 'channel set name');
+  const { from, to, spacing } = item;
+  if (!isHz(from) || !isHz(to) || from >= to) fail(`${name}: from and to must be whole Hz, from below to`);
+  const band = rangeAt(bands, from);
+  if (band === null || to > band.to) fail(`${name}: a channel set must lie inside one band`);
+  const label = text(item.label, `${name}: the label`);
+  if (!label.includes('{n}')) fail(`${name}: the label must hold {n}`);
+  if (!isHz(spacing) || spacing === 0) fail(`${name}: the spacing must be whole Hz above 0`);
+  const mode = readMode(item.mode, name, modes);
+  const regular = item.first !== undefined || item.count !== undefined || item.number !== undefined;
+  if (regular === (item.list !== undefined)) fail(`${name}: give either first, count and number, or a list`);
+  /** @type {Channel[]} */
+  const channels = [];
+  if (regular) {
+    const { first, count, number } = item;
+    if (!isHz(first)) fail(`${name}: first must be whole Hz`);
+    if (!Number.isSafeInteger(count) || Number(count) < 1) fail(`${name}: count must be a whole number above 0`);
+    if (!Number.isSafeInteger(number)) fail(`${name}: number must be a whole number`);
+    for (let i = 0; i < Number(count); i++) channels.push({ n: String(Number(number) + i), f: first + i * spacing, note: null });
+  } else {
+    if (!Array.isArray(item.list) || item.list.length === 0) fail(`${name}: the list must hold channels`);
+    for (const entry of item.list) {
+      if (!isObject(entry)) fail(`${name}: channels must be objects`);
+      const n = text(entry.n, `${name}: a channel's number`);
+      if (!isHz(entry.f)) fail(`${name}: channel ${n} must be at whole Hz`);
+      const note = entry.note === undefined ? null : text(entry.note, `${name}: channel ${n}'s note`);
+      channels.push({ n, f: entry.f, note });
+    }
+    channels.sort((a, b) => a.f - b.f);
+  }
+  for (const channel of channels) {
+    if (channel.f < from || channel.f >= to) fail(`${name}: channel ${channel.n} lies outside the set`);
+  }
+  return { name, from, to, label, spacing, mode, channels };
+}
+
+/**
+ * @param {unknown} item
+ * @param {readonly PlanBand[]} bands
+ * @param {Map<string, string>} colours  "r,g,b" by type
+ * @param {readonly string[]} modes
+ * @returns {Spot}
+ */
+function readSpot(item, bands, colours, modes) {
+  if (!isObject(item)) fail('spots must be objects');
+  const name = text(item.name, 'spot name');
+  const { f } = item;
+  if (!isHz(f) || rangeAt(bands, f) === null) fail(`${name}: f must be whole Hz inside the plan`);
+  const rgb = colours.get(String(item.type));
+  if (rgb === undefined) fail(`${name}: unknown type ${String(item.type)}`);
+  if (item.reference !== undefined && item.reference !== true) fail(`${name}: reference must be true or absent`);
+  return { f, name, rgb, mode: readMode(item.mode, name, modes), reference: item.reference === true };
+}
+
+/**
+ * An optional mode, one the interface knows.
+ * @param {unknown} value
+ * @param {string} name  what the mode belongs to, for the error
+ * @param {readonly string[]} modes
+ * @returns {string | null}
+ */
+function readMode(value, name, modes) {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || !modes.includes(value)) fail(`${name}: unknown mode ${String(value)}`);
+  return value;
 }
 
 /**

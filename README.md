@@ -1249,10 +1249,11 @@ desktop window opens Radiolack's pages on GitHub there, and no other page.
 
 ## Band plan
 
-The strip under the spectrum shows what each range is used for, from 9 kHz to
-6.425 GHz: broadcasting, aviation, shipping, mobile networks, satellites,
-short-range devices, amateur bands and more. Inside the amateur bands it
-follows the IARU Region 1 band plans, simplified. Hovering the strip names a
+The strip under the spectrum shows what each range is used for, from 0 Hz to
+10.5 GHz: broadcasting, aviation, shipping, mobile networks, satellites,
+short-range devices, radar, amateur bands and more, with nothing allocated
+below 8.3 kHz. Inside the amateur bands, from 2200 m to 3 cm, it follows
+the IARU Region 1 band plans, a few segments per band. Hovering the strip names a
 range and its edges, and clicking it zooms to the range. Zoomed out, where a
 band's ranges would be too narrow to read, the band shows as one block of
 its colour, named in full, by a short name or not at all as room allows,
@@ -1262,10 +1263,13 @@ The Automatic tuning step takes the channel spacing of the ranges that have
 channels ([Demodulation and audio](#demodulation-and-audio)). The Bookmarks menu lists the
 ranges of the received span. Display > "Band plan" hides the strip.
 
-The plan is a simplified table for Europe (ITU Region 1): a guide, not a legal
-reference. National tables differ and are the reference, and local law may
-forbid listening to some services or disclosing what they carry. Its format
-and sources are in [docs/design/band-plan.md](docs/design/band-plan.md).
+The plan is a detailed guide for Europe (ITU Region 1), not a legal
+reference: it is written by hand from the ITU Radio Regulations, the CEPT's
+European table and the IARU Region 1 band plans, and read a second time
+against them. National tables differ and are the reference, and local law may
+forbid listening to some services or disclosing what they carry. Its format,
+its sources with their editions, and what could not be checked are in
+[docs/design/band-plan.md](docs/design/band-plan.md).
 
 ## Tests
 
