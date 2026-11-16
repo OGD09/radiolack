@@ -362,6 +362,28 @@ signals to the same level: it takes the gain down as soon as a signal
 arrives and lets it come back at 10 dB per second. AM, SSB and CW audio runs
 from 100 Hz to 5 kHz.
 
+Frequencies are exact to the hertz. They show in MHz with as many decimals
+as they have, from 3 to 6 (145.500, 145.6125, 7.074001); measurements keep
+their rounding: the signals found and the History's channels to 100 Hz, the
+readout under the pointer to 10 Hz. A double-click on the frequency, or a
+tap on a touch screen, opens it whole for typing: Enter or leaving the
+field tunes there, unless it is unchanged, and Escape cancels. Every
+frequency field (the VFO's, a bookmark's, the sweep's range, the centre
+frequency) takes a point or a comma, and a unit in any case: Hz, k or kHz,
+M or MHz, G or GHz; without one, a number below 100,000 is in MHz and
+another in Hz, from 1 Hz to 100 GHz. A typed frequency beyond the
+receiver's reach tunes nothing, and the status line says so. The wheel over
+a digit of the frequency changes that digit, and so does dragging it up or
+down with any pointer, by one for every 16 px; both move the span when the
+frequency leaves it.
+
+The tuning step, in the Radio menu, is Automatic (the band plan's, or
+100 Hz where it gives none) or one of 1, 10, 50, 100 and 500 Hz, 1, 5,
+6.25, 8.33 (25 kHz / 3, the airband's), 9, 10, 12.5, 25, 50 and 100 kHz. A
+click, dragging the filter, the wheel, the arrow keys and the − and +
+buttons land on the step's grid, and Shift with an arrow key steps ten
+times as far; a typed frequency, a bookmark and a digit do not.
+
 WFM plays broadcast FM in mono, through a filter 180 kHz wide by default,
 from 50 to 250 kHz. Its audio has the European 50 µs de-emphasis and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
@@ -682,10 +704,13 @@ a few seconds later at most, and when Radiolack stops.
 The Bookmarks menu lists the bookmarks, which its filter narrows down. A
 click on one tunes to it with its mode, its box ticks it for the memory
 scan, which the menu starts at its foot ([Scanners](#scanners)), and Edit
-renames or removes it. "Add current frequency" adds one at the VFO, in its
-mode, and opens its name selected, ready to type over: Enter or leaving the
-row keeps the new name, and Escape the one it was given, Bookmark 1 or the
-next free number. The spectrum's context menu adds one anywhere.
+opens its name and its frequency, to change, or removes it: Enter or
+leaving the row keeps the changes, and Escape cancels them. A frequency
+that is not one, or lies outside 1 Hz to 100 GHz, keeps the row open with a
+note. "Add current frequency" adds one at the VFO, in its mode, and opens
+its name selected, ready to type over: Enter or leaving the row keeps the
+new name, and Escape the one it was given, Bookmark 1 or the next free
+number. The spectrum's context menu adds one anywhere.
 
 Settings > Storage says where the files are and what went wrong with them;
 the status line adds "changes not saved" while some changes do not reach

@@ -10,13 +10,15 @@ import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
+import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+// Measurements, such as the signals found and the pointer's place, in MHz to
+// a fixed number of decimals; exact frequencies take formatFrequency.
 const fmtMHz = (hz, dec = 4) => (hz / 1e6).toFixed(dec);
-const fmtEdge = (hz) => (hz / 1e6).toFixed(6).replace(/0{1,3}$/, '');   // MHz, 3 to 6 decimals as needed
 const fmtBw = (hz) => (hz >= 1000 ? `${+(hz / 1000).toFixed(2)} kHz` : `${Math.round(hz)} Hz`);
 const fmtDb = (db) => `${Math.round(db)} dB`;
 const fmtAgo = (s) => (s < 60 ? `${Math.max(0, Math.round(s))} s` : `${Math.floor(s / 60)} min`);
@@ -900,7 +902,7 @@ function renderMarks() {
     el.type = 'button';
     el.className = 'mark';
     el.textContent = it.b.name;
-    el.title = `${it.b.name} · ${fmtMHz(it.b.f)} MHz · ${it.b.mode}`;
+    el.title = `${it.b.name} · ${formatFrequency(it.b.f)} MHz · ${it.b.mode}`;
     el.style.left = `${it.x}px`;
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
     el.addEventListener('click', (e) => { e.stopPropagation(); tuneAnywhere(it.b.f, { mode: it.b.mode }); });
@@ -923,7 +925,7 @@ function renderFreq() {
   }
   freqEl.innerHTML = html;
   freqEl.setAttribute('aria-valuenow', String(Math.round(vfo)));
-  freqEl.setAttribute('aria-valuetext', `${fmtMHz(vfo)} MHz`);
+  freqEl.setAttribute('aria-valuetext', `${formatFrequency(vfo)} MHz`);
 }
 
 function updateMeta() {
@@ -990,7 +992,7 @@ function syncAntenna() {
   if (!antennaDialog.open) return;
   const f = shownVfo(), band = bandAt(f), { wavelength, half, quarter } = antennaLengths(f);
   const texts = [
-    ['#antenna-for', `${fmtMHz(f, 4)} MHz${band ? ` · ${band.name}` : ''}`],
+    ['#antenna-for', `${formatFrequency(f)} MHz${band ? ` · ${band.name}` : ''}`],
     ['#antenna-wave', formatLength(wavelength)],
     ['#antenna-dipole', formatLength(half)],
     ['#antenna-arm', formatLength(quarter)],
@@ -1024,14 +1026,14 @@ function outline(el) {
 let vfoReturnText = '';
 function syncVfoReturn(vfo) {
   const side = vfo < view.f0 ? 'left' : vfo > view.f1 ? 'right' : '';
-  const text = side === 'left' ? `← ${fmtMHz(vfo)} MHz` : side === 'right' ? `${fmtMHz(vfo)} MHz →` : '';
+  const text = side === 'left' ? `← ${formatFrequency(vfo)} MHz` : side === 'right' ? `${formatFrequency(vfo)} MHz →` : '';
   if (text === vfoReturnText) return;
   vfoReturnText = text;
   vfoReturnEl.hidden = !side;
   if (!side) return;
   vfoReturnEl.textContent = text;
   vfoReturnEl.classList.toggle('right', side === 'right');
-  vfoReturnEl.setAttribute('aria-label', `Show the VFO, at ${fmtMHz(vfo)} MHz`);
+  vfoReturnEl.setAttribute('aria-label', `Show the VFO, at ${formatFrequency(vfo)} MHz`);
 }
 vfoReturnEl.addEventListener('click', () => {
   const span = view.f1 - view.f0, f = shownVfo();
@@ -1108,6 +1110,16 @@ function showHover(e, area) {
 }
 function hideHover() { hoverAt = null; xline.hidden = true; hoverEl.textContent = ''; showTunePreview(null, 0); }
 
+// A note of this interface's own at the head of the status line, for
+// STATUS_NOTE_MS: why a typed frequency tuned nothing.
+const STATUS_NOTE_MS = 6000;
+let statusNote = '', statusNoteTimer = 0;
+function showStatusNote(note) {
+  statusNote = note;
+  clearTimeout(statusNoteTimer);
+  statusNoteTimer = setTimeout(() => { statusNote = ''; updateStatus(); }, STATUS_NOTE_MS);
+  updateStatus();
+}
 function updateStatus() {
   let text;
   if (streamState === 'open' && source) {
@@ -1135,6 +1147,7 @@ function updateStatus() {
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
   if (streamState === 'open' && sweepRuns()) text += ' · sweep';
   if (streamState === 'open') text += recordingStatus();
+  if (statusNote) text = `${statusNote} · ${text}`;
   if (gpuError) text = `${gpuError} · ${text}`;
   if (storage && storage.directory !== null && !storage.saving) text += ' · changes not saved';
   $('#status').textContent = `${text}${remoteState?.on ? ' · remote access on' : ''}`;
@@ -1531,8 +1544,8 @@ function syncSweepSettings() {
   const sweep = sweepKnown() ? scanner.sweep : null;
   for (const el of [swFrom, swTo, swWindow]) el.disabled = !sweep;
   if (!sweep) return;
-  if (!typingIn.has(swFrom)) swFrom.value = fmtMHz(sweep.lowHz);
-  if (!typingIn.has(swTo)) swTo.value = fmtMHz(sweep.highHz);
+  if (!typingIn.has(swFrom)) swFrom.value = formatFrequency(sweep.lowHz);
+  if (!typingIn.has(swTo)) swTo.value = formatFrequency(sweep.highHz);
   swWindow.value = String(sweep.windowS);
   swWindowOut.textContent = `${sweep.windowS} s`;
 }
@@ -1558,8 +1571,8 @@ function syncSweep() {
 // keeping the range's width: the range moves.
 function sendSweepRange(el) {
   const sweep = sweepKnown() ? scanner.sweep : null;
-  const hz = Math.round(parseFloat(el.value.replace(',', '.')) * 1e6);
-  if (!sweep || !Number.isFinite(hz) || hz === (el === swFrom ? sweep.lowHz : sweep.highHz)) {
+  const hz = parseFrequency(el.value);
+  if (!sweep || hz === null || hz === (el === swFrom ? sweep.lowHz : sweep.highHz)) {
     syncSweepSettings();
     return;
   }
@@ -1815,7 +1828,7 @@ function syncSource() {
   if (!typingIn.has(addressEl)) addressEl.value = source?.address ?? '';
   addressEl.disabled = !settable.has('address');
   const centreEl = $('#src-center');
-  if (!typingIn.has(centreEl)) centreEl.value = fmtMHz(source ? source.centreHz : S.fc);
+  if (!typingIn.has(centreEl)) centreEl.value = formatFrequency(source ? source.centreHz : S.fc);
   centreEl.disabled = !settable.has('centre_hz');
   const rateEl = $('#src-rate');
   selectRate(rateEl, source ? source.rateHz : S.fs);
@@ -1865,8 +1878,8 @@ $('#src-address').addEventListener('change', (e) => {
   if (!source || !address || address === source.address || !stream.sendSource({ address })) el.value = source?.address ?? '';
 });
 $('#src-center').addEventListener('change', (e) => {
-  const hz = Math.round(parseFloat(e.target.value.replace(',', '.')) * 1e6);
-  if (!source || !Number.isFinite(hz) || hz === source.centreHz) { syncSource(); return; }
+  const hz = parseFrequency(e.target.value);
+  if (!source || hz === null || hz === source.centreHz) { syncSource(); return; }
   if (!requestCentre(hz, hz + (S.vfo - S.fc), {})) syncSource();     // the VFO keeps its place in the span
 });
 $('#src-rate').addEventListener('change', (e) => { if (!stream.sendSource({ rateHz: Number(e.target.value) })) syncSource(); });
@@ -2097,7 +2110,7 @@ function renderPlanList() {
     if (g !== null && g !== group) html += `<li class="group">${escapeHtml(g)}</li>`;
     group = g;
     html += `<li><button type="button" class="item" data-range="${i}"><span class="sw"></span>`
-      + `<span class="name">${escapeHtml(r.name)}</span><span class="num">${fmtEdge(r.from)}–${fmtEdge(r.to)}</span></button></li>`;
+      + `<span class="name">${escapeHtml(r.name)}</span><span class="num">${formatFrequency(r.from)}–${formatFrequency(r.to)}</span></button></li>`;
     shown.push(r);
   });
   list.innerHTML = html || '<li class="empty">No band plan entry in the received span</li>';
@@ -2121,64 +2134,98 @@ function loadPlan() {
 // Bookmarks belong to the engine: changes go to it, and every interface
 // shows them once the engine sends them back. A click on a bookmark tunes
 // there with its mode, its box ticks it for the memory scan, and Edit turns
-// its row into a field for its name and a Remove link; leaving the row saves
-// the name. A bookmark that Add makes opens so, its name selected.
+// its row into fields for its name and its frequency and a Remove link;
+// leaving the row saves them, unless the frequency is not one: the row then
+// stays open with a note. A bookmark that Add makes opens so, its name
+// selected.
 const BOOKMARK_NAME_MAX = 60;       // as the engine's bookmarks.py
-let editing = null;                 // { id, text } while a bookmark is edited
+const BOOKMARK_FREQUENCY_NOTE = 'Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz, from 1 Hz to 100 GHz.';
+let editing = null;                 // { id, text, freq, invalid } while a bookmark is edited: its fields' texts
 let editRow = null;                 // its row: one that a new list replaced changes nothing
+const editingOf = (b) => ({ id: b.id, text: b.name, freq: formatFrequency(b.f), invalid: false });
 function renderBookmarks() {
   if (editing && !bookmarks.some((b) => b.id === editing.id)) editing = null;     // removed meanwhile
   const list = $('#bm-list'), refocus = focusedIn(list);
-  const oldField = editRow && editRow.querySelector('input[type="text"]');
+  // The field that had the focus, or the name's: the new row's takes its place and its selection.
+  const oldField = editRow && (editRow.querySelector('input:focus') || editRow.querySelector('input[data-field="name"]'));
   editRow = null;
   const q = $('#bm-filter').value.trim().toLowerCase();
   const edited = (b) => editing !== null && b.id === editing.id;
-  const items = bookmarks.filter((b) => edited(b) || !q || b.name.toLowerCase().includes(q) || fmtMHz(b.f).includes(q));
+  const items = bookmarks.filter((b) => edited(b) || !q || b.name.toLowerCase().includes(q) || formatFrequency(b.f).includes(q));
   // The ticked bookmarks that the memory scan leaves out say why.
   const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
   const left = memoryVisits() ? 'out of reach · ' : 'outside the span · ';
   scanMarksShown = scanMarksKey();
   list.innerHTML = items.length
     ? items.map((b) => (edited(b)
-      ? `<li class="bm" data-editing><input type="text" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${fmtMHz(b.f)} MHz">`
+      ? `<li class="bm" data-editing><input type="text" data-field="name" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${formatFrequency(b.f)} MHz">`
+        + `<input type="text" data-field="freq" inputmode="decimal" title="In MHz, or with Hz, kHz, MHz or GHz" aria-label="Frequency of ${escapeHtml(b.name)}">`
         + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`
       : `<li class="bm"><input type="checkbox" data-scan="${b.id}"${b.scan ? ' checked' : ''} title="Scan this bookmark" aria-label="Scan ${escapeHtml(b.name)}">`
-        + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${fmtMHz(b.f)} MHz · ${b.mode}`)}">`
-        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}${fmtMHz(b.f)}</span>`
+        + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${formatFrequency(b.f)} MHz · ${b.mode}`)}">`
+        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}${formatFrequency(b.f)}</span>`
         + `<span class="tag">${escapeHtml(b.mode)}</span></button>`
-        + `<button type="button" class="link" data-edit="${b.id}" title="Rename or remove" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
+        + `<button type="button" class="link" data-edit="${b.id}" title="Rename, retune or remove" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
     : '<li class="empty">No bookmarks</li>';
   const row = list.querySelector('li[data-editing]');
-  const field = row && row.querySelector('input[type="text"]');
+  let field = null;
   if (row) {
     editRow = row;
-    field.value = editing.text;
-    field.addEventListener('input', () => { if (row === editRow) editing.text = field.value; });
-    field.addEventListener('keydown', (e) => {
-      e.stopPropagation();      // Escape cancels the new name, and leaves the menu open
-      if (e.key === 'Enter') { e.preventDefault(); finishEdit(true, true); }
-      else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false, true); }
-    });
+    const nameField = row.querySelector('input[data-field="name"]'), freqField = row.querySelector('input[data-field="freq"]');
+    nameField.value = editing.text;
+    freqField.value = editing.freq;
+    if (editing.invalid) freqField.setAttribute('aria-invalid', 'true');
+    nameField.addEventListener('input', () => { if (row === editRow) editing.text = nameField.value; });
+    freqField.addEventListener('input', () => { if (row === editRow) editing.freq = freqField.value; });
+    for (const el of [nameField, freqField]) {
+      el.addEventListener('keydown', (e) => {
+        e.stopPropagation();      // Escape cancels the changes, and leaves the menu open
+        if (e.key === 'Enter') { e.preventDefault(); finishEdit(true, true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false, true); }
+      });
+    }
     row.addEventListener('focusout', (e) => { if (row === editRow && !row.contains(e.relatedTarget)) finishEdit(true, false); });
+    field = oldField && oldField.dataset.field === 'freq' ? freqField : nameField;
   }
+  // A row left open on a frequency that is not one leaves the focus where the user took it.
+  const focusOutside = document.activeElement !== null && document.activeElement !== document.body && !list.contains(document.activeElement);
   const target = refocus && list.querySelector(refocus);
   if (target) target.focus();
-  else if (field) {
+  else if (field && !(editing.invalid && focusOutside)) {
     field.focus();
     if (oldField) field.setSelectionRange(oldField.selectionStart, oldField.selectionEnd); else field.select();
   }
 }
-// The new name goes to the engine, unless empty or unchanged. Finished from
-// the keyboard, the focus returns to the bookmark's Edit link.
+// The new name, unless empty or unchanged, and the new frequency, unless
+// unchanged, go to the engine. A frequency that is not one keeps the row open,
+// its field marked, with a note: false. Finished from the keyboard, the focus
+// returns to the bookmark's Edit link.
 function finishEdit(save, keyboard) {
   const r = editing;
-  editing = null;
   const b = r && bookmarks.find((x) => x.id === r.id);
-  const name = r ? r.text.replace(/\s+/g, ' ').trim() : '';
-  if (save && b && name && name !== b.name) sendBookmark(() => stream.changeBookmark(b.id, { name }));
+  if (save && b) {
+    const f = parseFrequency(r.freq);
+    if (f === null) {
+      r.invalid = true;
+      if (editRow) editRow.querySelector('input[data-field="freq"]').setAttribute('aria-invalid', 'true');
+      bookmarkNote = BOOKMARK_FREQUENCY_NOTE;
+      syncBookmarkNote();
+      return false;
+    }
+    const name = r.text.replace(/\s+/g, ' ').trim(), changes = {};
+    if (name && name !== b.name) changes.name = name;
+    if (f !== b.f) changes.frequencyHz = f;
+    if (Object.keys(changes).length) sendBookmark(() => stream.changeBookmark(b.id, changes));
+  }
+  editing = null;
+  if (bookmarkNote === BOOKMARK_FREQUENCY_NOTE) {
+    bookmarkNote = '';
+    syncBookmarkNote();
+  }
   renderBookmarks();
   const link = keyboard && r && $(`#bm-list [data-edit="${r.id}"]`);
   if (link) link.focus();
+  return true;
 }
 // A rebuilt list keeps the keyboard focus: the control that had it, found
 // again by its data attribute.
@@ -2260,7 +2307,7 @@ function nameNewBookmark() {
   const b = n && bookmarks.find((x) => !n.before.has(x.id) && x.name === n.name && x.f === n.f);
   if (!b) return;     // not yet: this list came for another change
   namingBookmark = null;
-  if (openName === 'bookmarks' && !editing) editing = { id: b.id, text: b.name };
+  if (openName === 'bookmarks' && !editing) editing = editingOf(b);
 }
 $('#plan-list').addEventListener('click', (e) => { const b = e.target.closest('button[data-range]'); if (b) zoomToSegment(plan.ranges[Number(b.dataset.range)]); });
 $('#bm-filter').addEventListener('input', renderBookmarks);
@@ -2288,15 +2335,15 @@ $('#bm-list').addEventListener('click', (e) => {
   const b = id && bookmarks.find((x) => String(x.id) === id);
   if (!b) return;
   if (button.dataset.del) {
-    editing = null;             // the new name goes with the bookmark
+    editing = null;             // the changes go with the bookmark
     renderBookmarks();
     sendBookmark(() => stream.removeBookmark(b.id));
     if (e.detail === 0) $('#bm-add').focus();     // pressed from the keyboard: the focus stays in the menu
     return;
   }
-  if (editing) finishEdit(true, false);
+  if (editing && !finishEdit(true, false)) return;     // the frequency typed is not one: its row stays open
   if (button.dataset.id) tuneAnywhere(b.f, { mode: b.mode });
-  else { editing = { id: b.id, text: b.name }; renderBookmarks(); }
+  else { editing = editingOf(b); renderBookmarks(); }
 });
 
 // Scanners
@@ -2434,7 +2481,7 @@ function syncRecording() {
   syncRecordButton(recIq, iqGoes ? 'Stop' : 'Record I/Q', !iqOn || (!iqGoes && simulated));
   let text = '';
   if (runs) {
-    text = `${fmtEdge(a.frequencyHz)} MHz ${a.mode} · ${recordingMade(a)}`;
+    text = `${formatFrequency(a.frequencyHz)} MHz ${a.mode} · ${recordingMade(a)}`;
   } else if (known && simulated) {
     text = 'The simulated band is not recorded.';
   } else if (known && recording.stopped && recording.stopped.kind !== 'iq') {
@@ -2444,7 +2491,7 @@ function syncRecording() {
   if (el.textContent !== text) el.textContent = text;
   let iqText = '';
   if (iqGoes) {
-    iqText = `${fmtEdge(q.frequencyHz)} MHz · ${fmtRate(q.rateHz)} · ${recordingMade(q)}`;
+    iqText = `${formatFrequency(q.frequencyHz)} MHz · ${fmtRate(q.rateHz)} · ${recordingMade(q)}`;
   } else if (iqOn && recording.stopped && recording.stopped.kind === 'iq') {
     iqText = `Stopped: ${recordingStop()}.`;
   }
@@ -2498,7 +2545,7 @@ function recordingItem(f) {
       + `<button type="button" class="link" data-del="${name}"${armed ? ` aria-label="Confirm deleting ${name}"` : ''}>`
       + `${armed ? 'Confirm' : 'Delete'}</button>`;
   }
-  return `<li class="rec" title="${name}"><span class="name">${fmtEdge(f.frequencyHz)} MHz ${escapeHtml(f.mode)}`
+  return `<li class="rec" title="${name}"><span class="name">${formatFrequency(f.frequencyHz)} MHz ${escapeHtml(f.mode)}`
     + `<span class="facts">${facts}</span></span>${acts}</li>`;
 }
 function renderRecordings() {
@@ -2849,7 +2896,7 @@ function touchMenuOrigin(x, y, w, h) {
 function openCtx(x, y, f, touch = false) {
   ctxF = f;
   const seg = segmentAt(f);
-  $('#ctx-title').textContent = `${fmtMHz(f, 4)} MHz${seg ? ` · ${seg.name}` : ''}`;
+  $('#ctx-title').textContent = `${formatFrequency(snapAt(f))} MHz${seg ? ` · ${seg.name}` : ''}`;   // where Tune and Bookmark go
   ctxEl.querySelector('[data-cmd="segment"]').disabled = !seg;
   ctxEl.hidden = false;
   const r = ctxEl.getBoundingClientRect();
@@ -3028,7 +3075,7 @@ bandEl.addEventListener('pointermove', (e) => {
   poke();
   showHover(e, 'band');
   const item = stripItemAt(xToF(e.clientX));
-  bandEl.title = item ? `${rangeTitle(item)} · ${fmtEdge(item.from)}–${fmtEdge(item.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
+  bandEl.title = item ? `${rangeTitle(item)} · ${formatFrequency(item.from)}–${formatFrequency(item.to)} MHz · drag: spectrum height` : 'Drag: spectrum height';
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
@@ -3049,8 +3096,9 @@ function editFreq() {
   input.type = 'text';
   input.inputMode = 'decimal';
   input.className = 'freq-input';
-  input.value = fmtMHz(shownVfo());
-  input.setAttribute('aria-label', 'Frequency in MHz');
+  const shown = Math.round(shownVfo());
+  input.value = formatFrequency(shown);
+  input.setAttribute('aria-label', 'Frequency, in MHz or with a unit');
   freqEl.replaceChildren(input);
   input.focus();
   input.select();
@@ -3059,10 +3107,15 @@ function editFreq() {
     if (closed) return;
     closed = true;
     editingFreq = false;
-    if (apply) {
-      const v = parseFloat(input.value.replace(',', '.'));
-      const hz = v < 1e5 ? v * 1e6 : v;
-      if (Number.isFinite(hz) && reachable(hz)) tuneAnywhere(hz);
+    // Only a frequency other than the VFO's tunes: an entry left as it opened moves nothing.
+    const hz = apply ? parseFrequency(input.value) : null;
+    if (apply && hz === null && input.value.trim()) showStatusNote('Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz');
+    else if (hz !== null && hz !== shown) {
+      if (reachable(hz)) tuneAnywhere(hz);
+      else {
+        const [lo, hi] = reach();
+        showStatusNote(`${formatFrequency(hz)} MHz is beyond this receiver's range (${formatFrequency(lo)} to ${formatFrequency(hi)} MHz)`);
+      }
     }
     renderFreq();
     freqEl.focus();
@@ -3145,15 +3198,51 @@ legalButton.addEventListener('click', () => {
   $('#legal-text').scrollTop = 0;
 });
 
-freqEl.addEventListener('dblclick', editFreq);
-freqEl.addEventListener('click', () => { if (coarseQuery.matches) editFreq(); });   // touch: one tap opens the keypad
+// A digit of the readout changes with the wheel over it, or dragged up or
+// down by any pointer: by one for each DIGIT_DRAG_PX, once the pointer moved
+// DIGIT_DRAG_SLOP_PX, so that a shorter press stays a click, or a tap that
+// opens the keypad. The VFO goes there, off the step's grid, and the span
+// follows it as after a click outside the span.
+const DIGIT_DRAG_PX = 16;
+const DIGIT_DRAG_SLOP_PX = 8;
+const DRAG_CLICK_MS = 400;          // the click that ends a drag comes within this
+let digitDrag = null;               // { id, y0, base, m, steps, moved } while a pointer holds a digit
+let digitDragEnd = -Infinity;       // performance.now() when the last drag ended
+function tuneDigit(f) {
+  if (f >= MIN_FREQUENCY_HZ && f <= MAX_FREQUENCY_HZ) tuneAnywhere(f);
+}
+const afterDrag = () => performance.now() - digitDragEnd < DRAG_CLICK_MS;
+freqEl.addEventListener('dblclick', () => { if (!afterDrag()) editFreq(); });
+freqEl.addEventListener('click', () => { if (coarseQuery.matches && !afterDrag()) editFreq(); });   // touch: one tap opens the keypad
 freqEl.addEventListener('wheel', (e) => {
   const digit = e.target.closest('.d');
   if (!digit) return;
   e.preventDefault();
   if (Math.abs(e.deltaY) < 2) return;
-  tune(S.vfo + (e.deltaY < 0 ? 1 : -1) * Number(digit.dataset.m));
+  tuneDigit(Math.round(shownVfo()) + (e.deltaY < 0 ? 1 : -1) * Number(digit.dataset.m));
 }, { passive: false });
+freqEl.addEventListener('pointerdown', (e) => {
+  const digit = !editingFreq && e.button === 0 && e.target.closest('.d');
+  if (!digit) return;
+  digitDrag = { id: e.pointerId, y0: e.clientY, base: Math.round(shownVfo()), m: Number(digit.dataset.m), steps: 0, moved: false };
+  freqEl.setPointerCapture(e.pointerId);    // the digits are written again as the VFO moves
+});
+freqEl.addEventListener('pointermove', (e) => {
+  if (!digitDrag || e.pointerId !== digitDrag.id) return;
+  const rise = digitDrag.y0 - e.clientY;
+  if (!digitDrag.moved && Math.abs(rise) < DIGIT_DRAG_SLOP_PX) return;
+  digitDrag.moved = true;
+  const steps = Math.trunc(rise / DIGIT_DRAG_PX);
+  if (steps === digitDrag.steps) return;
+  digitDrag.steps = steps;
+  tuneDigit(digitDrag.base + steps * digitDrag.m);
+});
+function endDigitDrag(e) {
+  if (!digitDrag || e.pointerId !== digitDrag.id) return;
+  if (digitDrag.moved) digitDragEnd = performance.now();
+  digitDrag = null;
+}
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) freqEl.addEventListener(type, endDigitDrag);
 
 // Touch step buttons: a press steps once, holding repeats.
 function bindStepButton(btn, dir) {

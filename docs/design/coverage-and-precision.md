@@ -196,7 +196,7 @@ Common rules:
 Interface only.
 
 - **One formatter**, `formatFrequency(hz)`: MHz with 3 to 6 decimals, the
-  zeros at the end dropped (145.500, 145.6125, 145.612550). It replaces the
+  zeros at the end dropped (145.500, 145.6125, 145.61255). It replaces the
   4 decimals wherever a frequency is exact: the bookmarks' list, tooltips
   and labels, the VFO's edge label, the antenna dialog, the context menu's
   title, the sweep's range, the centre frequency. Measurements keep their

@@ -34,7 +34,7 @@
   <div id="tune-tip" hidden></div>
 
   <div id="readout">
-    <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
+    <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Drag or wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
       <svg viewBox="0 0 15 15" aria-hidden="true"><path d="M3 1.5c1.7 0 2.7.8 3.4 2.4l5.1 9.6M7.5 6 3 13.5"/></svg>
     </button></div>
     <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
@@ -94,12 +94,21 @@
             <label for="dm-step">Tuning step</label>
             <select id="dm-step">
               <option value="auto">Automatic</option>
+              <option value="1">1 Hz</option>
               <option value="10">10 Hz</option>
+              <option value="50">50 Hz</option>
               <option value="100">100 Hz</option>
+              <option value="500">500 Hz</option>
               <option value="1000">1 kHz</option>
+              <option value="5000">5 kHz</option>
               <option value="6250">6.25 kHz</option>
+              <option value="8333.333333333334">8.33 kHz</option>
+              <option value="9000">9 kHz</option>
+              <option value="10000">10 kHz</option>
               <option value="12500">12.5 kHz</option>
               <option value="25000">25 kHz</option>
+              <option value="50000">50 kHz</option>
+              <option value="100000">100 kHz</option>
             </select>
           </div>
           <p class="note">AM, USB, LSB and CW level their audio by themselves; WFM plays broadcast FM in mono.</p>
@@ -285,6 +294,7 @@
                 <dt>1 to 8</dt><dd>Menus</dd>
                 <dt>Esc</dt><dd>Close</dd>
                 <dt>Double-click the frequency</dt><dd>Type a frequency</dd>
+                <dt>Drag or wheel over a digit</dt><dd>Change that digit</dd>
               </dl>
             </div>
             <div class="keys-touch">
@@ -297,6 +307,7 @@
                 <dt>Tap the S-meter</dt><dd>Squelch</dd>
                 <dt>− and +</dt><dd>Tuning step, hold to repeat</dd>
                 <dt>Tap the frequency</dt><dd>Type a frequency</dd>
+                <dt>Drag a digit up or down</dt><dd>Change that digit</dd>
               </dl>
             </div>
           </div>
