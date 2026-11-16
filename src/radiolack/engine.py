@@ -239,7 +239,7 @@ class FixedSource:
         return {"kind": self.kind, "status": "streaming", "detail": "", "address": None,
                 "tuner": None, "centre_hz": centre, "sample_rate_hz": self.sample_rate_hz,
                 "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [centre, centre],
-                "settable": []}
+                "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "settable": []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
         raise ValueError(f"the {self.kind} source cannot change its settings")

@@ -131,9 +131,10 @@ class FakeRtlTcp:
     amplitude in full-scale units, the samples are instead those carriers,
     the ones within the current setting's band, over white noise of
     ``noise`` (full-scale units, in I and in Q). It records the commands it
-    receives, and applies a frequency or sample rate only after
-    ``apply_delay_s``, as samples of the old setting still arrive for a while
-    from a real receiver.
+    receives, and applies a frequency, sample rate, direct sampling input
+    or RTL2832 AGC only after ``apply_delay_s``, as samples of the old
+    setting still arrive for a while from a real receiver. Like librtlsdr,
+    leaving direct sampling wakes the tuner up in automatic gain.
     """
 
     def __init__(self, *, port: int = 0, magic: bytes = b"RTL0", tuner_type: int = 5,
@@ -153,6 +154,9 @@ class FakeRtlTcp:
         self.sending = True             # False: send no samples
         self.frequency_hz = 100_000_000     # left by a previous client
         self.sample_rate_hz = 2_048_000
+        self.direct_sampling = 0        # command 0x09: 0 the tuner, 1 the I input, 2 the Q input
+        self.rtl_agc = 0                # command 0x08
+        self.gain_tenths: int | None = None     # None: automatic gain
         self.commands: list[tuple[int, int]] = []
         self.connections = 0            # accepted so far
         self._writers: set[asyncio.StreamWriter] = set()
@@ -211,6 +215,16 @@ class FakeRtlTcp:
             self.frequency_hz = value
         elif command == 0x02:
             self.sample_rate_hz = value
+        elif command == 0x03:
+            self.gain_tenths = None if value == 0 else self.gain_tenths or 0
+        elif command == 0x04:
+            self.gain_tenths = value
+        elif command == 0x08:
+            self.rtl_agc = value
+        elif command == 0x09:
+            if self.direct_sampling and not value:
+                self.gain_tenths = None     # the tuner wakes up with its defaults
+            self.direct_sampling = value
 
     async def _send(self, writer: asyncio.StreamWriter) -> None:
         if not self.header:

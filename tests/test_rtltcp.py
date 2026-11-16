@@ -33,6 +33,21 @@ asyncio.run(main())
 """
 
 
+# Commands sent at each connection with automatic gain: the gain mode only.
+CONNECTION = 6
+
+
+def connection_commands(ppm: int, rate_hz: int, centre_hz: int, gain_tenths: int | None = None,
+                        direct: int = 0, rtl_agc: int = 0) -> list[tuple[int, int]]:
+    """What the source sends at each connection: the correction, the sample
+    rate, direct sampling, the RTL2832's AGC, the frequency, then the gain,
+    unless sampling directly."""
+    commands = [(0x05, ppm % 2**32), (0x02, rate_hz), (0x09, direct), (0x08, rtl_agc), (0x01, centre_hz)]
+    if not direct:
+        commands += [(0x03, 0)] if gain_tenths is None else [(0x03, 1), (0x04, gain_tenths)]
+    return commands
+
+
 async def eventually(condition, timeout: float = 5.0) -> None:
     """Wait until ``condition()`` holds."""
     deadline = time.monotonic() + timeout
@@ -92,7 +107,7 @@ class StreamingTest(SourceTest):
         for _ in range(5):
             self.assert_labelled(source, await self.read(source))
         self.assertEqual((source.centre_hz, source.sample_rate_hz), (433e6, 1_024_000.0))
-        self.assertEqual(self.fake.commands, [(0x03, 0), (0x05, 0), (0x02, 1_024_000), (0x01, 433_000_000)])
+        self.assertEqual(self.fake.commands, connection_commands(0, 1_024_000, 433_000_000))
         self.assertEqual(source.status, "streaming")
 
     async def test_converts_unsigned_bytes_to_full_scale(self):
@@ -112,12 +127,14 @@ class StreamingTest(SourceTest):
             "address": f"{LOOPBACK}:{self.fake.port}", "tuner": "Rafael Micro R820T",
             "centre_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
-            "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm"],
+            "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": False,
+            "rtl_agc": False,
+            "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc"],
         })
         # One set of settings whatever the address, which was given here.
         self.assertEqual((source.settings_key, source.given), ("rtl_tcp", frozenset({"address"})))
         self.assertEqual(len(state["gains_db"]), 29)
-        self.assertEqual(self.fake.commands[:2], [(0x03, 1), (0x04, 297)])
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 145_000_000, 297))
         self.assertGreaterEqual(self.changes, 2)    # connecting, then streaming
 
     async def test_a_reader_that_falls_behind_gets_the_latest_samples(self):
@@ -154,8 +171,8 @@ class SettingsTest(SourceTest):
         source = await self.start()
         await self.read(source)
         source.configure({"sample_rate_hz": 1_024_000})
-        await eventually(lambda: len(self.fake.commands) == 6)
-        self.assertEqual(self.fake.commands[4:], [(0x02, 1_024_000), (0x01, 145_000_000)])
+        await eventually(lambda: len(self.fake.commands) == CONNECTION + 2)
+        self.assertEqual(self.fake.commands[CONNECTION:], [(0x02, 1_024_000), (0x01, 145_000_000)])
         self.assert_labelled(source, await self.read(source))
         self.assertEqual(source.sample_rate_hz, 1_024_000.0)
 
@@ -165,8 +182,9 @@ class SettingsTest(SourceTest):
         source.configure({"gain_db": 30})
         source.configure({"gain_db": -5})
         source.configure({"gain_db": None})
-        await eventually(lambda: len(self.fake.commands) == 9)
-        self.assertEqual(self.fake.commands[4:], [(0x03, 1), (0x04, 297), (0x03, 1), (0x04, 0), (0x03, 0)])
+        await eventually(lambda: len(self.fake.commands) == CONNECTION + 5)
+        self.assertEqual(self.fake.commands[CONNECTION:],
+                         [(0x03, 1), (0x04, 297), (0x03, 1), (0x04, 0), (0x03, 0)])
         self.assertIsNone(source.describe()["gain_db"])
 
     async def test_negative_gains_go_in_twos_complement(self):
@@ -179,11 +197,11 @@ class SettingsTest(SourceTest):
     async def test_a_frequency_correction_retunes_and_drops_the_samples_on_their_way(self):
         source = await self.start(ppm=5)
         await self.read(source)
-        self.assertEqual(self.fake.commands, [(0x03, 0), (0x05, 5), (0x02, 2_400_000), (0x01, 145_000_000)])
+        self.assertEqual(self.fake.commands, connection_commands(5, 2_400_000, 145_000_000))
         changed = time.monotonic()
         source.configure({"ppm": -2.6})     # whole ppm, as librtlsdr takes them
-        await eventually(lambda: len(self.fake.commands) == 6)
-        self.assertEqual(self.fake.commands[4:], [(0x05, 2**32 - 3), (0x01, 145_000_000)])
+        await eventually(lambda: len(self.fake.commands) == CONNECTION + 2)
+        self.assertEqual(self.fake.commands[CONNECTION:], [(0x05, 2**32 - 3), (0x01, 145_000_000)])
         self.assertEqual(source.describe()["ppm"], -3)
         await self.read(source)
         self.assertGreaterEqual(time.monotonic() - changed, FAST["settle_s"])
@@ -253,8 +271,7 @@ class SettingsTest(SourceTest):
         source.configure({"centre_hz": 433_000_000, "gain_db": 40})
         self.assertEqual(self.fake.commands, [])
         await self.read(source)
-        self.assertEqual(self.fake.commands,
-                         [(0x03, 1), (0x04, 402), (0x05, 0), (0x02, 2_400_000), (0x01, 433_000_000)])
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 433_000_000, 402))
 
     def test_refuses_invalid_settings_at_creation(self):
         for options in ({"centre_hz": 1e10}, {"gain_db": "auto"}, {"ppm": 101}):
@@ -265,6 +282,114 @@ class SettingsTest(SourceTest):
         self.assertEqual(tuner_for(6, 29).name, "Rafael Micro R828D")
         self.assertEqual(tuner_for(1, 14).range_hz, (52e6, 2200e6))
         self.assertEqual(tuner_for(0, 0).name, "Unknown tuner (type 0)")
+
+
+class ShortwaveTest(SourceTest):
+    async def commands_after(self, count: int) -> list[tuple[int, int]]:
+        """The commands sent from the ``count``-th on, once they stop coming."""
+        await asyncio.sleep(0.1)
+        return self.fake.commands[count:]
+
+    async def test_samples_directly_below_the_tuner_and_keeps_the_gain_for_it(self):
+        source = await self.start()
+        source.configure({"hf_input": "q", "centre_hz": 7_100_000, "gain_db": 30, "rtl_agc": True})
+        self.assert_labelled(source, await self.read(source))
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 7_100_000, direct=2, rtl_agc=1))
+        state = source.describe()
+        self.assertEqual((state["hf_input"], state["direct"], state["rtl_agc"], state["gain_db"]),
+                         ("q", True, True, 29.7))
+        self.assertEqual(state["range_hz"], [1.2e6, 1766e6])
+        self.assertEqual((self.fake.direct_sampling, self.fake.rtl_agc), (2, 1))
+
+    async def test_enters_and_leaves_direct_sampling_as_the_centre_frequency_crosses_the_tuner(self):
+        source = await self.start(gain_db=30)
+        source.configure({"hf_input": "q", "rtl_agc": True})
+        await self.read(source)
+        sent = len(self.fake.commands)
+        self.assertEqual(self.fake.commands, connection_commands(0, 2_400_000, 145_000_000, 297))
+        source.configure({"centre_hz": 7_100_000})
+        self.assertEqual(await self.commands_after(sent), [(0x09, 2), (0x08, 1), (0x01, 7_100_000)])
+        self.assert_labelled(source, await self.read(source))
+        self.assertTrue(source.describe()["direct"])
+
+        sent = len(self.fake.commands)
+        source.configure({"gain_db": 40})                    # kept for the tuner, which sleeps
+        source.configure({"hf_input": "i"})                  # the other input, on the same frequency
+        source.configure({"rtl_agc": False})
+        self.assertEqual(await self.commands_after(sent), [(0x09, 1), (0x01, 7_100_000), (0x08, 0)])
+        self.assertEqual((source.describe()["gain_db"], source.centre_hz), (40.2, 7.1e6))
+
+        sent = len(self.fake.commands)
+        source.configure({"centre_hz": 24_000_000})          # the tuner's lowest frequency
+        self.assertEqual(await self.commands_after(sent),
+                         [(0x09, 0), (0x03, 1), (0x04, 402), (0x01, 24_000_000)])
+        self.assert_labelled(source, await self.read(source))
+        self.assertFalse(source.describe()["direct"])
+        self.assertEqual((self.fake.direct_sampling, self.fake.gain_tenths), (0, 402))
+
+        sent = len(self.fake.commands)
+        source.configure({"rtl_agc": True})                  # waits for direct sampling
+        source.configure({"centre_hz": 23_999_999})
+        source.configure({"centre_hz": 145_000_000})
+        self.assertEqual(await self.commands_after(sent), [
+            (0x09, 1), (0x08, 1), (0x01, 23_999_999),
+            (0x09, 0), (0x08, 0), (0x03, 1), (0x04, 402), (0x01, 145_000_000)])
+
+    async def test_the_reach_follows_the_input_and_the_sample_rate(self):
+        source = await self.start()
+        await self.read(source)
+        with self.assertRaisesRegex(ValueError, "^the receiver tunes from 24 to 1766 MHz$"):
+            source.configure({"centre_hz": 7_100_000})
+        for hf_input in ("q", "i", "tuner"):
+            with self.subTest(hf_input=hf_input):
+                source.configure({"hf_input": hf_input, "centre_hz": 1_200_000})    # a span from 0 Hz
+                self.assertEqual(source.describe()["range_hz"], [1.2e6, 1766e6])
+                self.assertEqual(source.describe()["direct"], hf_input != "tuner")
+                with self.assertRaisesRegex(ValueError, "^the receiver tunes from 1.2 to 1766 MHz$"):
+                    source.configure({"centre_hz": 1_199_999})
+        # A new rate or input without a centre frequency brings it within reach.
+        source.configure({"sample_rate_hz": 3_200_000})
+        self.assertEqual(source.describe()["centre_hz"], 1.6e6)
+        source.configure({"hf_input": "none"})
+        self.assertEqual(source.describe()["centre_hz"], 24e6)
+        self.assertEqual(source.describe()["range_hz"], [24e6, 1766e6])
+        source.configure({"hf_input": "q", "sample_rate_hz": 900_001})
+        source.configure({"centre_hz": 450_001})            # whole hertz: 450,000.5 rounded up
+        with self.assertRaises(ValueError):
+            source.configure({"centre_hz": 450_000})
+
+    async def test_a_tuner_far_above_shortwave_leaves_a_gap_that_is_refused(self):
+        source = await self.start(FakeRtlTcp(tuner_type=1, gain_count=14))
+        source.configure({"hf_input": "tuner", "centre_hz": 7_100_000})     # the tuner is not known yet
+        await self.read(source)
+        state = source.describe()
+        # An E4000 does not cover shortwave by itself: its centre comes back within its range.
+        self.assertEqual((state["hf_input"], state["hf_inputs"], state["centre_hz"], state["direct"]),
+                         ("none", ["none", "q", "i"], 52e6, False))
+        with self.assertRaisesRegex(ValueError, "^the shortwave input must be one of: none, q, i$"):
+            source.configure({"hf_input": "tuner"})
+        source.configure({"hf_input": "q"})
+        self.assertEqual(source.describe()["range_hz"], [1.2e6, 2200e6])
+        gap = ("^the receiver tunes from 1.2 to 27.6 MHz by direct sampling "
+               "and from 52 to 2200 MHz with its tuner$")
+        for centre in (27_600_001, 40e6, 51_999_999):
+            with self.subTest(centre=centre), self.assertRaisesRegex(ValueError, gap):
+                source.configure({"centre_hz": centre})
+        source.configure({"centre_hz": 27_600_000})
+        self.assertTrue(source.describe()["direct"])
+        source.configure({"centre_hz": 52_000_000})
+        self.assertFalse(source.describe()["direct"])
+
+    async def test_refuses_invalid_shortwave_settings(self):
+        source = await self.start()
+        await self.read(source)
+        before = source.describe()
+        for change in ({"hf_input": "x"}, {"hf_input": None}, {"hf_input": 2}, {"hf_input": "Q"},
+                       {"rtl_agc": 1}, {"rtl_agc": "true"}, {"rtl_agc": None},
+                       {"hf_input": "q", "centre_hz": 1e6}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                source.configure(change)
+        self.assertEqual(source.describe(), before)
 
 
 class AddressTest(SourceTest):
@@ -285,8 +410,7 @@ class AddressTest(SourceTest):
                          (f"{LOOPBACK}:{other.port}", "connecting", None))
         self.assert_labelled(source, await self.read(source))
         self.assertEqual(source.status, "streaming")
-        self.assertEqual(other.commands,
-                         [(0x03, 1), (0x04, 402), (0x05, 2**32 - 4), (0x02, 2_400_000), (0x01, 433_000_000)])
+        self.assertEqual(other.commands, connection_commands(-4, 2_400_000, 433_000_000, 402))
         await eventually(lambda: self.fake.open_connections == 0)
         self.assertEqual(self.fake.connections, 1)
 
@@ -452,7 +576,7 @@ class ConnectionTest(SourceTest):
         self.fake.drop()
         await eventually(lambda: self.fake.connections == 2 and source.status == "streaming")
         self.assert_labelled(source, await self.read(source))
-        self.assertEqual(self.fake.commands[4:], self.fake.commands[:4])
+        self.assertEqual(self.fake.commands[CONNECTION:], self.fake.commands[:CONNECTION])
 
     async def test_a_lost_connection_is_a_waiting_state(self):
         source = await self.start()
@@ -636,7 +760,7 @@ class RtlSdrSourceTest(SourceTest):
         source = RtlSdrSource(program=FAKE_RTL_TCP)     # nothing reads: nothing starts
         state = source.describe()
         self.assertIsNone(state["address"])
-        self.assertEqual(state["settable"], ["centre_hz", "sample_rate_hz", "gain_db", "ppm"])
+        self.assertEqual(state["settable"], ["hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc"])
         with self.assertRaisesRegex(ValueError, "unknown setting: address"):
             source.configure({"address": "192.0.2.10"})
 

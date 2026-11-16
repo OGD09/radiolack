@@ -1723,6 +1723,44 @@ class BrowserTest(unittest.TestCase):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_shortwave_samples_directly_below_the_tuner_without_gain_control(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                hf_input = first.locator("#src-hf")
+                expect(hf_input).to_have_value("none")
+                expect(first.locator("#src-hf-note")).to_contain_text("The tuner alone")
+                expect(first.locator("#src-rtl-agc")).to_be_disabled()
+                hf_input.select_option("q")
+                for page in (first, second):
+                    expect(page.locator("#src-hf")).to_have_value("q")
+                    expect(page.locator("#src-hf-note")).to_contain_text("an RTL-SDR Blog V3")
+                    expect(page.locator("#src-rtl-agc")).to_be_enabled()
+                    expect(page.locator("#src-gain-note")).to_be_hidden()
+                centre = first.locator("#src-center")
+                centre.fill("7.1")
+                centre.press("Enter")
+                for page in (first, second):
+                    expect(page.locator("#src-center")).to_have_value("7.100")
+                    expect(page.locator("#src-gain-note")).to_have_text("Direct sampling: no gain control")
+                    expect(page.locator("#src-gain")).to_be_disabled()
+                    expect(page.locator("#src-agc")).to_be_disabled()
+                    expect(page.locator("#src-hf-note")).to_contain_text(
+                        "signals above and below 14.4 MHz mirror each other")
+                first.locator("#src-rtl-agc").check()
+                expect(second.locator("#src-rtl-agc")).to_be_checked()
+                second.locator("#src-rtl-agc").uncheck()
+                expect(first.locator("#src-rtl-agc")).not_to_be_checked()
+                second.locator("#src-hf").select_option("none")     # the centre comes back within the tuner
+                for page in (first, second):
+                    expect(page.locator("#src-center")).to_have_value("24.000")
+                    expect(page.locator("#src-gain-note")).to_be_hidden()
+                    expect(page.locator("#src-agc")).to_be_enabled()
+                    expect(page.locator("#src-rtl-agc")).to_be_disabled()
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_receiver_list_switches_the_source_for_every_interface(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
@@ -1735,10 +1773,12 @@ class BrowserTest(unittest.TestCase):
                 expect(receiver).to_be_enabled()
                 expect(receiver).to_have_value("synthetic")
                 expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
+                expect(first.locator("#src-hf-field")).to_be_hidden()     # the simulated band has no shortwave
                 receiver.select_option("rtl_sdr")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("rtl_sdr")
                     expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                    expect(page.locator("#src-hf-field")).to_be_visible()
                 receiver.select_option("rtl_tcp")
                 for page in (first, second):
                     expect(page.locator("#status")).to_contain_text(

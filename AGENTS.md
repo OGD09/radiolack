@@ -86,7 +86,7 @@ the history under the tag `v0.1.0`.
   32 kHz in WFM), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
-  waiting state; hands the raw samples to an I/Q recording's tap),
+  waiting state; direct sampling below the tuner's range for shortwave; hands the raw samples to an I/Q recording's tap),
   `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
@@ -106,8 +106,10 @@ the history under the tag `v0.1.0`.
   `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
   (band plan loader), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
-  exact frequencies) and `tuning.js` (the Automatic step) carry JSDoc types; `main.js` still holds the mockup's code under
-  `// @ts-nocheck` and gets types as it is rewritten. `bandplan-europe.json`
+  exact frequencies), `shortwave.js` (the Receiver menu's shortwave
+  input) and `tuning.js` (the Automatic step) carry JSDoc types; `main.js`
+  still holds the mockup's code under `// @ts-nocheck` and gets types as it
+  is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`

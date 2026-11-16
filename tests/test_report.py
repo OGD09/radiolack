@@ -157,6 +157,20 @@ class ReceiverLineTest(unittest.TestCase):
                  "centre_hz": 145_000_000, "sample_rate_hz": 1_024_000}
         self.assertEqual(report.receiver_line(state), "synthetic, streaming, 1.024 MS/s")
 
+    def test_the_shortwave_input_in_use_without_a_frequency(self):
+        state = {"kind": "rtl_sdr", "status": "streaming", "detail": "", "address": None,
+                 "tuner": "R820T", "centre_hz": 7_100_000, "sample_rate_hz": 2_400_000,
+                 "hf_input": "q", "direct": True}
+        self.assertEqual(report.receiver_line(state), "rtl_sdr, streaming, tuner R820T, "
+                         "shortwave input q, using direct sampling, Q input, 2.4 MS/s")
+        for hf_input, direct, shown in (("i", False, ", shortwave input i, using the tuner"),
+                                        ("tuner", False, ", shortwave input tuner, using the tuner"),
+                                        ("none", False, ""), (None, False, "")):
+            with self.subTest(hf_input=hf_input):
+                state.update(hf_input=hf_input, direct=direct, centre_hz=145_500_000)
+                self.assertEqual(report.receiver_line(state),
+                                 f"rtl_sdr, streaming, tuner R820T{shown}, 2.4 MS/s")
+
 
 class CheckPageTest(unittest.TestCase):
     def test_takes_a_line_of_text(self):

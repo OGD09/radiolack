@@ -170,13 +170,22 @@ def check_page(page: object) -> str:
     return page
 
 
+# What a direct sampling input uses while the receiver samples directly.
+_DIRECT_INPUTS = {"q": "direct sampling, Q input", "i": "direct sampling, I input"}
+
+
 def receiver_line(state: Mapping[str, Any]) -> str:
     """The receiver's kind and state from its source state, such as
-    "rtl_tcp, waiting, tuner R820T, 2.048 MS/s (no answer)": neither its
-    address nor its frequency."""
+    "rtl_tcp, waiting, tuner R820T, 2.048 MS/s (no answer)", with the input
+    in use for shortwave once one is chosen: neither its address nor its
+    frequency."""
     parts = [str(state.get("kind")), str(state.get("status"))]
     if state.get("tuner"):
         parts.append(f"tuner {state['tuner']}")
+    hf_input = state.get("hf_input")
+    if hf_input in ("q", "i", "tuner"):
+        in_use = _DIRECT_INPUTS.get(hf_input, "the tuner") if state.get("direct") else "the tuner"
+        parts.append(f"shortwave input {hf_input}, using {in_use}")
     rate = state.get("sample_rate_hz")
     if isinstance(rate, (int, float)) and rate > 0:
         parts.append(f"{rate / 1e6:g} MS/s")

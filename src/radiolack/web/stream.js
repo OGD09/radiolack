@@ -27,7 +27,8 @@ const RETRY_MAX_MS = 4000;
 const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no longer
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
-const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
+const SETTINGS = ['address', 'hf_input', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'rtl_agc', 'dc_removal'];
+const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
   'recordings', 'update', 'remote', 'report'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
@@ -309,7 +310,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * @typedef {'address' | 'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'dc_removal'} Setting
+ * @typedef {'address' | 'hf_input' | 'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'rtl_agc' | 'dc_removal'} Setting
  */
 
 /**
@@ -329,6 +330,11 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {boolean} dcRemoval        the engine takes a constant offset off the samples
  * @property {number[]} gainsDb         manual gains the tuner offers, lowest first
  * @property {[number, number]} rangeHz centre frequencies the source takes
+ * @property {string | null} hfInput    what an RTL-SDR uses for shortwave: "none", "q", "i" or "tuner";
+ *                                      null: a source without it
+ * @property {string[]} hfInputs        the values of hfInput the receiver offers
+ * @property {boolean} direct           the receiver samples directly, without its tuner
+ * @property {boolean | null} rtlAgc    the RTL2832's AGC while sampling directly; null: a source without it
  * @property {Setting[]} settable       settings an interface may change
  * @property {string[]} kinds           kinds of source the engine may switch to; empty: it reads one only
  */
@@ -342,6 +348,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [rateHz]
  * @property {number | null} [gainDb]   null: automatic gain
  * @property {number} [ppm]             a whole number
+ * @property {string} [hfInput]         one of SourceState.hfInputs
+ * @property {boolean} [rtlAgc]
  * @property {boolean} [dcRemoval]
  */
 
@@ -456,7 +464,9 @@ export function decodeDemod(message) {
 
 /**
  * Decode a source state message. Returns null when a field is missing or
- * malformed; settings this interface does not know are left out.
+ * malformed; settings this interface does not know are left out. The
+ * shortwave fields, which an engine older than them does not send, read as
+ * a source without a shortwave input.
  * @param {any} message  a parsed JSON message of type "source"
  * @returns {SourceState | null}
  */
@@ -474,7 +484,12 @@ export function decodeSource(message) {
     && Array.isArray(m.gains_db) && m.gains_db.every(finite)
     && Array.isArray(m.range_hz) && m.range_hz.length === 2 && m.range_hz.every(finite)
     && m.range_hz[0] <= m.range_hz[1]
-    && Array.isArray(m.settable) && m.settable.every((/** @type {unknown} */ name) => typeof name === 'string');
+    && Array.isArray(m.settable) && m.settable.every((/** @type {unknown} */ name) => typeof name === 'string')
+    && (m.hf_input === undefined || m.hf_input === null || HF_INPUTS.includes(m.hf_input))
+    && (m.hf_inputs === undefined || (Array.isArray(m.hf_inputs)
+      && m.hf_inputs.every((/** @type {unknown} */ input) => typeof input === 'string')))
+    && (m.direct === undefined || typeof m.direct === 'boolean')
+    && (m.rtl_agc === undefined || m.rtl_agc === null || typeof m.rtl_agc === 'boolean');
   if (!valid) return null;
   return {
     kind: m.kind,
@@ -489,6 +504,10 @@ export function decodeSource(message) {
     dcRemoval: m.dc_removal,
     gainsDb: m.gains_db.slice(),
     rangeHz: [m.range_hz[0], m.range_hz[1]],
+    hfInput: m.hf_input ?? null,
+    hfInputs: Array.isArray(m.hf_inputs) ? m.hf_inputs.filter((/** @type {string} */ input) => HF_INPUTS.includes(input)) : [],
+    direct: m.direct === true,
+    rtlAgc: m.rtl_agc ?? null,
     settable: m.settable.filter((/** @type {string} */ name) => SETTINGS.includes(name)),
     kinds: Array.isArray(m.kinds) ? m.kinds.filter((/** @type {unknown} */ kind) => typeof kind === 'string') : [],
   };
@@ -914,6 +933,8 @@ export class EngineStream {
     if (changes.rateHz !== undefined) message.sample_rate_hz = changes.rateHz;
     if (changes.gainDb !== undefined) message.gain_db = changes.gainDb;
     if (changes.ppm !== undefined) message.ppm = changes.ppm;
+    if (changes.hfInput !== undefined) message.hf_input = changes.hfInput;
+    if (changes.rtlAgc !== undefined) message.rtl_agc = changes.rtlAgc;
     if (changes.dcRemoval !== undefined) message.dc_removal = changes.dcRemoval;
     return this.#send(message);
   }
