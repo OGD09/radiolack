@@ -90,8 +90,12 @@ the history under the tag `v0.1.0`.
   the antenna power, off at each connection unless turned on, never saved,
   turned off before the source closes; the converter in front of the
   receiver, converting only the frequency it sends and swapping I and Q
-  behind an inverted one; hands the raw samples to an I/Q recording's tap),
-  `converter` (a converter in front of a receiver: its kinds and
+  behind an inverted one; the correction's whole ppm by command 0x05 and
+  the rest by the frequency it asks for; hands the raw samples to an I/Q
+  recording's tap),
+  `correction` (the frequency correction in hundredths of ppm: its checks,
+  the whole part a receiver takes itself and the frequency to ask for the
+  rest), `converter` (a converter in front of a receiver: its kinds and
   oscillator, the frequency the receiver tunes for one on the air and the
   other way round, the reach on the air),
   `sources` (opens each kind of source from its saved
@@ -116,9 +120,10 @@ the history under the tag `v0.1.0`.
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
   input), `power.js` (the antenna power's second press), `converter.js`
   (the Receiver menu's converter, and the view that follows its change), `tuning.js` (the
-  Automatic step), `rates.js` (what a mode needs of the sample rate) and
+  Automatic step), `rates.js` (what a mode needs of the sample rate),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
-  the receiver's reach, and what the view draws as it widens) carry JSDoc
+  the receiver's reach, and what the view draws as it widens) and
+  `correction.js` (the frequency correction's field) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`

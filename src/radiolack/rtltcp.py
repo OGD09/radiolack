@@ -25,6 +25,13 @@ samples of the previous setting still arrive for a moment: the source drops
 what arrives during the next 0.4 s, then labels the samples with the new
 setting.
 
+The frequency correction takes hundredths of ppm (correction.py): rtl_tcp's
+command 0x05 gives the receiver its nearest whole number, as librtlsdr
+takes no other, and only when that changes, since the command retunes; the
+source corrects the rest by scaling the frequency it asks for, after the
+converter's conversion, on the tuner and in direct sampling alike. The
+samples keep the frequency asked as their label.
+
 Shortwave comes two ways, chosen per receiver by its ``hf_input``
 setting. Direct sampling (``q`` or ``i``) makes the RTL2832 sample one of
 its inputs at 28.8 MS/s without the tuner: the source switches to it by
@@ -75,13 +82,13 @@ from typing import Any
 import numpy as np
 
 from .converter import DEFAULT_LO_HZ, HIGHEST_HZ, Conversion, checked_converter, checked_lo, mhz
+from .correction import checked_ppm, corrected_hz, whole_ppm
 
 DEFAULT_ADDRESS = ("127.0.0.1", 1234)  # where rtl_tcp listens unless told otherwise
 DEFAULT_CENTRE_HZ = 145_000_000.0      # the 2 m band, until the user tunes elsewhere
 DEFAULT_SAMPLE_RATE_HZ = 2_400_000.0
 # librtlsdr's two ranges of sample rates, lowest first.
 SAMPLE_RATES_HZ = ((225_001.0, 300_000.0), (900_001.0, 3_200_000.0))
-PPM_RANGE = (-100, 100)     # frequency corrections offered: whole ppm, as librtlsdr takes them
 SETTLE_S = 0.4          # samples dropped after a change of frequency, rate or correction
 BUFFER_S = 0.5          # samples kept for a reader that falls behind
 IDLE_S = 2.0            # hang up once nobody has read for this long
@@ -106,7 +113,7 @@ _SET_FREQUENCY = 0x01   # Hz
 _SET_SAMPLE_RATE = 0x02  # Hz
 _SET_GAIN_MODE = 0x03   # 0: automatic, 1: manual
 _SET_GAIN = 0x04        # tenths of a dB
-_SET_FREQUENCY_CORRECTION = 0x05    # ppm
+_SET_FREQUENCY_CORRECTION = 0x05    # whole ppm
 _SET_RTL_AGC = 0x08     # the RTL2832's own AGC: 0 off, 1 on
 _SET_DIRECT_SAMPLING = 0x09     # 0: the tuner, 1: the I input, 2: the Q input
 _SET_BIAS_TEE = 0x0e    # antenna power: 0 off, 1 on (rtl_tcp 0.5.4 and later)
@@ -231,7 +238,7 @@ class Settings:
     centre_hz: float
     sample_rate_hz: float
     gain_db: float | None           # None: the tuner's automatic gain
-    ppm: int                        # frequency correction, in parts per million
+    ppm: float                      # frequency correction, in parts per million to the hundredth
     hf_input: str = "none"          # one of HF_INPUTS
     rtl_agc: bool = False           # the RTL2832's AGC, while sampling directly
     bias_tee: bool = False          # antenna power, never saved
@@ -252,10 +259,12 @@ class RtlTcpSource:
     """
 
     kind = "rtl_tcp"
+    # librtlsdr takes the whole part of the correction itself (command 0x05).
+    hardware_correction = True
 
     def __init__(self, host: str | None = None, port: int | None = None, *,
                  centre_hz: float = DEFAULT_CENTRE_HZ, sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
-                 gain_db: float | None = None, ppm: int = 0, settle_s: float = SETTLE_S,
+                 gain_db: float | None = None, ppm: float = 0, settle_s: float = SETTLE_S,
                  buffer_s: float = BUFFER_S, idle_s: float = IDLE_S, read_wait_s: float = READ_WAIT_S,
                  timeout_s: float = TIMEOUT_S, retry_s: tuple[float, float] = RETRY_S) -> None:
         default_host, default_port = DEFAULT_ADDRESS
@@ -268,7 +277,7 @@ class RtlTcpSource:
         self._read_wait_s = read_wait_s
         self._timeout_s = timeout_s
         self._retry_s = retry_s
-        start = Settings(DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, None, 0)
+        start = Settings(DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, None, 0.0)
         self._settings = _changed(start, {"centre_hz": centre_hz, "sample_rate_hz": sample_rate_hz,
                                           "gain_db": gain_db, "ppm": ppm}, None)
         self.centre_hz = self._settings.centre_hz
@@ -451,8 +460,10 @@ class RtlTcpSource:
             # The tuner sleeps while sampling directly: its gain waits.
             if new.gain_db != old.gain_db and not old_input and not new_input:
                 _send_gain(connection, new.gain_db)
-            if new.ppm != old.ppm:
-                connection.send(_SET_FREQUENCY_CORRECTION, new.ppm)
+            # The receiver retunes on 0x05: it goes only when the whole part changes.
+            whole = self._whole_ppm(new)
+            if whole != self._whole_ppm(old):
+                connection.send(_SET_FREQUENCY_CORRECTION, whole)
             if new.sample_rate_hz != old.sample_rate_hz:
                 connection.send(_SET_SAMPLE_RATE, int(new.sample_rate_hz))
             if new_input != old_input:
@@ -470,8 +481,9 @@ class RtlTcpSource:
             if retuned:
                 # Also after a change of rate, correction, input or
                 # converter, so that the receiver applies it whatever the
-                # librtlsdr version.
-                connection.send(_SET_FREQUENCY, _command_hz(new))
+                # librtlsdr version; after 0x05, which retuned to the
+                # previous request with the new whole part.
+                connection.send(_SET_FREQUENCY, _requested_hz(new, connection.tuner, whole))
         if retuned:
             self._new_setting()
         self._notify()
@@ -580,11 +592,12 @@ class RtlTcpSource:
         self.tuner = tuner
         settings = self._settings = _fitted(self._settings, tuner)
         direct = _direct_input(settings, tuner)
-        connection.send(_SET_FREQUENCY_CORRECTION, settings.ppm)
+        whole = self._whole_ppm(settings)
+        connection.send(_SET_FREQUENCY_CORRECTION, whole)
         connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
         connection.send(_SET_DIRECT_SAMPLING, direct)
         connection.send(_SET_RTL_AGC, int(bool(direct) and settings.rtl_agc))
-        connection.send(_SET_FREQUENCY, _command_hz(settings))
+        connection.send(_SET_FREQUENCY, _requested_hz(settings, tuner, whole))
         if not direct:
             _send_gain(connection, settings.gain_db)
         connection.send(_SET_BIAS_TEE, int(settings.bias_tee))
@@ -636,6 +649,10 @@ class RtlTcpSource:
         except Exception:
             log.exception("the samples' tap failed: it is left")
             self._tap = None
+
+    def _whole_ppm(self, settings: Settings) -> int:
+        """The part of the correction that the receiver takes itself."""
+        return whole_ppm(settings.ppm, self.hardware_correction)
 
     def _new_setting(self) -> None:
         """Drop the samples of the previous setting, with those still on their way."""
@@ -930,7 +947,7 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
         settings = replace(settings, centre_hz=centre)
     elif _conversion(settings).key != _conversion(before).key:
         # The receiver stays where it is tuned: the signals stay, their frequencies change.
-        centre = _conversion(settings).air(_command_hz(before))
+        centre = _conversion(settings).air(_tuned_hz(before))
         if not _within(centre, reach):
             raise ValueError(_conversion_text(centre, reach, settings))
         settings = replace(settings, centre_hz=centre)
@@ -945,11 +962,7 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
             gain = _nearest(tuner.gains_db, gain)
         settings = replace(settings, gain_db=gain)
     if "ppm" in changes:
-        ppm = round(_number(changes["ppm"], "the frequency correction"))
-        low, high = PPM_RANGE
-        if not low <= ppm <= high:
-            raise ValueError(f"the frequency correction must be from {low} to {high} ppm")
-        settings = replace(settings, ppm=ppm)
+        settings = replace(settings, ppm=checked_ppm(changes["ppm"]))
     return settings
 
 
@@ -972,10 +985,32 @@ def _conversion(settings: Settings) -> Conversion:
     return Conversion(settings.converter, settings.converter_lo_hz)
 
 
-def _command_hz(settings: Settings) -> int:
-    """The frequency asked of the receiver for ``settings``' centre
-    frequency on the air: within 32 bits, as the centre is within reach."""
+def _tuned_hz(settings: Settings) -> int:
+    """The frequency the receiver tunes for ``settings``' centre frequency
+    on the air: within 32 bits, as the centre is within reach."""
     return int(_conversion(settings).tuned(settings.centre_hz))
+
+
+def _requested_hz(settings: Settings, tuner: Tuner, whole: int) -> int:
+    """The frequency command's value: the frequency the receiver tunes,
+    scaled for the part of the correction that it does not take itself
+    (``whole`` being the part it takes), within 32 bits.
+
+    The scale moves it by at most half a ppm. With the tuner, it stays
+    within the tuner's range, so that at the range's very edges the
+    request does not leave it: below the R820T's 24 MHz, the RTL-SDR Blog
+    driver would switch to direct sampling by itself, and above its top the
+    tuner's PLL may not lock. There, within half a ppm of an edge, the
+    samples' label may be off by as much: 12 Hz at 24 MHz, 883 Hz at
+    1766 MHz. A tuner that covers shortwave (``hf_input`` ``tuner``) goes
+    below its range's start by itself. Direct sampling, which command 0x09
+    chose already, keeps the scaled request."""
+    low, high = _ANY_FREQUENCY_HZ
+    if not _direct_input(settings, tuner):
+        if settings.hf_input != "tuner":
+            low = max(low, tuner.range_hz[0])
+        high = min(high, tuner.range_hz[1])
+    return int(min(max(corrected_hz(_tuned_hz(settings), settings.ppm, whole), low), high))
 
 
 def _centre_ranges(settings: Settings, tuner: Tuner | None) -> list[tuple[float, float, str]]:
@@ -1046,7 +1081,7 @@ def _direct_input(settings: Settings, tuner: Tuner | None) -> int:
     """Command 0x09's value for ``settings``: the direct sampling input in
     use below the tuner's range, 0 for the tuner, and while the tuner is
     unknown."""
-    if tuner is None or _command_hz(settings) >= tuner.range_hz[0]:
+    if tuner is None or _tuned_hz(settings) >= tuner.range_hz[0]:
         return 0
     return _DIRECT_INPUTS.get(settings.hf_input, 0)
 

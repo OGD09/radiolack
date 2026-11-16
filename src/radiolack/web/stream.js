@@ -329,7 +329,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} centreHz
  * @property {number} rateHz
  * @property {number | null} gainDb     null: automatic gain, or no gain setting
- * @property {number | null} ppm        frequency correction, whole parts per million; null: none
+ * @property {number | null} ppm        frequency correction, parts per million to the hundredth; null: none
  * @property {boolean} dcRemoval        the engine takes a constant offset off the samples
  * @property {number[]} gainsDb         manual gains the tuner offers, lowest first
  * @property {[number, number]} rangeHz centre frequencies the source takes
@@ -354,7 +354,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [centreHz]
  * @property {number} [rateHz]
  * @property {number | null} [gainDb]   null: automatic gain
- * @property {number} [ppm]             a whole number
+ * @property {number} [ppm]             from -100 to 100, to the hundredth
  * @property {string} [hfInput]         one of SourceState.hfInputs
  * @property {boolean} [rtlAgc]
  * @property {boolean} [biasTee]
@@ -491,7 +491,7 @@ export function decodeSource(message) {
     && textOrNull(m.address) && textOrNull(m.tuner)
     && finite(m.centre_hz) && finite(m.sample_rate_hz) && m.sample_rate_hz > 0
     && (m.gain_db === null || finite(m.gain_db))
-    && (m.ppm === null || Number.isInteger(m.ppm)) && typeof m.dc_removal === 'boolean'
+    && (m.ppm === null || finite(m.ppm)) && typeof m.dc_removal === 'boolean'
     && Array.isArray(m.gains_db) && m.gains_db.every(finite)
     && Array.isArray(m.range_hz) && m.range_hz.length === 2 && m.range_hz.every(finite)
     && m.range_hz[0] <= m.range_hz[1]

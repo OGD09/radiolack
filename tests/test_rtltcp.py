@@ -63,6 +63,18 @@ def strongest_hz(samples: np.ndarray, rate_hz: float) -> float:
     return (int(np.argmax(spectrum)) - len(samples) // 2) * rate_hz / len(samples)
 
 
+def carrier_hz(samples: np.ndarray, rate_hz: float, near_hz: float) -> float:
+    """The frequency of a lone carrier near ``near_hz`` from the centre, to
+    a small fraction of a hertz: mixed down by ``near_hz``, averaged over
+    blocks of 64 samples, then the slope of its phase."""
+    block = 64
+    count = len(samples) // block * block
+    mixed = samples[:count] * np.exp(-2j * np.pi * near_hz * np.arange(count) / rate_hz)
+    phase = np.unwrap(np.angle(mixed.reshape(-1, block).mean(axis=1)))
+    slope = np.polyfit(np.arange(len(phase)) * block / rate_hz, phase, 1)[0]
+    return near_hz + slope / (2 * np.pi)
+
+
 def running(pid: int) -> bool:
     """Whether a process runs, an ended one waiting for its parent aside (Linux)."""
     try:
@@ -222,10 +234,10 @@ class SettingsTest(SourceTest):
         await self.read(source)
         self.assertEqual(self.fake.commands, connection_commands(5, 2_400_000, 145_000_000))
         changed = time.monotonic()
-        source.configure({"ppm": -2.6})     # whole ppm, as librtlsdr takes them
+        source.configure({"ppm": -2.6})     # -3 by the receiver, the rest by the frequency asked
         await eventually(lambda: len(self.fake.commands) == CONNECTION + 2)
-        self.assertEqual(self.fake.commands[CONNECTION:], [(0x05, 2**32 - 3), (0x01, 145_000_000)])
-        self.assertEqual(source.describe()["ppm"], -3)
+        self.assertEqual(self.fake.commands[CONNECTION:], [(0x05, 2**32 - 3), (0x01, 144_999_942)])
+        self.assertEqual(source.describe()["ppm"], -2.6)
         await self.read(source)
         self.assertGreaterEqual(time.monotonic() - changed, FAST["settle_s"])
 
@@ -249,10 +261,12 @@ class SettingsTest(SourceTest):
             {"sample_rate_hz": 3_300_000},
             {"gain_db": "auto"},
             {"ppm": 101},
+            {"ppm": 100.01},
             {"ppm": -100.6},
             {"ppm": "5"},
             {"ppm": None},
             {"ppm": True},
+            {"ppm": float("nan")},
             {"centre_hz": 433e6, "sample_rate_hz": 100},
             {"centre_hz": 433e6, "ppm": 200},
             {"address": ""},
@@ -588,6 +602,107 @@ class ConverterTest(SourceTest):
         source.configure({"converter": "up", "converter_lo_hz": 125_000_001, "centre_hz": 7e6})
         self.assertEqual(source.hardware, "RTL-SDR, Rafael Micro R820T, behind an upconverter with its "
                                           "oscillator at 125.000001 MHz")
+
+
+class CorrectionTest(SourceTest):
+    """The correction in hundredths of ppm: the receiver takes its nearest
+    whole number by command 0x05, and the source asks for a frequency
+    scaled for the rest, labelling the samples with the one on the air."""
+
+    async def commands_after(self, count: int) -> list[tuple[int, int]]:
+        """The commands sent from the ``count``-th on, once they stop coming."""
+        await asyncio.sleep(0.1)
+        return self.fake.commands[count:]
+
+    async def test_a_whole_correction_sends_what_it_always_did(self):
+        source = await self.start(ppm=7, gain_db=40)
+        await self.read(source)
+        self.assertEqual(self.fake.commands, connection_commands(7, 2_400_000, 145_000_000, 402))
+        for ppm in (12, -100, 100, 0):
+            with self.subTest(ppm=ppm):
+                sent = len(self.fake.commands)
+                source.configure({"ppm": ppm})
+                self.assertEqual(await self.commands_after(sent), [(0x05, ppm % 2**32), (0x01, 145_000_000)])
+
+    async def test_hundredths_alone_retune_without_the_correction_command(self):
+        source = await self.start(ppm=5)
+        await self.read(source)
+        # Each step, with what the receiver takes and the frequency asked.
+        for ppm, whole, requested in ((5.25, None, 144_999_964), (5.49, None, 144_999_929),
+                                      (5.5, 6, 145_000_072), (6.0, None, 145_000_000),
+                                      (-0.5, -1, 144_999_927), (0.5, 1, 145_000_072), (0.49, 0, 144_999_929)):
+            with self.subTest(ppm=ppm):
+                sent = len(self.fake.commands)
+                changed = time.monotonic()
+                source.configure({"ppm": ppm})
+                expected = ([] if whole is None else [(0x05, whole % 2**32)]) + [(0x01, requested)]
+                self.assertEqual(await self.commands_after(sent), expected)
+                self.assertEqual(source.describe()["ppm"], ppm)
+                await self.read(source)         # the samples of the previous setting are dropped
+                self.assertGreaterEqual(time.monotonic() - changed, FAST["settle_s"])
+                self.assertEqual(source.centre_hz, 145e6)       # the label: the frequency asked
+
+    async def test_each_connection_sends_the_whole_part_then_the_scaled_frequency(self):
+        source = await self.start(ppm=99.5)
+        await self.read(source)
+        self.assertEqual(self.fake.commands, connection_commands(100, 2_400_000, 145_000_072))
+        self.assertEqual(source.describe()["ppm"], 99.5)
+
+    async def test_the_request_stays_within_32_bits_and_the_tuner_s_range(self):
+        # An unknown tuner: the command's 32 bits are the limit.
+        source = await self.start(FakeRtlTcp(tuner_type=9), centre_hz=0xFFFF_FFFF, ppm=-0.4)
+        await self.read(source)
+        self.assertEqual(self.fake.commands[-3], (0x01, 0xFFFF_FFFF))
+        await self.fake.__aexit__(None, None, None)
+        # An R820T: kept within 24 to 1766 MHz on its tuner, so that the
+        # RTL-SDR Blog driver does not switch to direct sampling below it.
+        source = await self.start(centre_hz=24_000_000, ppm=0.4)
+        await self.read(source)
+        self.assertEqual(self.fake.commands[-3], (0x01, 24_000_000))
+        cases = (({"centre_hz": 24_000_001}, 24_000_000), ({"centre_hz": 30_000_000}, 29_999_988),
+                 ({"centre_hz": 1_766_000_000, "ppm": -0.4}, 1_766_000_000),
+                 ({"centre_hz": 1_765_000_000}, 1_765_000_706),
+                 # A tuner that covers shortwave goes below 24 MHz by itself.
+                 ({"hf_input": "tuner", "centre_hz": 24_000_000, "ppm": 0.4}, 23_999_990),
+                 # Direct sampling keeps the scaled frequency, even at 24 MHz.
+                 ({"hf_input": "q", "centre_hz": 7_100_000}, 7_099_997),
+                 ({"centre_hz": 23_999_999, "ppm": -0.4}, 24_000_009))
+        for changes, requested in cases:
+            with self.subTest(changes=changes):
+                sent = len(self.fake.commands)
+                source.configure(changes)
+                self.assertEqual((await self.commands_after(sent))[-1], (0x01, requested))
+        self.assertTrue(source.describe()["direct"])
+        self.assertEqual(self.fake.direct_sampling, 2)
+
+    async def test_a_carrier_shows_at_its_frequency_with_the_crystal_s_error_corrected(self):
+        rate_hz, offset_hz = 2.4e6, 10_000.0
+        # The frequency on the air, the converter, and where the receiver tunes.
+        paths = (("tuner", 145_000_000, {}, 145_000_000),
+                 ("direct sampling", 7_100_000, {"hf_input": "q"}, 7_100_000),
+                 ("upconverter", 7_100_000, {"converter": "up", "converter_lo_hz": 125_000_000}, 132_100_000),
+                 ("inverted LNB", 10_489_500_000,
+                  {"converter": "down_inverted", "converter_lo_hz": 11_229_000_000}, 739_500_000))
+        for crystal_ppb in (37_420, -52_730):
+            for path, air_hz, settings, tuned_hz in paths:
+                with self.subTest(crystal_ppb=crystal_ppb, path=path):
+                    # The carrier where the receiver gets it: mirrored behind the inverted LNB.
+                    carrier = tuned_hz - offset_hz if settings.get("converter") == "down_inverted" else tuned_hz + offset_hz
+                    fake = FakeRtlTcp(carriers={carrier: 0.5}, noise=0.01, chunk_bytes=8000,
+                                      crystal_ppb=crystal_ppb)
+                    source = await self.start(fake, idle_s=10.0)
+                    source.configure({**settings, "centre_hz": air_hz, "ppm": crystal_ppb / 1000})
+                    samples = await self.read(source, 48_000)
+                    self.assertEqual(source.centre_hz, air_hz)
+                    self.assertAlmostEqual(carrier_hz(samples, rate_hz, offset_hz), offset_hz, delta=1.0)
+                    if path == "tuner":
+                        # The whole part alone leaves it tens of hertz off: the fake's crystal moves it.
+                        source.configure({"ppm": round(crystal_ppb / 1000)})
+                        await asyncio.sleep(0.3)
+                        error_hz = carrier_hz(await self.read(source, 48_000), rate_hz, offset_hz) - offset_hz
+                        self.assertGreater(abs(error_hz), 30.0)
+                    source.close()
+                    await self.fake.__aexit__(None, None, None)
 
 
 class AntennaPowerTest(SourceTest):

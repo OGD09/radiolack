@@ -71,7 +71,7 @@ preferences apart from this computer's.
    | `tuner` | Name of the receiver's tuner once known, or null. |
    | `centre_hz`, `sample_rate_hz` | The settings asked of the receiver, the centre frequency on the air, through the converter if there is one. Each frame carries those it was taken with: after a change, frames follow a moment later. |
    | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). |
-   | `ppm` | Frequency correction of the receiver's clock, in whole parts per million; null for a source without one. |
+   | `ppm` | Frequency correction of the receiver's clock, in parts per million to the hundredth, such as 37.42; null for a source without one. An RTL-SDR takes its nearest whole number itself, and the engine the rest, by scaling the frequency it asks for: `centre_hz` stays the frequency asked. An interface older than the hundredths takes whole numbers only, and drops a source state that holds another until it is reloaded. |
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. |
    | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input, converter and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. Through a converter, it is the receiver's range converted to frequencies on the air, from half the sample rate at the lowest, so that the span never goes below 0 Hz, to 100 GHz less half the sample rate at the highest. |
    | `hf_input` | What an RTL-SDR uses for shortwave: `none`; `q` or `i`, direct sampling on that input of the RTL2832, by itself below the tuner's range; `tuner`, a tuner that covers shortwave, as an RTL-SDR Blog V4's does. Null for a source without it. |
@@ -579,7 +579,7 @@ are:
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
 | `gain_db` | Tuner gain in dB, or null for automatic gain. A gain becomes the nearest in `gains_db`. |
-| `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to a whole number. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`. |
+| `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to the hundredth; a whole number, as an older interface sends, is taken as it is. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`. |
 | `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |
 | `rtl_agc` | `true` or `false`; applies while the receiver samples directly. |
 | `bias_tee` | `true` or `false`. The interface asks for a second press before it sends `true`. |

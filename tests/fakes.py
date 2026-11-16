@@ -136,12 +136,20 @@ class FakeRtlTcp:
     or RTL2832 AGC only after ``apply_delay_s``, as samples of the old
     setting still arrive for a while from a real receiver. Like librtlsdr,
     leaving direct sampling wakes the tuner up in automatic gain.
+
+    ``crystal_ppb`` is how far its crystal is off, in parts per billion,
+    which moves the carriers as a real crystal would: librtlsdr takes the
+    whole ppm of command 0x05 to mean that the crystal runs that far off,
+    so the receiver truly tunes the frequency asked times
+    (1 + crystal_ppb / 10⁹) / (1 + ppm / 10⁶), on the tuner and in direct
+    sampling alike, and samples at the rate asked times the same factor.
     """
 
     def __init__(self, *, port: int = 0, magic: bytes = b"RTL0", tuner_type: int = 5,
                  gain_count: int = 29, header: bool = True, chunk_bytes: int = 1000,
                  interval_s: float = 0.002, apply_delay_s: float = 0.05,
-                 carriers: dict[float, float] | None = None, noise: float = 0.02) -> None:
+                 carriers: dict[float, float] | None = None, noise: float = 0.02,
+                 crystal_ppb: int = 0) -> None:
         self.port = port
         self.magic = magic
         self.tuner_type = tuner_type
@@ -152,12 +160,14 @@ class FakeRtlTcp:
         self.apply_delay_s = apply_delay_s
         self.carriers = carriers
         self.noise = noise
+        self.crystal_ppb = crystal_ppb
         self.sending = True             # False: send no samples
         self.frequency_hz = 100_000_000     # left by a previous client
         self.sample_rate_hz = 2_048_000
         self.direct_sampling = 0        # command 0x09: 0 the tuner, 1 the I input, 2 the Q input
         self.rtl_agc = 0                # command 0x08
         self.gain_tenths: int | None = None     # None: automatic gain
+        self.correction_ppm = 0         # command 0x05, signed
         self.commands: list[tuple[int, int]] = []
         self.on_command: Callable[[int, int], None] | None = None     # told of each command as it comes
         self.connections = 0            # accepted so far
@@ -223,6 +233,8 @@ class FakeRtlTcp:
             self.gain_tenths = None if value == 0 else self.gain_tenths or 0
         elif command == 0x04:
             self.gain_tenths = value
+        elif command == 0x05:
+            self.correction_ppm = value - 2**32 if value >= 2**31 else value
         elif command == 0x08:
             self.rtl_agc = value
         elif command == 0x09:
@@ -258,13 +270,15 @@ class FakeRtlTcp:
 
     def _carrier_samples(self, count: int) -> bytes:
         """``count`` I/Q pairs of the carriers within the current setting's
-        band over white noise, as rtl_tcp sends them: unsigned bytes."""
+        band over white noise, as rtl_tcp sends them: unsigned bytes. The
+        crystal's error moves the frequency tuned and the sample rate."""
+        scale = (1 + self.crystal_ppb / 1e9) / (1 + self.correction_ppm / 1e6)
         rate = float(self.sample_rate_hz)
-        t = (self._sent + np.arange(count)) / rate
+        t = (self._sent + np.arange(count)) / (rate * scale)
         self._sent += count
         samples = self._rng.normal(0.0, self.noise, count) + 1j * self._rng.normal(0.0, self.noise, count)
         for frequency_hz, amplitude in self.carriers.items():
-            offset_hz = frequency_hz - self.frequency_hz
+            offset_hz = frequency_hz - self.frequency_hz * scale
             if abs(offset_hz) < rate / 2:
                 samples += amplitude * np.exp(2j * np.pi * offset_hz * t)
         pairs = np.column_stack((samples.real, samples.imag))
