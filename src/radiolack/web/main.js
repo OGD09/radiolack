@@ -10,6 +10,7 @@ import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
+import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
 
@@ -1839,8 +1840,23 @@ function syncSource() {
   const rateEl = $('#src-rate');
   selectRate(rateEl, source ? source.rateHz : S.fs);
   rateEl.disabled = !settable.has('sample_rate_hz');
+  const shortwave = shortwaveView(source);
+  $('#src-hf-field').hidden = !shortwave.shown;
+  const hfEl = $('#src-hf');
+  for (const option of hfEl.options) option.hidden = option.disabled = !shortwave.offered.includes(option.value);
+  hfEl.value = shortwave.value;
+  hfEl.disabled = !settable.has('hf_input');
+  $('#src-hf-note').textContent = shortwave.note;
+  $('#src-rtl-agc-row').hidden = !shortwave.shown;
+  const rtlAgcEl = $('#src-rtl-agc');
+  rtlAgcEl.checked = shortwave.rtlAgc;
+  rtlAgcEl.disabled = !settable.has('rtl_agc') || !shortwave.rtlAgcApplies;
+  // While sampling directly the tuner sleeps: its gain waits for it.
+  const gainNoteEl = $('#src-gain-note');
+  gainNoteEl.hidden = !shortwave.direct;
+  gainNoteEl.textContent = shortwave.direct ? DIRECT_GAIN_NOTE : '';
   const gains = source ? source.gainsDb : [];
-  const gainSettable = settable.has('gain_db') && gains.length > 0;
+  const gainSettable = settable.has('gain_db') && gains.length > 0 && !shortwave.direct;
   const auto = !source || source.gainDb === null;
   if (!auto) manualGainDb = source.gainDb;
   const gainEl = $('#src-gain');
@@ -1907,6 +1923,12 @@ $('#src-ppm').addEventListener('change', (e) => {
   }
 });
 $('#src-dc').addEventListener('change', (e) => { if (!stream.sendSource({ dcRemoval: e.target.checked })) syncSource(); });
+// Another shortwave input: the engine brings the centre frequency within its reach.
+$('#src-hf').addEventListener('change', (e) => {
+  const hfInput = e.target.value;
+  if (!source || hfInput === source.hfInput || !stream.sendSource({ hfInput })) syncSource();
+});
+$('#src-rtl-agc').addEventListener('change', (e) => { if (!stream.sendSource({ rtlAgc: e.target.checked })) syncSource(); });
 
 // Tune to f. Outside the span, with a source that tunes, the engine moves the
 // span first, and the VFO goes to f once frames come from there; beyond the

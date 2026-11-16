@@ -344,8 +344,53 @@ With either option:
   first samples then take a moment, a little longer with `--rtl-sdr`, which
   starts rtl_tcp again.
 - Tuners: Rafael Micro R820T and R828D (24 to 1766 MHz), Elonics E4000,
-  Fitipower FC0012 and FC0013, FCI FC2580. HF through direct sampling or an
-  upconverter and antenna power (bias-T) are not supported yet.
+  Fitipower FC0012 and FC0013, FCI FC2580. Shortwave comes through direct
+  sampling or a tuner that covers it (below); an upconverter and antenna
+  power (bias-T) are not supported yet.
+
+### Shortwave
+
+The Receiver menu's "Shortwave" list says what a receiver uses below its
+tuner's range, and is kept with that receiver's settings; the line under
+it says what the choice needs:
+
+- "None": the tuner alone, as before.
+- "Direct sampling, Q input (RTL-SDR Blog V3)": below the tuner's range,
+  the RTL2832 samples its Q input, which the V3 wires to its antenna
+  socket, at 28.8 MS/s without the tuner; above it, the tuner takes over.
+  The centre frequency goes down to half the sample rate, so that the span
+  starts at 0 Hz: 1.2 MHz at 2.4 MS/s.
+- "Direct sampling, I input": the same on the I input, for a dongle
+  modified for it.
+- "Tuner (RTL-SDR Blog V4)": a tuner that covers shortwave by itself, as
+  the V4's does; the centre frequency goes down to half the sample rate.
+  Offered with an R820T or R828D tuner only.
+
+Radiolack switches by itself: a centre frequency below the tuner's range
+samples directly, another uses the tuner. Another choice in the list, or
+another sample rate, brings the centre frequency within the new reach. While
+the receiver samples directly, the menu says so under the list: the gain
+controls are disabled ("Direct sampling: no gain control"), the gain set
+before comes back with the tuner, and "RTL2832 AGC while sampling directly",
+off by default, turns on the RTL2832's own AGC, to try when shortwave is too
+quiet or too loud.
+
+Limits:
+
+- Direct sampling receives nothing below about 500 kHz on a V3, and covers
+  up to 28.8 MHz at most: signals above and below 14.4 MHz mirror each
+  other, a signal at f also showing at 28.8 MHz − f. It has no gain
+  control.
+- A dongle other than a V3 needs a hardware modification for direct
+  sampling, and Radiolack cannot tell whether it has one.
+- With an E4000 or FC2580 tuner, whose range starts above what direct
+  sampling reaches, the centre frequencies in between are refused, with the
+  two ranges in the menu.
+- The V4 setting has not been checked on a V4. With an rtl-sdr that does
+  not know the V4 (0.6.0, Debian 12's), a V4 tunes wrong on every band, and
+  Radiolack cannot see it: rtl_tcp announces a V4 as any R828D.
+- A tuner asked for a frequency it cannot reach says nothing: with the
+  wrong setting, the band is silent, not refused.
 
 ## Demodulation and audio
 
@@ -987,7 +1032,8 @@ prepares a report of what it runs on: its version, and whether it came from
 the Debian package; Python's, aiohttp's and NumPy's; the system and its
 kernel; GTK's and WebKitGTK's in the desktop window; the web browser, the
 views' WebGL2 and the window's size; the receiver's kind and state, with its
-tuner and sample rate but neither its address nor its frequency; how long
+tuner, its shortwave input and sample rate but neither its address nor its
+frequency; how long
 Radiolack has run; and its latest 50 warnings and errors, in UTC, with your
 home folder written `~`. Radiolack sends nothing by itself. Read the report
 first, as its warnings may name files, folders, frequencies or addresses.

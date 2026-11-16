@@ -52,8 +52,10 @@ preferences apart from this computer's.
     "address": "127.0.0.1:1234", "tuner": "Rafael Micro R820T",
     "centre_hz": 145000000.0, "sample_rate_hz": 2400000.0, "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
-    "dc_removal": true,
-    "settable": ["address", "centre_hz", "sample_rate_hz", "gain_db", "ppm", "dc_removal"],
+    "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": false,
+    "rtl_agc": false, "dc_removal": true,
+    "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm",
+                 "rtl_agc", "dc_removal"],
     "kinds": ["synthetic", "rtl_sdr", "rtl_tcp"]}
    ```
 
@@ -70,7 +72,11 @@ preferences apart from this computer's.
    | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). |
    | `ppm` | Frequency correction of the receiver's clock, in whole parts per million; null for a source without one. |
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. |
-   | `range_hz` | Lowest and highest centre frequency the source takes. |
+   | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. |
+   | `hf_input` | What an RTL-SDR uses for shortwave: `none`; `q` or `i`, direct sampling on that input of the RTL2832, by itself below the tuner's range; `tuner`, a tuner that covers shortwave, as an RTL-SDR Blog V4's does. Null for a source without it. |
+   | `hf_inputs` | The values of `hf_input` the receiver offers: all four for an R820T or R828D tuner and while the tuner is unknown, the first three for another; empty for a source without them. |
+   | `direct` | Whether the receiver samples directly, without its tuner: its gain does not apply meanwhile, and signals mirror each other about 14.4 MHz. |
+   | `rtl_agc` | Whether the RTL2832's own AGC runs while the receiver samples directly; null for a source without it. |
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
    | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. Never `address` for a remote client. |
    | `kinds` | Kinds of source the engine may switch to, `kind` among them; empty when it reads one source only. |
@@ -567,6 +573,8 @@ are:
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes 900001 to 3200000 Hz, librtlsdr's upper range. |
 | `gain_db` | Tuner gain in dB, or null for automatic gain. A gain becomes the nearest in `gains_db`. |
 | `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to a whole number. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`. |
+| `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |
+| `rtl_agc` | `true` or `false`; applies while the receiver samples directly. |
 | `dc_removal` | `true` or `false`. |
 
 The engine applies a valid message at once and sends the new state to every
@@ -810,8 +818,9 @@ but always measures the channel for the spectrum frames.
 While an `rtl_sdr` or `rtl_tcp` source waits, changes are kept and sent when
 it connects. Until its first connection, and after a change of address, the
 tuner is unknown: `range_hz` spans every frequency an rtl_tcp command can
-carry, any gain passes, and the source brings both within what the tuner can
-do once it connects.
+carry, any gain and any shortwave input pass, and the source brings them
+within what the tuner can do once it connects, `none` replacing an input it
+does not offer.
 
 ## Remote access
 
@@ -999,7 +1008,10 @@ and later.
   recording as one of mode `I/Q`, which it downloads as its data file. On
   2026-11-15, the problem report: the `report` messages, which an older
   interface never sends, and so never receives. On 2026-11-16, the hello's
-  `version`, which an older interface ignores.
+  `version`, which an older interface ignores; the same day, the source
+  state's `hf_input`, `hf_inputs`, `direct` and `rtl_agc`, settable in a
+  `source` message, which an older interface leaves out: it neither shows
+  nor changes them.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

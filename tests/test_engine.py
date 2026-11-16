@@ -162,6 +162,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
             "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
+            "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
             "dc_removal": True, "settable": ["dc_removal"], "kinds": [],    # this engine has one source only
         })
         self.assertEqual(subscription.get_nowait(), {
@@ -630,6 +631,19 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         settings = await self.saved(
             SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["address"] == "192.0.2.20:1234")
         self.assertEqual(settings["receivers"]["rtl_tcp"]["source"]["ppm"], -4)
+
+    async def test_an_rtl_tcp_receiver_keeps_its_shortwave_input(self):
+        saved = {"centre_hz": 7_100_000.0, "hf_input": "q", "rtl_agc": True}    # in any order
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": saved}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        state = engine.state()
+        self.assertEqual((state["hf_input"], state["centre_hz"], state["rtl_agc"]), ("q", 7.1e6, True))
+        engine.configure({"hf_input": "i"})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["hf_input"] == "i")
+        source = settings["receivers"]["rtl_tcp"]["source"]
+        self.assertEqual((source["centre_hz"], source["rtl_agc"]), (7.1e6, True))
+        self.assertEqual(list(source)[:3], ["address", "hf_input", "sample_rate_hz"])
 
     async def test_an_address_given_at_start_replaces_the_saved_one(self):
         self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": "192.0.2.10:40000", "ppm": -4}}}})

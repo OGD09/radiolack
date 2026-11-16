@@ -276,7 +276,8 @@ digit covers that.
   frequency. Leaving: 0x09 with 0, then the gain mode and the gain, which
   the tuner forgot, then the frequency. At each connection: the correction,
   the sample rate, 0x09, the frequency, the gain. The samples of the
-  settling time are dropped, as after any retune.
+  settling time are dropped, as after any retune. 0x08 follows 0x09 at each
+  connection too, since rtl_tcp keeps it from its previous client.
 - **Direct sampling's span** stays within 0 to 28.8 MHz. With a tuner whose
   range starts above what direct sampling reaches (E4000, FC2580), the
   centre frequencies in between are refused, with the message that names

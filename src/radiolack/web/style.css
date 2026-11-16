@@ -241,7 +241,7 @@ body.idle #hoverinfo { opacity: 0; }
   background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   font-size: 12.5px; user-select: text; -webkit-user-select: text;
 }
-#menu-scrim[hidden], #menu[hidden], #menu section[hidden] { display: none; }
+#menu-scrim[hidden], #menu[hidden], #menu section[hidden], .check[hidden] { display: none; }
 #menu nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 10px 8px; border-right: 1px solid var(--line); overflow: auto; overscroll-behavior: contain; }
 #menu nav button {
   flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 7px;
