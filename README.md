@@ -1268,6 +1268,11 @@ preview.
 
 - [docs/design/scoping.md](docs/design/scoping.md): purpose, decisions,
   architecture, milestones, spikes and open questions.
+- [docs/design/coverage-and-precision.md](docs/design/coverage-and-precision.md):
+  the design of the next milestone, shortwave, tuning to the hertz and the
+  band plan from 0 Hz to 10.5 GHz, with its limits.
+- [docs/design/later-milestones.md](docs/design/later-milestones.md): the
+  milestones after it, up to the public release.
 - [docs/design/protocol.md](docs/design/protocol.md): the stream between the
   engine and the interface.
 - [docs/design/band-plan.md](docs/design/band-plan.md): the band plan's

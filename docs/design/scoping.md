@@ -4,7 +4,11 @@ Status: v0 merged into `main` and released as 0.2.0 on 2026-11-10 (started
 on the `rewrite` branch on 2026-11-08), and accepted by the owner the same
 day with one check left (see v0 below). v1, remote access, started on
 2026-11-11. v2, the scanners, was designed with the owner on 2026-11-12,
-and v3, Radiolack next to the receiver, on 2026-11-14.
+and v3, Radiolack next to the receiver, on 2026-11-14. Coverage and
+precision, and the milestones that follow it up to v4, were designed with
+the owner on 2026-11-16
+([`coverage-and-precision.md`](coverage-and-precision.md),
+[`later-milestones.md`](later-milestones.md)).
 Visual reference: [`ui-mockup.html`](ui-mockup.html), validated on 2026-11-08
 (simulated data, no receiver, no audio).
 
@@ -84,31 +88,44 @@ radio program, only on receiver drivers.
 | 2026-11-15 | Keep the screen on while listening leaves Settings with its state, at the owner's request once the menu was merged: it did nothing, and listening on the iPhone needs no wake lock (2026-11-12). |
 | 2026-11-15 | Problem reports, which the owner asked for after the desktop window froze when WebKitGTK crashed: Settings > Report a problem, on this computer's interfaces, shows a report of what Radiolack runs on, the receiver's kind and state and its latest 50 warnings and errors, which the engine keeps in memory from its start, with the home folder written `~`; the user reads it, then opens GitHub's page for a new issue with it, in their own web browser, where they describe the problem and submit it, or copies it. Radiolack sends nothing: an automatic report, which the owner first suggested as an option in Settings, would need a token in a public program, which anyone could take to write on GitHub, or a relay server to run, and would send what the user has not seen. The report leaves out the receiver's address and frequency; the issue's address leaves out the oldest messages to stay under the length GitHub accepts. Set aside: automatic sending, a crash collector, and an editable report in the interface, as GitHub's page is where the user writes. |
 | 2026-11-16 | About, as the owner asked and chose: an eighth menu, last after a rule, with the key 8 and an "i" in a circle for its icon. It shows the version that runs on every interface, remote devices included, which the hello now carries (protocol version 6 still: an older page ignores the field); on this computer's interfaces, the updates and Report a problem, which leave Settings; Suggest an idea and Radiolack on GitHub, which open GitHub's page for a new issue and the project's page in the user's web browser, where posting needs a GitHub account; and a Legal line, the copyright, the licence and no warranty, with a Legal notice button. The notice opens in a modal dialog on every interface, and README.md repeats it word for word, which a test checks: licence, no warranty, limitation of liability, the user's responsibility under the law that applies to them, guidance that is not a reference, equipment and safety, other people's communications and data, remote access, privacy, third parties, and the rights that the law keeps. It names no country, authority or law, so as to hold wherever Radiolack is used, keeps the copyright with OGD09, and does not say that Radiolack only receives, as the owner means to transmit once licensed, which still needs the decision of its own of 2026-11-08; it explains the licence and adds no condition to it. The desktop window opens Radiolack's pages on GitHub (`PROJECT_URL`) in the user's web browser, and no other page, where it opened the page for a new issue alone. Settings keeps the fade, the storage, remote access and the gestures and keys. Set aside: Help as the name, while the shortcuts stay in Settings; What's new, until the release notes list the changes; GitHub Discussions and issue templates; a restart button; the logo in About; an acceptance at first start, which the GPL does not ask for; a governing law; and an email address in the copyright, which would stay public in the history. |
+| 2026-11-16 | Coverage and precision, as the owner asked: explore shortwave, cover 0 Hz to 10 GHz with a precise band plan, and tune to the hertz. It is the next milestone, and brings shortwave forward from "Receivers and bands", which waited for the public release (2026-11-14). Three things stay apart: what the software shows and stores, what the receiver in use reaches, and how true a frequency is. The limits found in the code, what the receivers allow, each pull request's rules and the limits that remain are in [`coverage-and-precision.md`](coverage-and-precision.md). Neither the saved files' format version nor the protocol's changes: frequencies were whole hertz already, and every new field is one that an older Radiolack or page ignores. |
+| 2026-11-16 | Shortwave with an RTL-SDR, as the owner left to the design, for experts and beginners alike: a setting of each receiver chooses direct sampling on the Q or the I input, which Radiolack switches by itself below the tuner's range and which the owner's RTL-SDR Blog V3 has; a tuner that covers shortwave (RTL-SDR Blog V4), which cannot be checked without one; and a converter in front of the receiver, an upconverter or an LNB, by its oscillator's frequency, the only way above the tuner with a dongle. Direct sampling mirrors above 14.4 MHz, has no gain control and starts near 500 kHz on a V3. The RTL2832's own AGC and a converter that mirrors the spectrum come with them. The 240 and 300 kS/s sample rates join the list: 29 Hz per bin at 240 kS/s, where WFM plays nothing. |
+| 2026-11-16 | Antenna power (bias tee), as the owner chose: a setting of the receiver, on every interface, turned on by a second press, never saved, off at each start unless `--bias-tee` is given, as `--remote` and `--scan` do for theirs, and turned off when Radiolack closes the receiver. Set aside: always off at start, which would leave an active antenna without power after a restart. |
+| 2026-11-16 | The view visits the whole band plan whatever the receiver, as the owner asked: from 0 Hz to the plan's end, with every source, the simulated band included. Beyond the receiver's reach nothing is measured and nothing tunes: a click, a typed frequency or a bookmark there leaves the VFO where it is and says why. This replaces, in the decision of 2026-11-13, the view of ten spans at most with its centre within the receiver's reach, the simulated band's view kept within its span, and tuning to the nearest frequency within reach. |
+| 2026-11-16 | Tuning to the hertz, as the owner chose: 1 Hz everywhere, which the engine already kept; the interface stops rounding. Frequencies show with as many decimals as they have; a typed frequency takes k, M and G; a bookmark's frequency is edited; dragging a digit of the readout changes it, the touch screen's wheel; steps go from 1 Hz to 100 kHz. The Automatic step follows the zoom, from 100 kHz down to 1 Hz by decades of the view's width, and is the channel spacing where the band plan gives one and the view shows two channels or more: the owner chose this over modifier keys, which a study found down to two free ones, Shift and Ctrl with Shift, as Ctrl with the wheel zooms and Alt belongs to browsers. Shift still multiplies the step by ten. Set aside for good: tuning below one hertz, which no receiver in scope holds. |
+| 2026-11-16 | Accuracy, as the owner chose: the frequency correction takes hundredths of ppm, its whole part by the receiver as before and the rest by Radiolack, which scales the frequency it asks for; a Calibrate tool measures the strongest carrier of the VFO's channel to about a hertz and computes the correction from its true frequency, which the user types. The tuner's PLL adds an error of its own, fixed for each centre frequency, read from the driver's code and never measured (up to about 175 Hz near 145 MHz with the owner's drivers, none in direct sampling): it is measured on the owner's receiver first, by a rule fixed beforehand, and corrected only if the measure says so. |
+| 2026-11-16 | The band plan becomes a detailed guide, still not a legal reference, as the owner chose: from 0 Hz to 10.5 GHz, which keeps the 3 cm amateur band whole, for Europe as before, with two new layers, named channels (CB, PMR446, maritime VHF and others that a regulation or a convention numbers) and known frequencies (distress, time signals, amateur conventions and others that are public and stable), on the one strip, which shows them as the zoom gives room, and in the line under the frequency. It is written by hand from the primary documents, with names of Radiolack's own, nothing copied from another program or extracted in bulk from a database, and read a second time against its sources. This replaces "simplified" in the decision of 2026-11-09 and in AGENTS.md's rule, and "9 kHz to 6.425 GHz". Set aside: a strip of two rows, and a table of every allocation by service. |
+| 2026-11-16 | The milestones up to v4, in this order, as the owner chose, each designed now in [`later-milestones.md`](later-milestones.md), with a spike first wherever a choice needs a measure, and the rule that reads its result fixed beforehand: Any receiver (SoapySDR, for the owner's HackRF One, with an overall gain and one per stage, and only the local USB drivers searched, so that no search reaches the network); Listening tools (a zoom that goes on into a fine spectrum of the VFO's channel, which the owner chose over an inset, synchronous AM, an automatic notch, a noise blanker); Automatic calibration (on the standard-frequency stations of the band plan, on demand); Band plans for other regions (the Americas, Asia-Pacific and France, the region being the engine's setting); Several receivers at once (each interface shows one, the others go on scanning and recording); DRM; Logarithmic overview (a bar that shows the whole plan, which the owner chose over a logarithmic axis for every view). The owner asked for all of them to be planned rather than set aside. Transmitting stays out, by the decision of 2026-11-08: with a HackRF, which can transmit, Radiolack opens reception only. |
+| 2026-11-16 | DRM may bring a compiled component, as the owner chose, since its decoding is too heavy for Python alone. It ships as a second, architecture-specific package, `radiolack-drm`, so that the main package stays independent of the architecture, built as it is and reproducible. The milestone starts with a spike on the audio codings' libraries and licences and on real-time decoding, and closes on its report if either fails. |
 
 ## Scope
 
 In scope, across the milestones below:
 
-- Receivers: RTL-SDR through rtl_tcp first, then SoapySDR devices.
-- Frequencies: the whole range of the receiver; the band plan covers 9 kHz to
-  6.425 GHz.
+- Receivers: RTL-SDR through rtl_tcp first, shortwave included (direct
+  sampling, a tuner that covers it, or a converter), then SoapySDR devices.
+- Frequencies: the whole range of the receiver, tuned to the hertz; the view
+  and the band plan cover 0 Hz to 10.5 GHz whatever the receiver.
 - Display: spectrum and waterfall with zoom and pan, past the receiver's span
   with a receiver that tunes, palettes, averaging, peak hold, a band plan
   strip and bookmarks on the spectrum.
 - Reception: one VFO (NFM, AM, USB, LSB, CW, and WFM from v3) with filter
-  width, squelch and AGC. More VFOs only if a later need shows up.
+  width, squelch and AGC; later synchronous AM, a notch, a noise blanker and
+  DRM. More VFOs only if a later need shows up; several receivers at once
+  come as a milestone.
 - Scanners: peak detection, sweep across several receiver windows, memory scan
   over bookmarks.
 - Recording, from v3: the audio and the receiver's raw I/Q, on demand.
 - Band plans: Europe first (ITU Region 1, with the IARU Region 1 amateur
-  plans), then the other regions.
+  plans), with named channels and known frequencies, then the other regions.
 - Remote access: control and audio over the local network.
 - A service on a computer next to the receiver, from v3.
 - Language: English only.
 
 Out of scope:
 
-- Transmitting, in any form.
+- Transmitting, in any form, whatever the receiver can do.
+- Tuning below one hertz.
 - Transcribing what is heard.
 - Receivers attached to phones, and native mobile apps.
 - Opening a receiver to anyone on the internet (a public WebSDR).
@@ -362,11 +379,140 @@ of a broadcast station in WFM, which a change of mode ended, as designed;
 and the recordings folder chosen in Settings. WFM played that station
 cleanly, the check that WFM's pull request had left.
 
+### Coverage and precision
+
+Designed with the owner on 2026-11-16 (see Decisions, and
+[`coverage-and-precision.md`](coverage-and-precision.md) for each pull
+request's rules). It takes shortwave from "Receivers and bands", the former
+v3.
+
+Pull requests, in this order:
+
+1. This design.
+2. Exact frequencies in the interface: shown to the hertz, typed with k, M
+   and G, a bookmark's frequency edited, a digit dragged, steps from 1 Hz to
+   100 kHz.
+3. The Automatic step follows the zoom, and the channel spacing where the
+   band plan gives one.
+4. Shortwave with an RTL-SDR: direct sampling switched by itself below the
+   tuner's range, the RTL-SDR Blog V4's tuner, the RTL2832's AGC.
+5. The 240 and 300 kS/s sample rates.
+6. Antenna power, with `--bias-tee`.
+7. The view visits the whole plan; nothing tunes beyond the receiver's
+   reach.
+8. A converter in front of the receiver.
+9. The correction in hundredths of ppm.
+10. Calibration on a known signal.
+11. The band plan from 0 Hz to 10.5 GHz, in format 2, read a second time.
+12. Named channels and known frequencies, and their display.
+13. The tuner's PLL, measured on the owner's receiver when the owner asks.
+14. PLL-exact centre frequencies, only if 13 says so.
+
+Done when, on the owner's computers with the RTL-SDR Blog V3 and its
+shortwave antenna: Radiolack tunes from 500 kHz to 30 MHz by direct
+sampling, plays a broadcast station in AM and an amateur contact in SSB on
+shortwave, and comes back to 2 m without a setting to change; a bookmark
+typed to the hertz shows and stays to the hertz across a restart, and its
+frequency can be edited; the wheel steps by channel in a channelized band
+and by finer steps as the view zooms in, down to 1 Hz; on the iPhone,
+dragging a digit tunes by 1 Hz; the view goes from 0 Hz to 10.5 GHz, the
+band strip names what is there, and a click beyond the receiver's reach
+tunes nothing and says why; the line under the frequency names a channel
+and a known frequency; the correction takes hundredths of ppm, and
+Calibrate brings a known carrier within 2 Hz of its frequency; the PLL's
+measure is recorded with what it decided; and every test passes in CI.
+Antenna power is checked with the owner's antenna if it takes it; the
+RTL-SDR Blog V4 setting and the converter are not checked on hardware.
+
+### Any receiver
+
+Designed with the owner on 2026-11-16
+([`later-milestones.md`](later-milestones.md), as the five after it).
+SoapySDR devices, for the owner's HackRF One, in reception only.
+
+1. Spikes: the sample rates the engine holds, a device search that stays
+   off the network, a reading thread that keeps up.
+2. The SoapySDR source and `--soapy`.
+3. The Receiver menu's devices, and the arguments field.
+4. Gains, overall and per stage, antenna choice, antenna power.
+5. I/Q recordings in the device's format.
+6. Package, service notes and CI.
+
+Done when the V3 opened through SoapySDR works as through rtl_tcp, and the
+HackRF One, back with the owner, is listed, tunes from 1 MHz to 6 GHz,
+plays, sweeps, records I/Q that another program opens at the right
+frequency, runs as the service, and never transmits.
+
+### Listening tools
+
+1. Spike: the cost of each tool, 6% of one core together.
+2. Synchronous AM.
+3. An automatic notch.
+4. A noise blanker.
+5. The fine spectrum of the VFO's channel, in the engine and the protocol.
+6. The zoom that goes on into it.
+
+Done when, on shortwave, synchronous AM holds a fading station, the notch
+removes a whistle, the blanker thins a crackle, and the zoom goes on to
+less than 100 Hz across.
+
+### Automatic calibration
+
+1. The run across the band plan's standard-frequency stations, its state
+   and its commands.
+2. The dialog.
+
+Done when a run on the owner's V3 finds at least two stations, when
+propagation allows, and a second run after applying its proposal proposes
+a change under 0.1 ppm.
+
+### Band plans for other regions
+
+1. The choice of plan, the engine's setting, with the FM de-emphasis from
+   the plan.
+2. The Americas.
+3. Asia-Pacific.
+4. France, once its source's licence is read and allows it.
+
+Done when the Bookmarks menu changes the plan on every interface at once,
+WFM's de-emphasis follows it, and each file carries the record of its
+second reading.
+
+### Several receivers at once
+
+1. Spike: two radios in one Radiolack, on the owner's two computers.
+2. The radio, split from the engine, without a change in behaviour.
+3. Several radios: engine, protocol, start options.
+4. The Receiver menu's radios.
+5. Service notes.
+
+Done when, with the V3 and the HackRF on the computer next to them, the
+iPhone listens on one while the other's memory scan stops on a bookmark,
+two browser windows show both, and a restart brings both back.
+
+### DRM
+
+1. Spike: the audio codings' libraries and licences, and real-time
+   decoding of the owner's recordings.
+2. The second package, `radiolack-drm`, with an empty component.
+3. The channel decoder and a modulator for the tests.
+4. The audio decoding.
+5. The mode and its state.
+
+Done when a DRM broadcast on shortwave plays with its label on the owner's
+computer, or the spike's report closes the milestone and says why.
+
+### Logarithmic overview
+
+One pull request: a bar above the band strip that shows the whole plan on
+a logarithmic scale, with the reach, the span, the view and the VFO, and
+frames the band that a click picks.
+
+Done when one click on the bar frames the 40 m band, and another the 3 cm
+band.
+
 ### Later milestones
 
-- Receivers and bands, the former v3, once the public release is the goal
-  again: SoapySDR devices, HF (direct sampling, RTL-SDR Blog V4), band plans
-  for the other regions.
 - v4, public release: Windows and macOS builds and installers, code signing,
   updates on every system, user documentation, accessibility review.
 
@@ -379,6 +525,11 @@ cleanly, the check that WFM's pull request had left.
 | 3 | Which HTTPS setup can a non-expert complete on an iPhone and on Android: a local certificate authority installed once per device, Tailscale certificates, or a certificate the user provides? | Remote clients need a secure page, and installing a certificate on iOS takes several steps. | Decided on 2026-11-11: a local authority limited by name constraints (see Decisions); to check on the owner's iPhone. |
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
+| 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Coverage and precision, pull request 13, on the owner's receiver. |
+| 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Any receiver, first pull request. |
+| 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Listening tools, first pull request. |
+| 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
+| 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
 
 ### Spike 1 result (2026-11-08)
 
@@ -444,7 +595,8 @@ These costs wait for v4:
 ## Open questions
 
 None for now: recording and wide FM were answered on 2026-11-14 (see
-Decisions).
+Decisions). What the milestones after v3 still have to learn is in the
+spikes above, each with the rule that reads its result.
 
 ## Repository plan
 
