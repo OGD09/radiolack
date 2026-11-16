@@ -365,7 +365,12 @@ the nearest frequency".
   instance, "5760.000 MHz is beyond this receiver's range (0.5 to
   1766 MHz)". The context menu there disables Tune and Ignore, and keeps
   Bookmark, Center view and Zoom to range: a bookmark may be prepared for
-  another receiver.
+  another receiver. As built, the range in the note is the receiver's
+  reach, the one that decides, rather than its centre range: half the
+  sample rate wider on each side, given from 0 Hz at the lowest (0.000 to
+  1767.200 MHz for a V3 at 2.4 MS/s, its span alone for the simulated
+  band), so that no frequency the note calls beyond the range tunes, nor
+  the other way round.
 - **The frequency axis** drops its decimals as the view widens (0 to 6).
 - The strip and its glow draw only the bands in view, found by bisection:
   the plan grows.

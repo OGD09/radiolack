@@ -15,6 +15,7 @@ import { POWER_CONFIRM_MS, powerPress, powerView } from './power.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
 import { modeRateNote } from './rates.js';
+import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -43,7 +44,6 @@ const AXIS_H = 18;                  // frequency scale under the spectrum, CSS p
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
 const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
 const FIRST_MANUAL_GAIN_DB = 30;    // offered when automatic gain is turned off before any manual gain
-const MAX_ZOOM_OUT = 10;            // widest view, in spans, with a receiver that tunes
 const DETENT_HOLD = 1.15;           // zooming out holds at the span's width until pushed this much further
 const STRIP_SEGMENT_PX = 12;        // the band strip shows a band's ranges while they average this wide, CSS px
 const RETUNE_SHARE = 1 / 32;        // a span that moves for the VFO puts it this share of its width above its centre,
@@ -677,13 +677,15 @@ let wfKey = '';                     // what the waterfall shows: drawn again onl
 function renderWaterfall() {
   if (!waterfallView) return;
   const W = waterfallView.width;
-  const key = `${histHead} ${histFilled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${S.nb} ${S.fc}`;
+  const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
+  const marker = spanMarker(toX(fStart()), toX(fEnd()), GLS);
+  const key = `${histHead} ${histFilled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${S.nb} ${S.fc} ${marker}`;
   if (key === wfKey) return;
   wfKey = key;
   const bin = binHz();
   waterfallView.draw({
     head: Math.max(0, histHead), lines: histFilled,
-    firstBin: (view.f0 - fStart()) / bin, binsPerPixel: (view.f1 - view.f0) / bin / W,
+    firstBin: (view.f0 - fStart()) / bin, binsPerPixel: (view.f1 - view.f0) / bin / W, marker,
   });
 }
 
@@ -721,7 +723,7 @@ const freqStep = () => niceStep(((view.f1 - view.f0) * 110) / appW);
 
 // The band plan's colours for the decor outside the span, one texel per
 // column: its band's colour, or nothing outside the plan and while the band
-// strip is hidden.
+// strip is hidden. Only the bands in view are visited.
 let bandGlow = new Uint8Array(0), bandGlowKey = '', bandGlowVersion = 0;
 function updateBandGlow(W) {
   const key = `${view.f0} ${view.f1} ${W} ${S.showPlan} ${plan.bands.length}`;
@@ -730,19 +732,17 @@ function updateBandGlow(W) {
   bandGlowVersion += 1;
   if (bandGlow.length === 4 * W) bandGlow.fill(0); else bandGlow = new Uint8Array(4 * W);
   if (!S.showPlan) return;
-  const span = view.f1 - view.f0;
-  let band = null, rgb = [0, 0, 0];
-  for (let x = 0; x < W; x += 1) {
-    const f = view.f0 + ((x + 0.5) / W) * span;
-    if (!band || f < band.from || f >= band.to) {
-      band = bandAt(f);
-      if (band) rgb = band.rgb.split(',').map(Number);
+  // Each column takes the band at its middle.
+  const span = view.f1 - view.f0, column = (f) => Math.ceil(((f - view.f0) / span) * W - 0.5);
+  const [first, end] = bandsInView(plan.bands, view.f0, view.f1);
+  for (let i = first; i < end; i += 1) {
+    const band = plan.bands[i], rgb = band.rgb.split(',').map(Number);
+    for (let x = Math.max(0, column(band.from)), e = Math.min(W, column(band.to)); x < e; x += 1) {
+      bandGlow[4 * x] = rgb[0];
+      bandGlow[4 * x + 1] = rgb[1];
+      bandGlow[4 * x + 2] = rgb[2];
+      bandGlow[4 * x + 3] = 255;
     }
-    if (!band) continue;
-    bandGlow[4 * x] = rgb[0];
-    bandGlow[4 * x + 1] = rgb[1];
-    bandGlow[4 * x + 2] = rgb[2];
-    bandGlow[4 * x + 3] = 255;
   }
 }
 
@@ -750,14 +750,16 @@ let specKey = '';                   // what the spectrum shows: drawn again only
 function renderSpectrum() {
   if (!spectrumView || !specColumns) return;
   const W = spectrumView.width, H = spectrumView.height, s = GLS, top = displayTop();
-  // Outside the span the view draws a decor, and hatches beyond the receiver's reach.
+  // Outside the span the view draws a decor, and hatches beyond the receiver's
+  // reach; a span too narrow to see shows as a marker.
   const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
   const [reachLo, reachHi] = reach();
   const spanX = [toX(fStart()), toX(fEnd())], reachX = [toX(reachLo), toX(reachHi)];
+  const marker = spanMarker(spanX[0], spanX[1], s);
   const fade = pendingTune ? PENDING_FADE : 0;
   updateBandGlow(W);
   const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks} ${peaksVersion}`
-    + ` ${spanX} ${reachX} ${fade} ${bandGlowVersion}`;
+    + ` ${spanX} ${reachX} ${fade} ${bandGlowVersion} ${marker}`;
   if (key === specKey) return;
   specKey = key;
   const plotH = Math.max(2, H - Math.round(AXIS_H * s));
@@ -791,7 +793,7 @@ function renderSpectrum() {
   spectrumView.draw({
     columns: specColumns, plotHeight: plotH, fill: S.fill, traceWidth: 1.1 * s, peakWidth: S.peakHold ? s : 0,
     grid, markers: markerCorners, markerCount,
-    span: spanX, reach: reachX, scale: s, fade, glow: bandGlow, glowVersion: bandGlowVersion,
+    span: spanX, reach: reachX, marker, scale: s, fade, glow: bandGlow, glowVersion: bandGlowVersion,
   });
 }
 
@@ -805,7 +807,7 @@ function renderScales() {
     axisKey = aKey;
     const ctx = axisCtx, W = axisCanvas.width, H = axisCanvas.height;
     ctx.clearRect(0, 0, W, H);
-    const step = freqStep(), dec = clamp(Math.ceil(-Math.log10(step / 1e6) - 1e-9), 3, 6);
+    const step = freqStep(), dec = axisDecimals(step);
     ctx.font = `${10 * d}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -879,8 +881,9 @@ function drawBandStrip() {
   ctx.font = `${10 * DPR}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  for (const band of plan.bands) {
-    if (band.to <= view.f0 || band.from >= view.f1) continue;
+  const [first, end] = bandsInView(plan.bands, view.f0, view.f1);
+  for (let i = first; i < end; i += 1) {
+    const band = plan.bands[i];
     if (!showsSegments(band)) { drawStripBlock(ctx, band, [band.name, band.short]); continue; }
     let named = false;
     for (let i = band.first; i < band.first + band.count; i += 1) {
@@ -1062,16 +1065,21 @@ function syncSpanFit() {
 spanFitEl.addEventListener('click', () => setView(fStart(), fEnd()));
 
 // Before a click outside the span, an outline shows where the span would go
-// and a tip by the pointer says what the click does. A mouse only: a finger
-// has no hover, and sees the span on its way just after its tap.
+// and a tip by the pointer says what the click does; beyond the receiver's
+// reach, the tip says that it tunes nothing. A mouse only: a finger has no
+// hover, and sees the span on its way just after its tap, or the status
+// line's note.
+const BEYOND_REACH_TIP = "Beyond the receiver's range: a click tunes nothing";
 let tuneTipText = '';
 function showTunePreview(at, f) {
   let range = null, tip = '';
-  if (at && at.pointerType === 'mouse' && at.area !== 'band' && !(drag && drag.moved) && streamState === 'open' && sourceTunes()) {
-    const [lo, hi] = targetSpan();
-    if (f < lo || f > hi) {
-      range = spanAround(retuneCentre(snapAt(clamp(f, ...reach())), {}));
-      tip = reachable(f) ? 'Click: tune here' : "Out of the receiver's reach · Click: tune to the nearest frequency";
+  if (at && at.pointerType === 'mouse' && at.area !== 'band' && !(drag && drag.moved)) {
+    const [lo, hi] = targetSpan(), target = snapAt(f);     // where the click tunes
+    if (beyondReach(target)) {
+      tip = BEYOND_REACH_TIP;
+    } else if (streamState === 'open' && sourceTunes() && (f < lo || f > hi)) {
+      range = spanAround(retuneCentre(target, {}));
+      tip = 'Click: tune here';
       if (memoryRuns()) tip += ' · stops the memory scan';
       else if (sweepRuns()) tip += ' · stops the sweep';
     }
@@ -1218,23 +1226,20 @@ function viewChanged() {
   if (hoverAt) showHover(hoverAt, hoverAt.area);
 }
 
-// The view stays within the span with a source that does not tune. With one
-// that does, it reaches MAX_ZOOM_OUT spans, its centre within the receiver's
-// reach; zooming out holds at the span's width first (the detent).
+// The view goes from 0 Hz to the end of the band plan, or of the receiver's
+// reach when that is higher, whatever the receiver; zooming out holds at the
+// span's width first (the detent).
 const minSpan = () => Math.max(4000, binHz() * 16);
-const freeView = () => sourceTunes();
-const clampSpan = (span) => clamp(span, minSpan(), (freeView() ? MAX_ZOOM_OUT : 1) * S.fs);
-const viewLimits = () => `${freeView()} ${reach()}`;
+const extent = () => viewExtent(planEnd(plan.bands), reach(), [fStart(), fEnd()]);
+const clampSpan = (span) => { const [lo, hi] = extent(); return clamp(span, minSpan(), hi - lo); };
+const viewLimits = () => `${extent()}`;
 const viewInSpan = () => view.f0 >= fStart() - 1 && view.f1 <= fEnd() + 1;
 const viewFramesSpan = () => Math.abs(view.f0 - fStart()) <= 1 && Math.abs(view.f1 - fEnd()) <= 1;
 const atSpanWidth = (span) => Math.abs(span - S.fs) <= S.fs * 1e-9;
 // Where a view of this centre and width goes. One kept in the span stays
 // inside it while it fits, as with a source that does not tune.
 function fitView(centre, span, keepInSpan = false) {
-  const s = clampSpan(span);
-  const [lo, hi] = freeView() && !(keepInSpan && s <= S.fs) ? reach() : [fStart() + s / 2, fEnd() - s / 2];
-  const c = clamp(centre, lo, hi);
-  return [c - s / 2, c + s / 2];
+  return fitWithin(centre, span, keepInSpan && clampSpan(span) <= S.fs ? [fStart(), fEnd()] : extent(), minSpan());
 }
 function setView(f0, f1, keepInSpan = false) {
   [view.f0, view.f1] = fitView((f0 + f1) / 2, f1 - f0, keepInSpan);
@@ -1244,16 +1249,14 @@ function setView(f0, f1, keepInSpan = false) {
 // span's width, zooming out holds there until pushed DETENT_HOLD times further.
 let detentPush = 1;
 function detentSpan(span, s) {
-  if (freeView()) {
-    if (atSpanWidth(span)) {
-      if (s > span) {
-        detentPush *= s / span;
-        if (detentPush < DETENT_HOLD) return S.fs;
-        s = S.fs * (detentPush / DETENT_HOLD);
-      }
-    } else if ((span < S.fs) !== (s < S.fs)) {
-      s = S.fs;
+  if (atSpanWidth(span)) {
+    if (s > span) {
+      detentPush *= s / span;
+      if (detentPush < DETENT_HOLD) return S.fs;
+      s = S.fs * (detentPush / DETENT_HOLD);
     }
+  } else if ((span < S.fs) !== (s < S.fs)) {
+    s = S.fs;
   }
   detentPush = 1;
   return s;
@@ -1263,7 +1266,6 @@ function detentSpan(span, s) {
 // further, and the other way round.
 function pinchSpan(raw, start) {
   const whole = S.fs;
-  if (!freeView()) return raw;
   if (start <= whole || atSpanWidth(start)) return raw <= whole ? raw : raw < whole * DETENT_HOLD ? whole : raw / DETENT_HOLD;
   return raw >= whole ? raw : raw > whole / DETENT_HOLD ? whole : raw * DETENT_HOLD;
 }
@@ -1271,18 +1273,14 @@ function zoomAt(factor, anchor) {
   const span = view.f1 - view.f0, r = (anchor - view.f0) / span;
   const s = clampSpan(detentSpan(span, span * factor));
   // At the detent, zooming around a point of the span frames the span.
-  if (freeView() && atSpanWidth(s) && anchor >= fStart() && anchor <= fEnd()) setView(fStart(), fEnd());
+  if (atSpanWidth(s) && anchor >= fStart() && anchor <= fEnd()) setView(fStart(), fEnd());
   else setView(anchor - r * s, anchor + (1 - r) * s, viewInSpan());
 }
-// Frame a range or a band; framing it again frames the span. With a source
-// that does not tune, only the part inside the span can show.
+// Frame a range or a band; framing it again frames the span.
 function zoomToSegment(seg) {
   if (!seg) return;
-  const from = freeView() ? seg.from : Math.max(seg.from, fStart());
-  const to = freeView() ? seg.to : Math.min(seg.to, fEnd());
-  if (!(to > from)) return;
-  const pad = (to - from) * 0.08;
-  const [a, b] = fitView((from + to) / 2, to - from + 2 * pad), w = b - a;
+  const pad = (seg.to - seg.from) * 0.08;
+  const [a, b] = fitView((seg.from + seg.to) / 2, seg.to - seg.from + 2 * pad), w = b - a;
   const same = Math.abs(view.f1 - view.f0 - w) < w * 0.05 && Math.abs((view.f0 + view.f1) / 2 - (a + b) / 2) < w * 0.05;
   if (same) setView(fStart(), fEnd()); else setView(a, b);
 }
@@ -1969,13 +1967,14 @@ $('#src-hf').addEventListener('change', (e) => {
 $('#src-rtl-agc').addEventListener('change', (e) => { if (!stream.sendSource({ rtlAgc: e.target.checked })) syncSource(); });
 
 // Tune to f. Outside the span, with a source that tunes, the engine moves the
-// span first, and the VFO goes to f once frames come from there; beyond the
-// receiver's reach, f becomes the nearest frequency it reaches. A source that
-// cannot retune keeps the VFO within its span.
+// span first, and the VFO goes to f once frames come from there. Beyond the
+// receiver's reach, the span of a source that does not tune included,
+// nothing tunes and the status line says why.
 function tuneAnywhere(f, opts = {}) {
   if (!Number.isFinite(f)) return;
+  if (beyondReach(f)) { showStatusNote(beyondReachNote(f, reach())); return; }
   if (streamState === 'open' && sourceTunes()) {
-    f = Math.round(clamp(f, ...reach()));
+    f = Math.round(f);
     const [lo, hi] = targetSpan();
     if (f < lo || f > hi) {
       if (retuneFor(f, opts)) return;
@@ -1995,7 +1994,9 @@ function reach() {
   const half = source.rateHz / 2;
   return [source.rangeHz[0] - half, source.rangeHz[1] + half];
 }
-function reachable(f) { const [lo, hi] = reach(); return f >= lo && f <= hi; }
+function reachable(f) { return withinReach(f, reach()); }
+// Whether f lies beyond the reach of the receiver in use: false while none is known.
+const beyondReach = (f) => streamState === 'open' && source !== null && !reachable(f);
 const spanAround = (centre) => [centre - (source ? source.rateHz : S.fs) / 2, centre + (source ? source.rateHz : S.fs) / 2];
 // The span the VFO has to lie in: the one a retune on its way brings, else the one in use.
 const targetSpan = () => (pendingTune ? spanAround(pendingTune.centre) : [fStart(), fEnd()]);
@@ -2194,7 +2195,7 @@ function loadPlan() {
   }).then(() => {
     renderPlanList();
     lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
-    updateOverlays();
+    setView(view.f0, view.f1);          // the view reaches the plan's end now, and redraws the overlays
     if (signalsShown()) renderPeaks();     // signals show on their channels now
   });
 }
@@ -2965,12 +2966,14 @@ function openCtx(x, y, f, touch = false) {
   const seg = segmentAt(f);
   $('#ctx-title').textContent = `${formatFrequency(snapAt(f))} MHz${seg ? ` · ${seg.name}` : ''}`;   // where Tune and Bookmark go
   ctxEl.querySelector('[data-cmd="segment"]').disabled = !seg;
+  // Beyond the receiver's reach nothing tunes: Bookmark stays, for another receiver.
+  for (const cmd of ['tune', 'ignore']) ctxEl.querySelector(`[data-cmd="${cmd}"]`).disabled = beyondReach(snapAt(f));
   ctxEl.hidden = false;
   const r = ctxEl.getBoundingClientRect();
   const [left, top] = touch ? touchMenuOrigin(x, y, r.width, r.height) : [x, y];
   ctxEl.style.left = `${clamp(left, 8, window.innerWidth - r.width - 8)}px`;
   ctxEl.style.top = `${clamp(top, 8, window.innerHeight - r.height - 8)}px`;
-  if (!touch) ctxEl.querySelector('button').focus();   // keyboard use starts on the first item; a finger needs no focus ring
+  if (!touch) ctxEl.querySelector('button:not(:disabled)').focus();   // keyboard use starts on the first item; a finger needs no focus ring
 }
 function closeCtx() { ctxEl.hidden = true; }
 // Lifting the finger that opened the menu also fires a click where it lifts: that click is ignored.
@@ -3177,13 +3180,7 @@ function editFreq() {
     // Only a frequency other than the VFO's tunes: an entry left as it opened moves nothing.
     const hz = apply ? parseFrequency(input.value) : null;
     if (apply && hz === null && input.value.trim()) showStatusNote('Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz');
-    else if (hz !== null && hz !== shown) {
-      if (reachable(hz)) tuneAnywhere(hz);
-      else {
-        const [lo, hi] = reach();
-        showStatusNote(`${formatFrequency(hz)} MHz is beyond this receiver's range (${formatFrequency(lo)} to ${formatFrequency(hi)} MHz)`);
-      }
-    }
+    else if (hz !== null && hz !== shown) tuneAnywhere(hz);     // beyond the receiver's reach, it says why
     renderFreq();
     freqEl.focus();
   };

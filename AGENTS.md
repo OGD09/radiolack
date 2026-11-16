@@ -110,8 +110,10 @@ the history under the tag `v0.1.0`.
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
   input), `power.js` (the antenna power's second press), `tuning.js` (the
-  Automatic step) and `rates.js` (what a mode needs of the sample rate)
-  carry JSDoc types; `main.js`
+  Automatic step), `rates.js` (what a mode needs of the sample rate) and
+  `view.js` (the view's limits up to the band plan's end, what lies beyond
+  the receiver's reach, and what the view draws as it widens) carry JSDoc
+  types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).

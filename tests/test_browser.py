@@ -26,6 +26,7 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from unittest import mock
 
+import radiolack
 from radiolack import PROJECT_URL, __version__
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
@@ -96,6 +97,9 @@ REMOTE_FRAME_RATE = re.compile(rf" {DOT} (?:1?\d|20) fps$")
 # under the interface's style-src 'self': a WebKit bug without visible effect,
 # which WebKitGTK 2.50 does not have. WebKit words a refused inline style the
 # same way, but Chromium and Firefox report those in their own words.
+# Where the band plan ends, in MHz: the view goes that far whatever the receiver.
+PLAN_END_MHZ = max(band["to"] for band in json.loads(
+    (Path(radiolack.__file__).parent / "web" / "bandplan-europe.json").read_text(encoding="utf-8"))["bands"]) / 1e6
 WEBKIT_SELECT_REFUSAL = "Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'"
 # Chromium and WebKit report a refused request in the console, such as the
 # answer to a wrong access code.
@@ -149,6 +153,50 @@ WATERFALL_PROBE = """async () => {
   const down = drawn();
   view.setOffsets(Float32Array.of(-2.5, 0, 0, 0));    // and by half a bin
   return [up, down, drawn()];
+}"""
+# A span too narrow to see, as the spectrum and the waterfall draw it on
+# canvases 8 px wide: a marker 2 px wide around its middle, the spectrum's
+# over its decor, the waterfall's over black; and what view.js gives for
+# the view's limits, the bands in view and the axis's decimals.
+SPAN_MARKER_PROBE = """async () => {
+  const base = document.baseURI;
+  const { SpectrumView, MAX_MARKERS } = await import(new URL('spectrum-gl.js', base).href);
+  const { WaterfallView } = await import(new URL('waterfall-gl.js', base).href);
+  const view = await import(new URL('view.js', base).href);
+  const marker = view.spanMarker(3.8, 4.2, 1);
+  const row = (canvas) => {
+    const gl = canvas.getContext('webgl2'), pixels = new Uint8Array(8 * 4);
+    gl.readPixels(0, 0, 8, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    return Array.from({ length: 8 }, (_, x) => pixels[x * 4]);
+  };
+  const specCanvas = document.createElement('canvas');
+  const spectrum = new SpectrumView(specCanvas, () => {});
+  spectrum.resize(8, 4);
+  const scene = {
+    columns: new Float32Array(16).fill(4), plotHeight: 4, fill: false, traceWidth: 1, peakWidth: 0, grid: null,
+    markers: new Float32Array(MAX_MARKERS * 6), markerCount: 0, span: [100, 101], reach: [-1e9, 1e9],
+    scale: 1, fade: 0, glow: new Uint8Array(32), glowVersion: 1,
+  };
+  spectrum.draw({ ...scene, marker: null });
+  const plain = row(specCanvas);
+  spectrum.draw({ ...scene, marker });
+  const marked = row(specCanvas);
+  const wfCanvas = document.createElement('canvas');
+  const waterfall = new WaterfallView(wfCanvas, 4, () => {});
+  waterfall.resize(8, 2);
+  waterfall.setBins(8);
+  waterfall.draw({ head: 0, lines: 0, firstBin: 0, binsPerPixel: 1, marker });
+  const bands = [{ from: 10, to: 20 }, { from: 20, to: 30 }, { from: 40, to: 50 }];
+  return {
+    marker, wide: view.spanMarker(3, 6, 1), doubled: view.spanMarker(3, 4, 2),
+    spectrum: [plain, marked], waterfall: row(wfCanvas),
+    extents: [view.viewExtent(6.425e9, [-0.7e6, 1767.2e6], [-0.7e6, 1.7e6]), view.viewExtent(0, [143.8e6, 146.2e6], [143.8e6, 146.2e6]),
+      view.viewExtent(6.425e9, [23.6e6, 4295.3e6], [143.8e6, 146.2e6])],
+    fitted: [view.fitWithin(-5, 4, [0, 100], 2), view.fitWithin(50, 500, [0, 100], 2), view.fitWithin(99, 1, [0, 100], 2)],
+    inView: [[0, 5], [15, 25], [30, 40], [25, 45], [55, 60], [0, 100]].map(([a, b]) => view.bandsInView(bands, a, b)),
+    decimals: [500e6, 100e6, 1e6, 0.5e6, 0.25e6, 25e3, 1, 0.1].map(view.axisDecimals),
+    note: view.beyondReachNote(5760e6, [-0.7e6, 1767.2e6]),
+  };
 }"""
 # The lengths antenna.js gives at a few frequencies (the wavelength, a
 # half-wave and a quarter-wave element), and how it writes lengths at the
@@ -1916,7 +1964,7 @@ class BrowserTest(unittest.TestCase):
                 for _ in range(9):
                     page.keyboard.press("-")
                 low, high = self.view_edges(page)
-                self.assertAlmostEqual(high - low, 24, delta=0.05)     # ten spans at most
+                self.assertAlmostEqual(high - low, 2.4 / 1.15 * 1.5 ** 9, delta=0.2)      # past ten spans
                 expect(page.locator("#span-fit")).to_be_visible()
                 # Zoomed out, a band whose ranges would be too narrow shows as one block.
                 where = (145 - low) / (high - low)
@@ -1944,8 +1992,8 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 for page in (first, second):
                     page.keyboard.press("Escape")   # the Receiver menu lies over the spectrum
-                for _ in range(9):
-                    first.keyboard.press("-")       # ten spans, from 127.6 to 151.6 MHz
+                for _ in range(7):
+                    first.keyboard.press("-")       # about 35.6 MHz wide, from 118.9 MHz
                 view = self.view_edges(first)
                 _, text = self.readout_at(first, 0.08)
                 self.assertRegex(text, rf"^\d+\.\d+ MHz {DOT} outside the span {DOT} Airband$")
@@ -2039,7 +2087,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(self.view_edges(page), span)
                 self.assertEqual([message for message in self.sent[page] if "centre_hz" in message], [])
 
-    def test_the_view_stays_in_the_simulated_span_and_comes_back_to_the_vfo_or_the_span(self):
+    def test_the_view_leaves_the_simulated_span_and_comes_back_to_the_vfo_or_the_span(self):
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
@@ -2049,7 +2097,11 @@ class BrowserTest(unittest.TestCase):
                 expect(fit).to_be_hidden()          # the view frames the span
                 span = self.view_edges(page)
                 for _ in range(3):
-                    page.keyboard.press("-")        # a source that does not tune shows its span at most
+                    page.keyboard.press("-")        # past the span, as with a receiver that tunes
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(high - low, 2.4 / 1.15 * 1.5 ** 3, delta=0.02)
+                expect(fit).to_be_visible()
+                page.keyboard.press("0")
                 self.assertEqual(self.view_edges(page), span)
                 for _ in range(3):
                     page.keyboard.press("+")
@@ -2071,6 +2123,85 @@ class BrowserTest(unittest.TestCase):
                 fit.click()
                 expect(fit).to_be_hidden()
                 self.assertEqual(self.view_edges(page), span)
+
+    def test_the_view_visits_the_whole_plan_and_tunes_nothing_beyond_reach(self):
+        # The simulated band, whose reach is its span: zooming out holds at
+        # the span's width, then goes on to the whole plan, from 0 Hz. Beyond
+        # the span nothing tunes: a mouse sees why before the click, and the
+        # status line says it after; the context menu there disables Tune and
+        # Ignore and keeps the rest.
+        url = self.serve()      # the simulated band, from 143.8 to 146.2 MHz, the VFO on 145.6 MHz
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                span = self.view_edges(page)
+                page.keyboard.press("-")            # one step out passes the detent at the span's width
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(high - low, 2.4 * 1.5 / 1.15, delta=0.01)
+                for _ in range(25):
+                    page.keyboard.press("-")        # out to the whole plan, and no further
+                width = page.locator("#specwrap").bounding_box()["width"]
+                low, high = self.view_edges(page)   # the spectrum's second pixel and its last but one
+                self.assertAlmostEqual(low, PLAN_END_MHZ / width, delta=0.05)
+                self.assertAlmostEqual(high, PLAN_END_MHZ * (width - 1) / width, delta=0.05)
+                _, text = self.readout_at(page, 0.5)
+                self.assertIn(f" MHz {DOT} out of reach", text)
+                expect(page.locator("#tune-tip")).to_have_text("Beyond the receiver's range: a click tunes nothing")
+                expect(page.locator("#span-preview")).to_be_hidden()
+                demods = len([m for m in map(json.loads, self.sent[page]) if m.get("type") == "demod"])
+                page.mouse.down()
+                page.mouse.up()
+                expect(page.locator("#status")).to_have_text(re.compile(
+                    rf"^\d+\.\d+ MHz is beyond this receiver's range \(143\.800 to 146\.200 MHz\) {DOT} Synthetic source"))
+                expect(page.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")
+                self.assertEqual(len([m for m in map(json.loads, self.sent[page]) if m.get("type") == "demod"]), demods)
+                ctx = page.locator("#ctx")
+                page.mouse.click(*self.spectrum_point(page, 0.5), button="right")
+                expect(ctx).to_be_visible()
+                for name in ("Tune here", "Ignore in the scanner"):
+                    expect(ctx.get_by_role("menuitem", name=name)).to_be_disabled()
+                for name in ("Add to bookmarks", "Centre the view here", "Zoom to the segment"):
+                    expect(ctx.get_by_role("menuitem", name=name)).to_be_enabled()
+                expect(ctx.get_by_role("menuitem", name="Add to bookmarks")).to_be_focused()
+                page.keyboard.press("Escape")
+                expect(ctx).to_be_hidden()
+                page.keyboard.press("0")            # frames the span: there, Tune is back
+                self.assertEqual(self.view_edges(page), span)
+                page.mouse.click(*self.spectrum_point(page, 0.3), button="right")
+                expect(ctx.get_by_role("menuitem", name="Tune here")).to_be_enabled()
+                expect(ctx.get_by_role("menuitem", name="Ignore in the scanner")).to_be_enabled()
+                page.keyboard.press("Escape")
+
+    @staticmethod
+    def spectrum_point(page: Page, fraction: float) -> tuple[float, float]:
+        """The point of the spectrum ``fraction`` of the way from its first
+        pixel to its last, where readout_at puts the pointer."""
+        box = page.locator("#specwrap").bounding_box()
+        return box["x"] + 1 + (box["width"] - 2) * fraction, box["y"] + box["height"] * 0.3
+
+    def test_a_span_too_narrow_to_see_shows_as_a_marker(self):
+        # Seen from far, the span shows as a marker 2 px wide in the spectrum
+        # and the waterfall, which holds no measurement.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                found = page.evaluate(SPAN_MARKER_PROBE)
+                self.assertEqual(found["marker"], [3, 5])
+                self.assertIsNone(found["wide"])                # 3 px wide: the span itself
+                self.assertEqual(found["doubled"], [1.5, 5.5])  # 2 CSS px at twice the scale
+                plain, marked = found["spectrum"]
+                for x in (3, 4):
+                    self.assertGreater(marked[x], plain[x] + 50)
+                for x in (0, 1, 2, 5, 6, 7):
+                    self.assertEqual(marked[x], plain[x])
+                self.assertEqual([found["waterfall"][x] > 90 for x in range(8)], [False] * 3 + [True] * 2 + [False] * 3)
+                self.assertEqual([found["waterfall"][x] for x in (0, 1, 2, 5, 6, 7)], [0] * 6)
+                self.assertEqual(found["extents"], [[-0.7e6, 6.425e9], [0, 146.2e6], [0, 6.425e9]])
+                self.assertEqual(found["fitted"], [[0, 4], [0, 100], [98, 100]])
+                self.assertEqual(found["inView"], [[0, 0], [0, 2], [2, 2], [1, 3], [3, 3], [0, 3]])
+                self.assertEqual(found["decimals"], [0, 0, 0, 1, 2, 3, 6, 6])
+                self.assertEqual(found["note"], "5760.000 MHz is beyond this receiver's range (0.000 to 1767.200 MHz)")
 
 
 if __name__ == "__main__":
