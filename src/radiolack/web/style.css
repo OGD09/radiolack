@@ -102,15 +102,23 @@ html, body {
   width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1;
   stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
 }
-/* The lengths themselves, in a modal dialog dressed as the menu. */
-#antenna-dialog {
+/* The lengths themselves, and the problem report, in modal dialogs dressed as the menu. */
+#antenna-dialog, #report-dialog {
   width: 320px; max-width: calc(100% - 32px); padding: 0; color: var(--text); background: var(--panel);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   font-size: 12.5px; user-select: text; -webkit-user-select: text;
 }
-#antenna-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }   /* no custom properties: older engines do not pass them to ::backdrop */
-#antenna-dialog .dialog-body { padding: 10px 14px 12px; }        /* fills the dialog: a press on the dialog itself is on the backdrop */
-#antenna-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+#report-dialog { width: 560px; }
+/* No custom properties: older engines do not pass them to ::backdrop. */
+#antenna-dialog::backdrop, #report-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }
+/* Fills the dialog: a press on the dialog itself is on the backdrop. */
+#antenna-dialog .dialog-body, #report-dialog .dialog-body { padding: 10px 14px 12px; }
+#antenna-dialog h2, #report-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+#report-text {
+  display: block; width: 100%; height: 240px; max-height: 50vh; margin: 8px 0; resize: vertical;
+  font: 11px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--text); background: var(--control); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
 .dialog-sub { margin: 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .lengths { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 6px 12px; margin: 12px 0; }
 .lengths dt { color: var(--muted); }
@@ -277,7 +285,7 @@ input:disabled, select:disabled { opacity: 0.45; }
 .sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
 .tag { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .link { background: transparent; border: 0; color: var(--accent); font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
-a.link { display: inline-flex; align-items: center; text-decoration: none; }
+a.link, a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .btn { background: var(--control); border: 1px solid var(--line); color: var(--text); font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.primary { border-color: rgba(89, 167, 255, 0.55); }

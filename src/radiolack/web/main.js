@@ -105,6 +105,7 @@ const noticeEl = $('#notice');
 const readoutEl = $('#readout');
 const antennaEl = $('#antenna');
 const antennaDialog = $('#antenna-dialog');
+const reportDialog = $('#report-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
 const oneColumnQuery = window.matchMedia('(max-width: 600px)'); // the menu shows its list or a menu (style.css)
 
@@ -370,6 +371,18 @@ const stream = new EngineStream({
     syncRemote();
     updateStatus();
   },
+  onReport: (report) => {
+    $('#st-report-msg').textContent = '';
+    $('#report-msg').textContent = '';
+    const text = $('#report-text');
+    text.value = report.text;
+    text.scrollTop = 0;
+    $('#report-issue').href = report.issueUrl;
+    if (!reportDialog.open) {
+      reportKeyClose = false;
+      reportDialog.showModal();
+    }
+  },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
       demodError = message;     // the engine's settings came back before the error
@@ -414,6 +427,10 @@ const stream = new EngineStream({
       syncRemote();
       return;
     }
+    if (command === 'report') {
+      $('#st-report-msg').textContent = `Refused: ${message}.`;
+      return;
+    }
     sourceError = message;
     dropPendingTune();
     syncSource();       // the controls show the engine's settings again
@@ -430,7 +447,10 @@ const stream = new EngineStream({
       if (pendingTune) pendingTune.before = [];
       namingBookmark = null;    // a bookmark added before comes back as any other
     }
-    if (state === 'open') $('#st-remote-client').hidden = !stream.remote;
+    if (state === 'open') {
+      $('#st-remote-client').hidden = !stream.remote;
+      $('#st-report-section').hidden = stream.remote;     // the engine reports to this computer's interfaces only
+    }
     syncSource();
     syncScanner();
     syncRecording();
@@ -3081,6 +3101,48 @@ antennaDialog.addEventListener('close', () => {
   else antennaEl.blur();
 });
 
+// Settings' problem report: the engine makes it, with what the interface
+// tells of itself; a modal dialog shows it, to open as a new GitHub issue,
+// which the user's web browser shows, or to copy. It closes as the antenna
+// lengths do, and gives the focus back to its button the same way.
+let reportBackdropPress = false;
+let reportKeyClose = false;
+const reportButton = $('#st-report');
+// The web engine, whether the views draw, and the window's size: 300 characters at most.
+function pageFacts() {
+  const views = spectrumView ? 'WebGL2 views' : gpuError;
+  return `${navigator.userAgent}; ${views}; ${innerWidth}x${innerHeight} at ${devicePixelRatio}x`.slice(0, 300);
+}
+reportButton.addEventListener('click', () => {
+  $('#st-report-msg').textContent = '';
+  if (!stream.askReport(pageFacts())) $('#st-report-msg').textContent = notConnected('no report was made');
+});
+$('#report-copy').addEventListener('click', () => {
+  const text = $('#report-text');
+  const note = $('#report-msg');
+  const select = () => {
+    text.focus();
+    text.select();
+    note.textContent = 'Report selected: copy it with Ctrl+C.';
+  };
+  if (!navigator.clipboard) { select(); return; }
+  navigator.clipboard.writeText(text.value).then(() => { note.textContent = 'Report copied.'; }, select);
+});
+reportDialog.addEventListener('cancel', () => { reportKeyClose = true; });     // Escape
+reportDialog.querySelector('.close').addEventListener('click', (e) => {
+  reportKeyClose = e.detail === 0;     // pressed from the keyboard
+  reportDialog.close();
+});
+reportDialog.addEventListener('pointerdown', (e) => { reportBackdropPress = e.target === reportDialog; });
+reportDialog.addEventListener('click', (e) => {
+  if (reportBackdropPress && e.target === reportDialog && e.detail < 2) reportDialog.close();
+  reportBackdropPress = false;
+});
+reportDialog.addEventListener('close', () => {
+  if (reportKeyClose) reportButton.focus();
+  else reportButton.blur();
+});
+
 freqEl.addEventListener('dblclick', editFreq);
 freqEl.addEventListener('click', () => { if (coarseQuery.matches) editFreq(); });   // touch: one tap opens the keypad
 freqEl.addEventListener('wheel', (e) => {
@@ -3115,7 +3177,8 @@ bindStepButton($('#tune-up'), 1);
 
 window.addEventListener('keydown', (e) => {
   poke();
-  if (antennaDialog.open) return;     // the dialog keeps its keys: Escape closes it alone, and nothing tunes behind it
+  // A dialog keeps its keys: Escape closes it alone, and nothing tunes behind it.
+  if (antennaDialog.open || reportDialog.open) return;
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
     else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }

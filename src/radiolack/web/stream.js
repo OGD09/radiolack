@@ -3,14 +3,15 @@
  * state, the demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the recording state, the
  * storage state, the update state and remote access's state from the
- * engine, and the observations and the recordings when this interface asks,
- * and takes this interface's changes, its preferences, its request for
- * audio, its recordings, its update requests and its remote access settings
- * to it (docs/design/protocol.md). It reconnects by itself after a
- * disconnection. On a device that remote access serves, the engine sends
- * neither the storage, update nor remote access state, nor the recordings
- * folder, and takes none of their changes; it keeps that device's
- * preferences apart from this computer's.
+ * engine, and the observations, the recordings and a problem report when
+ * this interface asks, and takes this interface's changes, its preferences,
+ * its request for audio, its recordings, its update requests, its remote
+ * access settings and its report requests to it (docs/design/protocol.md).
+ * It reconnects by itself after a disconnection. On a device that remote
+ * access serves, the engine sends neither the storage, update nor remote
+ * access state, nor the recordings folder, nor a problem report, and takes
+ * none of their changes; it keeps that device's preferences apart from this
+ * computer's.
  */
 
 export const PROTOCOL_VERSION = 6;
@@ -28,7 +29,7 @@ const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'dc_removal'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
-  'recordings', 'update', 'remote'];
+  'recordings', 'update', 'remote', 'report'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -265,6 +266,14 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A problem report, which the engine sends to the interface that asks, for
+ * its user to share or not.
+ * @typedef {object} ProblemReport
+ * @property {string} text      the report, in plain text
+ * @property {string} issueUrl  GitHub's page for a new issue, with the report as its description
+ */
+
+/**
  * A device paired with remote access.
  * @typedef {object} RemoteDevice
  * @property {string} id            names it in forget requests
@@ -290,7 +299,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'recording'
- *   | 'recordings' | 'update' | 'remote'} Command
+ *   | 'recordings' | 'update' | 'remote' | 'report'} Command
  */
 
 /**
@@ -367,6 +376,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
+ * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -749,6 +759,17 @@ export function decodeUpdate(message) {
 }
 
 /**
+ * Decode a problem report message. Returns null when a field is missing or
+ * malformed.
+ * @param {any} message  a parsed JSON message of type "report"
+ * @returns {ProblemReport | null}
+ */
+export function decodeReport(message) {
+  const valid = typeof message.text === 'string' && typeof message.issue_url === 'string';
+  return valid ? { text: message.text, issueUrl: message.issue_url } : null;
+}
+
+/**
  * Decode a remote access message. Returns null when a field is missing or
  * malformed.
  * @param {any} message  a parsed JSON message of type "remote"
@@ -1109,6 +1130,18 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine for a problem report, which comes to this interface only
+   * (`onReport`), with what this interface tells of itself: a line of text,
+   * of 300 characters at most. Returns false, sending nothing, when the
+   * stream is not open.
+   * @param {string} page
+   * @returns {boolean}
+   */
+  askReport(page) {
+    return this.#send({ type: 'report', page });
+  }
+
+  /**
    * Turn remote access on or off: this computer's interfaces receive its
    * state as it changes, which says why it could not turn on. Returns false,
    * sending nothing, when the stream is not open.
@@ -1270,6 +1303,9 @@ export class EngineStream {
     } else if (message.type === 'remote') {
       const remote = decodeRemote(message);
       if (remote) this.#handlers.onRemote(remote);
+    } else if (message.type === 'report') {
+      const report = decodeReport(message);
+      if (report) this.#handlers.onReport(report);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);

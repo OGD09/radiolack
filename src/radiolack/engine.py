@@ -74,6 +74,9 @@ recording state, and the list of the recordings when they ask, and may
 delete one; this computer's interfaces may also choose another folder,
 which is saved.
 
+This computer's interfaces may ask for a problem report (report.py), which
+the engine sends to the one that asked, for its user to share or not.
+
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
 bookmarks, the preferences, whether to check for updates at start, what
@@ -111,6 +114,7 @@ from .preferences import check_preferences, saved_preferences
 from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, check_folder, chosen_folder,
                          delete_recording, is_recording_file, is_recording_name, list_recordings, meta_name)
 from .remote import REMOTE_FILE, RemoteAccess
+from .report import Report, check_page, receiver_line
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
                        MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal,
                        Signals, Sweep, SweepWindows, checked_frequency, checked_resume, checked_sweep_range,
@@ -858,6 +862,16 @@ class Engine:
             self._request(self._choose_folder(folder, subscription))
         else:
             raise ValueError(f"unknown recording setting: {str(name)[:40]}")
+
+    def report(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Send ``subscription`` a problem report, with what the interface
+        tells of itself, ``page``, a line of text, if given. Raises
+        ValueError when refused."""
+        for name in changes:
+            if name != "page":
+                raise ValueError(f"unknown report field: {str(name)[:40]}")
+        made = Report.now(receiver_line(self.source.describe()), check_page(changes.get("page", "")))
+        subscription.reply({"type": "report", "text": made.text(), "issue_url": made.issue_url()})
 
     def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's recordings message, which without any field asks

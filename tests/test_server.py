@@ -18,7 +18,7 @@ from unittest import mock
 
 import aiohttp
 
-from radiolack import __version__
+from radiolack import __version__, report
 from radiolack.recordings import meta_name, wav_header
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
@@ -473,6 +473,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "update", "check": 1}': ("update", "check and check_at_start must be true or false"),
             '{"type": "update", "check_at_start": "no"}': (
                 "update", "check and check_at_start must be true or false"),
+            '{"type": "report", "text": "mine"}': ("report", "unknown report field: text"),
+            '{"type": "report", "page": "two\\nlines"}': (
+                "report", "page must be a line of text of at most 300 characters"),
         }
         async with self.connect(self.origin) as ws:
             await self.start(ws)
@@ -754,6 +757,38 @@ class UpdateStreamTest(unittest.IsolatedAsyncioTestCase):
             for ws in (first, other):
                 state = await self.next_update(ws)
                 self.assertEqual((state["status"], state["check_at_start"]), ("available", False))
+
+
+class ReportStreamTest(unittest.IsolatedAsyncioTestCase):
+    """This computer's interface asks for a problem report, which comes to it
+    alone."""
+
+    async def asyncSetUp(self):
+        self.server = LocalServer(source=FakeSource())
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.session = aiohttp.ClientSession()
+        self.addAsyncCleanup(self.session.close)
+
+    def connect(self):
+        return self.session.ws_connect(f"{self.server.url}stream", origin=f"http://{LOOPBACK_HOST}:{self.server.port}")
+
+    async def test_sends_a_report_to_the_interface_that_asks(self):
+        async with self.connect() as asking, self.connect() as other:
+            for ws in (asking, other):
+                await read_start(self, ws)
+            await asking.send_json({"type": "report", "page": "a browser; WebGL2 views"})
+            while (message := await next_text(asking))["type"] != "report":
+                continue
+            lines = message["text"].splitlines()
+            self.assertTrue(lines[0].startswith(f"Radiolack {__version__}"), lines[0])
+            self.assertIn("Interface: a browser; WebGL2 views", lines)
+            self.assertIn(f"Receiver: test, streaming, {FakeSource.sample_rate_hz / 1e6:g} MS/s", lines)
+            self.assertTrue(message["issue_url"].startswith(f"{report.ISSUES_URL}?body="), message["issue_url"])
+            # The other interface learns the next change, and no report before it.
+            await asking.send_json({"type": "scanner", "threshold_db": 20})
+            while (message := await next_text(other))["type"] != "scanner":
+                self.assertNotEqual(message["type"], "report")
 
 
 async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:

@@ -243,7 +243,7 @@
       <section data-menu="settings" hidden>
         <div class="menu-scroll">
           <label class="check"><input id="st-autohide" type="checkbox"> Fade the interface when idle</label>
-          <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, the recordings folder, updates and remote access are set on the computer.</p>
+          <p class="note" id="st-remote-client" hidden>This device reaches Radiolack through remote access: storage, the recordings folder, updates and remote access are set on the computer, which also reports problems.</p>
           <!-- The engine sends these three sections' states to this computer's interfaces only. -->
           <div id="st-storage-section" hidden>
             <h3>Storage</h3>
@@ -268,6 +268,12 @@
             <div class="field"><span class="label">Paired devices</span><ul class="list" id="st-remote-devices"></ul></div>
             <div class="field" id="st-remote-fp-field" hidden><span class="label">Certificate fingerprint (SHA-256)</span><span class="value fingerprint" id="st-remote-fingerprint"></span></div>
             <p class="note">Off at each start, unless Radiolack starts with --remote. Local network only; set on this computer only.</p>
+          </div>
+          <!-- On this computer's interfaces only, as the engine sends the report to no other. -->
+          <div id="st-report-section" hidden>
+            <h3>Problems</h3>
+            <p class="note">A report of what Radiolack runs on and of its latest warnings, to read, then share on GitHub or copy. Radiolack sends nothing by itself.</p>
+            <div class="row"><button type="button" class="btn" id="st-report">Report a problem</button><span class="note" id="st-report-msg" role="status"></span></div>
           </div>
           <!-- The device's own gestures come first: a touch screen's, or the mouse's and the keys' (style.css). -->
           <div class="keys-lists">
@@ -345,6 +351,15 @@
       </dl>
       <p class="note">The dipole and the vertical include the usual 5% shortening: cut them a little longer, then trim.</p>
       <p class="note">Listening needs no resonant antenna: below 30 MHz a long wire often does as well; above, a resonant one mostly helps weak signals.</p>
+    </div>
+  </dialog>
+
+  <dialog id="report-dialog" aria-labelledby="report-title" aria-describedby="report-about">
+    <div class="dialog-body">
+      <div class="dialog-head"><h2 id="report-title">Report a problem</h2><button type="button" class="close" aria-label="Close the report">×</button></div>
+      <p class="note" id="report-about">Read the report first: its warnings may name files, folders, frequencies or addresses. On GitHub, describe the problem above it, then submit the issue.</p>
+      <textarea id="report-text" readonly spellcheck="false" aria-label="Report"></textarea>
+      <div class="row"><a class="btn primary" id="report-issue" href="#" target="_blank" rel="noopener noreferrer">Open a GitHub issue</a><button type="button" class="btn" id="report-copy">Copy</button><span class="note" id="report-msg" role="status"></span></div>
     </div>
   </dialog>
 </div>

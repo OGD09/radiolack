@@ -11,7 +11,8 @@ process, which draws the page, ends on its own, after a crash in WebKitGTK
 for instance, it loads the page again, at most once a minute: a page that
 ends again sooner gives way to a message with a button that reloads it.
 WebKit paints the page on the CPU, unless WEBKIT_SKIA_ENABLE_CPU_RENDERING
-is set already: see CPU_PAINTING.
+is set already: see CPU_PAINTING. GitHub's page for a new issue, with a
+problem report (report.py), opens in the user's web browser.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import report
 from .store import shown_path
 
 log = logging.getLogger(__name__)
@@ -110,6 +112,9 @@ def show(url: str) -> None:
     def request_close(_signum, _frame):
         GLib.idle_add(window.close)
 
+    report.set_window(f"GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}, "
+                      f"WebKitGTK {WebKit2.get_major_version()}.{WebKit2.get_minor_version()}."
+                      f"{WebKit2.get_micro_version()}")
     stop_signals = (signal.SIGINT, signal.SIGTERM)
     previous = {signum: signal.signal(signum, request_close) for signum in stop_signals}
     try:
@@ -165,7 +170,8 @@ def _origin(uri: str) -> tuple[str, str, int | None]:
 
 
 def _stay_on_origin(_view, decision, decision_type, origin, WebKit2) -> bool:
-    """Refuse new windows and navigation away from the interface.
+    """Refuse new windows and navigation away from the interface: GitHub's
+    page for a new issue opens in the user's web browser instead.
 
     Without an address bar there is no way back, for example after a file is
     dropped on the window.
@@ -175,8 +181,27 @@ def _stay_on_origin(_view, decision, decision_type, origin, WebKit2) -> bool:
     uri = decision.get_navigation_action().get_request().get_uri()
     if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION and _origin(uri) == origin:
         return False
+    if _is_issue_page(uri):
+        _open_outside(uri)
     decision.ignore()
     return True
+
+
+def _is_issue_page(uri: str) -> bool:
+    """Whether ``uri`` is GitHub's page for a new issue of Radiolack, with or
+    without its description."""
+    parts, page = urlsplit(uri), urlsplit(report.ISSUES_URL)
+    return (parts.scheme, parts.netloc, parts.path, parts.fragment) == (page.scheme, page.netloc, page.path, "")
+
+
+def _open_outside(uri: str) -> None:
+    """Open ``uri`` in the user's web browser, or say on the error output
+    why it did not open."""
+    from gi.repository import Gio, GLib     # loaded with GTK
+    try:
+        Gio.AppInfo.launch_default_for_uri(uri, None)
+    except GLib.Error as error:
+        log.warning("no web browser opened %s: %s", urlsplit(uri)._replace(query="").geturl(), error.message)
 
 
 class _WebProcessEnds:

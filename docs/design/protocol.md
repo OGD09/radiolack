@@ -13,7 +13,7 @@ A device that remote access serves, a remote client, opens its stream on
 remote access's HTTPS server instead, with its session cookie
 ([Remote access](#remote-access)). It receives the same messages, apart
 from this computer's own states, with lighter spectrum frames, and may not
-change this computer's own settings: the engine keeps its device's
+change this computer's own settings nor ask for a problem report: the engine keeps its device's
 preferences apart from this computer's.
 
 ## From the engine
@@ -510,7 +510,22 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-16. An error, to one interface only, when the engine refuses a message from
+16. A problem report, a JSON text message, to one interface of this
+    computer only, when it asks for one (`report` message): what its user
+    may share, or not, when Radiolack misbehaves (README.md, Problem
+    reports).
+
+    ```json
+    {"type": "report", "text": "Radiolack 0.12.0 (Debian package)\nPython 3.11.2, aiohttp 3.8.4, NumPy 1.24.2\n...",
+     "issue_url": "https://github.com/OGD09/radiolack/issues/new?body=..."}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
+    | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
+
+17. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -522,12 +537,12 @@ What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
 found, the recording state, the storage state, the update state and remote
 access's state, each when it changed (and the preferences at the start),
-then the observations, the recordings and errors, in the order of the
-messages they answer, then audio frames, then spectrum frames. A client
+then the observations, the recordings, the reports and errors, in the
+order of the messages they answer, then audio frames, then spectrum frames. A client
 that reads too slowly loses its oldest frames: the engine keeps the latest
 four spectrum frames and fifteen audio frames (half a second) for it and
 never slows down for one client; it keeps its latest states, and up to
-eight observations, recordings and errors together. When
+eight observations, recordings, reports and errors together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -735,6 +750,17 @@ turns its check at start on or off, for the next starts:
 The engine starts a check unless one is running, saves the check at start
 with its settings, and this computer's interfaces receive the update state
 as it changes. It refuses other fields, and values other than true or false.
+
+A `report` message asks the engine for a problem report, which comes to the
+sender alone, with what the interface tells of itself, if it does:
+
+```json
+{"type": "report", "page": "Mozilla/5.0 (X11; Linux x86_64) ...; WebGL2 views; 1280x800 at 1x"}
+```
+
+`page`, a line of text of 300 characters at most, goes into the report as
+it is. The engine refuses other fields and another `page`, and the message
+of a remote client.
 
 A `remote` message changes remote access ([Remote access](#remote-access)),
 one setting at a time:
@@ -966,7 +992,9 @@ and later.
   recordings' I/Q entries, with `rate_hz` and `meta`, and the downloads of
   SigMF files. An interface that records audio only ignores `iq`, shows an
   I/Q recording's stop as a plain stop of its recording and lists an I/Q
-  recording as one of mode `I/Q`, which it downloads as its data file.
+  recording as one of mode `I/Q`, which it downloads as its data file. On
+  2026-11-15, the problem report: the `report` messages, which an older
+  interface never sends, and so never receives.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

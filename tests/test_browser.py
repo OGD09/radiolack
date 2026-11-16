@@ -26,6 +26,7 @@ from unittest import mock
 from radiolack import __version__
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
+from radiolack.report import ISSUES_URL
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
@@ -380,6 +381,26 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#st-update")).to_have_text(text)
                 expect(first.locator("#st-update-check")).to_be_enabled()
                 expect(first.locator("#notice")).to_be_hidden()         # the same version stays closed
+
+    def test_settings_report_a_problem_to_read_then_share_or_copy(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "settings")
+                page.locator("#st-report").click()
+                dialog = page.locator("#report-dialog")
+                expect(dialog).to_be_visible()
+                text = page.locator("#report-text")
+                expect(text).to_have_value(re.compile(rf"^Radiolack {re.escape(__version__)}( \(Debian package\))?\n"))
+                expect(text).to_have_value(re.compile(r"\nInterface: \S.*\nReceiver: synthetic, streaming, "))
+                self.assertTrue(page.locator("#report-issue").get_attribute("href").startswith(f"{ISSUES_URL}?body="))
+                page.locator("#report-copy").click()
+                # Without the clipboard, which a headless browser may refuse, the report is selected.
+                expect(page.locator("#report-msg")).to_have_text(
+                    re.compile(r"^Report (copied|selected: copy it with Ctrl\+C)\.$"))
+                page.keyboard.press("Escape")       # closes the dialog alone
+                expect(dialog).to_be_hidden()
+                expect(page.locator('#menu section[data-menu="settings"]')).to_be_visible()
 
     def test_a_change_in_one_interface_shows_in_the_others(self):
         url = self.serve()
@@ -1261,7 +1282,8 @@ class BrowserTest(unittest.TestCase):
                     expect(device.locator("#status")).to_contain_text(REMOTE_FRAME_RATE)     # half the frames
                     self.open_menu(device, "settings")
                     expect(device.locator("#st-remote-client")).to_be_visible()
-                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section", "#st-version"):
+                    for section in ("#st-storage-section", "#st-update-section", "#st-remote-section",
+                                    "#st-report-section", "#st-version"):
                         expect(device.locator(section)).to_be_hidden()
                     expect(device.locator("#status")).not_to_contain_text("remote access")
                     self.open_menu(device, "record")      # the recordings, not their folder

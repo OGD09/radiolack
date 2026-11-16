@@ -28,7 +28,8 @@ the history under the tag `v0.1.0`.
   signals found, the recording state and the update check's findings with
   clients, sends audio to those that ask, passes their changes on,
   switches between kinds of
-  sources, restores and saves the settings and the source in use; keeps the
+  sources, restores and saves the settings and the source in use; sends a
+  problem report to this computer's interface that asks; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
@@ -54,7 +55,12 @@ the history under the tag `v0.1.0`.
   unless the user chose another, its checks and its list; opening a
   recording's file to download it, and deleting a recording, with an I/Q
   recording's metadata, only for the files named as recordings),
-  `updates` (update check: apt run
+  `report` (problem reports: the latest warnings and errors of the
+  `radiolack` logger, kept in memory from `cli`'s start, which still writes
+  them on the error output; the report's facts, without the receiver's
+  address or frequency, the home folder written `~`; GitHub's page for a
+  new issue with it, the oldest messages left out to keep its address
+  short; Radiolack sends nothing itself), `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
   Radiolack), `store` (settings, bookmarks, observations and remote access
@@ -87,7 +93,8 @@ the history under the tag `v0.1.0`.
   page loads again, unless it ended less than a minute before: a message
   with a Reload button then takes its place; WebKit paints on the CPU,
   `WEBKIT_SKIA_ENABLE_CPU_RENDERING=1` unless the user set it, as Skia's
-  GPU painting crashed WebKitGTK 2.50's web process).
+  GPU painting crashed WebKitGTK 2.50's web process; GitHub's page for a
+  new issue, alone, opens in the user's web browser).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,

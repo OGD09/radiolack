@@ -214,7 +214,9 @@ seven menus beside the one it shows:
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
   plan and bookmarks on the spectrum.
 - Settings: the interface's behaviour, the storage, the updates, remote
-  access, the gestures and keys, and the version that runs.
+  access, on this computer a problem report ([Problem
+  reports](#problem-reports)), the gestures and keys, and the version that
+  runs.
 
 The keys 1 to 7 open these menus in this order, or close the one that
 shows; in a field they type as usual, and with Ctrl, Alt or Meta they do
@@ -941,6 +943,25 @@ Settings > Updates says why. On Debian 12, whose apt checks signatures
 through apt-key, each check leaves an empty folder in `/run/user/UID/gnupg`,
 which the end of your session removes.
 
+## Problem reports
+
+When Radiolack misbehaves, Settings > Report a problem, on this computer,
+prepares a report of what it runs on: its version, and whether it came from
+the Debian package; Python's, aiohttp's and NumPy's; the system and its
+kernel; GTK's and WebKitGTK's in the desktop window; the web browser, the
+views' WebGL2 and the window's size; the receiver's kind and state, with its
+tuner and sample rate but neither its address nor its frequency; how long
+Radiolack has run; and its latest 50 warnings and errors, in UTC, with your
+home folder written `~`. Radiolack sends nothing by itself. Read the report
+first, as its warnings may name files, folders, frequencies or addresses.
+Open a GitHub issue then shows GitHub's page for a new issue in your web
+browser, with the report as its description, where you say what happened
+above it and submit it with your GitHub account; Copy puts it on the
+clipboard instead, for an email for instance. When the warnings would make
+the page's address too long for GitHub, the issue leaves out the oldest
+ones; a copy keeps them all. Radiolack keeps its warnings and errors in
+memory only, from its start, and still writes them on its error output.
+
 ## Band plan
 
 The strip under the spectrum shows what each range is used for, from 9 kHz to
@@ -1277,7 +1298,10 @@ src/radiolack/
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
   updates.py    update check: asks the APT repository for a newer version
+  report.py     problem reports: the latest warnings and errors, kept in
+                memory, and GitHub's page for a new issue
   window.py     desktop window (GTK 3 and WebKitGTK), which saves downloads
+                and opens GitHub's page for a new issue in the web browser
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 docs/design/    design documents
