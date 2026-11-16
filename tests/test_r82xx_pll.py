@@ -1,11 +1,11 @@
-"""Tests for the port of rtl-sdr's two PLL computations (tests/r82xx_pll.py),
+"""Tests for the port of rtl-sdr's two PLL computations (src/radiolack/r82xx.py),
 on values derived by hand from the driver's arithmetic: a 28.8 MHz crystal,
 2X = 57.6 MHz, and a 65536th of it, 878.90625 Hz, for the VCO's fraction."""
 
 import unittest
 
-from tests import r82xx_pll
-from tests.r82xx_pll import (driver_xtal_hz, intermediate_hz, mix_divider, oscillator_hz, rate_if_hz,
+from radiolack import r82xx as r82xx_pll
+from radiolack.r82xx import (driver_xtal_hz, intermediate_hz, mix_divider, oscillator_hz, rate_if_hz,
                              rounding_lo_hz, truncating_lo_hz, tuned_hz)
 
 

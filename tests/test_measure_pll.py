@@ -17,7 +17,7 @@ import aiohttp
 
 from radiolack.rtltcp import RtlTcpSource
 from radiolack.server import LocalServer
-from tests import r82xx_pll
+from radiolack import r82xx as r82xx_pll
 from tests.fakes import LOOPBACK, FakeRtlTcp
 
 TOOL_PATH = Path(__file__).resolve().parents[1] / "tools" / "measure_pll.py"

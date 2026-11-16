@@ -1,7 +1,7 @@
 """The two ways rtl-sdr's driver programs the PLL of an R820T or R828D
-tuner, ported to predict the frequency that the tuner truly sets for one
-asked: the tests' fake rtl_tcp and tools/measure_pll.py use them, nothing
-that Radiolack installs does.
+tuner, ported to tell the frequency that the tuner truly sets for one
+asked, and the grid of centre frequencies where the error is the same at
+every one (coverage-and-precision.md, pull requests 13 and 14).
 
 librtlsdr asks the tuner for a frequency F; the tuner's oscillator runs at
 F plus the intermediate frequency (IF), and the RTL2832 brings the IF down
@@ -24,6 +24,12 @@ for it, so a carrier moves by as much in the samples.
   nearest 65536th. It is within 2X / 65536 / 2, 439 Hz, of the VCO asked,
   so within 439 Hz / mix_div of the frequency asked, and exact when the
   oscillator is a multiple of 112.5 kHz on a 28.8 MHz crystal.
+
+The grid (``GRID_HZ``): on an oscillator that is a multiple of 112.5 kHz,
+the rounding computation is exact, and the truncating one sits one
+constant low for each divider of the tuner (1757.8 Hz over the divider),
+except where the VCO is a multiple of 57.6 MHz, where it is exact too.
+``on_grid`` gives the frequency to ask for there.
 
 The IF depends on what librtlsdr did to the tuner last, its two states
 (``TUNER_STATES``):
@@ -68,7 +74,11 @@ Left out, as they do not move the frequency: the registers written, the
 VCO's fine tune, which changes the divider's register but not the VCO
 computed, the lock check, and the RTL2832's mixer, whose own rounding is
 the same for every centre frequency. The RTL-SDR Blog V4's upconversion
-below 28.8 MHz is left out too: the measure runs above it.
+below 28.8 MHz is left out too (``UPCONVERSION_HZ``): its driver
+(rtlsdrblog/rtl-sdr-blog, ``r82xx_set_freq`` in src/tuner_r82xx.c) adds
+28.8 MHz to a frequency below it on a dongle that names itself a V4 or a
+V4L, which rtl_tcp announces as any R828D, so that what the tuner sets
+there is not what these functions give.
 
 The licence notice of the files ported, which this port keeps:
 
@@ -97,6 +107,7 @@ version 3 or later, as the "or later" above allows.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 XTAL_HZ = 28_800_000        # the crystal of an R820T, and of the RTL-SDR Blog V4's R828D
@@ -107,6 +118,8 @@ SDM_STEPS = 65_536          # the PLL's fraction: sdm / 65536
 # again, until the next sample rate (the docstring above).
 TUNER_STATES = ("rate", "started")
 STARTED_IF_HZ = 3_570_000   # r82xx_set_tv_standard's IF, which r82xx_init sets
+GRID_HZ = 112_500           # 2X / 512: the oscillators where the error is the same at every one
+UPCONVERSION_HZ = 28_800_000    # an RTL-SDR Blog V4's driver upconverts below this
 
 # r82xx_set_bandwidth: the IF filter's widths, and the high-pass steps.
 _LOW_PASS_HZ = (1_700_000, 1_600_000, 1_550_000, 1_450_000, 1_200_000, 900_000, 700_000, 550_000, 450_000,
@@ -238,3 +251,17 @@ def tuned_hz(computation: str, frequency_hz: int, rate_hz: int, correction_ppm: 
     intermediate = intermediate_hz(rate_hz, state)
     lo_hz = COMPUTATIONS[computation](frequency_hz + intermediate, driver_xtal_hz(correction_ppm))
     return lo_hz - intermediate
+
+
+def on_grid(frequency_hz: float, intermediate: int, low_hz: float, high_hz: float) -> int:
+    """The frequency nearest ``frequency_hz`` whose oscillator, with the IF
+    ``intermediate``, is a multiple of GRID_HZ, within ``low_hz`` to
+    ``high_hz``: GRID_HZ / 2 away at most, unless the nearest lies beyond
+    them, then the nearest within them. ValueError when none lies within
+    them."""
+    first = math.ceil((low_hz + intermediate) / GRID_HZ)
+    last = math.floor((high_hz + intermediate) / GRID_HZ)
+    if first > last:
+        raise ValueError(f"no oscillator on the grid from {low_hz:.0f} to {high_hz:.0f} Hz")
+    nearest = math.floor((frequency_hz + intermediate) / GRID_HZ + 0.5)
+    return min(max(nearest, first), last) * GRID_HZ - intermediate

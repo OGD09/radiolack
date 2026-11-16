@@ -123,7 +123,8 @@ from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, che
 from .remote import REMOTE_FILE, RemoteAccess
 from .report import Report, check_page, receiver_line
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
-                       MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Signal,
+                       MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour,
+                       Placement, Signal,
                        Signals, Sweep, SweepWindows, checked_frequency, checked_resume, checked_sweep_range,
                        checked_threshold, checked_window, memory_window, memory_windows, search_blocks, sweep_windows,
                        watched_channels)
@@ -150,7 +151,9 @@ RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the client
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
-UNSAVED_SETTINGS = ("bias_tee",)    # source settings that start off at each start: never saved
+# Source settings that start at their default at each start, never saved:
+# the antenna power, off, and the tuner's grid, on.
+UNSAVED_SETTINGS = ("bias_tee", "tuner_grid")
 LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this computer's interfaces may change
 # Why a recording stopped by itself, as the output tells it.
 _RECORDING_STOPS = {"rate": "the audio rate changed, into or out of WFM", "source": "the simulated band was chosen",
@@ -166,7 +169,15 @@ class Source(Protocol):
     """A source of I/Q samples: complex64, in full-scale units.
 
     ``centre_hz`` and ``sample_rate_hz`` describe the samples ``read`` last
-    returned. ``describe`` gives the state the interfaces show
+    returned: the centre asked, which tells the setting they come from,
+    with ``exact_centre_hz``, the centre in use that labels them, where the
+    receiver sits on the air as far as the source knows, and
+    ``rate_scale``, how much faster than ``sample_rate_hz`` the receiver
+    truly samples, as the source alone corrects it, which scales the VFO's
+    distance from the centre. ``centre_in_use`` gives the centre in use
+    for a centre asked, and ``grid_hz`` how far apart those lie for a
+    receiver that places its centres on a grid (rtltcp.py), 0 for others.
+    ``describe`` gives the state the interfaces show
     (docs/design/protocol.md), and the source calls ``on_change`` whenever
     that state changes. ``settings_key`` names the receiver whose settings
     the engine saves: each key has its own. ``given`` names the settings
@@ -178,9 +189,18 @@ class Source(Protocol):
 
     kind: str
     centre_hz: float
+    exact_centre_hz: float
+    rate_scale: float
     sample_rate_hz: float
     given: frozenset[str]
     on_change: Callable[[], None] | None
+
+    @property
+    def grid_hz(self) -> float:
+        """How far apart the centres in use lie, on a grid; 0 without one."""
+
+    def centre_in_use(self, centre_hz: float) -> float:
+        """The centre in use that asking for ``centre_hz`` would give."""
 
     @property
     def settings_key(self) -> str:
@@ -228,6 +248,15 @@ class FixedSource:
     sample_rate_hz: float
     given: frozenset[str] = frozenset()
     on_change: Callable[[], None] | None = None
+    rate_scale = 1.0
+    grid_hz = 0.0
+
+    @property
+    def exact_centre_hz(self) -> float:
+        return self.centre_hz
+
+    def centre_in_use(self, centre_hz: float) -> float:
+        return centre_hz
 
     @property
     def settings_key(self) -> str:
@@ -248,10 +277,11 @@ class FixedSource:
     def describe(self) -> dict[str, Any]:
         centre = self.centre_hz
         return {"kind": self.kind, "status": "streaming", "detail": "", "address": None,
-                "tuner": None, "centre_hz": centre, "sample_rate_hz": self.sample_rate_hz,
-                "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [centre, centre],
-                "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
-                "converter": None, "converter_lo_hz": None, "settable": []}
+                "tuner": None, "centre_hz": centre, "centre_in_use_hz": centre,
+                "sample_rate_hz": self.sample_rate_hz, "gain_db": None, "ppm": None, "gains_db": [],
+                "range_hz": [centre, centre], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
+                "bias_tee": None, "converter": None, "converter_lo_hz": None, "driver_pll": None, "tuner_grid": None,
+                "settable": []}
 
     def configure(self, changes: Mapping[str, object]) -> None:
         raise ValueError(f"the {self.kind} source cannot change its settings")
@@ -404,7 +434,8 @@ class Engine:
         self._remote_blocks: list[np.ndarray] = []  # bin powers of the blocks of their next frame
         self._remote_capture: tuple[float, float] | None = None    # centre and rate of those blocks
         self._demodulator = Demodulator()   # used by one block at a time
-        self._capture: tuple[float, float] | None = None    # centre and rate of the last block
+        # The centre asked and the rate of the last block, and its centre in use and rate.
+        self._capture: tuple[tuple[float, float], tuple[float, float]] | None = None
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
         # What each client receives first, in this order, then again whenever
         # it changes; remote clients, none of LOCAL_STATES.
@@ -1046,10 +1077,13 @@ class Engine:
                     self._check_peaks()
                     self._check_carrier()
                     continue        # or switched away from
+                # The centre asked tells the setting the samples come from;
+                # the one in use labels them.
                 capture = (source.centre_hz, source.sample_rate_hz)
-                if capture != self._capture:
-                    self._capture = capture
-                    self._keep_vfo_in(*capture)
+                label = (source.exact_centre_hz, source.sample_rate_hz)
+                if (capture, label) != self._capture:
+                    self._capture = (capture, label)
+                    self._keep_vfo_in(*label)
                     self._watch_bookmarks()     # in case the source retuned by itself, as when it connects
                 audio = self._audio is not None or any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
@@ -1057,13 +1091,13 @@ class Engine:
                 # receiver: none while the samples still come from another.
                 channels = self._watched if self._memory is not None and capture == self._span() else None
                 sweep = self._sweep
-                measure = self._carrier_measure(capture)
+                measure = self._carrier_measure(label)
                 power, codes, meter, pcm, detections, levels, carrier = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
-                    *capture, self._dc_removal, self._demod, audio, threshold_db,
+                    *label, self._dc_removal, self._demod, audio, threshold_db,
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
-                    None if channels is None else self._bands, measure)
-                self._publish(capture, power, codes, meter, pcm)
+                    None if channels is None else self._bands, measure, source.rate_scale)
+                self._publish(label, power, codes, meter, pcm)
                 if measure is not None and measure[0] is self._carrier:
                     if carrier is not None:
                         self._answer_carrier(carrier, measure[2])
@@ -1241,7 +1275,8 @@ class Engine:
             return
         folder = self._recording_folder()
         source = self.source
-        centre_hz, rate_hz = self._span()
+        # Named after the centre in use, to the hertz; its metadata gives it as the samples are labelled.
+        centre_hz, rate_hz = float(round(source.describe()["centre_in_use_hz"])), self._span()[1]
         recording = IQRecording(folder, time.time(), centre_hz, rate_hz, hardware=source.hardware,
                                 make_folder=folder == self._default_recordings, report=self._reporter())
         source.tap(functools.partial(self._record_iq, recording))
@@ -1574,7 +1609,8 @@ class Engine:
         start_hz = centre_hz if self._home is None else self._home[0]
         ticked = self._bookmarks.ticked()
         windows, ids = self._memory_plan(ticked, start_hz, rate_hz)
-        watched = watched_channels(ticked, centre_hz, rate_hz) if self._memory is not None else ()
+        in_use = self.source.describe()["centre_in_use_hz"]
+        watched = watched_channels(ticked, in_use, rate_hz) if self._memory is not None else ()
         if watched != self._watched:
             self._watched = watched
             self._bands = np.array([(channel.low_hz, channel.high_hz, channel.clearance_hz)
@@ -1595,17 +1631,22 @@ class Engine:
                      rate_hz: float) -> tuple[tuple[float, ...], tuple[int, ...]]:
         """The centre frequencies of the windows that a memory scan visits
         and the ``ticked`` bookmarks it watches there, by id: those of the
-        span centred on ``centre_hz`` alone, unless the receiver tunes and
-        other ticked bookmarks lie within its reach, which then take as few
-        windows as ``memory_windows`` finds."""
-        span = tuple(channel.bookmark_id for channel in watched_channels(ticked, centre_hz, rate_hz))
-        described = self.source.describe()
+        span that asking for ``centre_hz`` gives alone, unless the receiver
+        tunes and other ticked bookmarks lie within its reach, which then
+        take as few windows as ``memory_windows`` finds, where the receiver
+        places them."""
+        source = self.source
+        span = tuple(channel.bookmark_id
+                     for channel in watched_channels(ticked, source.centre_in_use(centre_hz), rate_hz))
+        described = source.describe()
         if "centre_hz" in described["settable"]:
             low_hz, high_hz = described["range_hz"]
+            placement = Placement(source.centre_in_use, source.grid_hz)
             reach = [(bookmark_id, bookmark.frequency_hz) for bookmark_id, bookmark in ticked
-                     if memory_window(bookmark.frequency_hz, rate_hz, low_hz, high_hz) is not None]
+                     if memory_window(bookmark.frequency_hz, rate_hz, low_hz, high_hz, placement) is not None]
             if not {bookmark_id for bookmark_id, _ in reach} <= set(span):
-                windows = memory_windows((frequency for _, frequency in reach), rate_hz, low_hz, high_hz)
+                windows = memory_windows((frequency for _, frequency in reach), rate_hz, low_hz, high_hz,
+                                         placement)
                 return windows, tuple(bookmark_id for bookmark_id, _ in reach)
         return ((centre_hz,) if span else ()), span
 
@@ -1994,7 +2035,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
                    watch: ChannelWatch, samples: np.ndarray, centre_hz: float, rate_hz: float,
                    dc_removal: bool, settings: DemodSettings, audio: bool, threshold_db: float | None,
                    search_blocks: int, bands: np.ndarray | None,
-                   measure: tuple[CarrierMeasure, tuple[Any, ...], float] | None = None,
+                   measure: tuple[CarrierMeasure, tuple[Any, ...], float] | None = None, rate_scale: float = 1.0,
                    ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
                               tuple[np.ndarray, np.ndarray] | None, Carrier | None]:
     """The bin powers, the display codes, the channel meter, with ``audio``
@@ -2004,12 +2045,15 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     the setting of these samples, has one its result, of a block of samples,
     worked out in a worker thread. Detection is off without ``threshold_db``,
     and the memory scan's channels are not watched without ``bands``, their
-    passbands and noise clearances."""
+    passbands and noise clearances. The VFO's distance from ``centre_hz``
+    shrinks by ``rate_scale``, the factor by which the receiver samples
+    faster than ``rate_hz``: the samples show it that much nearer."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
     power = analyzer.power(samples)
-    noise = analyzer.noise_density(power, len(samples), settings.frequency_hz - centre_hz, rate_hz,
+    shift_hz = (settings.frequency_hz - centre_hz) / rate_scale
+    noise = analyzer.noise_density(power, len(samples), shift_hz, rate_hz,
                                    noise_clearance_hz(settings.mode, settings.bandwidth_hz))
     carrier: list[Carrier | None] = [None]     # what the measure gives, if any
     tap: Callable[[np.ndarray], None] | None = None
@@ -2021,7 +2065,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
         def tap(channel: np.ndarray) -> None:
             carrier[0] = gatherer.add(channel, demodulator.channel_rate_hz, position + low_hz, position + high_hz,
                                       key)
-    meter, pcm = demodulator.process(samples, centre_hz, rate_hz, settings, noise, audio, tap)
+    meter, pcm = demodulator.process(samples, settings.frequency_hz - shift_hz, rate_hz, settings, noise, audio, tap)
     if threshold_db is None:
         detector.reset()
         detections = None
