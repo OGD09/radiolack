@@ -11,6 +11,7 @@ import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
+import { automaticStep } from './tuning.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -65,7 +66,6 @@ const PALETTES = {
   gray: ['#000000', '#ffffff'],
 };
 const BAND_PLAN_URL = 'bandplan-europe.json';
-const DEFAULT_STEP = 100;           // tuning step where the band plan gives none, Hz
 const SQL_WHEEL_PX = 50;            // wheel travel over the S-meter that moves the squelch by 1 dB, as one notch does
 
 // ------------------------------------------------------------------ DOM
@@ -136,10 +136,13 @@ const segmentAt = (f) => rangeAt(plan.ranges, f);
 const bandAt = (f) => rangeAt(plan.bands, f);
 // Strip tooltip: a segment of a band also names its band.
 const rangeTitle = (r) => (r.kind === 'segment' ? `${r.band} · ${r.name}` : r.name);
+// A fixed step applies whatever the zoom; Automatic follows the view's
+// width, and the channel spacing of f's range where the view shows two
+// channels or more.
 function stepAt(f) {
   if (S.step !== 'auto') return Number(S.step);
   const seg = segmentAt(f);
-  return seg && seg.step ? seg.step : DEFAULT_STEP;
+  return automaticStep(view.f1 - view.f0, seg ? seg.step : null);
 }
 const snapAt = (f) => { const st = stepAt(f); return Math.round(f / st) * st; };
 // Where the VFO shows: where a retune on its way puts it, else where it is.
@@ -928,12 +931,15 @@ function renderFreq() {
   freqEl.setAttribute('aria-valuetext', `${formatFrequency(vfo)} MHz`);
 }
 
+// The line under the frequency, which a zoom changes with the Automatic step:
+// a text is written only when it changes, as rewriting it repaints in WebKitGTK.
 function updateMeta() {
-  $('#m-mode').textContent = S.mode;
-  $('#m-bw').textContent = fmtBw(S.bw);
   const vfo = shownVfo(), seg = segmentAt(vfo), step = `step ${fmtBw(stepAt(vfo))}`;
   const where = seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState];
-  $('#m-seg').textContent = where ? `${where} · ${step}` : step;
+  for (const [sel, text] of [['#m-mode', S.mode], ['#m-bw', fmtBw(S.bw)], ['#m-seg', where ? `${where} · ${step}` : step]]) {
+    const el = $(sel);
+    if (el.textContent !== text) el.textContent = text;
+  }
 }
 
 function sUnits(db) {

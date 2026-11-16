@@ -763,6 +763,41 @@ class BrowserTest(unittest.TestCase):
                 page.mouse.wheel(0, -100)                  # a notch up: 10 Hz more
                 expect(freq).to_have_attribute("aria-valuenow", "145601010")
 
+    def test_the_automatic_step_follows_the_zoom_and_the_channels(self):
+        # On the 2 m repeaters, 12.5 kHz apart, the step is their spacing while
+        # the view shows two channels or more; zoomed in further it follows the
+        # view's width. Where the plan gives no spacing, the width alone sets
+        # it, and a fixed step holds whatever the zoom.
+        url = self.serve()      # the simulated band, the VFO on 145.6 MHz, the view 2.4 MHz wide
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                meta, freq = page.locator("#m-seg"), page.locator("#freq")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 12\.5 kHz$"))
+                for _ in range(11):                 # 27.7 kHz wide: still two channels
+                    page.keyboard.press("+")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 12\.5 kHz$"))
+                page.keyboard.press("+")            # 18.5 kHz wide
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 1 Hz$"))
+                freq.focus()
+                freq.press("ArrowUp")
+                expect(freq).to_have_attribute("aria-valuenow", "145600001")
+                page.keyboard.press("0")            # the whole span, 2.4 MHz
+                freq.dblclick()
+                page.locator("#freq input").fill("144.05")     # the CW segment: no channels
+                page.locator("#freq input").press("Enter")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 1 kHz$"))
+                for _ in range(3):                  # 711 kHz wide
+                    page.keyboard.press("+")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 100 Hz$"))
+                self.open_menu(page, "radio")
+                page.locator("#dm-step").select_option("25000")
+                page.keyboard.press("Escape")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 25 kHz$"))
+                page.keyboard.press("0")
+                expect(meta).to_have_text(re.compile(rf" {DOT} step 25 kHz$"))
+
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_digit_that_leaves_the_span_moves_it(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
