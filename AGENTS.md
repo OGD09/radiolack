@@ -198,6 +198,17 @@ the history under the tag `v0.1.0`.
   an empty GnuPG home in it, which the
   programs the tests start inherit; those that import the package too keep
   it rather than make their own, and the run removes it at its end.
+  `r82xx_pll.py` holds rtl-sdr's two computations of the R820T's PLL,
+  ported from the driver (GPL-2.0-or-later; its docstring names the
+  versions and commits), for the fake rtl_tcp's optional tuner error and
+  `tools/measure_pll.py`.
+- `tools/`: development tools, run from a checkout and never installed:
+  the Debian package and pip take `src/radiolack` alone.
+  `measure_pll.py` (coverage-and-precision.md, pull request 13) measures
+  the tuner's PLL error through a Radiolack already running on a receiver,
+  through its stream on 127.0.0.1, moving only the centre frequency, which
+  it restores; `tests/test_measure_pll.py` runs it against the fake
+  rtl_tcp.
 
 ## Commands
 
@@ -220,6 +231,10 @@ the history under the tag `v0.1.0`.
   file that its docstring names, fontTools, Inkscape and ImageMagick;
   replace the inlined logo in `pair.html` with the one it prints.
   `tests/test_identity.py` checks that every copy agrees.
+- PLL measure, only when the owner asks for it in the current
+  conversation, against the Radiolack the owner started on the receiver:
+  `python3 tools/measure_pll.py PORT [--output FILE]` (its `--help` says
+  what to set first). It tunes that receiver.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
   a `main` without changes and at the commit of `origin/main`. It commits
   the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes
@@ -278,8 +293,9 @@ the history under the tag `v0.1.0`.
   without a receiver is fine. `radiolack --rtl-sdr` starts rtl_tcp, which
   opens the receiver, as soon as an interface opens (the default window
   included), or at start with `--scan`, and `radiolack --rtl-tcp` tunes
-  the receiver behind a running rtl_tcp: tests and checks use the fake
-  rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
+  the receiver behind a running rtl_tcp, as `tools/measure_pll.py` tunes
+  the receiver behind the Radiolack it drives: tests and checks use the
+  fake rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
   `tests/fake_rtl_tcp.py` instead. `radiolack` without either option
   reopens the source used last, which may be a receiver, read at start
   with `--scan`, and choosing a receiver in the Receiver menu's list opens

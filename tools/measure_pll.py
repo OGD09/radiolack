@@ -89,7 +89,7 @@ SPAN_USE = 0.4              # and within this share of the sample rate from it
 FILTER_MARGIN_HZ = 200.0    # the carrier stays this far inside the filter at every prediction
 
 PREDICTIONS = {
-    "truncating": "rtl-sdr up to 2.0.1 (0.6.0 on Debian 12) and the RTL-SDR Blog fork",
+    "truncating": "rtl-sdr up to 2.0.1, Debian 12's 0.6.0 among them, and the RTL-SDR Blog fork",
     "rounding": "rtl-sdr 2.0.2 and later",
 }
 NAMES = {"truncating": "up to 2.0.1", "rounding": "2.0.2 on"}
@@ -689,7 +689,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "without a converter or a scan, its crystal warmed up; the VFO on one steady carrier above "
                     "24 MHz, alone in its filter and 20 dB above the noise, in AM, NFM or CW with a filter of a "
                     "few kHz.",
-        epilog="It connects to 127.0.0.1 only, and changes nothing but the centre frequency.")
+        epilog="It connects to 127.0.0.1 only, and changes nothing but the centre frequency. Ctrl-C stops it "
+               "and restores the centre frequency; a second Ctrl-C leaves at once. Exit status: 0 with a verdict, "
+               "1 without one or when the centre frequency could not be restored, 130 after Ctrl-C.")
     parser.add_argument("port", type=port_number,
                         help="the port of that Radiolack on 127.0.0.1 (its address http://127.0.0.1:PORT/)")
     parser.add_argument("--output", type=Path, metavar="FILE",

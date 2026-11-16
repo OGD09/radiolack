@@ -738,6 +738,59 @@ session.
   between: the owner sees the table.
 - The result goes into `scoping.md`'s spikes, with its table.
 
+As built, where this section left a choice open or a rule had to bend:
+
+- **The oscillator is the centre plus the IF of the sample rate in use,
+  not always 3.57 MHz.** librtlsdr gives the tuner a bandwidth equal to
+  the sample rate it truly runs at, and the driver's IF follows it:
+  3.57 MHz above 2.43 MS/s, 1.815 MHz at 2.4 MS/s, 1.7 MHz at 1.024 MS/s.
+  `r82xx_pll.py` ports `r82xx_set_bandwidth` and the rate's rounding too,
+  and the second sweep puts the oscillator itself on multiples of
+  112.5 kHz. The table gives the oscillator of each point.
+- **Only the rounding computation is exact on a multiple of 112.5 kHz.**
+  The truncating one (up to rtl-sdr 2.0.1, and the RTL-SDR Blog fork)
+  takes a bit of sdm only while the remainder is strictly greater than its
+  weight: on an exact remainder, the last bit is left for smaller ones
+  that add up to less. It is exact only when the VCO is a multiple of
+  57.6 MHz (an oscillator on a multiple of 3.6 MHz near 145 MHz):
+  144.1125 MHz comes out 109.9 Hz low. The second sweep therefore tells
+  the two computations apart, and section 14's premise, both exact on
+  those oscillators, holds for the rounding one only.
+- **Drift.** The first centre is measured again after every 10 points and
+  at the end. Each point's offset is taken from the reference interpolated
+  in time between the measures around it, and the table gives that drift
+  beside the offset. A reference that moves more than 5 Hz between two of
+  its measures leaves no rule applicable: the owner sees the table, as a
+  crystal still warming up cannot be told from the PLL.
+- **"Follows a prediction"**: every offset within 5 Hz of it, half the
+  spread under which the error is not observed. **"Near 145 MHz"**: the
+  tuner's divider of 145 MHz, 16 (oscillators from 110.6 to 221.25 MHz);
+  elsewhere the owner sees the table.
+- **The first sweep** goes up from the centre found, or down when going up
+  would bring the VFO's filter within 1 kHz of the centre frequency or
+  beyond 40% of the sample rate from it. The second takes up to 8 centres,
+  those whose oscillators lie nearest the first one's. Each point gets two
+  measures before the carrier counts as lost; the first point one.
+- **Refused at start**, with the reason: another source than an RTL-SDR,
+  a tuner other than an R820T or R828D (the predictions take the 28.8 MHz
+  crystal of the R820T and of the RTL-SDR Blog V4's R828D), direct
+  sampling, a converter, a scan that runs, a mode whose filter is not
+  centred on the VFO (AM, NFM and CW are), a filter too narrow to hold the
+  carrier's predicted moves with 200 Hz to spare, a VFO below 24 MHz (or
+  28.8 MHz with a V4's tuner, which upconverts below). A change of the
+  receiver's or the VFO's settings by another interface, or of the centre
+  frequency other than by the tool, stops it as incomplete.
+- **The correction.** The predictions take the frequency that Radiolack
+  asks of rtl_tcp (`correction.py`) and the crystal that librtlsdr gives
+  the driver with the whole part of the correction, so they hold with any
+  correction; with a whole part other than 0, the driver's crystal is no
+  longer 28.8 MHz and the second sweep's oscillators are no longer exact.
+- **Where it runs.** The tool reads `tests/r82xx_pll.py` by its path and
+  the correction's arithmetic from `src/`: it runs from a checkout. The
+  Debian package copies `src/radiolack` alone, and pip installs it alone:
+  neither installs `tools/`. Exit status 0 with a verdict, 1 without one
+  or when the centre frequency could not be restored, 130 after Ctrl-C.
+
 ### 14. PLL-exact centre frequencies, only if 13 says so
 
 - For an R820T or R828D on a 28.8 MHz crystal, the source moves each
