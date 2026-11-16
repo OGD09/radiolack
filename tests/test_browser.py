@@ -1659,7 +1659,8 @@ class BrowserTest(unittest.TestCase):
                 metadata = json.loads(Path(downloading.value.path()).read_text(encoding="ascii"))
                 self.assertEqual((metadata["global"]["core:datatype"], metadata["global"]["core:sample_rate"]),
                                  ("cu8", 2_400_000))
-                self.assertEqual(metadata["captures"][0]["core:frequency"], 145_000_000)
+                # Named after the centre asked, the samples labelled with the centre in use on the grid.
+                self.assertEqual(metadata["captures"][0]["core:frequency"], in_use(145_000_000))
                 delete = iq_row.locator("button[data-del]")
                 delete.click()      # a first press asks for a second one
                 expect(delete).to_have_text("Confirm")
