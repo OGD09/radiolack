@@ -162,7 +162,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
             "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "sample_rate_hz": FAKE_RATE_HZ,
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
-            "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
+            "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
             "dc_removal": True, "settable": ["dc_removal"], "kinds": [],    # this engine has one source only
         })
         self.assertEqual(subscription.get_nowait(), {
@@ -644,6 +644,23 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         source = settings["receivers"]["rtl_tcp"]["source"]
         self.assertEqual((source["centre_hz"], source["rtl_agc"]), (7.1e6, True))
         self.assertEqual(list(source)[:3], ["address", "hf_input", "sample_rate_hz"])
+
+    async def test_the_antenna_power_is_never_saved_nor_restored(self):
+        # A hand-written file cannot turn it on either.
+        self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"bias_tee": True, "ppm": -4}}}})
+        engine = self.engine(RtlTcpSource(), save_delay_s=0.05)
+        self.assertEqual((engine.state()["bias_tee"], engine.state()["ppm"]), (False, -4))
+        engine.power_antenna()
+        self.assertTrue(engine.state()["bias_tee"])
+        engine.configure({"ppm": 2})
+        settings = await self.saved(
+            SETTINGS_FILE, lambda content: content["receivers"]["rtl_tcp"]["source"]["ppm"] == 2)
+        self.assertNotIn("bias_tee", settings["receivers"]["rtl_tcp"]["source"])
+
+    async def test_a_source_without_antenna_power_refuses_to_turn_it_on(self):
+        engine = self.engine()
+        with self.assertRaisesRegex(ValueError, "^the test source has no antenna power$"):
+            engine.power_antenna()
 
     async def test_an_address_given_at_start_replaces_the_saved_one(self):
         self.write(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": "192.0.2.10:40000", "ppm": -4}}}})

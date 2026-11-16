@@ -1723,6 +1723,28 @@ class BrowserTest(unittest.TestCase):
                         expect(page.locator("#src-ppm")).to_have_value(shown)
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_antenna_power_turns_on_with_a_second_press_and_off_with_one(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                power = first.locator("#src-power")
+                expect(first.locator("#src-power-v")).to_have_text("off")
+                expect(power).to_have_text("Turn on")
+                power.click()
+                expect(power).to_have_text("Confirm: 4.5 V on the antenna socket")
+                expect(second.locator("#src-power-v")).to_have_text("off")     # nothing sent yet
+                power.click()
+                for page in (first, second):
+                    expect(page.locator("#src-power-v")).to_have_text("on")
+                    expect(page.locator("#src-power")).to_have_text("Turn off")
+                second.locator("#src-power").click()                          # off at once
+                for page in (first, second):
+                    expect(page.locator("#src-power-v")).to_have_text("off")
+                    expect(page.locator("#src-power")).to_have_text("Turn on")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_wfm_says_it_needs_a_higher_sample_rate_than_the_lowest_ones(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
@@ -1801,6 +1823,7 @@ class BrowserTest(unittest.TestCase):
                 expect(receiver).to_have_value("synthetic")
                 expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
                 expect(first.locator("#src-hf-field")).to_be_hidden()     # the simulated band has no shortwave
+                expect(first.locator("#src-power-row")).to_be_hidden()    # nor antenna power
                 receiver.select_option("rtl_sdr")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("rtl_sdr")

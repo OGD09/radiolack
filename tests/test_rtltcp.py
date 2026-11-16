@@ -34,18 +34,18 @@ asyncio.run(main())
 
 
 # Commands sent at each connection with automatic gain: the gain mode only.
-CONNECTION = 6
+CONNECTION = 7
 
 
 def connection_commands(ppm: int, rate_hz: int, centre_hz: int, gain_tenths: int | None = None,
-                        direct: int = 0, rtl_agc: int = 0) -> list[tuple[int, int]]:
+                        direct: int = 0, rtl_agc: int = 0, bias_tee: int = 0) -> list[tuple[int, int]]:
     """What the source sends at each connection: the correction, the sample
-    rate, direct sampling, the RTL2832's AGC, the frequency, then the gain,
-    unless sampling directly."""
+    rate, direct sampling, the RTL2832's AGC, the frequency, the gain,
+    unless sampling directly, then the antenna power."""
     commands = [(0x05, ppm % 2**32), (0x02, rate_hz), (0x09, direct), (0x08, rtl_agc), (0x01, centre_hz)]
     if not direct:
         commands += [(0x03, 0)] if gain_tenths is None else [(0x03, 1), (0x04, gain_tenths)]
-    return commands
+    return [*commands, (0x0e, bias_tee)]
 
 
 async def eventually(condition, timeout: float = 5.0) -> None:
@@ -128,8 +128,9 @@ class StreamingTest(SourceTest):
             "centre_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
             "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": False,
-            "rtl_agc": False,
-            "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc"],
+            "rtl_agc": False, "bias_tee": False,
+            "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc",
+                         "bias_tee"],
         })
         # One set of settings whatever the address, which was given here.
         self.assertEqual((source.settings_key, source.given), ("rtl_tcp", frozenset({"address"})))
@@ -410,6 +411,58 @@ class ShortwaveTest(SourceTest):
         self.assertEqual(source.describe(), before)
 
 
+class AntennaPowerTest(SourceTest):
+    async def test_starts_off_is_sent_at_each_connection_and_when_it_changes(self):
+        source = await self.start()
+        await self.read(source)
+        self.assertEqual(self.fake.commands[-1], (0x0e, 0))
+        self.assertFalse(source.describe()["bias_tee"])
+        source.configure({"bias_tee": True})
+        await eventually(lambda: self.fake.commands[-1] == (0x0e, 1))
+        self.assertTrue(source.describe()["bias_tee"])
+        self.fake.drop()        # a reconnection applies the state in use
+        await eventually(lambda: self.fake.connections == 2 and source.status == "streaming")
+        self.assertEqual(self.fake.commands[-CONNECTION:],
+                         connection_commands(0, 2_400_000, 145_000_000, bias_tee=1))
+        source.configure({"bias_tee": False})
+        await eventually(lambda: self.fake.commands[-1] == (0x0e, 0))
+
+    async def test_turns_it_off_before_closing(self):
+        source = await self.start()
+        source.configure({"bias_tee": True})
+        await self.read(source)
+        source.close()
+        await eventually(lambda: self.fake.open_connections == 0)
+        self.assertEqual(self.fake.commands[CONNECTION:], [(0x0e, 0)])
+
+    async def test_a_source_without_power_closes_without_a_command(self):
+        source = await self.start()
+        await self.read(source)
+        source.close()
+        await eventually(lambda: self.fake.open_connections == 0)
+        self.assertEqual(len(self.fake.commands), CONNECTION)
+
+    async def test_turns_it_off_on_the_server_it_leaves_for_another_address(self):
+        source = await self.start()
+        source.configure({"bias_tee": True})
+        await self.read(source)
+        other = FakeRtlTcp()
+        await other.__aenter__()
+        self.addAsyncCleanup(other.__aexit__, None, None, None)
+        source.configure({"address": f"{LOOPBACK}:{other.port}"})
+        await self.read(source)
+        await eventually(lambda: self.fake.open_connections == 0)
+        self.assertEqual(self.fake.commands[CONNECTION:], [(0x0e, 0)])
+        self.assertEqual(other.commands[-1], (0x0e, 1))     # the state in use
+
+    async def test_refuses_anything_but_true_or_false(self):
+        source = await self.start()
+        for value in (1, 0, "on", None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "antenna power"):
+                source.configure({"bias_tee": value})
+        self.assertFalse(source.describe()["bias_tee"])
+
+
 class AddressTest(SourceTest):
     async def other_server(self) -> FakeRtlTcp:
         """A second fake server, closed after the test."""
@@ -687,6 +740,17 @@ class RtlSdrSourceTest(SourceTest):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
+    async def test_stops_rtl_tcp_once_it_has_turned_the_antenna_power_off(self):
+        source = await self.start_sdr()
+        source.configure({"bias_tee": True})
+        await self.read(source, timeout=10)
+        [(pid, _)] = self.runs.started()
+        source.close()
+        await asyncio.wait_for(source.wait_closed(), 10)
+        events = self.runs.events(pid)
+        self.assertEqual(events[-2:], ["command 14 0", "stopping"])
+        self.assertIn("command 14 1", events)
+
     async def test_runs_rtl_tcp_on_a_free_loopback_port_and_streams(self):
         source = await self.start_sdr()
         self.assertEqual(self.runs.started(), [])
@@ -778,7 +842,8 @@ class RtlSdrSourceTest(SourceTest):
         source = RtlSdrSource(program=FAKE_RTL_TCP)     # nothing reads: nothing starts
         state = source.describe()
         self.assertIsNone(state["address"])
-        self.assertEqual(state["settable"], ["hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc"])
+        self.assertEqual(state["settable"],
+                         ["hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee"])
         with self.assertRaisesRegex(ValueError, "unknown setting: address"):
             source.configure({"address": "192.0.2.10"})
 

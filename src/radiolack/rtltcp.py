@@ -35,6 +35,13 @@ it. ``tuner`` is for a dongle whose tuner covers shortwave by itself, such
 as an RTL-SDR Blog V4: the centre frequency simply goes lower. No tuner
 says when it cannot reach a frequency: rtl_tcp checks no command's result.
 
+Antenna power (``bias_tee``, command 0x0e) puts 4.5 V on the antenna
+socket of an RTL-SDR Blog V3 or V4. It starts off, is sent at each
+connection, since rtl_tcp keeps it from its previous client, and is never
+saved. A source on which it is on turns it off before it closes, and before
+it leaves a server for another address; an RtlSdrSource gives its rtl_tcp a
+moment to apply it before stopping it.
+
 For a recording of the raw I/Q, the source also hands every sample that
 arrives to a tap, as rtl_tcp sends it, labelled the same way: whether the
 engine reads it or not, so that a recording loses nothing when the engine
@@ -93,6 +100,8 @@ _SET_GAIN = 0x04        # tenths of a dB
 _SET_FREQUENCY_CORRECTION = 0x05    # ppm
 _SET_RTL_AGC = 0x08     # the RTL2832's own AGC: 0 off, 1 on
 _SET_DIRECT_SAMPLING = 0x09     # 0: the tuner, 1: the I input, 2: the Q input
+_SET_BIAS_TEE = 0x0e    # antenna power: 0 off, 1 on (rtl_tcp 0.5.4 and later)
+POWER_OFF_S = 0.3       # an rtl_tcp that RtlSdrSource stops first applies the power's end
 # What a receiver may use for shortwave (hf_input): nothing, direct sampling
 # on the Q or the I input, or a tuner that covers it.
 HF_INPUTS = ("none", "q", "i", "tuner")
@@ -100,7 +109,7 @@ _DIRECT_INPUTS = {"q": 2, "i": 1}   # the value of command 0x09 for each input
 DIRECT_SAMPLING_HZ = 28_800_000.0   # the RTL2832's own rate: what direct sampling covers
 # In the order the engine restores them: the input and the rate before the
 # centre frequency, whose reach depends on them.
-_SETTINGS = ("hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc")
+_SETTINGS = ("hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm", "rtl_agc", "bias_tee")
 # Full-scale value of each unsigned 8-bit sample.
 _LEVELS = (np.arange(256, dtype=np.float32) - np.float32(127.5)) / np.float32(127.5)
 
@@ -213,6 +222,7 @@ class Settings:
     ppm: int                        # frequency correction, in parts per million
     hf_input: str = "none"          # one of HF_INPUTS
     rtl_agc: bool = False           # the RTL2832's AGC, while sampling directly
+    bias_tee: bool = False          # antenna power, never saved
 
 
 class RtlTcpSource:
@@ -262,6 +272,7 @@ class RtlTcpSource:
         self._last_read = -math.inf     # when the latest read ended
         self._reading = False
         self._closed = False
+        self._powered_off = False   # close() asked rtl_tcp to turn the antenna power off
         # The tap of a recording: where the samples it received end in
         # rtl_tcp's stream, None after a gap; an I byte that waits for its Q
         # byte; and whether the next samples follow those it received.
@@ -363,14 +374,15 @@ class RtlTcpSource:
             "hf_inputs": list(hf_inputs(tuner)),
             "direct": _direct_input(settings, tuner) != 0,
             "rtl_agc": settings.rtl_agc,
+            "bias_tee": settings.bias_tee,
             "settable": self._settable(),
         }
 
     def configure(self, changes: Mapping[str, object]) -> None:
         """Change ``address`` (as ``parse_address`` reads it), ``centre_hz``,
         ``sample_rate_hz``, ``gain_db`` (``None`` for automatic gain),
-        ``ppm``, ``hf_input`` (one of ``HF_INPUTS``) and ``rtl_agc``, then
-        call ``on_change``.
+        ``ppm``, ``hf_input`` (one of ``HF_INPUTS``), ``rtl_agc`` and
+        ``bias_tee``, then call ``on_change``.
 
         Raises ValueError, changing nothing, when a setting is unknown or
         invalid. A gain becomes the nearest the tuner offers. Another input
@@ -396,6 +408,7 @@ class RtlTcpSource:
         retuned = ((new.centre_hz, new.sample_rate_hz, new.ppm, new_input)
                    != (old.centre_hz, old.sample_rate_hz, old.ppm, old_input))
         if address is not None:
+            self._power_off(old)    # the receiver left behind
             self.host, self.port = address
             self.tuner = None
             if self._task is not None and not self._task.done():
@@ -423,6 +436,8 @@ class RtlTcpSource:
                     _send_gain(connection, new.gain_db)     # the tuner forgot it
             elif new_input and new.rtl_agc != old.rtl_agc:
                 connection.send(_SET_RTL_AGC, int(new.rtl_agc))
+            if new.bias_tee != old.bias_tee:
+                connection.send(_SET_BIAS_TEE, int(new.bias_tee))
             if retuned:
                 # Also after a change of rate, correction or input, so that
                 # the receiver applies it whatever the librtlsdr version.
@@ -437,6 +452,7 @@ class RtlTcpSource:
         if self._closed:
             return
         self._closed = True
+        self._powered_off = self._power_off(self._settings)
         self._hang_up()
         self._arrived.set()
 
@@ -501,6 +517,16 @@ class RtlTcpSource:
             raise _Waiting(_reason(error)) from None
         return connection
 
+    def _power_off(self, settings: Settings) -> bool:
+        """Turn the antenna power off on a receiver about to be left, when
+        ``settings`` have it on and rtl_tcp answered: True once asked. The
+        command goes out before the connection closes."""
+        connection = self._connection
+        if not settings.bias_tee or connection is None or connection.tuner is None:
+            return False
+        connection.send(_SET_BIAS_TEE, 0)
+        return True
+
     def _hang_up(self) -> None:
         """End the connection, or the attempts to make one, with the samples
         it brought."""
@@ -531,6 +557,7 @@ class RtlTcpSource:
         connection.send(_SET_FREQUENCY, int(settings.centre_hz))
         if not direct:
             _send_gain(connection, settings.gain_db)
+        connection.send(_SET_BIAS_TEE, int(settings.bias_tee))
         self._new_setting()
         self._set_status("streaming", "")
 
@@ -638,9 +665,12 @@ class RtlSdrSource(RtlTcpSource):
         return {**super().describe(), "address": None}
 
     def close(self) -> None:
-        if self._child is not None and not self._closed:
-            self._child.terminate()
+        if self._closed:
+            return
         super().close()
+        # rtl_tcp stops at once, unless it has the antenna power to turn off first.
+        if self._child is not None and not self._powered_off:
+            self._child.terminate()
 
     async def _session(self) -> None:
         try:
@@ -648,6 +678,8 @@ class RtlSdrSource(RtlTcpSource):
         finally:
             child, self._child = self._child, None
             if child is not None:
+                if self._powered_off:
+                    await asyncio.sleep(POWER_OFF_S)
                 await child.stop(self._stop_s)
 
     async def _connect(self) -> _Connection:
@@ -838,6 +870,11 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
         if not isinstance(value, bool):
             raise ValueError("the RTL2832's AGC must be true or false")
         settings = replace(settings, rtl_agc=value)
+    if "bias_tee" in changes:
+        value = changes["bias_tee"]
+        if not isinstance(value, bool):
+            raise ValueError("the antenna power must be true or false")
+        settings = replace(settings, bias_tee=value)
     if "sample_rate_hz" in changes:
         rate = float(round(_number(changes["sample_rate_hz"], "the sample rate")))
         if not any(low <= rate <= high for low, high in SAMPLE_RATES_HZ):

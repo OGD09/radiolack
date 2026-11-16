@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -158,6 +159,7 @@ class FakeRtlTcp:
         self.rtl_agc = 0                # command 0x08
         self.gain_tenths: int | None = None     # None: automatic gain
         self.commands: list[tuple[int, int]] = []
+        self.on_command: Callable[[int, int], None] | None = None     # told of each command as it comes
         self.connections = 0            # accepted so far
         self._writers: set[asyncio.StreamWriter] = set()
         self._handlers: set[asyncio.Task] = set()
@@ -200,6 +202,8 @@ class FakeRtlTcp:
                     command, value = struct.unpack_from(">BI", pending)
                     pending = pending[5:]
                     self.commands.append((command, value))
+                    if self.on_command is not None:
+                        self.on_command(command, value)
                     loop.call_later(self.apply_delay_s, self._apply, command, value)
         except ConnectionError:
             pass
@@ -296,6 +300,11 @@ class FakeRtlTcpRuns:
     def stopping(self) -> set[int]:
         """The runs that SIGTERM stopped."""
         return {pid for pid, rest in self._events() if rest == "stopping"}
+
+    def events(self, pid: int) -> list[str]:
+        """What one run did after it started, in order: "command C V" for
+        each command it received, then "stopping" when SIGTERM came."""
+        return [rest for run, rest in self._events() if run == pid and not rest.startswith("started ")]
 
     def _events(self) -> list[tuple[int, str]]:
         try:

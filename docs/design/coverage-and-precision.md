@@ -328,7 +328,9 @@ Listening tools milestone.
   interface changes it afterwards, and a reconnection applies the state in
   use.
 - Radiolack turns it off before it closes a source on which it was on:
-  when it stops, and when another source takes its place.
+  when it stops, and when another source takes its place; also before an
+  rtl_tcp source leaves its server for another address, so that the
+  receiver left behind is not left powered.
 - **Receiver menu**: "Antenna power (bias tee)", on every interface, as the
   other receiver settings; turning it on waits for a second press, which
   says "4.5 V on the antenna socket"; turning it off is immediate.

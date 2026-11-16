@@ -11,6 +11,7 @@ import { WaterfallView } from './waterfall-gl.js';
 import { loadBandPlan, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
 import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
+import { POWER_CONFIRM_MS, powerPress, powerView } from './power.js';
 import { formatFrequency, parseFrequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from './frequency.js';
 import { automaticStep } from './tuning.js';
 import { modeRateNote } from './rates.js';
@@ -1861,6 +1862,7 @@ function syncSource() {
   const gainNoteEl = $('#src-gain-note');
   gainNoteEl.hidden = !shortwave.direct;
   gainNoteEl.textContent = shortwave.direct ? DIRECT_GAIN_NOTE : '';
+  syncPower();
   const gains = source ? source.gainsDb : [];
   const gainSettable = settable.has('gain_db') && gains.length > 0 && !shortwave.direct;
   const auto = !source || source.gainDb === null;
@@ -1880,6 +1882,36 @@ function syncSource() {
   dcEl.checked = Boolean(source?.dcRemoval);
   dcEl.disabled = !settable.has('dc_removal');
 }
+// Antenna power: a first press arms the button, which then says what
+// turning it on does; a second one, within POWER_CONFIRM_MS, turns it on.
+// Turning it off takes one press.
+let powerArmed = false;
+let powerArmTimer = 0;
+function syncPower() {
+  const view = powerView(source, powerArmed);
+  $('#src-power-row').hidden = !view.shown;
+  $('#src-power-v').textContent = view.state;
+  const button = $('#src-power');
+  button.textContent = view.button;
+  button.setAttribute('aria-label', view.label);
+  button.disabled = !(streamState === 'open' && source && source.settable.includes('bias_tee'));
+}
+function disarmPower() {
+  clearTimeout(powerArmTimer);
+  powerArmed = false;
+}
+$('#src-power').addEventListener('click', () => {
+  if (!source) return;
+  const press = powerPress(source.biasTee === true, powerArmed);
+  disarmPower();
+  if (press === 'arm') {
+    powerArmed = true;
+    powerArmTimer = setTimeout(() => { disarmPower(); syncPower(); }, POWER_CONFIRM_MS);
+  } else {
+    stream.sendSource({ biasTee: press === 'on' });
+  }
+  syncPower();
+});
 // Gain the slider points at, in dB, or undefined.
 const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] : undefined);
 // A text field shows the engine's value, except while the user types in it:

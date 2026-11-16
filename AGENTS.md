@@ -17,7 +17,7 @@ the history under the tag `v0.1.0`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
-  `--scan`, `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1,
+  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1,
   own event loop in a background thread; interface files, read once at
   start, the `/stream` WebSocket and the recordings' downloads
   (`/recordings/<file>`); starts the scan given at start;
@@ -86,7 +86,9 @@ the history under the tag `v0.1.0`.
   32 kHz in WFM), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
-  waiting state; direct sampling below the tuner's range for shortwave; hands the raw samples to an I/Q recording's tap),
+  waiting state; direct sampling below the tuner's range for shortwave;
+  the antenna power, off at each connection unless turned on, never saved,
+  turned off before the source closes; hands the raw samples to an I/Q recording's tap),
   `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
@@ -107,8 +109,9 @@ the history under the tag `v0.1.0`.
   (band plan loader), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
-  input), `tuning.js` (the Automatic step) and `rates.js` (what a mode
-  needs of the sample rate) carry JSDoc types; `main.js`
+  input), `power.js` (the antenna power's second press), `tuning.js` (the
+  Automatic step) and `rates.js` (what a mode needs of the sample rate)
+  carry JSDoc types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).

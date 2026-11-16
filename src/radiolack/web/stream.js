@@ -27,7 +27,8 @@ const RETRY_MAX_MS = 4000;
 const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no longer
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
-const SETTINGS = ['address', 'hf_input', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'rtl_agc', 'dc_removal'];
+const SETTINGS = ['address', 'hf_input', 'centre_hz', 'sample_rate_hz', 'gain_db', 'ppm', 'rtl_agc', 'bias_tee',
+  'dc_removal'];
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
   'recordings', 'update', 'remote', 'report'];
@@ -310,7 +311,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * @typedef {'address' | 'hf_input' | 'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'rtl_agc' | 'dc_removal'} Setting
+ * @typedef {'address' | 'hf_input' | 'centre_hz' | 'sample_rate_hz' | 'gain_db' | 'ppm' | 'rtl_agc' | 'bias_tee'
+ *   | 'dc_removal'} Setting
  */
 
 /**
@@ -335,6 +337,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string[]} hfInputs        the values of hfInput the receiver offers
  * @property {boolean} direct           the receiver samples directly, without its tuner
  * @property {boolean | null} rtlAgc    the RTL2832's AGC while sampling directly; null: a source without it
+ * @property {boolean | null} biasTee   antenna power, 4.5 V on the antenna socket; null: a source without it
  * @property {Setting[]} settable       settings an interface may change
  * @property {string[]} kinds           kinds of source the engine may switch to; empty: it reads one only
  */
@@ -350,6 +353,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [ppm]             a whole number
  * @property {string} [hfInput]         one of SourceState.hfInputs
  * @property {boolean} [rtlAgc]
+ * @property {boolean} [biasTee]
  * @property {boolean} [dcRemoval]
  */
 
@@ -465,8 +469,8 @@ export function decodeDemod(message) {
 /**
  * Decode a source state message. Returns null when a field is missing or
  * malformed; settings this interface does not know are left out. The
- * shortwave fields, which an engine older than them does not send, read as
- * a source without a shortwave input.
+ * shortwave and antenna power fields, which an engine older than them does
+ * not send, read as a source without them.
  * @param {any} message  a parsed JSON message of type "source"
  * @returns {SourceState | null}
  */
@@ -489,7 +493,8 @@ export function decodeSource(message) {
     && (m.hf_inputs === undefined || (Array.isArray(m.hf_inputs)
       && m.hf_inputs.every((/** @type {unknown} */ input) => typeof input === 'string')))
     && (m.direct === undefined || typeof m.direct === 'boolean')
-    && (m.rtl_agc === undefined || m.rtl_agc === null || typeof m.rtl_agc === 'boolean');
+    && (m.rtl_agc === undefined || m.rtl_agc === null || typeof m.rtl_agc === 'boolean')
+    && (m.bias_tee === undefined || m.bias_tee === null || typeof m.bias_tee === 'boolean');
   if (!valid) return null;
   return {
     kind: m.kind,
@@ -508,6 +513,7 @@ export function decodeSource(message) {
     hfInputs: Array.isArray(m.hf_inputs) ? m.hf_inputs.filter((/** @type {string} */ input) => HF_INPUTS.includes(input)) : [],
     direct: m.direct === true,
     rtlAgc: m.rtl_agc ?? null,
+    biasTee: m.bias_tee ?? null,
     settable: m.settable.filter((/** @type {string} */ name) => SETTINGS.includes(name)),
     kinds: Array.isArray(m.kinds) ? m.kinds.filter((/** @type {unknown} */ kind) => typeof kind === 'string') : [],
   };
@@ -935,6 +941,7 @@ export class EngineStream {
     if (changes.ppm !== undefined) message.ppm = changes.ppm;
     if (changes.hfInput !== undefined) message.hf_input = changes.hfInput;
     if (changes.rtlAgc !== undefined) message.rtl_agc = changes.rtlAgc;
+    if (changes.biasTee !== undefined) message.bias_tee = changes.biasTee;
     if (changes.dcRemoval !== undefined) message.dc_removal = changes.dcRemoval;
     return this.#send(message);
   }

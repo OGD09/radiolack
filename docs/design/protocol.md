@@ -53,9 +53,9 @@ preferences apart from this computer's.
     "centre_hz": 145000000.0, "sample_rate_hz": 2400000.0, "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
     "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": false,
-    "rtl_agc": false, "dc_removal": true,
+    "rtl_agc": false, "bias_tee": false, "dc_removal": true,
     "settable": ["address", "hf_input", "sample_rate_hz", "centre_hz", "gain_db", "ppm",
-                 "rtl_agc", "dc_removal"],
+                 "rtl_agc", "bias_tee", "dc_removal"],
     "kinds": ["synthetic", "rtl_sdr", "rtl_tcp"]}
    ```
 
@@ -77,6 +77,7 @@ preferences apart from this computer's.
    | `hf_inputs` | The values of `hf_input` the receiver offers: all four for an R820T or R828D tuner and while the tuner is unknown, the first three for another; empty for a source without them. |
    | `direct` | Whether the receiver samples directly, without its tuner: its gain does not apply meanwhile, and signals mirror each other about 14.4 MHz. |
    | `rtl_agc` | Whether the RTL2832's own AGC runs while the receiver samples directly; null for a source without it. |
+   | `bias_tee` | Whether the antenna power is on: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4. Off at each start unless Radiolack was started with `--bias-tee`, never saved, and turned off before the engine closes the receiver. Null for a source without it. |
    | `dc_removal` | Whether the engine takes each block's mean off the samples before the FFT, so that a constant offset, such as an RTL-SDR's, does not show as a spike at the centre frequency; a signal exactly on the centre frequency goes with it. True when Radiolack starts. |
    | `settable` | Settings an interface may change; only `dc_removal` for the synthetic source. Never `address` for a remote client. |
    | `kinds` | Kinds of source the engine may switch to, `kind` among them; empty when it reads one source only. |
@@ -575,6 +576,7 @@ are:
 | `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to a whole number. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`. |
 | `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |
 | `rtl_agc` | `true` or `false`; applies while the receiver samples directly. |
+| `bias_tee` | `true` or `false`. The interface asks for a second press before it sends `true`. |
 | `dc_removal` | `true` or `false`. |
 
 The engine applies a valid message at once and sends the new state to every
@@ -1011,7 +1013,7 @@ and later.
   `version`, which an older interface ignores; the same day, the source
   state's `hf_input`, `hf_inputs`, `direct` and `rtl_agc`, settable in a
   `source` message, which an older interface leaves out: it neither shows
-  nor changes them.
+  nor changes them; and `bias_tee`, likewise.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

@@ -99,8 +99,8 @@ class ParserTest(unittest.TestCase):
 
     def test_defaults(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual((args.ui, args.port, args.remote, args.scan, args.rtl_sdr, args.rtl_tcp),
-                         ("window", 0, None, None, None, None))
+        self.assertEqual((args.ui, args.port, args.remote, args.scan, args.bias_tee, args.rtl_sdr, args.rtl_tcp),
+                         ("window", 0, None, None, False, None, None))
 
     def test_remote_ports(self):
         for argv, port in ((["--remote"], 0), (["--remote", "--ui", "none"], 0),     # 0: the port used last
@@ -286,6 +286,45 @@ class ScanOptionTest(unittest.TestCase):
             code, out, err = run_main("--ui", "none", "--scan", "memory")
         self.assertEqual((code, err), (0, "radiolack: the memory scan did not start in time\n"))
         self.assertRegex(out, URL_LINE)
+
+
+class BiasTeeOptionTest(unittest.TestCase):
+    """--bias-tee: the antenna power of the receiver given or reopened at
+    start, ignored with a warning by a source without it."""
+
+    def test_the_simulated_band_ignores_it_and_says_so(self):
+        with own_settings():
+            code, out, err = run_main("--ui", "none", "--bias-tee")
+        self.assertEqual((code, err), (0, "radiolack: --bias-tee is ignored: the synthetic source has no "
+                                          "antenna power\n"))
+        self.assertRegex(out, URL_LINE)
+
+    def test_powers_the_receiver_given_before_the_window_opens(self):
+        states, power_antenna = [], cli.LocalServer.power_antenna
+
+        def power(server):
+            power_antenna(server)
+            states.append(server._engine.state()["bias_tee"])
+
+        with own_settings(), mock.patch.object(cli.LocalServer, "power_antenna", autospec=True,
+                                               side_effect=power), \
+                mock.patch.object(cli.window, "unavailable_reason", return_value=None), \
+                mock.patch.object(cli.window, "show", side_effect=lambda url: states.append("window")):
+            # Nothing listens there, and nothing reads: the source never connects.
+            code, out, err = run_main("--rtl-tcp", f"{LOOPBACK_HOST}:{ephemeral_port()}", "--bias-tee")
+        self.assertEqual((code, out, err), (0, "", ""))
+        self.assertEqual(states, [True, "window"])
+
+    def test_without_it_the_antenna_power_stays_off(self):
+        with own_settings(), mock.patch.object(cli.LocalServer, "power_antenna", autospec=True) as power:
+            code, _, err = run_main("--ui", "none", "--rtl-tcp", f"{LOOPBACK_HOST}:{ephemeral_port()}")
+        self.assertEqual((code, err), (0, ""))
+        power.assert_not_called()
+
+    def test_says_when_the_power_did_not_turn_on_in_time(self):
+        with own_settings(), mock.patch.object(cli.LocalServer, "power_antenna", side_effect=TimeoutError()):
+            code, out, err = run_main("--ui", "none", "--bias-tee")
+        self.assertEqual((code, err), (0, "radiolack: the antenna power did not turn on in time\n"))
 
 
 class MainTest(unittest.TestCase):
