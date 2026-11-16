@@ -26,10 +26,10 @@ from urllib.parse import urlencode
 import aiohttp
 import numpy
 
-from . import __version__
+from . import PROJECT_URL, __version__
 from .updates import PACKAGE_DIR
 
-ISSUES_URL = "https://github.com/OGD09/radiolack/issues/new"
+ISSUES_URL = f"{PROJECT_URL}/issues/new"
 RECENT_MESSAGES = 50    # the latest warnings and errors that a report gives
 MAX_MESSAGE = 500       # characters of one of them, beyond which it is cut
 MAX_PAGE = 300          # characters of what the interface tells of itself

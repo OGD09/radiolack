@@ -96,7 +96,7 @@ const meterBar = $('#smeter .bar');
 const menuEl = $('#menu');
 const menuButton = $('#menu-button');
 const menuScrim = $('#menu-scrim');
-// The menus, in the order of the keys 1 to 7.
+// The menus, in the order of the keys 1 to 8.
 const MENUS = $$('#menu nav button[data-menu]').map((b) => b.dataset.menu);
 const ctxEl = $('#ctx');
 const hoverEl = $('#hoverinfo');
@@ -106,6 +106,7 @@ const readoutEl = $('#readout');
 const antennaEl = $('#antenna');
 const antennaDialog = $('#antenna-dialog');
 const reportDialog = $('#report-dialog');
+const legalDialog = $('#legal-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
 const oneColumnQuery = window.matchMedia('(max-width: 600px)'); // the menu shows its list or a menu (style.css)
 
@@ -372,16 +373,13 @@ const stream = new EngineStream({
     updateStatus();
   },
   onReport: (report) => {
-    $('#st-report-msg').textContent = '';
+    $('#ab-report-msg').textContent = '';
     $('#report-msg').textContent = '';
     const text = $('#report-text');
     text.value = report.text;
     text.scrollTop = 0;
     $('#report-issue').href = report.issueUrl;
-    if (!reportDialog.open) {
-      reportKeyClose = false;
-      reportDialog.showModal();
-    }
+    if (!reportDialog.open) openReportDialog();
   },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
@@ -428,7 +426,7 @@ const stream = new EngineStream({
       return;
     }
     if (command === 'report') {
-      $('#st-report-msg').textContent = `Refused: ${message}.`;
+      $('#ab-report-msg').textContent = `Refused: ${message}.`;
       return;
     }
     sourceError = message;
@@ -449,7 +447,9 @@ const stream = new EngineStream({
     }
     if (state === 'open') {
       $('#st-remote-client').hidden = !stream.remote;
-      $('#st-report-section').hidden = stream.remote;     // the engine reports to this computer's interfaces only
+      $('#ab-remote-client').hidden = !stream.remote;
+      $('#ab-report-section').hidden = stream.remote;     // the engine reports to this computer's interfaces only
+      syncVersion();
     }
     syncSource();
     syncScanner();
@@ -1687,7 +1687,7 @@ function clearHistory(what) {
 // Every menu behind one icon. The menu opens as a card under the readout,
 // the list of menus beside the chosen one; in one column (oneColumnQuery),
 // the list first, then the chosen menu with a back arrow. Escape, a press
-// outside it and its close button close it; the keys 1 to 7 open each menu,
+// outside it and its close button close it; the keys 1 to 8 open each menu,
 // or close it when it shows already. Which menu shows is this page's alone.
 let openName = null;        // the menu whose contents show, or null: the menu is closed or shows its list
 let lastMenu = MENUS[0];    // the menu that the icon opens again
@@ -2583,14 +2583,14 @@ window.addEventListener('radiolack-download', (e) => {
 // Settings
 bindCheck('st-autohide', 'autoHide', poke);
 
-// Updates: the engine checks for a newer Radiolack at start, unless turned
-// off, and on request. The box and the notice follow the engine's state.
-$('#st-update-start').addEventListener('change', (e) => {
+// About's updates: the engine checks for a newer Radiolack at start, unless
+// turned off, and on request. The box and the notice follow the engine's state.
+$('#ab-update-start').addEventListener('change', (e) => {
   if (stream.setCheckAtStart(e.target.checked)) return;
   updateNote = 'Not connected to the engine: the setting did not change.';
   syncUpdate();
 });
-$('#st-update-check').addEventListener('click', () => {
+$('#ab-update-check').addEventListener('click', () => {
   updateNote = stream.checkUpdates() ? '' : 'Not connected to the engine.';
   syncUpdate();
 });
@@ -2612,20 +2612,22 @@ function noticeKey() {
   return update && (update.status === 'available' || update.status === 'installed') ? `${update.status} ${update.latest}` : '';
 }
 function syncUpdate() {
-  $('#st-update-section').hidden = !update;     // this computer's interfaces only
+  $('#ab-update-section').hidden = !update;     // this computer's interfaces only
   const text = update ? UPDATE_TEXTS[update.status](update) : '';
-  $('#st-update').textContent = [text, updateNote].filter(Boolean).join(' ');
-  const start = $('#st-update-start');
+  $('#ab-update').textContent = [text, updateNote].filter(Boolean).join(' ');
+  const start = $('#ab-update-start');
   start.checked = update ? update.checkAtStart : false;
   start.disabled = !update;
-  $('#st-update-check').disabled = !update || update.status === 'checking';
+  $('#ab-update-check').disabled = !update || update.status === 'checking';
   const key = noticeKey();
   if (key) $('#notice-text').textContent = text;
   noticeEl.hidden = !key || key === noticeClosed;
-  // The version that runs closes Settings, on this computer's interfaces, which receive it.
-  const version = $('#st-version');
-  version.textContent = update ? `Radiolack ${update.version}` : '';
-  version.hidden = !update;
+}
+// The version that runs opens About, on every interface: the engine's hello gives it.
+function syncVersion() {
+  const version = $('#ab-version');
+  version.textContent = stream.version ? `Radiolack ${stream.version}` : '';
+  version.hidden = !stream.version;
 }
 
 // Remote access: devices on the local network reach the engine over HTTPS
@@ -3072,50 +3074,56 @@ function editFreq() {
   });
   input.addEventListener('blur', () => finish(true));
 }
-// The icon beside the frequency opens the antenna lengths in a modal dialog,
-// which Escape, its close button or a press on the backdrop closes. Closed
-// from the keyboard, the dialog gives the focus back to the icon; closed with
-// a pointer, it leaves the icon unfocused: a focus there, even the dialog's own
-// restoring one, would ring it in WebKit.
-let antennaBackdropPress = false;
-let antennaKeyClose = false;
+// A modal dialog, which Escape, its close button or a press on the backdrop
+// closes. Closed from the keyboard, the dialog gives the focus back to the
+// control that opened it; closed with a pointer, it leaves that control
+// unfocused: a focus there, even the dialog's own restoring one, would ring it
+// in WebKit. Returns the function that opens the dialog.
+function bindDialog(dialog, opener) {
+  let backdropPress = false;
+  let keyClose = false;
+  dialog.addEventListener('cancel', () => { keyClose = true; });     // Escape
+  dialog.querySelector('.close').addEventListener('click', (e) => {
+    keyClose = e.detail === 0;     // pressed from the keyboard
+    dialog.close();
+  });
+  // A press that starts in the dialog and ends on the backdrop, as when selecting text, keeps it open,
+  // and so does the second click of a double click on its opener, which lands on the backdrop.
+  dialog.addEventListener('pointerdown', (e) => { backdropPress = e.target === dialog; });
+  dialog.addEventListener('click', (e) => {
+    if (backdropPress && e.target === dialog && e.detail < 2) dialog.close();
+    backdropPress = false;
+  });
+  dialog.addEventListener('close', () => {
+    if (keyClose) opener.focus();
+    else opener.blur();
+  });
+  return () => {
+    keyClose = false;
+    dialog.showModal();
+  };
+}
+
+// The icon beside the frequency opens the antenna lengths.
+const openAntennaDialog = bindDialog(antennaDialog, antennaEl);
 antennaEl.addEventListener('click', () => {
-  antennaKeyClose = false;
-  antennaDialog.showModal();
+  openAntennaDialog();
   syncAntenna();
 });
-antennaDialog.addEventListener('cancel', () => { antennaKeyClose = true; });     // Escape
-antennaDialog.querySelector('.close').addEventListener('click', (e) => {
-  antennaKeyClose = e.detail === 0;     // pressed from the keyboard
-  antennaDialog.close();
-});
-// A press that starts in the dialog and ends on the backdrop, as when selecting text, keeps it open,
-// and so does the second click of a double click on the icon, which lands on the backdrop.
-antennaDialog.addEventListener('pointerdown', (e) => { antennaBackdropPress = e.target === antennaDialog; });
-antennaDialog.addEventListener('click', (e) => {
-  if (antennaBackdropPress && e.target === antennaDialog && e.detail < 2) antennaDialog.close();
-  antennaBackdropPress = false;
-});
-antennaDialog.addEventListener('close', () => {
-  if (antennaKeyClose) antennaEl.focus();
-  else antennaEl.blur();
-});
 
-// Settings' problem report: the engine makes it, with what the interface
-// tells of itself; a modal dialog shows it, to open as a new GitHub issue,
-// which the user's web browser shows, or to copy. It closes as the antenna
-// lengths do, and gives the focus back to its button the same way.
-let reportBackdropPress = false;
-let reportKeyClose = false;
-const reportButton = $('#st-report');
+// About's problem report: the engine makes it, with what the interface tells
+// of itself; a modal dialog shows it, to open as a new GitHub issue, which
+// the user's web browser shows, or to copy.
+const reportButton = $('#ab-report');
+const openReportDialog = bindDialog(reportDialog, reportButton);
 // The web engine, whether the views draw, and the window's size: 300 characters at most.
 function pageFacts() {
   const views = spectrumView ? 'WebGL2 views' : gpuError;
   return `${navigator.userAgent}; ${views}; ${innerWidth}x${innerHeight} at ${devicePixelRatio}x`.slice(0, 300);
 }
 reportButton.addEventListener('click', () => {
-  $('#st-report-msg').textContent = '';
-  if (!stream.askReport(pageFacts())) $('#st-report-msg').textContent = notConnected('no report was made');
+  $('#ab-report-msg').textContent = '';
+  if (!stream.askReport(pageFacts())) $('#ab-report-msg').textContent = notConnected('no report was made');
 });
 $('#report-copy').addEventListener('click', () => {
   const text = $('#report-text');
@@ -3128,19 +3136,13 @@ $('#report-copy').addEventListener('click', () => {
   if (!navigator.clipboard) { select(); return; }
   navigator.clipboard.writeText(text.value).then(() => { note.textContent = 'Report copied.'; }, select);
 });
-reportDialog.addEventListener('cancel', () => { reportKeyClose = true; });     // Escape
-reportDialog.querySelector('.close').addEventListener('click', (e) => {
-  reportKeyClose = e.detail === 0;     // pressed from the keyboard
-  reportDialog.close();
-});
-reportDialog.addEventListener('pointerdown', (e) => { reportBackdropPress = e.target === reportDialog; });
-reportDialog.addEventListener('click', (e) => {
-  if (reportBackdropPress && e.target === reportDialog && e.detail < 2) reportDialog.close();
-  reportBackdropPress = false;
-});
-reportDialog.addEventListener('close', () => {
-  if (reportKeyClose) reportButton.focus();
-  else reportButton.blur();
+
+// About's legal notice, on every interface, from its start each time.
+const legalButton = $('#ab-legal');
+const openLegalDialog = bindDialog(legalDialog, legalButton);
+legalButton.addEventListener('click', () => {
+  openLegalDialog();
+  $('#legal-text').scrollTop = 0;
 });
 
 freqEl.addEventListener('dblclick', editFreq);
@@ -3178,7 +3180,7 @@ bindStepButton($('#tune-up'), 1);
 window.addEventListener('keydown', (e) => {
   poke();
   // A dialog keeps its keys: Escape closes it alone, and nothing tunes behind it.
-  if (antennaDialog.open || reportDialog.open) return;
+  if (antennaDialog.open || reportDialog.open || legalDialog.open) return;
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
     else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }
@@ -3218,7 +3220,7 @@ window.addEventListener('pointerdown', poke, { passive: true });   // a tap wake
 window.addEventListener('resize', () => { layoutPending = true; });
 
 const HINTS = {
-  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 7: menus',
+  mouse: 'Click: tune · Wheel: step · Ctrl + wheel: zoom · Right-click: menu · 1 to 8: menus',
   touch: 'Tap: tune · Pinch: zoom · Drag: scroll · Long press: menu',
 };
 function syncPointerMode() { hintEl.textContent = coarseQuery.matches ? HINTS.touch : HINTS.mouse; }

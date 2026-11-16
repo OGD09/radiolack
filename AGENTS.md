@@ -93,8 +93,9 @@ the history under the tag `v0.1.0`.
   page loads again, unless it ended less than a minute before: a message
   with a Reload button then takes its place; WebKit paints on the CPU,
   `WEBKIT_SKIA_ENABLE_CPU_RENDERING=1` unless the user set it, as Skia's
-  GPU painting crashed WebKitGTK 2.50's web process; GitHub's page for a
-  new issue, alone, opens in the user's web browser).
+  GPU painting crashed WebKitGTK 2.50's web process; Radiolack's pages on
+  GitHub, under `PROJECT_URL` (`__init__`), alone open in the user's web
+  browser).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
@@ -109,7 +110,10 @@ the history under the tag `v0.1.0`.
   Home Screen) are the icons, and `pair.html` inlines the logo in the
   text's colour: `packaging/identity.py` draws them. The interface names
   Radiolack in its title only, and keeps its settings in one menu
-  (scoping.md, 2026-11-15).
+  (scoping.md, 2026-11-15), whose last entry, About, shows the version
+  that runs, the updates, the links to GitHub and the legal notice:
+  README.md repeats the notice word for word, which
+  `tests/test_legal_notice.py` checks (scoping.md, 2026-11-16).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
   Python package as it is; reproducible: every file carries the last
   commit's date, or SOURCE_DATE_EPOCH), `radiolack.1` (manual page, whose

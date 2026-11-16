@@ -832,6 +832,7 @@ export class EngineStream {
   #greeted = false;
   #incompatible = false;
   #remote = false;        // the engine serves this interface through remote access
+  #version = '';          // the Radiolack that runs, as its last hello said: '' from an older engine
   /** @type {string[]} */
   #scanners = [];         // the scanners the engine runs, as its last hello listed them
   /** @type {string[]} */
@@ -859,6 +860,14 @@ export class EngineStream {
    */
   get remote() {
     return this.#remote;
+  }
+
+  /**
+   * The version of the Radiolack that runs, as its last hello said, on every
+   * interface; '' before the first hello, or from an engine older than About.
+   */
+  get version() {
+    return this.#version;
   }
 
   /**
@@ -1325,6 +1334,7 @@ export class EngineStream {
     }
     this.#greeted = true;
     this.#remote = message.remote === true;
+    this.#version = typeof message.version === 'string' ? message.version : '';
     /** @param {unknown} list */
     const names = (list) => (Array.isArray(list) ? list.filter((name) => typeof name === 'string') : []);
     this.#scanners = names(message.scanners);

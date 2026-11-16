@@ -199,7 +199,7 @@ The spectrum, the waterfall and the readout, the frequency with its mode
 and its S-meter, take the whole window. Everything else is in one menu,
 behind an icon: a small square at the top left with a mouse, a round button
 between the step buttons at the bottom on a touch screen. The menu lists
-seven menus beside the one it shows:
+eight menus beside the one it shows:
 
 - Radio: the mode, the band plan's mode and step, the squelch, the volume,
   the filter width and the tuning step.
@@ -213,12 +213,15 @@ seven menus beside the one it shows:
   ([RTL-SDR receivers](#rtl-sdr-receivers)).
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
   plan and bookmarks on the spectrum.
-- Settings: the interface's behaviour, the storage, the updates, remote
-  access, on this computer a problem report ([Problem
-  reports](#problem-reports)), the gestures and keys, and the version that
-  runs.
+- Settings: the interface's behaviour, the storage, remote access and the
+  gestures and keys.
+- About: the version that runs, on every device; on this computer, the
+  updates ([Updates](#updates)) and a problem report ([Problem
+  reports](#problem-reports)); Suggest an idea and Radiolack on GitHub,
+  which open GitHub's pages in your web browser; and the legal notice
+  ([Legal notice](#legal-notice)).
 
-The keys 1 to 7 open these menus in this order, or close the one that
+The keys 1 to 8 open these menus in this order, or close the one that
 shows; in a field they type as usual, and with Ctrl, Alt or Meta they do
 nothing. Escape, a click outside the menu or its close button closes it,
 and the icon opens the last menu shown again. In a window 600 px wide or
@@ -921,9 +924,10 @@ waterfall until you close the notice: the system's software updates, or
 `sudo apt update && sudo apt upgrade`, install it, and it runs once
 Radiolack restarts. Until then, Radiolack keeps serving the interface it
 started with, so that a page reloaded meanwhile, in its window or on a
-remote device, still matches it. Settings > Updates shows what the latest
-check found, checks again on request, and turns the check at start off, a
-choice saved with the settings.
+remote device, still matches it. About > Updates, on this computer, shows
+what the latest check found, checks again on request, and turns the check
+at start off, a choice saved with the settings. About shows the version
+that runs on every device, remote ones included.
 
 The check needs no password and installs nothing. It runs apt as you, with
 Radiolack's APT source alone and none of the system's apt configuration, in
@@ -934,18 +938,18 @@ only connection Radiolack makes besides the receiver and its interfaces,
 and it carries no identifier: GitHub Pages sees your address and apt's
 version, as for any download. apt's own proxy settings do not apply to it,
 but the `https_proxy` environment variable does. A check that gets no
-answer within 30 seconds fails, and Settings > Updates says why; the notice
+answer within 30 seconds fails, and About > Updates says why; the notice
 shows only for a newer version.
 
 A Radiolack that does not run from the package (from the repository or
 pip), or whose APT source is missing or turned off, does not check, and
-Settings > Updates says why. On Debian 12, whose apt checks signatures
+About > Updates says why. On Debian 12, whose apt checks signatures
 through apt-key, each check leaves an empty folder in `/run/user/UID/gnupg`,
 which the end of your session removes.
 
 ## Problem reports
 
-When Radiolack misbehaves, Settings > Report a problem, on this computer,
+When Radiolack misbehaves, About > Report a problem, on this computer,
 prepares a report of what it runs on: its version, and whether it came from
 the Debian package; Python's, aiohttp's and NumPy's; the system and its
 kernel; GTK's and WebKitGTK's in the desktop window; the web browser, the
@@ -961,6 +965,11 @@ clipboard instead, for an email for instance. When the warnings would make
 the page's address too long for GitHub, the issue leaves out the oldest
 ones; a copy keeps them all. Radiolack keeps its warnings and errors in
 memory only, from its start, and still writes them on its error output.
+
+For an idea or a question, About > Suggest an idea shows GitHub's page for
+a new issue, and Radiolack on GitHub the project's page, on every device.
+Both open in your web browser, where posting needs a GitHub account. The
+desktop window opens Radiolack's pages on GitHub there, and no other page.
 
 ## Band plan
 
@@ -1327,6 +1336,96 @@ packaging/      Debian package (build script, manual page, menu entry,
 jsconfig.json   settings of the interface's type check
 LICENSE         GNU General Public License, version 3
 ```
+
+## Legal notice
+
+**Licence.** Radiolack is free software, copyright 2026 OGD09. You may run it
+for any purpose, study it, share it and modify it under the terms of the GNU
+General Public License, version 3 or, at your option, any later version. If
+you distribute Radiolack or a modified version of it, you must do so under
+the same licence and make its source code available. This notice explains
+the licence and your responsibilities: it adds no condition to the licence,
+which prevails over it. [Read the licence](LICENSE).
+
+**No warranty.** Radiolack is provided "as is", without warranty of any
+kind, express or implied, including the warranties of merchantability,
+fitness for a particular purpose, accuracy and non-infringement. The author
+does not warrant that it works without errors or interruption, or that what
+it shows, plays, records or calculates is accurate or complete:
+frequencies, levels, measurements, audio, detected signals, the History and
+calculations may be wrong. Do not rely on it where an error could harm
+people or property, such as for safety of life, distress or emergency
+communications, or navigation.
+
+**Limitation of liability.** To the fullest extent permitted by applicable
+law, the author and the contributors are not liable for any damage arising
+from the use of Radiolack or from the inability to use it, whether direct,
+indirect, incidental, special or consequential, including loss of data or
+recordings, damage to equipment or property, interference, fines,
+penalties, legal costs and claims by third parties, even if advised of the
+possibility of such damage.
+
+**Your responsibility.** Radio is regulated differently from one country to
+another, and sometimes within a country. You alone are responsible for
+making sure that the way you install and use Radiolack, your receiver, your
+antennas and any other equipment complies with every law and regulation
+that applies to you, including those on:
+
+- the use of radio frequencies and radio equipment, to receive or to
+  transmit, and the licences, certificates, call signs and conditions that
+  some uses require, such as the frequencies, power, modes and
+  identification allowed;
+- the reception of some services, which some countries restrict or forbid;
+- the secrecy of communications: intercepting communications not intended
+  for the general public, or recording, using, publishing or disclosing
+  their content, or even their existence;
+- privacy and personal data;
+- harmful interference to other users of the radio spectrum.
+
+Where the law forbids something, do not do it with Radiolack. The author
+does not encourage or endorse any unlawful use.
+
+**Guidance, not a reference.** The band plan, the modes and steps it
+suggests, the antenna lengths and every other piece of guidance in
+Radiolack are simplified, and may be incomplete, outdated or wrong where
+you are: the band plan follows a simplified European table. They are not
+legal references. The frequency allocation tables, licence conditions and
+regulations of your country, and its radio authority, are.
+
+**Equipment and safety.** Installing and using antennas and radio equipment
+can be dangerous. Keep antennas and masts well away from power lines,
+protect your installation against lightning, follow the instructions of
+your equipment's makers and the local rules on installations and, wherever
+equipment transmits, the limits on exposure to radio-frequency fields.
+
+**Other people's communications and data.** What you receive, record or
+keep, such as recordings and the History, may contain other people's
+communications, voices or personal data. You are responsible for keeping,
+using, sharing and deleting them lawfully.
+
+**Remote access.** You choose the devices you let in, and you are
+responsible for what is done through them. Keep the access code to
+yourself, and reach Radiolack from outside your local network only through
+a private network that you control, such as your own VPN.
+
+**Privacy.** Radiolack has no telemetry and no account. It connects only to
+your receiver, to the devices you let in and, for its update check, which
+you can turn off, to its APT repository. Links to GitHub open in your web
+browser, where GitHub's terms and privacy statement apply. A problem report
+leaves only if you send it yourself. Your settings, bookmarks, History and
+recordings stay on the computer that runs Radiolack, unless you download
+them.
+
+**Third parties.** Radiolack is not affiliated with, or endorsed by, the
+makers of the receivers and software it works with, radio authorities,
+amateur radio organisations or GitHub. Names such as RTL-SDR, Debian, Ubuntu
+and GitHub belong to their owners.
+
+**Your rights.** Some countries do not allow some of the exclusions and
+limitations above, or give rights that cannot be waived, to consumers in
+particular. There, they apply only as far as the law allows, and nothing in
+this notice limits those rights. If a court holds part of this notice
+unenforceable, the rest still applies.
 
 ## Licence
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from radiolack import report, window
+from radiolack import PROJECT_URL, report, window
 
 ORIGIN = window._origin("http://127.0.0.1:8000/")
 
@@ -64,22 +64,33 @@ class StayOnOriginTest(unittest.TestCase):
     def test_refuses_new_windows(self):
         self.assertTrue(self.decide("http://127.0.0.1:8000/", DECISION.NEW_WINDOW_ACTION))
 
-    def test_opens_the_new_issue_page_in_the_web_browser(self):
-        uri = f"{report.ISSUES_URL}?body=%2A%2AWhat+happened%2A%2A"
-        for decision_type in (DECISION.NEW_WINDOW_ACTION, DECISION.NAVIGATION_ACTION):
-            with self.subTest(decision_type=decision_type), mock.patch.object(window, "_open_outside") as open_outside:
-                self.assertTrue(self.decide(uri, decision_type))
-                open_outside.assert_called_once_with(uri)
+    def test_opens_the_project_pages_in_the_web_browser(self):
+        for uri in (PROJECT_URL, f"{PROJECT_URL}/", f"{report.ISSUES_URL}?body=%2A%2AWhat+happened%2A%2A",
+                    report.ISSUES_URL, f"{PROJECT_URL}/blob/main/LICENSE", f"{PROJECT_URL}#legal-notice"):
+            for decision_type in (DECISION.NEW_WINDOW_ACTION, DECISION.NAVIGATION_ACTION):
+                with (self.subTest(uri=uri, decision_type=decision_type),
+                      mock.patch.object(window, "_open_outside") as open_outside):
+                    self.assertTrue(self.decide(uri, decision_type))
+                    open_outside.assert_called_once_with(uri)
 
     def test_opens_no_other_page_in_the_web_browser(self):
-        for uri in ("https://github.com/OGD09/radiolack/issues", "https://github.com/OGD09/radiolack/issues/new/choose",
-                    "http://github.com/OGD09/radiolack/issues/new", "https://example.com/OGD09/radiolack/issues/new",
-                    "https://someone@github.com/OGD09/radiolack/issues/new",
-                    "https://github.com:444/OGD09/radiolack/issues/new",
-                    "https://github.com/OGD09/radiolack/issues/new#body", "https://github.com/OGD09/other/issues/new"):
+        for uri in ("http://github.com/OGD09/radiolack", "https://example.com/OGD09/radiolack",
+                    "https://someone@github.com/OGD09/radiolack", "https://github.com:444/OGD09/radiolack",
+                    "https://github.com/OGD09", "https://github.com/OGD09/other", "https://github.com/OGD09/radiolack-fork",
+                    "https://github.com/OGD09/radiolack/../other", "https://github.com/OGD09/radiolack/%2e%2E/other",
+                    "https://github.com/OGD09/radiolack/..\\..\\other", "https://github.com/OGD09/radiolack/.\t./other",
+                    "https://github.com/OGD09/radiolack/issues new", "https://github.com/OGD09/radiolack/./issues"):
             with self.subTest(uri=uri), mock.patch.object(window, "_open_outside") as open_outside:
                 self.assertTrue(self.decide(uri, DECISION.NEW_WINDOW_ACTION))
                 open_outside.assert_not_called()
+
+    def test_opens_every_link_of_the_interface_that_leaves_it(self):
+        page = (Path(window.__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        links = [href for href in re.findall(r'\bhref="([^"]*)"', page) if re.match(r"[a-z]+:", href)]
+        self.assertGreaterEqual(len(links), 3)      # About's links and the licence's
+        for href in links:
+            with self.subTest(href=href):
+                self.assertTrue(window._is_project_page(href))
 
     def test_leaves_responses_alone(self):
         decision = SimpleNamespace(ignore=mock.Mock())

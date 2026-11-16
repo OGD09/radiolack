@@ -19,6 +19,7 @@ from unittest import mock
 import aiohttp
 from aiohttp.abc import AbstractResolver
 
+from radiolack import __version__
 from radiolack.engine import REMOTE_BINS
 from radiolack.recordings import wav_header
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE
@@ -274,7 +275,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.pair(device, "WRONG"), (200, {"paired": True}))
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
-                         {"type": "hello", "protocol": 6, "remote": True,
+                         {"type": "hello", "protocol": 6, "version": __version__, "remote": True,
                           "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])
