@@ -273,11 +273,15 @@ digit covers that.
   lowest frequency stays 1 Hz.
 - **Switching.** A centre frequency below the tuner's range samples
   directly, another uses the tuner. Entering: 0x09 with 2 or 1, then the
-  frequency. Leaving: 0x09 with 0, then the gain mode and the gain, which
-  the tuner forgot, then the frequency. At each connection: the correction,
-  the sample rate, 0x09, the frequency, the gain. The samples of the
+  frequency. Leaving: 0x09 with 0, then the frequency, the sample rate and
+  the gain, which the tuner forgot. At each connection: the correction,
+  0x09, the frequency, the sample rate, the gain. The samples of the
   settling time are dropped, as after any retune. 0x08 follows 0x09 at each
-  connection too, since rtl_tcp keeps it from its previous client.
+  connection too, since rtl_tcp keeps it from its previous client. As
+  first built, the sample rate came before 0x09 at each connection and was
+  not sent on leaving, which left the tuner's filter at its widest and its
+  IF at 3.57 MHz whatever the sample rate: pull request 13's measure found
+  it, and the order above, with the reasons, is section 13's "As built".
 - **Direct sampling's span** stays within 0 to 28.8 MHz. With a tuner whose
   range starts above what direct sampling reaches (E4000, FC2580), the
   centre frequencies in between are refused, with the message that names
@@ -806,13 +810,76 @@ Measured on 2026-11-16, on the owner's V3 with rtl-sdr 0.6.0
   back to 3.57 MHz and its filter to the widest, whatever the sample rate.
   The tool, which took the IF of the sample rate, answered that the
   carrier followed neither prediction; the figures were computed again
-  from its table with the oscillator that was truly set. The tool's
-  oscillator, and whether Radiolack should send the sample rate after
-  0x09 so that the tuner's filter follows it again, are to settle with
-  what pull request 14 becomes.
+  from its table with the oscillator that was truly set.
 - By the rule, pull request 14 is built; as the second point above says,
   its premise does not hold for this computation, so what it becomes is
   the owner's to decide.
+
+Done after the measure, in a pull request of its own, before pull
+request 14:
+
+- **The tuner follows the sample rate again.** librtlsdr's
+  `rtlsdr_set_direct_sampling` with 0 calls the tuner's init whether
+  direct sampling was on or not (osmocom's rtl-sdr at 2659e2d, v2.0.1 and
+  v2.0.2, and the RTL-SDR Blog fork): `r82xx_init` writes the tuner's
+  registers afresh, which puts its gain back to automatic (the LNA's and
+  the mixer's, and a VGA other than the one automatic gain sets), and its
+  `r82xx_set_tv_standard` puts the IF back to 3.57 MHz and the filter to
+  DVB-T's 6 MHz; the RTL2832 takes that IF, and the tuner retunes to the
+  frequency it had. The correction stays: the init reads the crystal as
+  corrected. The RTL2832's AGC and the antenna power are not the tuner's
+  and stay too. `rtlsdr_set_sample_rate` sets the bandwidth, the IF and
+  the RTL2832's IF again from the rate, whether the rate changed or not,
+  and retunes. So `rtltcp.py` sends after 0x09 with 0, at each
+  connection and on leaving direct sampling, the frequency, then the
+  sample rate, then the gain: a new rate in the same change goes then,
+  once. Connection: 0x05, 0x09, 0x08, 0x01, 0x02, the gain on the tuner,
+  0x0e. Leaving: 0x09 with 0, 0x08 with 0 if it was on, 0x01, 0x02, the
+  gain. Entering, and any change that keeps the tuner or direct sampling,
+  send what they sent before.
+- **Why the frequency comes before the sample rate.** In the Blog fork,
+  0x09 with 0 means automatic direct sampling below 24 MHz on an R820T:
+  the tuner, started again, retunes to the frequency it had, which after
+  direct sampling lies below 24 MHz, so the fork goes back to direct
+  sampling by itself, and the next frequency above 24 MHz leaves it,
+  which starts the tuner again a second time. The sample rate after the
+  frequency comes after both. With osmocom's driver, the order makes no
+  difference.
+- **Limit.** With the Blog fork, an R820T set to "Tuner (RTL-SDR Blog
+  V4)" goes to direct sampling by itself below 24 MHz, and back to the
+  tuner on a plain frequency command, which starts the tuner again: its
+  filter stays at its widest until the next sample rate or connection.
+  Radiolack cannot tell which driver runs, and the setting is meant for a
+  V4, whose R828D the fork never switches by itself.
+- **The fake rtl_tcp** starts its tuner again on 0x09 with 0: automatic
+  gain, and the state `started`, whose IF `r82xx_pll.py` gives as
+  3.57 MHz, until the next 0x02 (`rate`). Its optional PLL takes that
+  state. The tests put a carrier where the IF of the sample rate puts it
+  at connection, after a new sample rate and after direct sampling,
+  within 2 Hz; with the order of before, it sits 44 Hz off at connection.
+- **The tool predicts under both IFs**: each computation with the IF of
+  the sample rate and with 3.57 MHz, four predictions, all in the table.
+  The conclusion names those the measures follow; when that is the IF
+  of a tuner started again, it says so, and what it means of the
+  Radiolack measured, and gives the verdict all the same. The second
+  sweep's oscillators take the IF of the sample rate, the one this
+  order keeps; the tool cannot tell at start whether the Radiolack it
+  measures has this order, as the calibration it needs came in between
+  without a release and both say the same version. Taken the other way,
+  the second sweep's oscillators miss the multiples of 112.5 kHz, which
+  the conclusion says, but every point still counts for every prediction.
+  The rule near 145 MHz takes the tuner's divider with the IF the
+  measures follow, or the one assumed.
+- **Ctrl-C.** The tool waited for the stream through `asyncio.wait_for`,
+  which in Python 3.11 may swallow a cancellation that comes as its wait
+  ends: about once in thirty runs of its test, Ctrl-C was lost and the
+  run went to its end. It waits through `asyncio.wait` instead.
+- **What a new measure should show.** At 2.4 MS/s, the oscillator at the
+  centre plus 1.815 MHz, and, with rtl-sdr 0.6.0 as on the owner's V3,
+  the conclusion "up to 2.0.1, IF of the rate" followed. Each offset
+  changes with the oscillator, but not the spread's size: by the port's
+  predictions, 170 to 220 Hz over a first sweep near 111 MHz under either
+  IF, the tuner's divider being 16 under both.
 
 ### 14. PLL-exact centre frequencies, only if 13 says so
 
