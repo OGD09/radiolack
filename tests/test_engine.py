@@ -1668,8 +1668,15 @@ class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):
     fixed frequencies, found across its windows."""
 
     async def test_finds_the_carriers_across_its_windows_and_tuning_by_hand_stops_it_at_once(self):
-        low, high, rate = 145_000_000.0, 145_600_000.0, 1_024_000.0
-        windows = sweep_windows(low, high, rate)    # three
+        await self.sweep(1_024_000.0, 145_600_000.0)    # three windows
+
+    async def test_sweeps_at_librtlsdr_s_lowest_rates_too(self):
+        await self.sweep(240_000.0, 145_150_000.0)      # three windows too
+
+    async def sweep(self, rate: float, high: float) -> None:
+        low = 145_000_000.0
+        windows = sweep_windows(low, high, rate)
+        self.assertEqual(windows.count, 3)
         carriers = {low + 50_000: 0.2, windows.centre(1): 0.2, high - 50_000: 0.2}
         fake = FakeRtlTcp(carriers=carriers, chunk_bytes=16_384, interval_s=0.004)
         await fake.__aenter__()
@@ -1697,6 +1704,7 @@ class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):
         await next_scanner(subscription, until=at_window(1))
         engine.configure({"centre_hz": 145_350_000})    # before its samples come
         self.assertEqual((engine.scanner_state()["stopped"], engine.state()["centre_hz"]), ("tuned", 145_350_000))
+        self.assertEqual(engine.state()["sample_rate_hz"], rate)
 
 
 NEAR_HZ = HOME_HZ + 30_000      # a bookmark in the span where the receiver is when a memory scan starts
@@ -1890,8 +1898,14 @@ class RtlTcpMemoryScanTest(unittest.IsolatedAsyncioTestCase):
     another window on the air, through the receiver's settling."""
 
     async def test_listens_on_a_bookmark_of_another_window(self):
-        rate = 1_024_000.0
-        near, quiet, on_air = HOME_HZ + 100_000, HOME_HZ + 1_800_000, HOME_HZ + 2_000_000
+        await self.listen(1_024_000.0)
+
+    async def test_listens_at_librtlsdr_s_lowest_rates_too(self):
+        await self.listen(240_000.0)
+
+    async def listen(self, rate: float) -> None:
+        # The same places in the span whatever the rate: 100 kHz, 1.8 and 2 MHz at 1.024 MS/s.
+        near, quiet, on_air = (HOME_HZ + round(rate * fraction) for fraction in (0.0977, 1.7578, 1.9531))
         windows = memory_windows([near, quiet, on_air], rate, 24e6, 1766e6)     # two
         fake = FakeRtlTcp(carriers={on_air: 0.2}, chunk_bytes=16_384, interval_s=0.004)
         await fake.__aenter__()

@@ -107,7 +107,8 @@ the history under the tag `v0.1.0`.
   (band plan loader), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
-  input) and `tuning.js` (the Automatic step) carry JSDoc types; `main.js`
+  input), `tuning.js` (the Automatic step) and `rates.js` (what a mode
+  needs of the sample rate) carry JSDoc types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).

@@ -63,9 +63,8 @@ import numpy as np
 DEFAULT_ADDRESS = ("127.0.0.1", 1234)  # where rtl_tcp listens unless told otherwise
 DEFAULT_CENTRE_HZ = 145_000_000.0      # the 2 m band, until the user tunes elsewhere
 DEFAULT_SAMPLE_RATE_HZ = 2_400_000.0
-# librtlsdr's upper range of sample rates; its lower one, 225 to 300 kHz, is
-# not offered.
-SAMPLE_RATES_HZ = (900_001.0, 3_200_000.0)
+# librtlsdr's two ranges of sample rates, lowest first.
+SAMPLE_RATES_HZ = ((225_001.0, 300_000.0), (900_001.0, 3_200_000.0))
 PPM_RANGE = (-100, 100)     # frequency corrections offered: whole ppm, as librtlsdr takes them
 SETTLE_S = 0.4          # samples dropped after a change of frequency, rate or correction
 BUFFER_S = 0.5          # samples kept for a reader that falls behind
@@ -841,9 +840,9 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
         settings = replace(settings, rtl_agc=value)
     if "sample_rate_hz" in changes:
         rate = float(round(_number(changes["sample_rate_hz"], "the sample rate")))
-        low, high = SAMPLE_RATES_HZ
-        if not low <= rate <= high:
-            raise ValueError(f"the sample rate must be from {low / 1e6:g} to {high / 1e6:g} MS/s")
+        if not any(low <= rate <= high for low, high in SAMPLE_RATES_HZ):
+            ranges = " or ".join(f"from {low / 1e6:g} to {high / 1e6:g}" for low, high in SAMPLE_RATES_HZ)
+            raise ValueError(f"the sample rate must be {ranges} MS/s")
         settings = replace(settings, sample_rate_hz=rate)
     if "centre_hz" in changes:
         centre = float(round(_number(changes["centre_hz"], "the centre frequency")))
