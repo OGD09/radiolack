@@ -29,8 +29,9 @@ const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no lon
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'hf_input', 'converter_lo_hz', 'converter', 'centre_hz', 'sample_rate_hz', 'gain_db',
-  'ppm', 'rtl_agc', 'bias_tee', 'dc_removal'];
+  'ppm', 'driver_pll', 'rtl_agc', 'bias_tee', 'dc_removal'];
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
+const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
   'recordings', 'update', 'remote', 'report', 'carrier'];
@@ -327,7 +328,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * @typedef {'address' | 'hf_input' | 'converter_lo_hz' | 'converter' | 'centre_hz' | 'sample_rate_hz' | 'gain_db'
- *   | 'ppm' | 'rtl_agc' | 'bias_tee' | 'dc_removal'} Setting
+ *   | 'ppm' | 'driver_pll' | 'rtl_agc' | 'bias_tee' | 'dc_removal'} Setting
  */
 
 /**
@@ -340,7 +341,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} detail            why the source waits, or ""
  * @property {string | null} address    of a network source, as host:port
  * @property {string | null} tuner      name of the receiver's tuner, once known
- * @property {number} centreHz
+ * @property {number} centreHz         the centre frequency asked
+ * @property {number} centreInUseHz    where the receiver sits on the air for it, which labels the frames: an
+ *                                      R820T's or R828D's tuner is placed on its grid, up to 56.25 kHz away
  * @property {number} rateHz
  * @property {number | null} gainDb     null: automatic gain, or no gain setting
  * @property {number | null} ppm        frequency correction, parts per million to the hundredth; null: none
@@ -356,6 +359,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string | null} converter  in front of the receiver: "none", "up", "down" or "down_inverted";
  *                                      null: a source without it, or one this interface does not know
  * @property {number | null} converterLoHz the converter's oscillator, whole Hz; null: a source without it
+ * @property {string | null} driverPll  how the receiver's driver computes an R820T's or R828D's PLL:
+ *                                      "unknown", "truncating" or "rounding"; null: a source without it
  * @property {Setting[]} settable       settings an interface may change
  * @property {string[]} kinds           kinds of source the engine may switch to; empty: it reads one only
  */
@@ -374,6 +379,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {boolean} [biasTee]
  * @property {string} [converter]       one of "none", "up", "down" and "down_inverted"
  * @property {number} [converterLoHz]   whole Hz, above 0 and at most 100 GHz
+ * @property {string} [driverPll]       one of "unknown", "truncating" and "rounding"
  * @property {boolean} [dcRemoval]
  */
 
@@ -518,7 +524,9 @@ export function decodeSource(message) {
     && (m.rtl_agc === undefined || m.rtl_agc === null || typeof m.rtl_agc === 'boolean')
     && (m.bias_tee === undefined || m.bias_tee === null || typeof m.bias_tee === 'boolean')
     && (m.converter === undefined || m.converter === null || typeof m.converter === 'string')
-    && (m.converter_lo_hz === undefined || m.converter_lo_hz === null || (finite(m.converter_lo_hz) && m.converter_lo_hz > 0));
+    && (m.converter_lo_hz === undefined || m.converter_lo_hz === null || (finite(m.converter_lo_hz) && m.converter_lo_hz > 0))
+    && (m.centre_in_use_hz === undefined || finite(m.centre_in_use_hz))
+    && (m.driver_pll === undefined || m.driver_pll === null || typeof m.driver_pll === 'string');
   if (!valid) return null;
   return {
     kind: m.kind,
@@ -527,6 +535,7 @@ export function decodeSource(message) {
     address: m.address,
     tuner: m.tuner,
     centreHz: m.centre_hz,
+    centreInUseHz: m.centre_in_use_hz ?? m.centre_hz,
     rateHz: m.sample_rate_hz,
     gainDb: m.gain_db,
     ppm: m.ppm,
@@ -540,6 +549,7 @@ export function decodeSource(message) {
     biasTee: m.bias_tee ?? null,
     converter: CONVERTERS.includes(m.converter) ? m.converter : null,
     converterLoHz: m.converter_lo_hz ?? null,
+    driverPll: DRIVER_PLLS.includes(m.driver_pll) ? m.driver_pll : null,
     settable: m.settable.filter((/** @type {string} */ name) => SETTINGS.includes(name)),
     kinds: Array.isArray(m.kinds) ? m.kinds.filter((/** @type {unknown} */ kind) => typeof kind === 'string') : [],
   };
@@ -998,6 +1008,7 @@ export class EngineStream {
     if (changes.biasTee !== undefined) message.bias_tee = changes.biasTee;
     if (changes.converter !== undefined) message.converter = changes.converter;
     if (changes.converterLoHz !== undefined) message.converter_lo_hz = changes.converterLoHz;
+    if (changes.driverPll !== undefined) message.driver_pll = changes.driverPll;
     if (changes.dcRemoval !== undefined) message.dc_removal = changes.dcRemoval;
     return this.#send(message);
   }

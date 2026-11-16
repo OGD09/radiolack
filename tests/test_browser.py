@@ -27,7 +27,7 @@ from pathlib import Path
 from unittest import mock
 
 import radiolack
-from radiolack import PROJECT_URL, __version__
+from radiolack import PROJECT_URL, __version__, r82xx
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
@@ -277,6 +277,12 @@ def mhz(frequency_hz: int) -> str:
     """A frequency as the interface writes it (frequency.js): in MHz, with 3
     to 6 decimals, the zeros at the end beyond the third dropped."""
     return re.sub(r"0{1,3}\Z", "", f"{frequency_hz // 1_000_000}.{frequency_hz % 1_000_000:06d}")
+
+
+def in_use(centre_hz: int, rate_hz: int = 2_400_000) -> int:
+    """Where the fake rtl_tcp's R820T sits for ``centre_hz``: on its grid,
+    the driver's computation unknown and no correction (rtltcp.py)."""
+    return r82xx.on_grid(centre_hz, r82xx.rate_if_hz(rate_hz), 24e6, 1766e6)
 
 
 def kept_channel(frequency_hz: int, last_s: float) -> dict:
@@ -1999,6 +2005,35 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#src-rtl-agc")).to_be_disabled()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_driver_s_computation_is_chosen_for_every_interface_and_labels_the_samples(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # on 145 MHz, placed 2.5 kHz below
+        truncated = round(r82xx.tuned_hz("truncating", 144_997_500, 2_400_000))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                driver = first.locator("#src-driver")
+                expect(driver).to_have_value("unknown")
+                expect(driver).to_be_enabled()
+                expect(first.locator("#src-driver-note")).to_contain_text("Calibrate will identify the driver")
+                expect(first.locator("#src-center")).to_have_value("145.000")       # the centre asked
+                expect(first.locator("#src-center-note")).to_have_text("In use: 144.9975 MHz, where the tuner sits.")
+                driver.select_option("truncating")
+                for page in (first, second):
+                    expect(page.locator("#src-driver")).to_have_value("truncating")
+                    expect(page.locator("#src-driver-note")).to_contain_text("the RTL-SDR Blog driver")
+                    expect(page.locator("#src-center-note")).to_have_text(
+                        f"In use: {mhz(truncated)} MHz, where the tuner sits.")
+                self.assertIn({"type": "source", "driver_pll": "truncating"}, map(json.loads, self.sent[first]))
+                second.locator("#src-driver").select_option("rounding")
+                for page in (first, second):
+                    expect(page.locator("#src-driver")).to_have_value("rounding")
+                    expect(page.locator("#src-driver-note")).to_contain_text("rtl-sdr 2.0.2 and later")
+                    expect(page.locator("#src-center-note")).to_have_text("In use: 144.9975 MHz, where the tuner sits.")
+                second.locator("#src-driver").select_option("unknown")       # as each browser found it
+                expect(first.locator("#src-driver")).to_have_value("unknown")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_converter_moves_the_frequencies_shown_and_the_receiver_stays_where_it_is_tuned(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))
@@ -2050,11 +2085,14 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
                 expect(first.locator("#src-hf-field")).to_be_hidden()     # the simulated band has no shortwave
                 expect(first.locator("#src-power-row")).to_be_hidden()    # nor antenna power
+                expect(first.locator("#src-driver-field")).to_be_hidden()     # nor a tuner on a grid
+                expect(first.locator("#src-center-note")).to_be_hidden()
                 receiver.select_option("rtl_sdr")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("rtl_sdr")
                     expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                     expect(page.locator("#src-hf-field")).to_be_visible()
+                    expect(page.locator("#src-driver-field")).to_be_visible()
                 receiver.select_option("rtl_tcp")
                 for page in (first, second):
                     expect(page.locator("#status")).to_contain_text(
@@ -2184,7 +2222,7 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):        # once frames come from there, the airband's mode
                     expect(page.locator("#m-mode")).to_have_text("AM")
                 vfo = int(first.locator("#freq").get_attribute("aria-valuenow"))
-                centre = (vfo - 75_000) / 1e6       # a 32nd of the span below the VFO
+                centre = in_use(vfo - 75_000) / 1e6     # asked a 32nd of the span below the VFO, on the grid
                 for page in (first, second):
                     expect(page.locator("#freq")).to_have_attribute("aria-valuenow", str(vfo))
                     expect(page.locator("#src-center")).to_have_value(mhz(vfo - 75_000))
@@ -2225,7 +2263,9 @@ class BrowserTest(unittest.TestCase):
                 for _ in range(4):      # steps of 250 kHz: the second goes past 145.96 MHz, into the span's upper tenth
                     freq.press("Shift+ArrowUp")
                 deadline = time.monotonic() + TIMEOUT_MS / 1000
-                while abs(self.view_edges(page)[0] - 144.825) > 0.01:     # the view frames the new span
+                # The view frames the new span, asked at 146.025 MHz, on the grid 15 kHz below.
+                self.assertEqual(in_use(146_025_000), 146_010_000)
+                while abs(self.view_edges(page)[0] - 144.81) > 0.005:
                     self.assertLess(time.monotonic(), deadline, "the span did not move")
                     page.wait_for_timeout(50)
                 # The waterfall's older lines keep their frequencies, within the new span only.
@@ -2237,7 +2277,7 @@ class BrowserTest(unittest.TestCase):
                 centres = [message["centre_hz"] for message in map(json.loads, self.sent[page]) if "centre_hz" in message]
                 self.assertEqual(centres, [146_025_000])
                 low, high = self.view_edges(page)
-                self.assertAlmostEqual(high, 147.225, delta=0.01)
+                self.assertAlmostEqual(high, 147.21, delta=0.005)
 
     def test_the_waterfall_draws_each_line_at_its_frequencies(self):
         url = self.serve()
