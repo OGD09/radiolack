@@ -998,8 +998,8 @@ As built, where this section left a choice open or a rule had to bend:
   the DC spike.
 - **The Receiver menu** shows "rtl-sdr driver" for an R820T or R828D, with
   "Unknown", "rtl-sdr up to 2.0.1, RTL-SDR Blog" and "rtl-sdr 2.0.2 and
-  later", a note on what each does, which says that Calibrate will
-  identify the driver in a later version (14b), and "In use: …, where the
+  later", a note on what each does, which said that Calibrate would
+  identify the driver in a later version (14b now does), and "In use: …, where the
   tuner sits" under the centre frequency when the two differ by a hertz or
   more.
 - **The sign.** With the older computation and the setting unknown, the
@@ -1047,6 +1047,69 @@ rate's error is no longer corrected by the receiver, at most 72 Hz at the
 edge of a span for a crystal 60 ppm off. Measured on one V3 with rtl-sdr
 0.6.0 at one divider: rtl-sdr 2.0.1 and 2.0.2, the fork and an RTL-SDR
 Blog V4 are read from their source.
+
+As built, where this section left a choice open or a rule had to bend:
+
+- **The method** (`pllcheck.py`, apart from the engine, with no state).
+  The carrier is measured as Calibrate measures it, two seconds that agree
+  within 1 Hz, first at the centre asked, on the grid, then at three
+  centres off it (`tuner_grid` false). At each point the engine keeps how
+  far the carrier lies from the label, both brought back to the frequencies
+  the receiver tunes (through a converter); a computation predicts how
+  far that offset moves from the first point, minus the move of its tuned
+  frequency. The crystal's error, the correction, the computation set and
+  the true frequency add the same amount at every point and cancel: the
+  true frequency is never used, and the label's own computation drops out
+  with it. Both computations within 5 Hz, or neither, name none (`both`,
+  `neither`).
+- **The points.** Three, not "two or three": a third costs two seconds
+  and catches a carrier that moved between two. They lie within 2 kHz of
+  the centre in use (`MAX_MOVE_HZ`), on 50 Hz steps, nearest first, one on
+  each side when it can, where the computations' predictions differ by
+  40 Hz or more: within 2 kHz the sample rate's own error, which a move
+  scales, stays under half a hertz for a crystal 100 ppm off, and a study
+  of every divider found such points within it (41 Hz at least at the
+  divider 64, 55 Hz and more at 2 m). The rtl-sdr side
+  (`rtltcp.pll_tuning`, `centre_off_grid`) gives the request in use and
+  the centre that reaches a request off the grid, so that the points are
+  chosen on the requests the driver computes.
+- **When it runs.** The dialog asks for it (`carrier` message, action
+  `identify`) at the first steady carrier of each opening, so that a
+  check never starts on a VFO without a carrier, and holds the correction
+  until the answer, then measures again: the correction comes from a
+  measure labelled with the computation found. The hello lists
+  `driver_pll` among its `measures`; an interface without it never asks.
+- **Refusals** answer at once, with nothing moved, and the calibration goes
+  on with the computation set: another receiver or tuner, the simulated
+  band, direct sampling, a centre the grid does not place (`range`), a
+  scan or an I/Q recording, a VFO within 3 kHz of the centre in use or too
+  near the span's edge for the moves (`position`, which the section did
+  not foresee: a move must not bring the DC residue or the edge onto the
+  carrier), WFM below 320 kS/s, where the VFO's channel receives nothing
+  (`lost`), and no point found (`indistinct`).
+- **What stops it.** Any change an interface sends to the source or to the
+  VFO's frequency, mode or filter, gain included, a scan or an I/Q
+  recording that starts, every interface that asked going away, and the
+  engine's stop: the receiver goes back to its centre and its grid before
+  the change applies, and the answer says `stopped`; the dialog asks again
+  at the next carrier. A point without a steady carrier within 6 s gives
+  `lost`. The settings saved meanwhile keep the centre asked.
+- **The restore** is one change of the source, with the computation found
+  when it differs, so that the source state reaches every interface
+  before the answer. A failed check leaves `driver_pll` as it was. An audio
+  recording runs through the moves, as through any retune.
+- **The dialog** shows "rtl-sdr driver" under the carrier measured: the
+  computation set, then "Identifying…", then the computation "confirmed",
+  "identified, and saved with the receiver", with what it was when it
+  changed, or "Not identified", why, and the setting that stays. The note
+  on the tuner's own error goes once the computation is known, and stays
+  while it is unknown. Closing the dialog ignores the answer; the check
+  still ends and saves.
+- **The fake rtl_tcp program's** `carrier` device follows rtl-sdr 0.6.0's
+  computation, so that the browser test sees the driver identified.
+- **The tool** is unchanged: it never asks for the check; a change it sends
+  stops a check that runs, and a check another interface starts during its
+  measure moves the centre, which its guard reports as a measure incomplete.
 
 ## Band plan file, format 2
 

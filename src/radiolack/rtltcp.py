@@ -484,6 +484,42 @@ class RtlTcpSource:
             return 0.0
         return r82xx.GRID_HZ * (1 + settings.ppm / 1e6)
 
+    def pll_tuning(self) -> tuple[int, int] | str:
+        """For the check of the driver's computation (pllcheck.py): the
+        frequency asked of an R820T's or R828D's tuner (command 0x01) with
+        the settings as they are, and the sample rate, where r82xx.py
+        computes what the tuner sets for it; otherwise why not: "receiver"
+        (another tuner, or none known yet), "direct" (direct sampling) or
+        "range" (below where the PLL is computed, or an R828D below
+        28.8 MHz)."""
+        tuner, settings = self.tuner, self._settings
+        if tuner is None or not tuner.pll:
+            return "receiver"
+        if _direct_input(settings, tuner):
+            return "direct"
+        request = _tuning(settings, tuner).request_hz
+        if not _computed(request, settings, tuner):
+            return "range"
+        return request, int(settings.sample_rate_hz)
+
+    def centre_off_grid(self, request_hz: int) -> float | None:
+        """The centre on the air, a whole hertz within reach, for which the
+        receiver asks its tuner for ``request_hz`` with ``tuner_grid`` off
+        and the other settings as they are, for the check of the driver's
+        computation; None when none does, or where ``pll_tuning`` gives no
+        request."""
+        tuner = self.tuner
+        settings = replace(self._settings, tuner_grid=False)
+        if tuner is None or not tuner.pll:
+            return None
+        guess = round(_conversion(settings).air(request_hz * (1 + settings.ppm / 1e6)))
+        for centre in (guess, guess - 1, guess + 1, guess - 2, guess + 2):
+            moved = replace(settings, centre_hz=float(centre))
+            if (_within(moved.centre_hz, _reach(moved, tuner)) and not _direct_input(moved, tuner)
+                    and _tuning(moved, tuner).request_hz == request_hz and _computed(request_hz, moved, tuner)):
+                return moved.centre_hz
+        return None
+
     def configure(self, changes: Mapping[str, object]) -> None:
         """Change ``address`` (as ``parse_address`` reads it), ``centre_hz``,
         ``sample_rate_hz``, ``gain_db`` (``None`` for automatic gain),

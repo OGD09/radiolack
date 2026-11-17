@@ -1878,7 +1878,8 @@ class BrowserTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_calibration_brings_a_carrier_to_its_true_frequency(self):
         # The fake's carrier, at 145.010 MHz on the air, shows 465.5 Hz low
-        # through its crystal, 3.21 ppm fast.
+        # through its crystal, 3.21 ppm fast, once the check of the driver
+        # labels the samples with the fake's computation, rtl-sdr 0.6.0's.
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource("carrier", program=FAKE_RTL_TCP))
         for browser in BROWSERS:
@@ -1895,6 +1896,11 @@ class BrowserTest(unittest.TestCase):
                 expect(dialog).to_be_visible()
                 expect(true).to_have_value("145.010")       # the VFO, rounded to the kilohertz
                 expect(page.locator("#calibrate-in-use")).to_have_text("0.00 ppm")
+                driver = page.locator("#calibrate-driver")
+                expect(driver).to_have_text("rtl-sdr up to 2.0.1, RTL-SDR Blog: identified, and saved with "
+                                            "the receiver.", timeout=60_000)
+                expect(page.locator("#calibrate-tuner")).to_be_hidden()
+                expect(page.locator("#src-driver")).to_have_value("truncating")
                 expect(page.locator("#calibrate-measured")).to_contain_text(
                     re.compile(rf"^145\.00953\d\d MHz {DOT} \d+ dB above the noise, "
                                r"46[45]\.\d Hz below its true frequency$"))
@@ -2016,7 +2022,7 @@ class BrowserTest(unittest.TestCase):
                 driver = first.locator("#src-driver")
                 expect(driver).to_have_value("unknown")
                 expect(driver).to_be_enabled()
-                expect(first.locator("#src-driver-note")).to_contain_text("Calibrate will identify the driver")
+                expect(first.locator("#src-driver-note")).to_contain_text("Calibrate identifies the driver")
                 expect(first.locator("#src-center")).to_have_value("145.000")       # the centre asked
                 expect(first.locator("#src-center-note")).to_have_text("In use: 144.9975 MHz, where the tuner sits.")
                 driver.select_option("truncating")

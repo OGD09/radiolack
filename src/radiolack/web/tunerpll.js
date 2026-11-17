@@ -20,13 +20,22 @@ export const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 export const PLL_TUNERS = ['Rafael Micro R820T', 'Rafael Micro R828D'];
 
 /**
+ * Each choice as the Receiver menu's list names it.
+ * @type {Readonly<Record<DriverPll, string>>}
+ */
+export const DRIVER_PLL_NAMES = {
+  unknown: 'Unknown',
+  truncating: 'rtl-sdr up to 2.0.1, RTL-SDR Blog',
+  rounding: 'rtl-sdr 2.0.2 and later',
+};
+
+/**
  * What each choice does, shown under the list for the one chosen.
  * @type {Readonly<Record<DriverPll, string>>}
  */
 export const DRIVER_PLL_NOTES = {
   unknown: 'Radiolack places the tuner where its error is the same at every centre frequency, and takes the '
-    + 'tuner as exact there. Calibrate will identify the driver in a later version; until then, choose it '
-    + 'if you know it.',
+    + 'tuner as exact there. Calibrate identifies the driver on a steady carrier; choose it here if you know it.',
   truncating: 'rtl-sdr up to 2.0.1 (Debian 12\'s 0.6.0) and the RTL-SDR Blog driver: the tuner sits a little '
     + 'low, by the same amount at every centre frequency of its range, and Radiolack takes it off.',
   rounding: 'rtl-sdr 2.0.2 and later: the tuner sits exactly where Radiolack places it.',
@@ -41,10 +50,10 @@ export const DRIVER_PLL_NOTES = {
  */
 
 /**
- * @param {string | null} value
+ * @param {string | null | undefined} value
  * @returns {value is DriverPll}
  */
-const isDriverPll = (value) => DRIVER_PLLS.some((choice) => choice === value);
+export const isDriverPll = (value) => DRIVER_PLLS.some((choice) => choice === value);
 
 /**
  * The driver controls for ``source``: hidden for a source without the

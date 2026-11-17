@@ -557,16 +557,18 @@ and Radiolack saves it with the receiver:
 
 - "Unknown", the default: Radiolack takes the tuner as exact on its grid.
   With an older driver, every signal then shows the same amount high at
-  every centre frequency of a range, 110 Hz at 2 m, which a calibration
-  takes in.
+  every centre frequency of a range, 110 Hz at 2 m, until Calibrate
+  identifies the driver.
 - "rtl-sdr up to 2.0.1, RTL-SDR Blog": Radiolack takes that constant off
   everywhere.
 - "rtl-sdr 2.0.2 and later": the tuner sits where Radiolack places it.
 
-The rtl-sdr package that provides rtl_tcp gives the version; the RTL-SDR
-Blog driver computes as 2.0.1 does. Calibrate will identify the driver in a
-later version. A choice changes only where Radiolack says the samples were
-taken: nothing is asked of the receiver.
+Calibrate identifies the driver on a steady carrier and saves it with the
+receiver, and checks it again at every calibration ([Calibration](#calibration)).
+You may also choose it here: the rtl-sdr package that provides rtl_tcp
+gives the version, and the RTL-SDR Blog driver computes as 2.0.1 does. A
+choice changes only where Radiolack says the samples were taken: nothing
+is asked of the receiver.
 
 A converter changes nothing: it is the frequency the receiver itself tunes
 that goes on the grid.
@@ -584,10 +586,12 @@ Limits:
   sweep and the memory scan cannot search 3 kHz on either side of each
   point of the grid, every 112.5 kHz. From 0.300 MS/s they search everything.
 - The constant comes from the driver's code, read for rtl-sdr 2.0.1 and
-  2.0.2 and the RTL-SDR Blog fork and measured on one RTL-SDR Blog V3 with
-  rtl-sdr 0.6.0 at 2 m. A driver that computes otherwise keeps the error
-  it has, and a driver changed without changing the setting may put
-  signals up to twice the constant off.
+  2.0.2 and the RTL-SDR Blog fork, and was measured on one RTL-SDR Blog V3
+  with rtl-sdr 0.6.0 near 111 MHz, at the tuner's divider 16, which covers
+  111 to 221 MHz. A driver that computes otherwise keeps the error it has,
+  and Calibrate then names neither computation; a driver changed without
+  changing the setting may put signals up to twice the constant off until
+  the next calibration.
 
 For developers, `tools/measure_pll.py`, run from a checkout, measures how
 well a Radiolack already running on such a receiver labels its samples: it
@@ -610,7 +614,8 @@ filter to a tenth of a hertz, over two seconds, which the display, at
 3. Open Receiver > Calibrate. Every two seconds it shows the carrier
    measured, how far it stands above the noise, and how far it lies from
    "True frequency of this carrier", which starts from the VFO's frequency
-   rounded to the kilohertz: type the true frequency if it differs.
+   rounded to the kilohertz: type the true frequency if it differs. On an
+   R820T or R828D, it first identifies the rtl-sdr driver (below).
 4. Apply sends "Correction to apply", the correction that brings the
    carrier to its true frequency, as a change in the Receiver menu would,
    and tunes the VFO there, where the carrier then lies. The next measures
@@ -630,6 +635,27 @@ at that centre frequency, which another centre frequency does not share.
 An R820T's or R828D's own error is the same at every centre frequency of a
 range on its grid, and none is left once its driver is set ([The tuner's
 grid](#the-tuners-grid)).
+
+On an RTL-SDR whose tuner is an R820T or R828D, the first steady carrier
+that Calibrate measures also identifies the rtl-sdr driver: the receiver's
+centre frequency moves for about ten seconds, for every interface, by up to
+2 kHz off the tuner's grid at three points, and comes back. How far the
+carrier moves from one point to the next tells the driver's two
+computations apart, whatever the crystal's error, the correction, the
+driver set and the true frequency. "rtl-sdr driver" then says what it
+found, which is saved with the receiver; at the next calibration it says
+"confirmed", or that it changed, as when the driver was upgraded. The
+correction comes only from the measures taken once the driver is known.
+
+The check is not made, and the calibration goes on with the driver set,
+while a scan runs or an I/Q recording is made, in direct sampling, on
+other tuners, where Radiolack does not place the tuner on its grid, or
+with the VFO within 3 kHz of the centre frequency or near the span's edge:
+the dialog says why. It names no driver when the carrier fades or moves
+during the check, or follows neither computation within 5 Hz; the driver
+set stays. An audio recording goes on through it, as through any change of
+the centre frequency, and while the tuner is off its grid what it hears
+may sit off by the tuner's own error there, under 200 Hz at 2 m.
 
 The dialog says why it shows no frequency: nothing received at the VFO, no
 line standing 20 dB above the noise within the filter, two lines of nearly

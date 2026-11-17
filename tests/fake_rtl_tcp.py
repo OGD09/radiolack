@@ -9,7 +9,7 @@ port given. The device decides what it does:
 - "mute": never listens, until stopped.
 - "stubborn": serves, but ignores SIGTERM.
 - "carrier": serves CARRIER_HZ through a crystal CARRIER_CRYSTAL_PPB off,
-  until SIGTERM.
+  its R820T's PLL computed as rtl-sdr up to 2.0.1 does, until SIGTERM.
 - any other value: serves until SIGTERM.
 
 Like rtl_tcp, it opens the receiver for a moment before it listens. Each run
@@ -20,11 +20,13 @@ command it receives, then "<pid> stopping" on SIGTERM.
 
 import argparse
 import asyncio
+import functools
 import os
 import signal
 import sys
 import time
 
+from radiolack import r82xx
 from tests.fakes import FakeRtlTcp
 
 OPEN_S = 0.2    # rtl_tcp opens the receiver before it listens
@@ -54,7 +56,8 @@ def stop(_signum, _frame) -> None:
 
 
 async def serve(port: int, device: str) -> None:
-    carrier = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB} if device == "carrier" else {}
+    carrier = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB,
+               "tuner_pll": functools.partial(r82xx.tuned_hz, "truncating")} if device == "carrier" else {}
     async with FakeRtlTcp(port=port, chunk_bytes=8000, **carrier) as fake:
         fake.on_command = lambda command, value: log(f"command {command} {value}")
         await asyncio.Event().wait()

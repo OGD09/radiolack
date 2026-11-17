@@ -35,7 +35,10 @@ the history under the tag `v0.1.0`.
   sources, restores and saves the settings and the source in use; sends a
   problem report to this computer's interface that asks; measures the
   carrier at the VFO for the interfaces that ask, gathering the VFO's
-  channel only while one waits, and sends each the result alone; keeps the
+  channel only while one waits, and sends each the result alone; checks
+  the rtl-sdr driver's computation on that carrier for the interfaces that
+  ask, moving an R820T's or R828D's centre off its grid for a few points,
+  then back whatever ends the check, and saves what it found; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
@@ -97,8 +100,10 @@ the history under the tag `v0.1.0`.
   placed on its grid, none of the correction by 0x05, its samples labelled
   with the centre in use, where the driver's computation that the
   receiver's `driver_pll` names puts the tuner, and the VFO's shift scaled
-  by the correction (coverage-and-precision.md, pull request 14a); hands
-  the raw samples to an I/Q recording's tap),
+  by the correction (coverage-and-precision.md, pull request 14a); the
+  request in use and the centre that reaches a request off the grid, for
+  the driver's check (14b); hands the raw samples to an I/Q recording's
+  tap),
   `r82xx` (rtl-sdr's two computations of an R820T's or R828D's PLL, ported
   from the driver, GPL-2.0-or-later, whose docstring names the versions
   and commits and keeps the notice that `packaging/copyright` repeats; the
@@ -110,7 +115,11 @@ the history under the tag `v0.1.0`.
   the demodulator: Hann window, FFT of one second, the strongest line
   within the filter placed by a parabola, its margin over the median, two
   seconds that must agree within 1 Hz; apart from the engine and the
-  interface, for later runs across several stations), `converter` (a converter in front of a receiver: its kinds and
+  interface, for later runs across several stations), `pllcheck` (the
+  check of the driver's computation: the centres off the grid where the
+  two computations differ, and the computation that the carrier's moves
+  between them follow, whatever the crystal and the label; apart from the
+  engine), `converter` (a converter in front of a receiver: its kinds and
   oscillator, the frequency the receiver tunes for one on the air and the
   other way round, the reach on the air),
   `sources` (opens each kind of source from its saved
@@ -146,7 +155,8 @@ the history under the tag `v0.1.0`.
   the receiver's reach, and what the view draws as it widens) and
   `correction.js` (the frequency correction's field) and `calibration.js`
   (the Calibrate dialog: the correction from a carrier measured and its
-  true frequency, with its derivation, and what the dialog shows) carry JSDoc
+  true frequency, with its derivation, the driver's check and what the
+  dialog shows) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `bandplan-europe.json`

@@ -3,11 +3,12 @@
  * state, the demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the recording state, the
  * storage state, the update state and remote access's state from the
- * engine, and the observations, the recordings, a problem report and the
- * measure of a carrier when this interface asks, and takes this interface's
- * changes, its preferences, its request for audio, its recordings, its
- * update requests, its remote access settings, its report requests and its
- * carrier measure requests to it (docs/design/protocol.md).
+ * engine, and the observations, the recordings, a problem report, the
+ * measure of a carrier and the check of the rtl-sdr driver when this
+ * interface asks, and takes this interface's changes, its preferences, its
+ * request for audio, its recordings, its update requests, its remote access
+ * settings, its report requests and its carrier measure and driver check
+ * requests to it (docs/design/protocol.md).
  * It reconnects by itself after a disconnection. On a device that remote
  * access serves, the engine sends neither the storage, update nor remote
  * access state, nor the recordings folder, nor a problem report, and takes
@@ -292,6 +293,18 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * What a check of the rtl-sdr driver found, which the engine sends to the
+ * interface that asks: which of the driver's computations an R820T's or
+ * R828D's PLL follows, or why it names none.
+ * @typedef {object} DriverCheck
+ * @property {number | null} id         the request's id, which this interface gave
+ * @property {string | null} driverPll  "truncating" or "rounding", now set; null: none found, see `reason`
+ * @property {string | null} previous   the computation set when the check began; null for a source without one
+ * @property {string | null} reason     null with a computation; why none otherwise, such as "lost" or "scan",
+ *                                      or one this interface does not know
+ */
+
+/**
  * A device paired with remote access.
  * @typedef {object} RemoteDevice
  * @property {string} id            names it in forget requests
@@ -416,6 +429,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
+ * @property {(check: DriverCheck) => void} onDriverCheck   sent when this interface asks for one
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -848,6 +862,22 @@ export function decodeCarrier(message) {
 }
 
 /**
+ * Decode a driver check message. Returns null when a field is missing or
+ * malformed: a computation comes without a reason, and a reason without a
+ * computation.
+ * @param {any} message  a parsed JSON message of type "driver_pll"
+ * @returns {DriverCheck | null}
+ */
+export function decodeDriverCheck(message) {
+  const m = message;
+  const found = m.driver_pll === null || (DRIVER_PLLS.includes(m.driver_pll) && m.driver_pll !== 'unknown');
+  const valid = (m.id === null || Number.isSafeInteger(m.id)) && found
+    && (m.previous === null || DRIVER_PLLS.includes(m.previous))
+    && (m.reason === null || typeof m.reason === 'string') && (m.driver_pll === null) === (m.reason !== null);
+  return valid ? { id: m.id, driverPll: m.driver_pll, previous: m.previous, reason: m.reason } : null;
+}
+
+/**
  * Decode a remote access message. Returns null when a field is missing or
  * malformed.
  * @param {any} message  a parsed JSON message of type "remote"
@@ -1258,6 +1288,19 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine to check which computation the rtl-sdr driver follows,
+   * on the carrier at the VFO: the receiver moves for about ten seconds, and
+   * the result comes to this interface only (`onDriverCheck`), with `id`.
+   * Asking while a check runs waits for that one. Returns false, sending
+   * nothing, when the stream is not open.
+   * @param {number} id  a whole number from 1
+   * @returns {boolean}
+   */
+  identifyDriver(id) {
+    return this.#send({ type: 'carrier', action: 'identify', id });
+  }
+
+  /**
    * Turn remote access on or off: this computer's interfaces receive its
    * state as it changes, which says why it could not turn on. Returns false,
    * sending nothing, when the stream is not open.
@@ -1425,6 +1468,9 @@ export class EngineStream {
     } else if (message.type === 'carrier') {
       const measure = decodeCarrier(message);
       if (measure) this.#handlers.onCarrier(measure);
+    } else if (message.type === 'driver_pll') {
+      const check = decodeDriverCheck(message);
+      if (check) this.#handlers.onDriverCheck(check);
     } else if (message.type === 'error') {
       const command = COMMANDS.includes(message.command) ? message.command : null;
       this.#handlers.onError(String(message.message), command);
