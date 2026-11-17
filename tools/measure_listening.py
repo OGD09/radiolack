@@ -3,35 +3,37 @@
 receiver at 2.4 MS/s: later-milestones.md, section 2, pull request 1, and
 spike 8 of scoping.md.
 
-The tools are synchronous AM, the package's SAM mode (demod.py) since its
-pull request, the automatic notch and the noise blanker, the package's too
-since their own (the demodulation settings' ``notch`` and ``blanker``), and
-the prototype of `tools/listening.py`, the fine spectrum. The tool feeds
-the engine's own block processing (``engine._process_block``: DC removal,
-display spectrum, detection, the VFO's channel, its meter and its audio)
-with synthetic samples, in the engine's block size, 1/30 s of samples,
-and times it in six configurations: without any tool (the baseline), with
-each tool alone, and with the four together. All six process the same
-blocks, one after the other, in an order that turns with every block, so
-that other work on the computer weighs on them alike; each block's
-processor time is that of this thread (``time.thread_time_ns``), not the
-wall clock's. A run does this over ``--seconds`` of signal after
-``--warmup-s`` that are not timed, in which SAM locks and the notch finds
-its whistle; the tool makes ``--runs`` runs, each with fresh state, and
-reports for each tool the median of what it added per second of signal,
-as a percentage of one core, with the lowest and the highest, against the
-rule fixed beforehand: 1.5% for each, 6% together.
+The tools are the package's: synchronous AM, the SAM mode (demod.py), the
+automatic notch and the noise blanker, the demodulation settings' ``notch``
+and ``blanker``, and the fine spectrum (fine.py), which the engine computes
+while an interface asks for it. The tool feeds the engine's own block
+processing (``engine._process_block``: DC removal, display spectrum,
+detection, the VFO's channel, its meter and its audio) with synthetic
+samples, in the engine's block size, 1/30 s of samples, and times it in
+seven configurations: without any tool (the baseline), with each tool
+alone, with the fine spectrum and the blanker, and with the four together.
+All seven process the same blocks, one after the other, in an order that
+turns with every block, so that other work on the computer weighs on them
+alike; each block's processor time is that of this thread
+(``time.thread_time_ns``), not the wall clock's. A run does this over
+``--seconds`` of signal after ``--warmup-s`` that are not timed, in which
+SAM locks and the notch finds its whistle; the tool makes ``--runs`` runs,
+each with fresh state, and reports for each tool the median of what it
+added per second of signal, as a percentage of one core, with the lowest
+and the highest, against the rule fixed beforehand: 1.5% for each, 6%
+together. The fine spectrum with the blanker counts against the blanker
+alone: it is what the fine spectrum adds while the blanker is on, as it
+then takes the samples as received through a copy of the front filter.
 
-The tools sit where the design puts them, SAM as the VFO's mode, the notch
-and the blanker as its settings, the prototype through a subclass in this
-file, so that the engine's code stays as it is: the blanker on the samples
-that the demodulator receives, after the display spectrum has read them; SAM in
-place of the AM detector in the audio path, with the same delay, and its
-search for the carrier on the channel; the notch reading the detector's
-output and changing the audio filter's taps;
-the fine spectrum reading the front filter's output, the channel at 48 kHz
-before the channel filter, whose cover the design sets at 19.2 kHz on each
-side of the VFO.
+The tools sit where the engine puts them, so that the engine's code stays
+as it is: SAM as the VFO's mode, the notch and the blanker as its
+settings, the blanker on the samples that the demodulator receives, after
+the display spectrum has read them, SAM in place of the AM detector in the
+audio path, with the same delay, and its search for the carrier on the
+channel, the notch reading the detector's output and changing the audio
+filter's taps; the fine spectrum as an interface subscribed to it would
+have it, reading the front filter's output, the channel at 48 kHz before
+the channel filter, and making its frames, which it encodes.
 
 The signal: white noise at -40 dBFS, an AM station 300 kHz from the centre
 frequency, 150 Hz off the VFO, modulated at 50% by a voice-like sound,
@@ -66,10 +68,9 @@ import numpy as np
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import listening  # noqa: E402
-from radiolack.demod import MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator, audio_taps  # noqa: E402
+from radiolack.demod import CHANNEL_RATE_HZ, MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator, audio_taps  # noqa: E402
 from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
+from radiolack.fine import FineSpectrum, encode_fine  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
 from radiolack.spectrum import SpectrumAnalyzer  # noqa: E402
 
@@ -80,12 +81,18 @@ MODE = "AM"
 SAM_MODE = "SAM"        # synchronous AM, the package's
 
 TOOLS = ("sam", "notch", "blanker", "fine")
+FINE_BLANKER = "fine_blanker"   # the fine spectrum while the blanker is on
 NAMES = {"sam": "Synchronous AM", "notch": "Automatic notch", "blanker": "Noise blanker",
-         "fine": "Fine spectrum", "all": "The four together"}
+         "fine": "Fine spectrum", FINE_BLANKER: "Fine spectrum, the blanker on", "all": "The four together"}
 BASELINE = "baseline"
 ALL = "all"
+ROWS = (*TOOLS, FINE_BLANKER, ALL)     # the configurations that add to another, in the table's order
 CONFIGURATIONS: dict[str, frozenset[str]] = {
-    BASELINE: frozenset(), **{tool: frozenset((tool,)) for tool in TOOLS}, ALL: frozenset(TOOLS)}
+    BASELINE: frozenset(), **{tool: frozenset((tool,)) for tool in TOOLS},
+    FINE_BLANKER: frozenset(("blanker", "fine")), ALL: frozenset(TOOLS)}
+# What each configuration adds to: the baseline, or for the fine spectrum
+# with the blanker, the blanker alone.
+REFERENCES = {FINE_BLANKER: "blanker"}
 SHARE_PCT = 1.5         # each tool's share of one core, set by the planning session
 TOGETHER_PCT = 6.0      # the four together, later-milestones.md, section 2
 
@@ -144,22 +151,6 @@ def voice(t: np.ndarray) -> np.ndarray:
     return 0.55 * sound * syllables
 
 
-class _Tapped:
-    """A filter whose output also goes to ``receiver``."""
-
-    def __init__(self, filter_: Any, receiver: Callable[[np.ndarray, float], None]) -> None:
-        self._filter = filter_
-        self._receiver = receiver
-
-    def process(self, samples: np.ndarray) -> np.ndarray:
-        output = self._filter.process(samples)
-        self._receiver(output, self._filter.output_rate_hz)
-        return output
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._filter, name)
-
-
 @dataclass
 class Activity:
     """What the tools did, so that the figures are those of tools at work."""
@@ -172,29 +163,18 @@ class Activity:
 
 
 class ToolDemodulator(Demodulator):
-    """The engine's demodulator with the prototype of the fine spectrum
-    where the design puts it; SAM, the notch and the blanker are its own,
-    through the mode and the settings."""
+    """The engine's demodulator, which counts what SAM, the notch and the
+    blanker, its own through the mode and the settings, did."""
 
-    def __init__(self, tools: frozenset[str]) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.tools = tools
         self.activity = Activity()
-        self._fine = listening.FineSpectrum() if "fine" in tools else None
-
-    def _start(self, rate_hz: float, wide: bool) -> None:
-        super()._start(rate_hz, wide)
-        if self._fine is not None and self._front is not None and not isinstance(self._front, _Tapped):
-            self._front = _Tapped(self._front, self._fine_frames)
-
-    def _fine_frames(self, channel: np.ndarray, rate_hz: float) -> None:
-        assert self._fine is not None
-        self.activity.frames += len(self._fine.add(channel, rate_hz))
 
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool,
-                tap: Callable[[np.ndarray], None] | None = None) -> tuple[Any, np.ndarray | None]:
-        meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap)
+                tap: Callable[[np.ndarray], None] | None = None,
+                front_tap: Callable[[np.ndarray], None] | None = None) -> tuple[Any, np.ndarray | None]:
+        meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap, front_tap)
         self.activity.blanked += self._blanker is not None and self._blanker.impulses > 0
         self.activity.blocks += 1
         self.activity.locked += bool(meter.sam_locked)
@@ -207,19 +187,30 @@ class Pipeline:
 
     def __init__(self, tools: frozenset[str]) -> None:
         self.analyzer = SpectrumAnalyzer()
-        self.demodulator = ToolDemodulator(tools)
+        self.demodulator = ToolDemodulator()
         self.detector = Detector()
         self.watch = ChannelWatch()
         mode = SAM_MODE if "sam" in tools else MODE
         self.settings = DemodSettings(CENTRE_HZ + VFO_OFFSET_HZ, mode, MODE_BANDWIDTHS_HZ[mode],
                                       notch="notch" in tools, blanker="blanker" in tools)
+        # The fine spectrum as the engine gives it to a block while an
+        # interface asks for it: the spectrum, the setting and the rate's scale.
+        self.fine = (FineSpectrum(), (self.settings, CENTRE_HZ, RATE_HZ), 1.0) if "fine" in tools else None
 
     def process(self, samples: np.ndarray) -> int:
-        """Process one block as the engine does; the processor time it took, in ns."""
+        """Process one block as the engine does, and encode the fine frames
+        it completes as the engine does for an interface on this computer;
+        the processor time it took, in ns."""
         started = time.thread_time_ns()
-        _process_block(self.analyzer, self.demodulator, self.detector, self.watch, samples, CENTRE_HZ, RATE_HZ,
-                       True, self.settings, True, DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, None)
-        return time.thread_time_ns() - started
+        fine_codes = _process_block(self.analyzer, self.demodulator, self.detector, self.watch, samples, CENTRE_HZ,
+                                    RATE_HZ, True, self.settings, True, DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, None,
+                                    None, 1.0, self.fine)[7]
+        for codes in fine_codes:
+            encode_fine(0, self.settings.frequency_hz, CHANNEL_RATE_HZ, self.analyzer.db_min, self.analyzer.db_step,
+                        codes)
+        spent = time.thread_time_ns() - started
+        self.demodulator.activity.frames += len(fine_codes)
+        return spent
 
 
 @dataclass
@@ -233,8 +224,9 @@ class Run:
         return self.cpu_ns[name] / 1e9 / self.seconds * 100
 
     def added(self, name: str) -> float:
-        """What a configuration took more than the baseline, in % of one core."""
-        return self.percent(name) - self.percent(BASELINE)
+        """What a configuration took more than the one it adds to, the
+        baseline unless REFERENCES names another, in % of one core."""
+        return self.percent(name) - self.percent(REFERENCES.get(name, BASELINE))
 
 
 def block_size(rate_hz: float = RATE_HZ) -> int:
@@ -321,13 +313,14 @@ def report(runs: Sequence[Run], options: argparse.Namespace, started: datetime, 
         "- The scene " + ("with its impulses, three samples every"
                           f" {IMPULSE_PERIOD_S * 1e3:g} ms." if options.impulses else "without impulses."),
         "- Processor time of the processing thread per second of signal, in % of one core:"
-        " the median of the runs, then the lowest and the highest.",
+        " the median of the runs, then the lowest and the highest. Each tool adds to the baseline;"
+        " the fine spectrum with the blanker on, to the blanker alone.",
         "",
         "| Configuration | % of one core | Added by the tool | Rule |",
         "| --- | --- | --- | --- |",
         f"| Baseline, without any tool | {spread([run.percent(BASELINE) for run in runs])} | | |",
     ]
-    for name in (*TOOLS, ALL):
+    for name in ROWS:
         added = [run.added(name) for run in runs]
         lines.append(f"| {NAMES[name]} | {spread([run.percent(name) for run in runs])} | {spread(added)}"
                      f" | {verdict(name, added)} |")
@@ -342,16 +335,17 @@ def report(runs: Sequence[Run], options: argparse.Namespace, started: datetime, 
         f" audio filter's taps with four notches, when they change, takes {redesign_ms():.1f} ms.",
         f"- The blanker zeroed impulses in {sum(a.blanked for a in activity['blanker'])} of"
         f" {sum(a.blocks for a in activity['blanker'])} blocks.",
-        f"- The fine spectrum made {sum(a.frames for a in activity['fine'])} frames.",
+        f"- The fine spectrum made {sum(a.frames for a in activity['fine'])} frames,"
+        f" {sum(a.frames for a in activity[FINE_BLANKER])} with the blanker on.",
         "",
         "Each run, % of one core added by each tool (the baseline's own in the first column):",
         "",
-        "| Run | Baseline | " + " | ".join(NAMES[name] for name in (*TOOLS, ALL)) + " |",
-        "| --- | --- | " + " | ".join("---" for _ in (*TOOLS, ALL)) + " |",
+        "| Run | Baseline | " + " | ".join(NAMES[name] for name in ROWS) + " |",
+        "| --- | --- | " + " | ".join("---" for _ in ROWS) + " |",
     ]
     for number, run in enumerate(runs, 1):
         lines.append(f"| {number} | {run.percent(BASELINE):.2f} | "
-                     + " | ".join(f"{run.added(name):.2f}" for name in (*TOOLS, ALL)) + " |")
+                     + " | ".join(f"{run.added(name):.2f}" for name in ROWS) + " |")
     return lines
 
 
@@ -366,9 +360,9 @@ def positive(kind: type) -> Callable[[str], Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Measure the processor time that each listening tool (SAM, the notch and the noise"
-                    " blanker, then the prototype of tools/listening.py) adds to the engine's processing of one"
-                    " receiver at 2.4 MS/s, on synthetic samples. No receiver, no network.")
+        description="Measure the processor time that each listening tool (SAM, the notch, the noise blanker"
+                    " and the fine spectrum) adds to the engine's processing of one receiver at 2.4 MS/s, on"
+                    " synthetic samples. No receiver, no network.")
     parser.add_argument("--runs", type=positive(int), default=7, help="runs, each with fresh state (default 7)")
     parser.add_argument("--seconds", type=positive(float), default=10.0,
                         help="seconds of signal timed in each run (default 10)")

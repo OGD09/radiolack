@@ -21,6 +21,7 @@ from aiohttp.abc import AbstractResolver
 
 from radiolack import __version__
 from radiolack.engine import REMOTE_BINS
+from radiolack.fine import FRAME_KIND_FINE, REMOTE_FINE_BINS
 from radiolack.recordings import wav_header
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE
 from radiolack.server import CLOSE_MOVING, CLOSE_NOT_PAIRED, CLOSE_REMOTE_OFF, LocalServer, _limit_unsent
@@ -277,7 +278,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "version": __version__, "remote": True,
                           "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
-                          "measures": ["carrier", "driver_pll"]})
+                          "measures": ["carrier", "driver_pll"], "spectra": ["fine"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
@@ -444,6 +445,13 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
         self.assertEqual(FRAME_HEADER.unpack_from(message.data)[0], FRAME_KIND_SPECTRUM)
         self.assertEqual(len(message.data), FRAME_HEADER.size + REMOTE_BINS)
+        # Its fine frames too, once it asks: 2048 bins, across the channel's width.
+        await ws.send_json({"type": "fine", "on": True})
+        while (message := await ws.receive(timeout=5)).type is not aiohttp.WSMsgType.BINARY or (
+                message.data[0] != FRAME_KIND_FINE):
+            self.assertIn(message.type, (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY))
+        self.assertEqual(FRAME_HEADER.unpack_from(message.data)[5], 48_000.0)
+        self.assertEqual(len(message.data), FRAME_HEADER.size + REMOTE_FINE_BINS)
         # A device's message must fit the limit once inflated: a megabyte of
         # spaces, which deflates to a few kilobytes, is far over it.
         await ws.send_str(json.dumps({"type": "demod", "padding": " " * (1 << 20)}))

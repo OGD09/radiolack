@@ -30,7 +30,9 @@ the history under the tag `v0.1.0`.
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks, the scanner state, the
   signals found, the recording state and the update check's findings with
-  clients, sends audio to those that ask, passes their changes on,
+  clients, sends audio to those that ask, and the fine spectrum of the
+  VFO's channel, computed once while at least one asks, remote clients'
+  with fewer bins, passes their changes on,
   switches between kinds of
   sources, restores and saves the settings and the source in use; sends a
   problem report to this computer's interface that asks; measures the
@@ -88,7 +90,11 @@ the history under the tag `v0.1.0`.
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO, or beyond a WFM
   channel), `dsp` (FIR design and overlap-save FFT filters that shift and
-  resample, the Hann window), `demod` (one VFO: channel level, squelch,
+  resample, a few samples among zeros filtered alone, the Hann window),
+  `fine` (the fine spectrum of the VFO's channel for the deep zoom: FFTs
+  of 8192 bins of the front filter's output, about ten frames a second,
+  started again at each change of setting, and the binary fine frame),
+  `demod` (one VFO: channel level, squelch,
   audio at 12 kHz, or 32 kHz in WFM; SAM, synchronous AM: the carrier's
   search and lock, sought with or without audio, and the detector that
   follows it, AM's envelope without a lock, the switch faded; the
@@ -99,8 +105,10 @@ the history under the tag `v0.1.0`.
   noise blanker in every mode: the impulses of the receiver's samples
   zeroed before the front filter, a signal longer than an impulse and a
   block where it would zero too much left whole, the impulses of the
-  latest second counted, and the channel of the samples as received for
-  the measure's tap, through filters of its own while it blanks), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  latest second counted, and the samples as received for the taps, the
+  measure's channel and the fine spectrum's front filter output, while it
+  blanks: the blanked front's output plus that of the samples zeroed,
+  filtered alone), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; direct sampling below the tuner's range for shortwave;
@@ -148,7 +156,8 @@ the history under the tag `v0.1.0`.
   GitHub, under `PROJECT_URL` (`__init__`), alone open in the user's web
   browser).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
-  build step. `stream.js` (stream client), `audio.js` and
+  build step. `stream.js` (stream client, which decodes the fine frames it
+  asks for but nothing draws yet), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
   `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
   (band plan loader, and the mode the plan gives, SAM counting as AM), `antenna.js` (antenna lengths for the VFO's
@@ -241,20 +250,17 @@ the history under the tag `v0.1.0`.
   moving only the centre frequency and the tuner's grid (`tuner_grid`,
   never saved), which it restores, and names the driver's computation to
   choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
-  `listening.py` (later-milestones.md, section 2) holds the prototype of
-  the last listening tool to build, the fine spectrum, which its pull
-  request moves into the package, as SAM's, the notch's and the
-  blanker's moved into `demod`;
-  `measure_listening.py` (spike 8) times the engine's block processing on
-  synthetic samples at 2.4 MS/s without them, with each and with the four,
-  SAM as the VFO's mode, the notch and the blanker as its settings and the
-  prototype through a subclass of the demodulator that puts it where the
-  design does, needing no receiver, with the scene's impulses or without
-  them (`--without-impulses`); `tests/test_listening.py` checks the
-  prototype on synthetic signals and runs the measure briefly, never
-  reading its figures, `tests/test_sam.py` checks SAM,
-  `tests/test_notch.py` the notch and `tests/test_blanker.py` the
-  blanker.
+  `measure_listening.py` (spike 8, later-milestones.md, section 2) times
+  the engine's block processing on synthetic samples at 2.4 MS/s without
+  the four listening tools, with each, with the fine spectrum and the
+  blanker together, and with the four, all of them the package's: SAM as
+  the VFO's mode, the notch and the blanker as its settings and the fine
+  spectrum as the engine gives it a block, needing no receiver, with the
+  scene's impulses or without them (`--without-impulses`);
+  `tests/test_listening.py` runs the measure briefly, never reading its
+  figures, `tests/test_sam.py` checks SAM, `tests/test_notch.py` the
+  notch, `tests/test_blanker.py` the blanker and `tests/test_fine.py`
+  the fine spectrum.
 
 ## Commands
 

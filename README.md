@@ -604,12 +604,11 @@ measures one steady carrier at each, and says whether the driver set holds
 or which to choose. Its `--help` says what it needs; the Debian package does
 not install it.
 
-Also for developers, `tools/listening.py` holds the prototype of the last
-listening tool to come, a fine spectrum of the VFO's channel, which
-Radiolack does not use yet, and `tools/measure_listening.py` measures the
-processor time that synchronous AM, Radiolack's SAM, the automatic notch,
-the noise blanker and that prototype each add to the engine at 2.4 MS/s,
-on synthetic samples, without a receiver; it takes about three minutes,
+Also for developers, `tools/measure_listening.py` measures the processor
+time that synchronous AM, Radiolack's SAM, the automatic notch, the noise
+blanker and the fine spectrum ([Spectrum view](#spectrum-view)) each add to
+the engine at 2.4 MS/s, the fine spectrum with the blanker too, on
+synthetic samples, without a receiver; it takes about three minutes,
 `--output FILE` keeps its table and `--without-impulses` leaves the
 scene's impulses out, the usual case for the blanker.
 
@@ -904,6 +903,18 @@ it, the waterfall moves with it: each line stays at its own frequencies,
 within the span only, so what leaves the span goes and the new part starts
 empty. The peak hold moves the same way. A longer move, another sample
 rate or FFT size, or another receiver starts them again.
+
+For the deep zoom to come, a few hertz per bin around the VFO, the engine
+also computes a fine spectrum of the VFO's channel, before the
+demodulator: 8192 bins over the channel's 48 kHz, 5.9 Hz each (320 kHz
+and 39 Hz in WFM), about ten times a second, of which 19.2 kHz on each
+side of the VFO (128 kHz in WFM) show the air, the samples as received
+whatever the noise blanker. It
+computes it only while an interface asks for it, which none does yet: the
+interface's zoom stops at the spectrum's own bins. A device paired through
+remote access would get 2048 bins, each the strongest of the four it
+groups, about 0.17 Mbit/s before compression ([Remote
+access](#remote-access)).
 
 ## Scanners
 
@@ -1811,9 +1822,10 @@ src/radiolack/
   engine.py     reads a source, removes its DC offset, shares spectrum
                 frames, the demodulation settings, the bookmarks, the
                 signals found, the recording state and the update check's
-                findings with the interfaces, sends audio to those that
-                ask, records it and the receiver's raw I/Q, and saves the
-                settings and the observations
+                findings with the interfaces, sends audio and the fine
+                spectrum to those that ask, records the audio and the
+                receiver's raw I/Q, and saves the settings and the
+                observations
   recordings.py the audio's WAV files and the raw I/Q's SigMF files, each
                 recording written by a thread of its own, their folder and
                 its list
@@ -1831,6 +1843,7 @@ src/radiolack/
                 the interfaces' own settings and their checks
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
+  fine.py       the fine spectrum of the VFO's channel, for the deep zoom
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you,
                 an R820T's or R828D's grid, and their raw samples for an I/Q
                 recording
@@ -1853,9 +1866,8 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 tools/          measure_pll.py: measures how well Radiolack labels an
-                R820T's samples; listening.py: the prototype of the
-                last listening tool to build, and measure_listening.py,
-                the cost of each; run from a checkout
+                R820T's samples; measure_listening.py: the cost of each
+                listening tool; run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,

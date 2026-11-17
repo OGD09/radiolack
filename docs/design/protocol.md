@@ -23,7 +23,7 @@ preferences apart from this computer's.
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
     "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
-    "measures": ["carrier", "driver_pll"]}
+    "measures": ["carrier", "driver_pll"], "spectra": ["fine"]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -47,7 +47,11 @@ preferences apart from this computer's.
    measure, below), and `driver_pll`, the check of the rtl-sdr driver's
    computation on that carrier (the driver's check, below). An engine
    older than the calibration sends no `measures`: it measures nothing;
-   one older than the driver's check lists `carrier` alone.
+   one older than the driver's check lists `carrier` alone. `spectra` lists
+   the spectra that the engine sends, besides the spectrum frames, to an
+   interface that asks: `fine`, the fine spectrum of the VFO's channel (the
+   fine frames, below). An engine older than the fine spectrum sends no
+   `spectra`: it sends none.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -114,7 +118,7 @@ preferences apart from this computer's.
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
    | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. In WFM, whose channel fills those bins, it takes the median of the bins from the channel's edge to 100 kHz beyond it, on the quieter side, as a neighbouring station may fill the other. |
    | `notch` | Whether the automatic notch is on: off by default, saved with the receiver's settings, kept across modes, and acting in AM, SAM, USB and LSB only, not in CW, whose signal is a steady tone, nor in NFM and WFM. While it acts it removes from the audio the lines that stand 15 dB or more over their surroundings, are at most 30 Hz wide, are found at every analysis, ten times a second, for half a second, and lie between 100 Hz and 5 kHz, four at most, those that stand highest first; each one leaves a second after it was last found. A bookmark does not carry it. |
-   | `blanker` | Whether the noise blanker is on: off by default, saved with the receiver's settings, kept across modes, and acting in every mode, on the samples that make the VFO's channel alone, before its filters. In each block of samples it zeroes the impulses, samples whose magnitude exceeds six times the block's median, estimated on every 16th sample, with two samples on each side, an impulse at a block's end reaching two samples into the next. Samples over that limit whose zeroed spans touch make one impulse; one that spans more than 16 samples is a signal, left as it is, and a block where impulses would zero more than 2% of its samples is left whole. The channel level, the squelch, SAM's search, the notch's analysis, the audio and its recordings take the blanked channel; the spectrum frames, the signals found, the scans' search, the carrier's measure, the driver's check and the I/Q recordings take the samples as received. A bookmark does not carry it. |
+   | `blanker` | Whether the noise blanker is on: off by default, saved with the receiver's settings, kept across modes, and acting in every mode, on the samples that make the VFO's channel alone, before its filters. In each block of samples it zeroes the impulses, samples whose magnitude exceeds six times the block's median, estimated on every 16th sample, with two samples on each side, an impulse at a block's end reaching two samples into the next. Samples over that limit whose zeroed spans touch make one impulse; one that spans more than 16 samples is a signal, left as it is, and a block where impulses would zero more than 2% of its samples is left whole. The channel level, the squelch, SAM's search, the notch's analysis, the audio and its recordings take the blanked channel; the spectrum frames, the fine frames, the signals found, the scans' search, the carrier's measure, the driver's check and the I/Q recordings take the samples as received. A bookmark does not carry it. |
    | `sam_locked` | In SAM, synchronous AM, whether it holds a carrier: true while a line within 1 kHz of the VFO, once held followed within 40 Hz of it, stands 10 dB or more over the noise within 80 Hz, sought ten times a second and judged on the mean of the latest five searches, a lock held staying down to 7 dB; false otherwise, when the audio is AM's envelope. Null in the other modes. The state is sent again whenever it changes, to every interface; it is the engine's, never saved, and found whether or not an interface asked for audio. |
    | `notch_lines` | While the notch acts, the lines it removes now, 0 to 4; null when it is off, in the modes where it does not act, and from an engine older than the notch. The engine finds them in the audio it makes: 0 while no interface asks for audio and nothing is recorded. The state is sent again whenever it changes, to every interface; it is the engine's, never saved. |
    | `blanker_impulses` | While the blanker is on, the impulses it zeroed in the latest second of samples, counted over the whole blocks that make it up and scaled to a second, 0 before the first second; null when it is off, and from an engine older than the blanker. It changes at most once a second, whether or not an interface asked for audio, and the state is sent again whenever it changes, to every interface; it is the engine's, never saved. |
@@ -504,7 +508,71 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
     and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-14. The observations, a JSON text message, to one interface only, when it
+14. Binary fine frames, about 10 per second, only to an interface that asked
+    for the fine spectrum (`fine` message): the spectrum of the VFO's
+    channel before the demodulator, at a few hertz per bin. Each frame has
+    the spectrum frames' 40-byte little-endian header, of another kind,
+    followed by one byte per bin:
+
+    | Offset | Type | Field |
+    | --- | --- | --- |
+    | 0 | uint8 | kind: 3, a fine frame |
+    | 1 | uint8 | fine format version: 1 |
+    | 2 | uint16 | flags: 0 |
+    | 4 | uint32 | sequence number, wrapping at 2^32 |
+    | 8 | float64 | centre frequency, Hz: the frequency on the air of the channel's 0 Hz, bin `n / 2` |
+    | 16 | float64 | width, Hz: the channel's rate on the air |
+    | 24 | float32 | level of code 0, dBFS |
+    | 28 | float32 | level step per code, dB |
+    | 32 | float32 | NaN: a fine frame carries no channel level |
+    | 36 | float32 | NaN: a fine frame carries no squelch threshold |
+    | 40 | uint8[] | one code per bin, lowest frequency first: 8192 |
+
+    As in a spectrum frame, with `n` bins, bin `i` is centred on
+    `centre - width / 2 + i * width / n`, and code `c` stands for
+    `level0 + c * step` dBFS, code 0 every lower level too; the levels are
+    the spectrum frames' (a full-scale tone centred on a bin reads 0 dBFS),
+    and so are `level0` and `step`.
+
+    The engine takes the channel from the demodulator's front filter, which
+    brings the VFO's neighbourhood to the channel's rate, before the mode's
+    filter: 48 kHz in every mode but WFM, 320 kHz in WFM, or within 0.5% of
+    it at an unusual sample rate, as the width tells. A bin is then 5.9 Hz
+    wide, or 39 Hz in WFM. The centre is the VFO's frequency, and in CW the
+    VFO's less the CW pitch, 700 Hz, where the channel's 0 Hz lies. Both
+    the centre's distance from the VFO and the width are scaled, as every
+    frequency on the air, when the receiver's samples are labelled with a
+    rate that differs from the rate asked (an R820T or R828D whose tuner is
+    placed on its grid, with a correction). The cover, where the front
+    filter passes the signal, is 0.4 times the width on each side of the
+    centre (19.2 kHz at 48 kHz, 128 kHz in WFM): flat to 16 kHz, 0.8 dB
+    down at 18 kHz and 3.1 dB at the edge at 48 kHz, within 0.1 dB in WFM;
+    the bins beyond it show the filter's stopband, not the air.
+
+    Each FFT is Hann-windowed, over 8192 samples of the channel (0.17 s at
+    48 kHz, 0.026 s in WFM), and a frame is the mean power of the FFTs that
+    ended since the previous frame: at 48 kHz one FFT every 4800 samples,
+    which overlap, a frame each; in WFM one every 8192 samples, three or
+    four to a frame. The first frame comes once 8192 samples came, 0.17 s
+    at 48 kHz, 0.1 s in WFM, then one every 0.1 s. A frame never mixes two
+    settings: a change of the VFO's frequency or mode, of the source's
+    settings, of DC removal (`dc_removal`) or of the source starts the FFTs
+    again, dropping the samples gathered, and the frames of a block
+    processed while such a change came are dropped. While the VFO moves,
+    as it does block after block during a drag, no frame comes; nor while
+    the VFO's channel receives nothing (the VFO outside the span, WFM below
+    320 kHz, or a sample rate below the channel's). With the noise blanker
+    (`blanker`), a fine frame shows the samples as received, as the
+    spectrum frames do.
+
+    The engine computes the fine spectrum only while at least one interface
+    asked for it, once for all of them, and every interface's frames take
+    the same sequence: a gap in it is frames dropped for a slow interface,
+    or sent while it had not asked. A remote client gets every frame, with
+    2048 bins, each the highest of the four it groups, so that narrow lines
+    stay visible.
+
+15. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -534,7 +602,7 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-15. The recordings, a JSON text message, to one interface only, when it
+16. The recordings, a JSON text message, to one interface only, when it
     asks for them or deleted one (`recordings` message): the latest 500
     recordings of the recordings folder, the newest first.
 
@@ -555,7 +623,7 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-16. A problem report, a JSON text message, to one interface of this
+17. A problem report, a JSON text message, to one interface of this
     computer only, when it asks for one (`report` message): what its user
     may share, or not, when Radiolack misbehaves (README.md, Problem
     reports).
@@ -570,7 +638,7 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-17. A carrier's measure, a JSON text message, to one interface only, when
+18. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
     channel, before the demodulator, and unblanked whether the noise
@@ -600,7 +668,7 @@ preferences apart from this computer's.
     and each receives it alone, with its own latest `id`; one that goes
     away stops waiting, and once none waits nothing more is measured.
 
-18. A driver's check, a JSON text message, to the interfaces that asked
+19. A driver's check, a JSON text message, to the interfaces that asked
     for it (`carrier` message with the action `identify`) only: which of
     the rtl-sdr driver's two computations an R820T's or R828D's PLL
     follows, or why none was named.
@@ -635,7 +703,7 @@ preferences apart from this computer's.
     receiver as it is back. An interface that goes away stops waiting;
     once none waits, the check stops.
 
-19. An error, to one interface only, when the engine refuses a message from
+20. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -649,9 +717,10 @@ found, the recording state, the storage state, the update state and remote
 access's state, each when it changed (and the preferences at the start),
 then the observations, the recordings, the reports, the carrier's
 measures, the driver's checks and errors, in the
-order of the messages they answer, then audio frames, then spectrum frames. A client
-that reads too slowly loses its oldest frames: the engine keeps the latest
-four spectrum frames and fifteen audio frames (half a second) for it and
+order of the messages they answer, then audio frames, then fine frames,
+then spectrum frames. A client that reads too slowly loses its oldest
+frames: the engine keeps the latest four spectrum frames, fifteen audio
+frames (half a second) and two fine frames (a fifth of a second) for it and
 never slows down for one client; it keeps its latest states, and up to
 eight observations, recordings, reports, carrier's measures, driver's
 checks and errors together. When
@@ -924,9 +993,9 @@ sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
-`observations`, `preferences`, `recording`, `recordings`, `carrier` and
-`audio` messages, but neither `update` nor `remote` messages, nor a `source`
-message that names `address`, nor a `recording` message that names
+`observations`, `preferences`, `recording`, `recordings`, `carrier`,
+`audio` and `fine` messages, but neither `update` nor `remote` messages,
+nor a `source` message that names `address`, nor a `recording` message that names
 `folder`: the engine refuses them with the error "only Radiolack's
 interface on the computer may change this". Its `preferences` are its
 device's own: they change neither this computer's nor another device's.
@@ -941,6 +1010,22 @@ are off when the stream opens:
 
 The engine demodulates audio only while at least one interface asked for it,
 but always measures the channel for the spectrum frames.
+
+A `fine` message starts or stops the fine frames for this interface; they
+are off when the stream opens:
+
+```json
+{"type": "fine", "on": true}
+```
+
+The engine computes the fine spectrum only while at least one interface
+asked for it, and forgets what it gathered once none does. Asking twice
+changes nothing, nor does stopping without having asked. A message
+without `on`, or whose `on` is not `true` or `false`, is refused with the
+error "the fine spectrum must be turned on or off: true or false", and one
+with another field with "unknown fine setting: …". An engine older than
+the fine spectrum refuses the message as one of an unknown type: an
+interface sends it only when the hello lists `fine` among its `spectra`.
 
 While an `rtl_sdr` or `rtl_tcp` source waits, changes are kept and sent when
 it connects. Until its first connection, and after a change of address, the
@@ -1025,7 +1110,11 @@ and later.
   or step is not a finite number; the rate and the step must also be
   positive. It ignores audio frames while it has not asked for audio, and
   those with an odd number of sample bytes or a rate that is not a positive
-  number. It ignores a source state, demodulation settings, bookmarks, a
+  number; fine frames while it has not asked for them, and those whose
+  centre, width, level or step is not a finite number, or whose width or
+  step is not positive. An interface older than the fine spectrum never
+  asks for fine frames, and would ignore them as frames of another kind.
+  It ignores a source state, demodulation settings, bookmarks, a
   scanner state, a list of signals found, observations, a recording state,
   recordings, a storage state, an update state or a remote access state
   with a missing or malformed field, apart from the recording state's
@@ -1069,6 +1158,9 @@ and later.
   the folder changes, and every 30 s while the menu shows and its page is
   visible; a recording that runs takes its length and size from the
   recording state.
+- An interface asks for the fine frames only when the hello lists `fine`
+  among its `spectra`, and asks again after a reconnection, as the engine
+  forgets what a stream asked when it closes.
 - The interface applies the preferences of its page's first connection
   only: after a reconnection, its own stand. It gives the engine its
   preferences within a second of a change, and when its page hides.
@@ -1209,6 +1301,13 @@ and later.
   every interface's. A reload brings a newer interface. A newer interface
   reads a demodulation state without `blanker`, an older engine's, as one
   without the blanker, and greys its box with a note.
+  Later that day, the fine spectrum (later-milestones.md, section 2, pull
+  request 5), without a new version: the hello's `spectra`, the `fine`
+  message and the fine frames, of kind 3. An older interface ignores
+  `spectra` and never sends `fine`, and so never receives a fine frame;
+  it would ignore one anyway, as it reads a binary frame by its kind and
+  drops the kinds it does not know. A newer interface asks only an engine
+  whose hello lists `fine`, so an older engine never receives `fine`.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

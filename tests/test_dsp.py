@@ -139,6 +139,52 @@ class FftFilterTest(unittest.TestCase):
         longer.set_taps(lowpass(0.1, 0.01, 1.0))
         self.assertEqual(len(longer.process(samples[4_000:])), 6_000)
 
+    def test_a_few_samples_filter_alone_as_among_zeros(self):
+        # The engine's front filters: 2.4 MS/s to 48 kHz and to WFM's
+        # 320 kHz, and 2.048 MS/s to 48 kHz, a fraction; blocks of every
+        # size, a few samples or many, the shift changed on the way.
+        rng = np.random.default_rng(3)
+        for rate, target, cutoff, transition in ((2.4e6, 48e3, 20e3, 8e3), (2.4e6, 320e3, 142.5e3, 35e3),
+                                                 (2.048e6, 48e3, 20e3, 8e3)):
+            with self.subTest(rate=rate, target=target):
+                up, down = rate_ratio(rate, target)
+                taps = lowpass(cutoff, transition, rate)
+                dense, sparse = FftFilter(taps, rate, up=up, down=down), FftFilter(taps, rate, up=up, down=down)
+                for index, (count, few) in enumerate(((80_000, 3), (7, 1), (1, 0), (80_001, 0), (30_000, 3_000),
+                                                      (999, 20), (0, 0), (80_000, 20), (50, 3))):
+                    if index == 4:
+                        dense.set_shift(31_234.5)
+                        sparse.set_shift(31_234.5)
+                    at = np.unique(rng.integers(0, max(count, 1), few)) if count else np.zeros(0, np.intp)
+                    samples = np.zeros(count, np.complex64)
+                    samples[at] = complex_noise(len(at))
+                    expected = dense.process(samples)
+                    got = sparse.process_sparse(count, at, samples[at])
+                    self.assertEqual(got.dtype, np.complex64)
+                    scale = max(1.0, float(np.abs(expected).max(initial=0)))
+                    np.testing.assert_allclose(got, expected, rtol=0, atol=1e-6 * scale)
+                # The same point of the stream: what follows filters the same way.
+                more = complex_noise(20_000)
+                np.testing.assert_allclose(sparse.process(more), dense.process(more), rtol=0, atol=1e-6)
+
+    def test_a_silent_copy_adds_to_the_filter_as_its_samples_add(self):
+        taps = lowpass(0.02, 0.01, 1.0)
+        filter_, whole = FftFilter(taps, 1.0, up=1, down=5), FftFilter(taps, 1.0, up=1, down=5)
+        for f in (filter_, whole):
+            f.set_shift(0.013)
+        first = complex_noise(10_000)
+        filter_.process(first)
+        whole.process(first)
+        copy = filter_.silent_copy()
+        self.assertFalse(np.any(copy._buffer))      # silence, where the filter remembers samples
+        self.assertTrue(np.any(filter_._buffer))
+        self.assertEqual(copy.shift_hz, 0.013)
+        base, extra = complex_noise(10_000), np.zeros(10_000, np.complex64)
+        extra[[10, 4_000, 9_999]] = 0.5
+        at = np.flatnonzero(extra)
+        summed = filter_.process(base) + copy.process_sparse(len(extra), at, extra[at])
+        np.testing.assert_allclose(summed, whole.process(base + extra), rtol=0, atol=1e-5)
+
     def test_refuses_raising_the_rate_and_empty_filters(self):
         with self.assertRaises(ValueError):
             FftFilter(np.ones(3), 1.0, up=2, down=1)
