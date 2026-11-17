@@ -20,7 +20,10 @@ spectrum shows around the VFO; it opens and closes in 5 ms fades, in step
 with the audio. The automatic notch, when on, in AM, SAM, USB and LSB,
 finds the steady lines in the detector's output (``AutoNotch``) and takes
 them out of the audio filter's response, the audio fading from the old
-taps to the new.
+taps to the new. The noise blanker, when on, in every mode, zeroes the
+short impulses of the receiver's samples before the front filter
+(``NoiseBlanker``): only the VFO's channel takes them blanked, and a
+carrier's measure, which taps the channel, takes it unblanked.
 """
 
 from __future__ import annotations
@@ -109,6 +112,12 @@ NOTCH_MOVE_HZ = 5.0                 # a notch follows its line once it moved thi
 # on each side, so that the filter's whole attenuation reaches the line.
 NOTCH_HALF_HZ = NOTCH_WIDTH_HZ / 2 + AUDIO_TRANSITION_HZ / 2
 NOTCH_FADE_S = FADE_S               # the audio fades from the old taps to the new over this
+# The noise blanker (later-milestones.md, section 2).
+BLANKER_FACTOR = 6.0                # samples over this many times the block's median magnitude are impulses
+BLANKER_SIDES = 2                   # samples zeroed on each side of an impulse
+BLANKER_STRIDE = 16                 # the block's median magnitude, from every 16th of its samples
+BLANKER_LONGEST = 16                # an impulse spans at most this many samples; longer, it is a signal
+BLANKER_MOST = 0.02                 # a block where more of its samples would be zeroed is left whole
 
 # Audio frame header, little-endian: kind, version, reserved, position of the
 # first sample (counted at the audio rate, modulo 2^32), audio rate (Hz);
@@ -128,6 +137,7 @@ class DemodSettings:
     squelch_db: float = -80.0       # the threshold set by hand
     squelch_auto: bool = True
     notch: bool = False             # the automatic notch, which acts in NOTCH_MODES only
+    blanker: bool = False           # the noise blanker, which acts in every mode
 
     def changed(self, changes: Mapping[str, object]) -> DemodSettings:
         """These settings with ``changes`` applied; raises ValueError, naming
@@ -157,6 +167,10 @@ class DemodSettings:
                 if not isinstance(value, bool):
                     raise ValueError("the notch must be true or false")
                 values[name] = value
+            elif name == "blanker":
+                if not isinstance(value, bool):
+                    raise ValueError("the noise blanker must be true or false")
+                values[name] = value
             else:
                 raise ValueError(f"unknown demodulator setting: {name}")
         low, high = width_range
@@ -167,7 +181,7 @@ class DemodSettings:
     def describe(self) -> dict[str, Any]:
         return {"frequency_hz": self.frequency_hz, "mode": self.mode,
                 "bandwidth_hz": self.bandwidth_hz, "squelch_db": self.squelch_db,
-                "squelch_auto": self.squelch_auto, "notch": self.notch}
+                "squelch_auto": self.squelch_auto, "notch": self.notch, "blanker": self.blanker}
 
     @property
     def notching(self) -> bool:
@@ -208,6 +222,7 @@ class Meter:
     open: bool
     sam_locked: bool | None = None  # in SAM, whether it holds a carrier; None in the other modes
     notch_lines: int | None = None  # while the notch acts, the lines it removes now; None otherwise
+    blanker_impulses: int | None = None     # with the blanker on, the impulses it zeroed in the latest second
 
 
 def has_channel(mode: str, rate_hz: float) -> bool:
@@ -395,6 +410,115 @@ class AutoNotch:
         return True
 
 
+class NoiseBlanker:
+    """Zeroes the impulses of the receiver's samples at ``rate_hz``, block
+    by block, before the VFO's channel is made of them.
+
+    An impulse is a short run of samples whose magnitude exceeds
+    ``BLANKER_FACTOR`` times the block's median magnitude: they are zeroed,
+    with ``BLANKER_SIDES`` samples on each side. Samples over the limit
+    whose zeroed spans touch make one impulse. So that a legitimate strong
+    signal is never blanked, an impulse that spans more than
+    ``BLANKER_LONGEST`` samples is a signal, such as a strong carrier keyed
+    on during the block, which its median does not hold, and is left as it
+    is; and a block where the impulses would zero more than
+    ``BLANKER_MOST`` of its samples, or than one impulse's reach in a block
+    of fewer than 1000 samples, is left whole, as what crosses the limit
+    that often is a signal or noise, not impulses. A signal that
+    fills half the block or more is the median; AM at 100% modulation
+    peaks at twice its carrier, FM's envelope is steady: neither crosses
+    the limit.
+
+    The median is that of every ``BLANKER_STRIDE``th sample, 5000 of a block
+    at 2.4 MS/s, which estimates the block's within about 1% for noise, far
+    finer than the factor of 6; a whole block's median took most of the
+    blanker's time (spike 8). The impulses are sought in the samples' real
+    and imaginary parts, which NumPy compares far faster than it computes
+    magnitudes: a magnitude over the limit has a part over the limit over
+    the square root of 2, and only the samples with such a part have their
+    magnitude computed. A block without an impulse is given back as it is,
+    not copied. A block whose median magnitude is 0, more than half of its
+    samples exact zeros, is left alone.
+
+    Across blocks: an impulse at the end of a block zeroes the first
+    samples of the next; one at the start of a block does not reach back
+    into the previous one, which the channel has taken, so at most
+    ``BLANKER_SIDES`` samples before it stay. Each block judges its own
+    part of a run over the limit: a strong signal that starts within the
+    last ``BLANKER_LONGEST`` samples of a block, or ends within the first
+    of one, loses those and ``BLANKER_SIDES`` more there, 18 samples at
+    most at such an edge, 7.5 µs at 2.4 MS/s.
+
+    ``impulses`` is the number zeroed in the latest block, and
+    ``per_second`` that of the latest second of samples, counted over the
+    whole blocks that make it up and scaled to a second: 0 before the
+    first second, it changes at most once a second. Not thread-safe."""
+
+    def __init__(self, rate_hz: float) -> None:
+        self.rate_hz = float(rate_hz)
+        self.impulses = 0
+        self.per_second = 0
+        self._pending = 0           # samples to zero at the start of the next block
+        self._counted = 0           # impulses in the second being counted
+        self._samples = 0           # samples of that second so far
+
+    def process(self, samples: np.ndarray) -> np.ndarray:
+        """``samples`` with their impulses zeroed: the same array when there
+        was nothing to zero, a new one otherwise."""
+        count = len(samples)
+        pending = min(self._pending, count)
+        self._pending -= pending
+        first, last = self._find(samples)
+        low = np.maximum(first - BLANKER_SIDES, 0)
+        high = np.minimum(last + BLANKER_SIDES, count - 1)
+        if int(np.sum(high - low + 1)) > max(BLANKER_MOST * count, BLANKER_LONGEST + 2 * BLANKER_SIDES):
+            low = high = np.zeros(0, np.intp)
+        self.impulses = len(low)
+        self._count(count)
+        if not len(low) and not pending:
+            return samples
+        blanked = samples.copy()
+        blanked[:pending] = 0
+        if len(low):
+            # Zeroed spans are apart from each other, each at most this long.
+            spans = low[:, np.newaxis] + np.arange(BLANKER_LONGEST + 2 * BLANKER_SIDES)
+            blanked[spans[spans <= high[:, np.newaxis]]] = 0
+            self._pending = max(self._pending, int(last[-1]) + BLANKER_SIDES + 1 - count)
+        return blanked
+
+    def _find(self, samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The first and the last sample over the limit of each impulse of
+        ``samples``, in order."""
+        none = np.zeros(0, np.intp)
+        if not len(samples):
+            return none, none
+        every = samples[::BLANKER_STRIDE]
+        median = float(np.median(every.real.astype(np.float64) ** 2 + every.imag.astype(np.float64) ** 2))
+        if not median > 0:          # silence, or samples that are not numbers
+            return none, none
+        limit = BLANKER_FACTOR ** 2 * median
+        parts = np.ascontiguousarray(samples, np.complex64).view(np.float32)
+        candidates = np.unique(np.flatnonzero(np.abs(parts) > math.sqrt(limit / 2)) // 2)
+        if not len(candidates):
+            return none, none
+        values = samples[candidates]
+        hits = candidates[values.real.astype(np.float64) ** 2 + values.imag.astype(np.float64) ** 2 > limit]
+        if not len(hits):
+            return none, none
+        apart = np.diff(hits) > 2 * BLANKER_SIDES + 1
+        first = hits[np.flatnonzero(np.concatenate(([True], apart)))]
+        last = hits[np.flatnonzero(np.concatenate((apart, [True])))]
+        short = last - first < BLANKER_LONGEST
+        return first[short], last[short]
+
+    def _count(self, count: int) -> None:
+        self._counted += self.impulses
+        self._samples += count
+        if self._samples >= self.rate_hz:
+            self.per_second = round(self._counted * self.rate_hz / self._samples)
+            self._counted = self._samples = 0
+
+
 class Demodulator:
     """Turns blocks of receiver samples into a channel level, a squelch
     state and audio. Not thread-safe: one block at a time."""
@@ -413,6 +537,10 @@ class Demodulator:
         self._open = False
         self._audio: _AudioPath | None = None
         self._search: CarrierSearch | None = None   # in SAM, with or without audio
+        self._blanker: NoiseBlanker | None = None   # while the noise blanker is on
+        # While the blanker is on and the channel is tapped: the front and
+        # channel filters of the unblanked samples, which the tap takes.
+        self._unblanked: tuple[FftFilter, FftFilter] | None = None
         self.position = 0                   # audio samples sent, modulo 2^32
 
     @property
@@ -431,25 +559,54 @@ class Demodulator:
         receiver slower than the channel rate gives no meter, no audio and
         no channel. In SAM the carrier is sought with or without audio, so
         that the meter says whether SAM holds one. The notch reads the
-        audio path's detector: without audio it removes nothing."""
+        audio path's detector: without audio it removes nothing. The noise
+        blanker, in every mode, acts on the samples before the channel is
+        made of them, with or without audio, so the meter, the squelch and
+        SAM's search take the blanked channel; ``tap`` takes the channel of
+        the samples as received, through filters of its own while the
+        blanker is on and has blanked since the tap began."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
         if self._front is None or self._channel is None:
             return Meter(None, None, False), None       # too slow a receiver for a channel
+        if settings.blanker:
+            if self._blanker is None:
+                self._blanker = NoiseBlanker(rate_hz)
+            blanked = self._blanker.process(samples)
+        else:
+            self._blanker = None
+            blanked = samples
         shift_hz = settings.frequency_hz - centre_hz
-        self._front.set_shift(shift_hz - vfo_position_hz(settings.mode))
+        front_shift_hz = shift_hz - vfo_position_hz(settings.mode)
+        self._front.set_shift(front_shift_hz)
         key = (settings.mode, settings.bandwidth_hz, self.channel_rate_hz)
+        taps: np.ndarray | None = None
         if key != self._channel_key:
             taps = channel_taps(settings.mode, settings.bandwidth_hz, self.channel_rate_hz)
             self._channel.set_taps(taps)
             self._channel_key = key
             self._noise_bandwidth_hz = float(np.sum(np.abs(taps) ** 2)) * self.channel_rate_hz
-        channel = self._channel.process(self._front.process(samples))
-        if not abs(shift_hz) <= rate_hz / 2:
-            channel = np.zeros_like(channel)    # the VFO lies outside the received band
+        if tap is None or not settings.blanker:
+            self._unblanked = None
+        elif self._unblanked is not None:
+            self._unblanked[0].set_shift(front_shift_hz)
+            if taps is not None:
+                self._unblanked[1].set_taps(taps)
+        elif blanked is not samples:
+            # Until now the channel's filters took the samples as received:
+            # from here on, copies of them go on doing so for the tap.
+            self._unblanked = (copy.deepcopy(self._front), copy.deepcopy(self._channel))
+        received = abs(shift_hz) <= rate_hz / 2         # false: the VFO lies outside the received band
+        channel = self._channel.process(self._front.process(blanked))
+        if not received:
+            channel = np.zeros_like(channel)
         if tap is not None:
-            tap(channel)
+            if self._unblanked is None:
+                tap(channel)
+            else:
+                unblanked = self._unblanked[1].process(self._unblanked[0].process(samples))
+                tap(unblanked if received else np.zeros_like(unblanked))
 
         power = channel.real.astype(np.float64) ** 2 + channel.imag.astype(np.float64) ** 2
         mean = float(power.mean()) if len(power) else 0.0
@@ -469,9 +626,10 @@ class Demodulator:
         else:
             self._search = None
 
+        impulses = None if self._blanker is None else self._blanker.per_second
         if not audio:
             self._audio = None
-            return Meter(level_db, threshold, self._open, locked, 0 if settings.notching else None), None
+            return Meter(level_db, threshold, self._open, locked, 0 if settings.notching else None, impulses), None
         if self._audio is None or self._audio.mode != settings.mode:
             self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation, self._search,
                                      settings.notch)
@@ -480,7 +638,8 @@ class Demodulator:
         sound = self._audio.process(channel, power, gate)
         pcm = np.clip(np.rint(sound * 32767), -32768, 32767).astype("<i2")
         notches = self._audio.notches
-        return Meter(level_db, threshold, self._open, locked, None if notches is None else len(notches)), pcm
+        return Meter(level_db, threshold, self._open, locked, None if notches is None else len(notches),
+                     impulses), pcm
 
     def encode_audio(self, pcm: np.ndarray) -> bytes:
         """An audio frame (docs/design/protocol.md) for samples that follow the previous ones."""
@@ -492,6 +651,9 @@ class Demodulator:
         """New receiver rate, or into or out of WFM: a new front filter, and
         new channel and audio filters if the channel rate changes with it. A
         receiver slower than the channel rate gives no channel at all."""
+        if rate_hz != self._rate_hz:
+            self._blanker = None        # its impulses counted at the old rate
+        self._unblanked = None          # a new front filter
         self._rate_hz, self._wide = rate_hz, wide
         target_hz = WFM_CHANNEL_RATE_HZ if wide else CHANNEL_RATE_HZ
         self._decimation = WFM_AUDIO_DECIMATION if wide else AUDIO_DECIMATION

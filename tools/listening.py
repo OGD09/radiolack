@@ -1,93 +1,33 @@
-"""Prototypes of the listening tools (later-milestones.md, section 2), for
-the spike that measures their cost (`tools/measure_listening.py`) and as the
-starting point of the pull requests that build them for good.
+"""Prototype of the last listening tool still to build (later-milestones.md,
+section 2), for the spike that measures the tools' cost
+(`tools/measure_listening.py`) and as the starting point of the pull request
+that builds it for good.
 
-Each one is written as the design says and as it could move into the
-package: vectorised NumPy, block by block, with no loop per sample, and no
-knowledge of the engine, the stream or the interface. Synchronous AM and
-the automatic notch moved into the package with their pull requests:
-demod.py's ``CarrierSearch`` and ``SyncDetector``, the SAM mode, and
-``AutoNotch``, the demodulation settings' ``notch``, which the measure takes
-from there.
+It is written as the design says and as it could move into the package:
+vectorised NumPy, block by block, with no loop per sample, and no knowledge
+of the engine, the stream or the interface. Synchronous AM, the automatic
+notch and the noise blanker moved into the package with their pull
+requests: demod.py's ``CarrierSearch`` and ``SyncDetector``, the SAM mode,
+``AutoNotch``, the demodulation settings' ``notch``, and ``NoiseBlanker``,
+their ``blanker``, which the measure takes from there.
 
-- ``NoiseBlanker``: on the samples that go to the VFO's channel, those over
-  six times the block's median magnitude are zeroed, with two samples on
-  each side.
 - ``FineSpectrum``: FFTs of 8192 bins of the VFO's channel before the
   demodulator, about ten frames a second, each the mean of those since the
   last.
 
-They live in `tools/` until their pull requests move them: the Debian
-package and pip take `src/radiolack` alone.
+It lives in `tools/` until its pull request moves it: the Debian package
+and pip take `src/radiolack` alone.
 """
 
 from __future__ import annotations
-
-import math
 
 import numpy as np
 
 from radiolack.dsp import hann
 
-# The noise blanker.
-BLANKER_FACTOR = 6.0        # samples over this many times the block's median magnitude are impulses
-BLANKER_SIDES = 2           # samples zeroed on each side of one
-BLANKER_STRIDE = 16         # the block's median magnitude, from every 16th of its samples
-
 # The fine spectrum.
 FINE_SIZE = 8192
 FINE_FRAME_RATE = 10.0      # frames a second, about
-
-
-class NoiseBlanker:
-    """Zeroes the impulses of the samples that go to the VFO's channel:
-    those whose magnitude exceeds ``BLANKER_FACTOR`` times the block's
-    median, with ``BLANKER_SIDES`` samples on each side.
-
-    The median is that of every ``BLANKER_STRIDE``th sample, 5000 of a block
-    at 2.4 MS/s, which estimates the block's within about 1% for noise, far
-    finer than the factor of 6; a whole block's median took most of the
-    blanker's time. The impulses are sought in the samples' real and
-    imaginary parts, which NumPy compares far faster than it computes
-    magnitudes: a magnitude over the limit has a part over the limit over
-    the square root of 2, and only the samples with such a part have their
-    magnitude computed.
-
-    An impulse at the end of a block zeroes the first samples of the next;
-    one at the start of a block does not reach back into the previous one,
-    which has gone. A block whose median magnitude is 0, more than half of
-    its samples exact zeros, is left alone. Not thread-safe."""
-
-    def __init__(self) -> None:
-        self._pending = 0           # samples to zero at the start of the next block
-
-    def process(self, samples: np.ndarray) -> np.ndarray:
-        """``samples`` with their impulses zeroed: the same array when none
-        was found, a new one otherwise."""
-        count = len(samples)
-        pending, self._pending = min(self._pending, count), max(0, self._pending - count)
-        if not count:
-            return samples
-        every = samples[::BLANKER_STRIDE]
-        median = float(np.median(every.real.astype(np.float64) ** 2 + every.imag.astype(np.float64) ** 2))
-        hits = np.zeros(0, np.intp)
-        if median > 0:
-            limit = BLANKER_FACTOR ** 2 * median
-            parts = np.ascontiguousarray(samples, np.complex64).view(np.float32)
-            candidates = np.unique(np.flatnonzero(np.abs(parts) > math.sqrt(limit / 2)) // 2)
-            if len(candidates):
-                values = samples[candidates]
-                hits = candidates[values.real.astype(np.float64) ** 2 + values.imag.astype(np.float64) ** 2 > limit]
-        if not len(hits) and not pending:
-            return samples
-        blanked = samples.copy()
-        blanked[:pending] = 0
-        if len(hits):
-            reach = np.arange(-BLANKER_SIDES, BLANKER_SIDES + 1)
-            zeroed = (hits[:, np.newaxis] + reach).ravel()
-            blanked[zeroed[(zeroed >= 0) & (zeroed < count)]] = 0
-            self._pending = max(self._pending, int(hits[-1]) + BLANKER_SIDES + 1 - count)
-        return blanked
 
 
 class FineSpectrum:

@@ -1,9 +1,10 @@
-"""Tests for the listening tools' prototypes (tools/listening.py), each on
-synthetic signals that exercise it, and for the tool that measures their
-cost (tools/measure_listening.py), whose figures they leave alone: they
-depend on the computer, the tests on nothing but the samples. Synchronous
-AM and the automatic notch, in the package, have their own tests
-(test_sam.py, test_notch.py)."""
+"""Tests for the prototype of the last listening tool to build
+(tools/listening.py), the fine spectrum, on synthetic signals that exercise
+it, and for the tool that measures the listening tools' cost
+(tools/measure_listening.py), whose figures they leave alone: they depend
+on the computer, the tests on nothing but the samples. Synchronous AM, the
+automatic notch and the noise blanker, in the package, have their own
+tests (test_sam.py, test_notch.py, test_blanker.py)."""
 
 import importlib.util
 import io
@@ -15,6 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+
+from radiolack.demod import NoiseBlanker
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -44,44 +47,6 @@ def noise(rng, count, rms):
 
 def blocks(signal, size=BLOCK):
     return (signal[start:start + size] for start in range(0, len(signal), size))
-
-
-class NoiseBlankerTest(unittest.TestCase):
-    def test_impulses_go_with_two_samples_on_each_side_and_nothing_else(self):
-        rng = np.random.default_rng(7)
-        signal = noise(rng, 20_000, 0.01).astype(np.complex64)
-        hit = signal.copy()
-        for at in (100, 5_000, 12_345):
-            hit[at:at + 3] = 0.5
-        blanker = listening.NoiseBlanker()
-        blanked = blanker.process(hit)
-        expected = signal.copy()
-        for at in (100, 5_000, 12_345):
-            expected[at - 2:at + 5] = 0
-        np.testing.assert_array_equal(blanked, expected)
-        self.assertEqual(hit[100], 0.5)         # the samples given stay as they were
-
-    def test_a_block_without_impulses_is_untouched(self):
-        rng = np.random.default_rng(8)
-        t = np.arange(20_000) / 2.4e6
-        # Noise, and a carrier far stronger than the noise: its magnitude is the median.
-        for signal in (noise(rng, 20_000, 0.01), 0.3 * np.exp(2j * np.pi * 1e5 * t) + noise(rng, 20_000, 0.01),
-                       np.zeros(20_000)):
-            signal = signal.astype(np.complex64)
-            with self.subTest(rms=float(np.std(signal))):
-                self.assertIs(listening.NoiseBlanker().process(signal), signal)
-
-    def test_an_impulse_at_a_blocks_end_reaches_the_next(self):
-        rng = np.random.default_rng(9)
-        first = noise(rng, 1_000, 0.01).astype(np.complex64)
-        second = noise(rng, 1_000, 0.01).astype(np.complex64)
-        first[-1] = 0.5
-        blanker = listening.NoiseBlanker()
-        self.assertFalse(np.any(blanker.process(first)[-3:]))
-        after = blanker.process(second)
-        self.assertFalse(np.any(after[:2]))
-        np.testing.assert_array_equal(after[2:], second[2:])
-        self.assertIs(blanker.process(second), second)
 
 
 class FineSpectrumTest(unittest.TestCase):
@@ -148,6 +113,17 @@ class MeasureTest(unittest.TestCase):
         starts = [at - size for at in range(size, 2 * size) if at % period == 0]
         self.assertEqual(impulses.tolist(), [start + k for start in starts for k in range(3)])
 
+    def test_the_scene_without_impulses_is_the_same_less_them(self):
+        size = measuring.block_size()
+        scene, quiet = measuring.Scene(1), measuring.Scene(1, impulses=False)
+        with_them, without = scene.block(size, size), quiet.block(size, size)
+        magnitude = np.abs(without)
+        self.assertFalse(np.any(magnitude > 6 * np.median(magnitude)))
+        differ = np.flatnonzero(with_them != without)
+        period = round(measuring.IMPULSE_PERIOD_S * measuring.RATE_HZ)
+        self.assertEqual(differ.tolist(), [at - size + k for at in range(size, 2 * size) if at % period == 0
+                                           for k in range(measuring.IMPULSE_SAMPLES)])
+
     def test_a_short_run_writes_its_table_with_every_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "table.md"
@@ -169,9 +145,25 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(len([line for line in text.splitlines() if line[:4] in ("| 1 ", "| 2 ")]), 2)
         self.assertIn("Python ", text)
         self.assertIn("NumPy ", text)
+        self.assertIn("The scene with its impulses, three samples every 10 ms.", text)
+
+    def test_without_impulses_the_blanker_finds_none(self):
+        out, err = io.StringIO(), io.StringIO()
+        status = measuring.main(["--runs", "1", "--seconds", "0.1", "--warmup-s", "0.2", "--without-impulses"],
+                                out, err)
+        self.assertEqual(status, measuring.EXIT_DONE, err.getvalue())
+        self.assertIn("The scene without impulses.", out.getvalue())
+        self.assertIn("The blanker zeroed impulses in 0 of", out.getvalue())
 
     def test_the_tools_work_where_the_measure_puts_them(self):
         run = measuring.measure(measuring.Scene(2), 0.1, 1.0)
+        # The package's blanker, as the VFO's setting: no second copy.
+        self.assertFalse(hasattr(listening, "NoiseBlanker"))
+        pipeline = measuring.Pipeline(frozenset({"blanker"}))
+        pipeline.process(measuring.Scene(2).block(0, measuring.block_size()))
+        self.assertTrue(pipeline.settings.blanker)
+        self.assertIsInstance(pipeline.demodulator._blanker, NoiseBlanker)
+        self.assertGreater(pipeline.demodulator._blanker.impulses, 0)
         activity = run.activity
         self.assertGreater(activity["sam"].locked, 0)
         self.assertGreater(activity["notch"].notches, 0)

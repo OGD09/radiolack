@@ -4,9 +4,9 @@ receiver at 2.4 MS/s: later-milestones.md, section 2, pull request 1, and
 spike 8 of scoping.md.
 
 The tools are synchronous AM, the package's SAM mode (demod.py) since its
-pull request, the automatic notch, the package's too since its own (the
-demodulation settings' ``notch``), and the prototypes of
-`tools/listening.py`: the noise blanker and the fine spectrum. The tool feeds
+pull request, the automatic notch and the noise blanker, the package's too
+since their own (the demodulation settings' ``notch`` and ``blanker``), and
+the prototype of `tools/listening.py`, the fine spectrum. The tool feeds
 the engine's own block processing (``engine._process_block``: DC removal,
 display spectrum, detection, the VFO's channel, its meter and its audio)
 with synthetic samples, in the engine's block size, 1/30 s of samples,
@@ -22,10 +22,10 @@ reports for each tool the median of what it added per second of signal,
 as a percentage of one core, with the lowest and the highest, against the
 rule fixed beforehand: 1.5% for each, 6% together.
 
-The tools sit where the design puts them, SAM as the VFO's mode and the
-notch as its setting, the prototypes through subclasses in this file, so
-that the engine's code stays as it is: the blanker on the samples that the
-demodulator receives, after the display spectrum has read them; SAM in
+The tools sit where the design puts them, SAM as the VFO's mode, the notch
+and the blanker as its settings, the prototype through a subclass in this
+file, so that the engine's code stays as it is: the blanker on the samples
+that the demodulator receives, after the display spectrum has read them; SAM in
 place of the AM detector in the audio path, with the same delay, and its
 search for the carrier on the channel; the notch reading the detector's
 output and changing the audio filter's taps;
@@ -37,10 +37,11 @@ The signal: white noise at -40 dBFS, an AM station 300 kHz from the centre
 frequency, 150 Hz off the VFO, modulated at 50% by a voice-like sound,
 with a carrier that fades alone (selective fading) and a whole signal that
 fades too, a steady carrier 1 kHz above the station's, which whistles in
-its audio, and impulses of three samples every 10 ms at -6 dBFS. The VFO
-is in AM with its 8 kHz filter, or in SAM with the same filter for
-synchronous AM, the audio on and detection on, as an interface listening
-would have them.
+its audio, and impulses of three samples every 10 ms at -6 dBFS, which
+``--without-impulses`` leaves out, the usual case for the blanker: it then
+finds none and copies nothing. The VFO is in AM with its 8 kHz filter, or
+in SAM with the same filter for synchronous AM, the audio on and detection
+on, as an interface listening would have them.
 
 It needs no receiver and no network, and runs from a checkout of the
 repository; the Debian package does not install it.
@@ -107,9 +108,10 @@ class Scene:
     """The synthetic samples, computed from the sample's index, so that
     any block can be made on its own: deterministic for a seed."""
 
-    def __init__(self, seed: int, rate_hz: float = RATE_HZ) -> None:
+    def __init__(self, seed: int, rate_hz: float = RATE_HZ, impulses: bool = True) -> None:
         self.seed = seed
         self.rate_hz = rate_hz
+        self.impulses = impulses
 
     def block(self, start: int, count: int) -> np.ndarray:
         t = (start + np.arange(count)) / self.rate_hz
@@ -126,7 +128,7 @@ class Scene:
         samples += whistle * np.exp(2j * np.pi * (offset_hz + WHISTLE_HZ) * t + 1.0j)
         period = round(IMPULSE_PERIOD_S * self.rate_hz)
         first = -(-start // period) * period
-        for at in range(first, start + count, period):
+        for at in range(first, start + count, period) if self.impulses else ():
             stop = min(at + IMPULSE_SAMPLES, start + count)
             samples[at - start:stop - start] += 10 ** (IMPULSE_DBFS / 20) * np.exp(1j * (at % 7))
         return samples.astype(np.complex64)
@@ -170,15 +172,14 @@ class Activity:
 
 
 class ToolDemodulator(Demodulator):
-    """The engine's demodulator with the prototypes of the listening tools
-    where the design puts them; SAM and the notch are its own, through the
-    mode and the setting."""
+    """The engine's demodulator with the prototype of the fine spectrum
+    where the design puts it; SAM, the notch and the blanker are its own,
+    through the mode and the settings."""
 
     def __init__(self, tools: frozenset[str]) -> None:
         super().__init__()
         self.tools = tools
         self.activity = Activity()
-        self._blanker = listening.NoiseBlanker() if "blanker" in tools else None
         self._fine = listening.FineSpectrum() if "fine" in tools else None
 
     def _start(self, rate_hz: float, wide: bool) -> None:
@@ -193,11 +194,8 @@ class ToolDemodulator(Demodulator):
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool,
                 tap: Callable[[np.ndarray], None] | None = None) -> tuple[Any, np.ndarray | None]:
-        if self._blanker is not None:
-            blanked = self._blanker.process(samples)
-            self.activity.blanked += blanked is not samples
-            samples = blanked
         meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap)
+        self.activity.blanked += self._blanker is not None and self._blanker.impulses > 0
         self.activity.blocks += 1
         self.activity.locked += bool(meter.sam_locked)
         self.activity.notches = max(self.activity.notches, meter.notch_lines or 0)
@@ -214,7 +212,7 @@ class Pipeline:
         self.watch = ChannelWatch()
         mode = SAM_MODE if "sam" in tools else MODE
         self.settings = DemodSettings(CENTRE_HZ + VFO_OFFSET_HZ, mode, MODE_BANDWIDTHS_HZ[mode],
-                                      notch="notch" in tools)
+                                      notch="notch" in tools, blanker="blanker" in tools)
 
     def process(self, samples: np.ndarray) -> int:
         """Process one block as the engine does; the processor time it took, in ns."""
@@ -320,6 +318,8 @@ def report(runs: Sequence[Run], options: argparse.Namespace, started: datetime, 
         f"- Engine block: {block_size()} samples at {RATE_HZ / 1e6:g} MS/s ({FRAME_RATE:g} blocks a second);"
         f" the VFO in {MODE} ({SAM_MODE} for synchronous AM), {MODE_BANDWIDTHS_HZ[MODE] / 1e3:g} kHz, audio and"
         " detection on.",
+        "- The scene " + ("with its impulses, three samples every"
+                          f" {IMPULSE_PERIOD_S * 1e3:g} ms." if options.impulses else "without impulses."),
         "- Processor time of the processing thread per second of signal, in % of one core:"
         " the median of the runs, then the lowest and the highest.",
         "",
@@ -366,15 +366,17 @@ def positive(kind: type) -> Callable[[str], Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Measure the processor time that each listening tool (SAM and the notch, then the"
-                    " prototypes of tools/listening.py) adds to the engine's processing of one receiver at 2.4 MS/s, on"
-                    " synthetic samples. No receiver, no network.")
+        description="Measure the processor time that each listening tool (SAM, the notch and the noise"
+                    " blanker, then the prototype of tools/listening.py) adds to the engine's processing of one"
+                    " receiver at 2.4 MS/s, on synthetic samples. No receiver, no network.")
     parser.add_argument("--runs", type=positive(int), default=7, help="runs, each with fresh state (default 7)")
     parser.add_argument("--seconds", type=positive(float), default=10.0,
                         help="seconds of signal timed in each run (default 10)")
     parser.add_argument("--warmup-s", type=positive(float), default=2.0,
                         help="seconds of signal processed first in each run, not timed (default 2)")
     parser.add_argument("--seed", type=int, default=1, help="the synthetic signal's seed (default 1)")
+    parser.add_argument("--without-impulses", dest="impulses", action="store_false",
+                        help="leave the impulses out of the scene, the usual case for the noise blanker")
     parser.add_argument("--output", type=Path, help="also write the table to this file")
     return parser
 
@@ -383,7 +385,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout, err: TextI
     options = build_parser().parse_args(argv)
     started = datetime.now(timezone.utc)
     first_load = load()
-    scene = Scene(options.seed)
+    scene = Scene(options.seed, impulses=options.impulses)
     runs = []
     try:
         for number in range(1, options.runs + 1):

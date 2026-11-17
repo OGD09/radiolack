@@ -374,6 +374,90 @@ or settles what it left open:
   each of the scene's four changes in ten seconds, adds about 0.05%, and
   the rest of the difference between the measures is theirs.
 
+As built in pull request 4, the noise blanker, where it departs from the
+prototype or settles what it left open:
+
+- **The blanker lives in `demod.py`**: `NoiseBlanker` is the prototype's,
+  with the two bounds below and a count, and the demodulator runs it on
+  the samples it receives, after the display's FFT has read them, where
+  the prototype was measured, while the demodulation settings' `blanker`
+  is on. `tools/listening.py` keeps no copy, and
+  `tools/measure_listening.py` measures it as the VFO's setting, and
+  without the scene's impulses with `--without-impulses`.
+- **Every mode, WFM included.** Nothing argued against WFM: broadcast FM's
+  envelope is steady and never crosses six times the median, and a
+  station's neighbours in the span cross it no more. On impulses over a
+  weak signal the tests take the audio's error down by more than 15 dB in
+  each of the seven modes (21 to 60 dB on the test signals), while a
+  signal without impulses comes out the same sample for sample.
+- **A strong signal is not an impulse.** The rule alone blanks a strong
+  signal that fills less than half a block, whose median is then the
+  noise's: a carrier keyed on during a block lost every sample it had
+  there, up to 16 ms. Two bounds, which the tests check on a carrier keyed
+  abruptly 7 ms in 23 at 34 dB over the noise, an AM station at full
+  modulation, with a tone and with a voice-like sound, and a broadcast FM
+  station with three neighbours, none of which loses a sample: samples
+  over the limit whose zeroed spans touch make one impulse, and one that
+  spans more than 16 samples is a signal, left as it is; and a block where
+  the impulses would zero more than 2% of its samples, or more than one
+  impulse's reach in a block of fewer than 1000, is left whole. The
+  fraction blanked is then at most 2% of a block, plus the two samples
+  that an impulse at the end of the block before reaches; a strong signal
+  that starts within the last 16 samples of a block, or ends within the
+  first 16 of one, loses those and two more, 7.5 µs at 2.4 MS/s.
+- **Across blocks**, as the prototype: an impulse at a block's end zeroes
+  the next block's first two samples; one at a block's start does not
+  reach back into the block before, which the channel's filters took
+  already. Reaching back would delay every block by two samples, and copy
+  every one, where a block without an impulse is not copied.
+- **Calibrate's measure and the driver's check take the channel
+  unblanked.** Where the prototype sat, they read the blanked samples. A
+  measure must not change with a listening setting: blanking leaves a
+  carrier where it is, but impulses raise the noise within the filter, and
+  blanking them raised a measured margin by about 9 dB in the tests,
+  enough for the same carrier to pass the measure's 20 dB with the blanker
+  and fail it without. While the blanker is on and a measure or a check
+  runs, the demodulator keeps copies of its front and channel filters,
+  made at the first block blanked since the measure began, which filter
+  the samples as received for the measure: a second pair of filters for
+  the measure's few seconds, or the check's ten. Until a block is blanked
+  the measure takes the channel itself, which is then the same. The tests
+  check the measure's channel bit for bit against the blanker off, from
+  the block after the copies' first (that block's filters remember the
+  blanked block before the measure, a few hundred microseconds), and
+  through the engine a measure's margin and every point of a check
+  within 1 dB and 1.5 dB of the measure without the blanker, while the
+  blanked channel's would be 8.7 and 9 dB higher.
+- **What takes the blanked channel**: the channel level, the S-meter and
+  the squelch, which crackle no longer opens; SAM's search, the notch's
+  analysis, the audio and its recordings. The memory scan holds on a
+  channel while the VFO's squelch is open, which crackle then no longer
+  holds; its search of the channels, as detection and the display, reads
+  the spectrum of the samples as received, as do the I/Q recordings.
+- **The state's `blanker_impulses`**, null while the blanker is off, is
+  the impulses zeroed in the latest second of samples, the whole blocks
+  that make it up scaled to a second: a count rather than a flag, which
+  tells the user how thick the crackle is and that the blanker catches
+  it, and a second rather than a block, so that the state changes at most
+  once a second. It is found with or without audio, as the blanker acts
+  on the channel itself. Over 60 s of samples at 2.4 MS/s through the
+  demodulator, impulses every 10 ms, the measure's, changed it once, from
+  0 to 100, and impulses every 7.3 ms, out of step with the seconds,
+  once too, from 0 to 137: the count scaled to a second rounds away the
+  impulse more or less that a second's blocks catch. Random crackle can
+  change it every second, never more often.
+- **Its cost** is spike 8's. The measure, run on the owner's laptop
+  before the move under a light load (load average 0.5 at the start, 1.3
+  at the end), gave the prototype 1.24% of one core over a baseline of
+  11.28%, an eleventh; after it (0.4, then 1.5), the package's blanker
+  1.38% over 11.02%, an eighth, against spike 8's 1.40% over 12.54% and
+  1.54% over 12.71%. The impulses' grouping and the count add little to
+  the prototype's work, within what the runs spread. Without the scene's
+  impulses, the usual case, the blanker added 0.90% over 10.96% (load
+  average 1.5 to 1.6), a twelfth: the median and the search for impulses
+  remain, the copy of the block goes. The tables are in the pull
+  request.
+
 ### Pull requests
 
 1. The spike and its figures.
@@ -395,7 +479,10 @@ voice; the blanker thins a crackle; and the zoom goes on to less than
 - The fine spectrum covers 19 kHz on each side of the VFO, no more.
 - The notch does not act in CW, where the signal is a steady tone, nor in
   NFM and WFM.
-- The blanker's threshold is fixed.
+- The blanker's threshold is fixed, against the median of the whole span
+  that the receiver takes in; it removes impulses of 16 samples at most,
+  in blocks where they take 2% of the samples at most, and nothing of a
+  steady noise.
 
 Set aside: a manual notch, a blanker strength, SAM on one sideband, noise
 reduction.

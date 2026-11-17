@@ -75,6 +75,10 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  *   and LSB only; null from an engine older than the notch
  * @property {number | null} notchLines  while the notch acts, the lines it removes now, 0 to 4;
  *   null otherwise
+ * @property {boolean | null} blanker  whether the noise blanker is on, which acts in every mode;
+ *   null from an engine older than the blanker
+ * @property {number | null} blankerImpulses  while the blanker is on, the impulses it zeroed in the
+ *   latest second; null otherwise
  */
 
 /**
@@ -86,6 +90,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [squelchDb]
  * @property {boolean} [squelchAuto]
  * @property {boolean} [notch]
+ * @property {boolean} [blanker]
  */
 
 /**
@@ -513,6 +518,8 @@ export function decodeDemod(message) {
     samLocked: typeof m.sam_locked === 'boolean' ? m.sam_locked : null,
     notch: typeof m.notch === 'boolean' ? m.notch : null,
     notchLines: Number.isSafeInteger(m.notch_lines) && m.notch_lines >= 0 ? m.notch_lines : null,
+    blanker: typeof m.blanker === 'boolean' ? m.blanker : null,
+    blankerImpulses: Number.isSafeInteger(m.blanker_impulses) && m.blanker_impulses >= 0 ? m.blanker_impulses : null,
     acknowledged: m.acknowledged,
   };
 }
@@ -1070,6 +1077,7 @@ export class EngineStream {
     if (changes.squelchDb !== undefined) message.squelch_db = changes.squelchDb;
     if (changes.squelchAuto !== undefined) message.squelch_auto = changes.squelchAuto;
     if (changes.notch !== undefined) message.notch = changes.notch;
+    if (changes.blanker !== undefined) message.blanker = changes.blanker;
     if (!this.#send(message)) return false;
     this.#lastChangeId += 1;
     this.#awaitedId = this.#lastChangeId;
