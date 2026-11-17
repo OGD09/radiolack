@@ -229,6 +229,15 @@ the history under the tag `v0.1.0`.
   moving only the centre frequency and the tuner's grid (`tuner_grid`,
   never saved), which it restores, and names the driver's computation to
   choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
+  `listening.py` (later-milestones.md, section 2) holds the prototypes of
+  the listening tools, synchronous AM, the automatic notch, the noise
+  blanker and the fine spectrum, which the pull requests that build them
+  move into the package; `measure_listening.py` (spike 8) times the
+  engine's block processing on synthetic samples at 2.4 MS/s without them,
+  with each and with the four, through subclasses of the demodulator that
+  put them where the design does, needing no receiver;
+  `tests/test_listening.py` checks each prototype on synthetic signals and
+  runs the measure briefly, never reading its figures.
 
 ## Commands
 
@@ -255,6 +264,10 @@ the history under the tag `v0.1.0`.
   conversation, against the Radiolack the owner started on the receiver:
   `python3 tools/measure_pll.py PORT [--output FILE]` (its `--help` says
   what to set first). It tunes that receiver.
+- Listening tools' cost: `python3 tools/measure_listening.py [--runs N]
+  [--seconds S] [--output FILE]`, synthetic samples only; about three
+  minutes with its defaults. Figures depend on the computer's other work:
+  compare configurations within one measure, not across measures.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on
   a `main` without changes and at the commit of `origin/main`. It commits
   the version, tags it `vX.Y.Z` and commits the next `.dev0`; it pushes

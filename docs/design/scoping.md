@@ -98,6 +98,7 @@ radio program, only on receiver drivers.
 | 2026-11-16 | The milestones up to v4, in this order, as the owner chose, each designed now in [`later-milestones.md`](later-milestones.md), with a spike first wherever a choice needs a measure, and the rule that reads its result fixed beforehand: Any receiver (SoapySDR, for the owner's HackRF One, with an overall gain and one per stage, and only the local USB drivers searched, so that no search reaches the network); Listening tools (a zoom that goes on into a fine spectrum of the VFO's channel, which the owner chose over an inset, synchronous AM, an automatic notch, a noise blanker); Automatic calibration (on the standard-frequency stations of the band plan, on demand); Band plans for other regions (the Americas, Asia-Pacific and France, the region being the engine's setting); Several receivers at once (each interface shows one, the others go on scanning and recording); DRM; Logarithmic overview (a bar that shows the whole plan, which the owner chose over a logarithmic axis for every view). The owner asked for all of them to be planned rather than set aside. Transmitting stays out, by the decision of 2026-11-08: with a HackRF, which can transmit, Radiolack opens reception only. |
 | 2026-11-16 | DRM may bring a compiled component, as the owner chose, since its decoding is too heavy for Python alone. It ships as a second, architecture-specific package, `radiolack-drm`, so that the main package stays independent of the architecture, built as it is and reproducible. The milestone starts with a spike on the audio codings' libraries and licences and on real-time decoding, and closes on its report if either fails. |
 | 2026-11-16 | The tuner's PLL, after its measure (spike 6), as the owner chose: the grid and the compensation. The measure found the error, 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz. Radiolack places the tuner's oscillator on multiples of 112.5 kHz, where that error is the same at every centre frequency, and takes it off once it knows which of the driver's two computations runs: a setting of each receiver, which Calibrate identifies by a short measure and checks again at each calibration. Pull request 14 of Coverage and precision becomes two, 14a and 14b ([`coverage-and-precision.md`](coverage-and-precision.md)). |
+| 2026-11-16 | The listening tools' spike (spike 8), as the owner chose: each of the four tools may add 1.5% of one core, as the planning session set the shares of the 6% they may add together; a tool over its share is reworked once, and a tool still over it is kept, its measured cost documented, rather than set aside or brought back to the owner. |
 
 ## Scope
 
@@ -451,7 +452,8 @@ frequency, runs as the service, and never transmits.
 
 ### Listening tools
 
-1. Spike: the cost of each tool, 6% of one core together.
+1. Spike: the cost of each tool, 6% of one core together; measured on
+   2026-11-17, 3.3% together after two tools were reworked.
 2. Synchronous AM.
 3. An automatic notch.
 4. A noise blanker.
@@ -533,7 +535,7 @@ band.
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
 | 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
 | 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Any receiver, first pull request. |
-| 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Listening tools, first pull request. |
+| 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Answered on 2026-11-17: 3.2 to 3.3% of one core together on the owner's laptop, against 12.5% for the engine itself, once synchronous AM and the blanker, over their 1.5% each, were reworked once; the blanker stays at its share, 1.40 and 1.54% in two measures, and is kept with that cost, by the owner's decision of 2026-11-16 ([Spike 8 result](#spike-8-result-2026-11-17)). |
 | 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
 | 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
 
@@ -702,6 +704,89 @@ at commit 719215c of `main`.
 Not measured: another divider of the tuner, rtl-sdr 2.0.1 or 2.0.2, the
 RTL-SDR Blog fork, an RTL-SDR Blog V4, and the check through a filter
 narrower than 6 kHz.
+
+### Spike 8 result (2026-11-17)
+
+Measured with `tools/measure_listening.py` (later-milestones.md, section
+2, pull request 1) on the owner's laptop: Intel Core i7-7500U at 2.70 GHz,
+two cores and four logical processors, Python 3.11.2, NumPy 1.24.2. The
+tool feeds the engine's own processing of a block (`engine._process_block`:
+DC removal, display spectrum, detection, the VFO's channel, its meter and
+its audio) with synthetic samples at 2.4 MS/s in the engine's blocks of
+80000 samples, 30 a second: white noise at -40 dBFS, an AM station at
+-30 dBFS 150 Hz off the VFO, modulated at 50% by a voice-like sound, whose
+whole signal fades by up to 20 dB and whose carrier fades alone by up to
+14 dB more, a steady carrier 1 kHz above it at -20 dB, which whistles in
+its audio, and impulses of three samples at -6 dBFS every 10 ms. The VFO
+is in AM with its 8 kHz filter, audio and detection on. Six
+configurations process the same blocks, in an order that turns with each
+block: without any tool, each tool alone and the four together, the tools
+where the design puts them (`tools/listening.py`'s prototypes, through
+subclasses of the demodulator in the tool; the engine's code is
+unchanged). Each block's processor time is the processing thread's, not
+the wall clock's; a run times 10 s of signal after 2 s that are not timed,
+in which SAM locks and the notch finds the whistle; seven runs, each with
+fresh state. In the timed runs SAM held its lock after 99% of the blocks,
+the notch removed the whistle and the second line it makes on AM's
+envelope, the blanker found impulses in every block and the fine spectrum
+made ten frames a second.
+
+- **The first version** of SAM and of the blanker were over their share,
+  1.5% of one core each, and were reworked once. SAM's band-pass, a filter
+  of 1441 taps through an FFT, became three moving averages in cascade by
+  cumulative sums; the blanker's median of a whole block became the median
+  of every 16th sample, and its search for impulses compares the samples'
+  real and imaginary parts before computing any magnitude.
+- **After the rework** SAM adds 1.0% and the blanker 1.4 to 1.5%; with the
+  notch and the fine spectrum, 0.4% each, the four add 3.2 to 3.3%, well
+  within the 6% they may add together.
+- **The figures move with the computer's other work.** The laptop was
+  busy with other work throughout. A first measure under heavier load
+  (load average about 7 on four logical processors) gave a baseline of
+  18.9% and, for the first version, 2.93% for SAM and 5.83% for the
+  blanker; the tables below were measured one after the other under a load
+  average of about 2, where the baseline took 12.5 to 13.9%, as in spike 4.
+  Within a measure the runs spread by about half a percent for each tool.
+- **Measured a third time** the same day, in a run of its own, with the
+  laptop's desktop busier (load average 2 to 4): the baseline took 19.1%,
+  SAM added 1.58% (0.86 to 2.06), the notch 0.78%, the blanker 2.39% (1.78
+  to 2.70), the fine spectrum 0.53% and the four together 5.03% (4.34 to
+  5.55). In proportion to the baseline the figures are those of the
+  tables below: SAM adds a twelfth to the engine's processing, the
+  blanker an eighth and the four together a quarter. What a tool costs in
+  % of one core follows how fast the processor runs at the time; together
+  the four stayed within their 6% in every measure, and SAM and the
+  blanker, both reworked once, were over their 1.5% in this one.
+- **By the rule fixed beforehand**, SAM, the notch and the fine spectrum
+  are built as pull requests 2, 3 and 5 say: the notch and the fine
+  spectrum within their share in every measure, SAM within it in two and
+  just over it in the busier third, kept with that cost as the blanker is.
+  The blanker, reworked once, measured 1.40% then 1.54%, at its share and
+  once just over it: it is kept, with that cost, as the owner decided on
+  2026-11-16. Its figure is the worst case, an impulse in every block; a
+  block without one costs less, since it is not copied.
+
+Added to the baseline, in % of one core, the median of seven runs with the
+lowest and the highest:
+
+| Tool | First version | After its rework, first measure | After its rework, second measure |
+| --- | --- | --- | --- |
+| Baseline, the engine alone | 13.90 (11.10 to 18.10) | 12.54 (11.53 to 13.25) | 12.71 (11.53 to 13.61) |
+| Synchronous AM | 2.14 (1.48 to 3.45) | 1.00 (0.90 to 1.28) | 1.01 (0.91 to 1.38) |
+| Automatic notch | 0.46 (-0.04 to 1.24) | 0.43 (0.29 to 0.69) | 0.37 (0.32 to 0.62) |
+| Noise blanker | 4.60 (3.50 to 5.95) | 1.40 (1.22 to 1.81) | 1.54 (1.24 to 2.05) |
+| Fine spectrum | 0.52 (0.25 to 0.66) | 0.36 (0.19 to 0.46) | 0.42 (0.16 to 0.51) |
+| The four together | 7.90 (6.08 to 10.24) | 3.16 (2.95 to 3.69) | 3.27 (2.92 to 3.58) |
+
+The baseline's row is its own cost, not an addition. The notch's taps,
+computed again when a notch comes, goes or moves, take 1.6 to 1.9 ms each
+time, outside these figures. What the prototypes showed about the design,
+and the choices made, are in later-milestones.md, section 2.
+
+Not measured: the engine in other modes than AM (the notch costs the same
+in SSB; the fine spectrum alone took 0.7% at WFM's 320 kHz channel against
+0.2% at 48 kHz), other sample rates, NumPy 2, another computer, and the
+tools on a receiver's signals.
 
 ## Preparing a public release
 

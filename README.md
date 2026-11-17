@@ -601,6 +601,13 @@ measures one steady carrier at each, and says whether the driver set holds
 or which to choose. Its `--help` says what it needs; the Debian package does
 not install it.
 
+Also for developers, `tools/listening.py` holds prototypes of the coming
+listening tools (synchronous AM, an automatic notch, a noise blanker and a
+fine spectrum of the VFO's channel), which Radiolack does not use yet, and
+`tools/measure_listening.py` measures the processor time each would add to
+the engine at 2.4 MS/s, on synthetic samples, without a receiver; it takes
+about three minutes and `--output FILE` keeps its table.
+
 ### Calibration
 
 The Receiver menu's Calibrate finds the correction from a carrier whose
@@ -1764,7 +1771,9 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 tools/          measure_pll.py: measures how well Radiolack labels an
-                R820T's samples, run from a checkout
+                R820T's samples; listening.py: prototypes of the
+                listening tools, and measure_listening.py, their cost;
+                run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,
