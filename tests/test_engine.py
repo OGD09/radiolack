@@ -178,8 +178,9 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(subscription.get_nowait(), {
             "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
-            "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "sam_locked": None,
-            "modes": list(MODES), "audio_modes": list(MODES), "acknowledged": 0,
+            "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "notch": False,
+            "sam_locked": None, "notch_lines": None, "modes": list(MODES), "audio_modes": list(MODES),
+            "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
         self.assertEqual(subscription.get_nowait(), scanner_state())
@@ -378,6 +379,40 @@ class DemodulationTest(unittest.IsolatedAsyncioTestCase):
         for subscription in clients:
             self.assertFalse([message for message in waiting(subscription)
                               if isinstance(message, dict) and message["type"] == "demod"])
+
+    async def test_the_notch_is_shared_by_every_client_and_says_what_it_removes(self):
+        # The fake's tone, 1 kHz above the VFO in USB, whistles.
+        listener, other = self.engine.subscribe(), self.engine.subscribe()
+        for subscription in (listener, other):
+            state = waiting(subscription)[STATES.index("demod")]
+            self.assertEqual((state["notch"], state["notch_lines"]), (False, None))
+        self.engine.set_audio(listener, True)
+        self.engine.configure_demod({"frequency_hz": round(FAKE_TONE_HZ) - 1_000, "mode": "USB",
+                                     "bandwidth_hz": 2_700, "notch": True}, other, 4)
+        for subscription in (listener, other):
+            state = await next_demod(subscription)      # the state as it is when the client reads it
+            self.assertEqual((state["mode"], state["notch"]), ("USB", True))
+            while state["notch_lines"] != 1:        # steady for half a second, then removed
+                self.assertEqual(state["notch_lines"], 0)
+                state = await next_demod(subscription)
+            self.assertEqual(state["acknowledged"], 4 if subscription is other else 0)
+        # Kept in CW, where it does not act; off, it says nothing either.
+        self.engine.configure_demod({"mode": "CW"})
+        for subscription in (listener, other):
+            state = await next_demod(subscription)
+            self.assertEqual((state["mode"], state["notch"], state["notch_lines"]), ("CW", True, None))
+        self.engine.configure_demod({"mode": "USB", "notch": False})
+        for subscription in (listener, other):
+            state = await next_demod(subscription)
+            self.assertEqual((state["mode"], state["notch"], state["notch_lines"]), ("USB", False, None))
+        reads = self.source.reads
+        while self.source.reads < reads + 5:
+            await asyncio.sleep(0.01)
+        for subscription in (listener, other):
+            self.assertFalse([message for message in waiting(subscription)
+                              if isinstance(message, dict) and message["type"] == "demod"])
+        with self.assertRaisesRegex(ValueError, "^the notch must be true or false$"):
+            self.engine.configure_demod({"notch": "on"})
 
     async def test_a_new_span_brings_the_vfo_inside_it(self):
         subscription = self.engine.subscribe()
@@ -579,6 +614,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         engine = self.engine()
         self.assertFalse(engine.state()["dc_removal"])
         self.assertEqual({key: engine.demod_state()[key] for key in demod}, demod)
+        self.assertIs(engine.demod_state()["notch"], False)    # saved before the notch: off
         self.assertEqual(engine.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
         self.assertEqual(engine.preferences_state(),
                          {"type": "preferences", "values": {"volume": 40, "palette": "classic"}})
@@ -599,6 +635,27 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state["frequency_hz"], state["mode"], state["bandwidth_hz"], state["sam_locked"]),
                          (145_010_000.0, "SAM", 8_000.0, False))
         self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+
+    async def test_the_notch_comes_back_after_a_restart_and_no_bookmark_carries_it(self):
+        engine = self.engine(save_delay_s=0.01)
+        engine.configure_demod({"frequency_hz": 145_010_000, "mode": "USB", "notch": True})
+        bookmark = {"frequency_hz": 145_020_000.0, "name": "Whistles", "mode": "USB", "scan": False}
+        engine.edit_bookmarks({"action": "add", **bookmark})
+        await self.stop(engine)
+        demod = self.read(SETTINGS_FILE)["receivers"]["test"]["demod"]
+        self.assertIs(demod["notch"], True)
+        self.assertNotIn("notch_lines", demod)      # a state, not a setting
+        again = self.engine()
+        state = again.demod_state()
+        self.assertEqual((state["mode"], state["notch"], state["notch_lines"]), ("USB", True, 0))
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+        await self.stop(again)
+        # A saved notch that is not true or false is left off.
+        self.write(SETTINGS_FILE, {"receivers": {"test": {"demod": {"mode": "AM", "notch": "yes"}}}})
+        with self.assertLogs("radiolack", "WARNING") as logs:
+            third = self.engine()
+        self.assertIn("the saved setting notch is not used: the notch must be true or false", logs.output[0])
+        self.assertEqual((third.demod_state()["mode"], third.demod_state()["notch"]), ("AM", False))
 
     async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
         self.write(SETTINGS_FILE, {"receivers": {"test": {

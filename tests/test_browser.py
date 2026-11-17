@@ -63,8 +63,9 @@ SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
 # The menus, in the order of the keys 1 to 8, with their titles (index.html).
 MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receiver",
          "display": "Display", "settings": "Settings", "about": "About"}
-# The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md).
-REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-notch", "#dm-nb", '#src-device option[value="soapy"]',
+# The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md); the
+# notch came back, working, with the listening tools (later-milestones.md, section 2).
+REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-nb", '#src-device option[value="soapy"]',
                     '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
                     "#st-wake", "#brand", "#toolbar", "#panel", "#mem-list")
 S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left end to its right end (main.js)
@@ -758,6 +759,80 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#freq")).to_have_attribute("aria-valuenow", re.compile(r"^1[23]\d{7}$"))
                     expect(page.locator("#m-mode")).to_have_text("SAM")
                     expect(page.locator("#m-lock")).to_have_text("no lock")      # no carrier there
+
+    def test_the_notch_is_one_box_shared_by_every_interface_and_greyed_where_it_does_not_act(self):
+        # At a frequency of the simulated band where only noise lies: off at
+        # first, greyed with a note in NFM; ticked in one interface, ticked in
+        # the other, kept but greyed in WFM and CW, and unticked from the
+        # keyboard in the other.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(FRAME_RATE)
+                first.keyboard.press("Escape")      # the Receiver menu lies over the readout
+                first.locator("#freq").dblclick()
+                first.locator("#freq input").fill("145.2")
+                first.locator("#freq input").press("Enter")
+                expect(second.locator("#freq")).to_have_attribute("aria-valuenow", "145200000")
+                for page in (first, second):
+                    self.open_menu(page, "radio")
+                box, note = first.locator("#dm-notch"), first.locator("#dm-notch-note")
+                expect(first.locator('label:has(#dm-notch)')).to_have_text("Automatic notch")
+                for page in (first, second):
+                    expect(page.locator("#dm-notch")).not_to_be_checked()
+                    expect(page.locator("#dm-notch")).to_be_disabled()
+                    expect(page.locator("#dm-notch-note")).to_have_text("No notch in NFM: it acts in AM, SAM, USB and LSB.")
+                for mode in ("AM", "SAM", "USB", "LSB"):
+                    first.locator(f'#mode-group button[data-mode="{mode}"]').click()
+                    for page in (first, second):
+                        expect(page.locator("#m-mode")).to_have_text(mode)
+                        expect(page.locator("#dm-notch")).to_be_enabled()
+                        expect(page.locator("#dm-notch-note")).to_be_hidden()
+                box.check()
+                expect(second.locator("#dm-notch")).to_be_checked()
+                for mode in ("WFM", "CW"):
+                    second.locator(f'#mode-group button[data-mode="{mode}"]').click()
+                    for page in (first, second):
+                        expect(page.locator("#dm-notch")).to_be_checked()      # kept across modes
+                        expect(page.locator("#dm-notch")).to_be_disabled()
+                    expect(note).to_have_text(f"No notch in {mode}: it acts in AM, SAM, USB and LSB.")
+                second.locator('#mode-group button[data-mode="USB"]').click()
+                expect(box).to_be_enabled()
+                expect(note).to_be_hidden()     # nothing to remove in the noise there
+                second.locator("#dm-notch").focus()
+                second.keyboard.press("Space")
+                for page in (first, second):
+                    expect(page.locator("#dm-notch")).not_to_be_checked()
+                expect(second.locator("#menu")).to_be_visible()     # the key stayed with the box
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_notch_removes_a_carrier_s_whistle_and_every_interface_says_so(self):
+        # The fake's carrier, at 145.010 MHz on the air, shows 465.5 Hz low
+        # through its crystal: about 1 kHz above the VFO in USB, a whistle.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource("carrier", program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                self.wait_for_audio(first)
+                for page in (first, second):
+                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                first.locator("#freq").dblclick()
+                first.locator("#freq input").fill("145.0085")
+                first.locator("#freq input").press("Enter")
+                for page in (first, second):
+                    self.open_menu(page, "radio")
+                first.locator('#mode-group button[data-mode="USB"]').click()
+                expect(second.locator("#m-mode")).to_have_text("USB")
+                expect(second.locator("#dm-notch-note")).to_be_hidden()
+                first.locator("#dm-notch").check()
+                for page in (first, second):
+                    expect(page.locator("#dm-notch")).to_be_checked()
+                    expect(page.locator("#dm-notch-note")).to_have_text("Removing 1 line.")
+                second.locator("#dm-notch").uncheck()
+                for page in (first, second):
+                    expect(page.locator("#dm-notch")).not_to_be_checked()
+                    expect(page.locator("#dm-notch-note")).to_be_hidden()
 
     def test_the_icon_beside_the_frequency_opens_the_antenna_lengths(self):
         # The lengths follow the VFO while they show, as when another

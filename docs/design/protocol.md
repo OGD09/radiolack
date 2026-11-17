@@ -101,7 +101,7 @@ preferences apart from this computer's.
 
    ```json
    {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
-    "squelch_db": -80.0, "squelch_auto": true, "sam_locked": null,
+    "squelch_db": -80.0, "squelch_auto": true, "notch": false, "sam_locked": null, "notch_lines": null,
     "modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"],
     "audio_modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"], "acknowledged": 0}
    ```
@@ -113,7 +113,9 @@ preferences apart from this computer's.
    | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM, SAM, CW and WFM, above it for USB, below it for LSB. SAM takes AM's widths. |
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
    | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. In WFM, whose channel fills those bins, it takes the median of the bins from the channel's edge to 100 kHz beyond it, on the quieter side, as a neighbouring station may fill the other. |
+   | `notch` | Whether the automatic notch is on: off by default, saved with the receiver's settings, kept across modes, and acting in AM, SAM, USB and LSB only, not in CW, whose signal is a steady tone, nor in NFM and WFM. While it acts it removes from the audio the lines that stand 15 dB or more over their surroundings, are at most 30 Hz wide, are found at every analysis, ten times a second, for half a second, and lie between 100 Hz and 5 kHz, four at most, those that stand highest first; each one leaves a second after it was last found. A bookmark does not carry it. |
    | `sam_locked` | In SAM, synchronous AM, whether it holds a carrier: true while a line within 1 kHz of the VFO, once held followed within 40 Hz of it, stands 10 dB or more over the noise within 80 Hz, sought ten times a second and judged on the mean of the latest five searches, a lock held staying down to 7 dB; false otherwise, when the audio is AM's envelope. Null in the other modes. The state is sent again whenever it changes, to every interface; it is the engine's, never saved, and found whether or not an interface asked for audio. |
+   | `notch_lines` | While the notch acts, the lines it removes now, 0 to 4; null when it is off, in the modes where it does not act, and from an engine older than the notch. The engine finds them in the audio it makes: 0 while no interface asks for audio and nothing is recorded. The state is sent again whenever it changes, to every interface; it is the engine's, never saved. |
    | `modes` | The modes the engine takes. |
    | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All seven for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
@@ -484,7 +486,10 @@ preferences apart from this computer's.
     the carrier's at once and falls at 10 dB per second: unfaded, as loud as
     AM, and the sidebands' audio stays as it is while the carrier fades
     alone. Without a lock (`sam_locked`) it is AM's, the switch fading over
-    5 ms. AM, SAM, USB, LSB and CW audio runs from 100 Hz to 5 kHz. In WFM the audio is the FM discriminator's
+    5 ms. AM, SAM, USB, LSB and CW audio runs from 100 Hz to 5 kHz; with
+    the notch (`notch`), in AM, SAM, USB and LSB, less 45 Hz on each side of
+    each line it removes, the audio fading over 5 ms from the filter before
+    a change to the filter after it. In WFM the audio is the FM discriminator's
     output too, full scale at 75 kHz of deviation, broadcast's peak, with a
     50 µs de-emphasis (unit gain at the lowest frequencies) and a band from
     40 Hz to 15 kHz: mono, without the stereo pilot at 19 kHz or what lies
@@ -691,6 +696,7 @@ A `demod` message changes the demodulation settings it names, the same way:
 | `bandwidth_hz` | From 100 to 25000 Hz, or in WFM from 50000 to 250000 Hz: the range of the mode that the message leaves. A new mode that the width in use does not suit, into or out of WFM, takes its width once tuned to a bookmark (NFM 10 kHz, AM 8 kHz, USB and LSB 2.7 kHz, CW 500 Hz, WFM 180 kHz), unless the message gives one. |
 | `squelch_db` | From -160 to 0 dBFS. |
 | `squelch_auto` | `true` or `false`. |
+| `notch` | `true` or `false`. |
 | `id` | Optional: a whole number from 1 to 2^53 - 1, which the engine returns in `acknowledged`. |
 
 The engine handles an `id` even when it refuses the changes: the sender then
@@ -1177,6 +1183,14 @@ and later.
   A bookmark or a recording in SAM shows with its mode's name; tuning to
   such a bookmark there moves the VFO and leaves the engine's mode as it
   is. A reload brings a newer interface.
+  Later that day, the automatic notch (later-milestones.md, section 2,
+  pull request 3), without a new version: the demodulation state gains
+  `notch` and `notch_lines`, and the `demod` message `notch`. An older
+  interface ignores both fields and never sends `notch`: it shows no box,
+  its changes leave the notch as another interface set it, and it plays
+  the notched audio, as every interface does. A reload brings a newer
+  interface. A newer interface reads a demodulation state without
+  `notch`, an older engine's, as one without the notch, and greys its box.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

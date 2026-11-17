@@ -17,16 +17,20 @@ lock; USB, LSB and CW through the channel's real part, which is the
 sideband's audio, under an AGC. The squelch compares the channel level with
 a threshold, set by hand or, automatically, 8 dB above the noise that the
 spectrum shows around the VFO; it opens and closes in 5 ms fades, in step
-with the audio.
+with the audio. The automatic notch, when on, in AM, SAM, USB and LSB,
+finds the steady lines in the detector's output (``AutoNotch``) and takes
+them out of the audio filter's response, the audio fading from the old
+taps to the new.
 """
 
 from __future__ import annotations
 
 import collections
+import copy
 import dataclasses
 import math
 import struct
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -88,6 +92,23 @@ SAM_SEARCH_S = 0.1                  # one search this often
 SAM_LOBE_BINS = 2                   # a Hann window's main lobe, on each side of its peak
 SAM_FLOOR = 1e-9                    # -180 dBFS: no carrier at all, silence
 SAM_FADE_S = FADE_S                 # the switch between the synchronous detector and the envelope
+# The automatic notch (later-milestones.md, section 2).
+NOTCH_MODES = ("AM", "SAM", "USB", "LSB")   # not CW, whose signal is a steady tone, nor NFM and WFM
+NOTCH_MARGIN_DB = 15.0              # a line stands this far over its surroundings
+NOTCH_WIDTH_HZ = 30.0               # and is at most this wide
+NOTCH_STEADY_S = 0.5                # for this long, before it is removed
+NOTCH_RELEASE_S = 1.0               # removed until this long after it stops
+NOTCH_RANGE_HZ = (100.0, 5_000.0)
+NOTCH_MAX = 4
+NOTCH_BIN_HZ = 6.0                  # the analysis's bins are at most this wide
+NOTCH_ANALYSIS_S = 0.1              # one analysis this often
+NOTCH_SURROUNDINGS_HZ = 300.0       # a line's surroundings: the bins this far on each side, beyond its own
+NOTCH_MATCH_HZ = 9.0                # a line found again this close to where it was is the same line
+NOTCH_MOVE_HZ = 5.0                 # a notch follows its line once it moved this far
+# Each notch removes the line's width and half the audio filter's transition
+# on each side, so that the filter's whole attenuation reaches the line.
+NOTCH_HALF_HZ = NOTCH_WIDTH_HZ / 2 + AUDIO_TRANSITION_HZ / 2
+NOTCH_FADE_S = FADE_S               # the audio fades from the old taps to the new over this
 
 # Audio frame header, little-endian: kind, version, reserved, position of the
 # first sample (counted at the audio rate, modulo 2^32), audio rate (Hz);
@@ -106,6 +127,7 @@ class DemodSettings:
     bandwidth_hz: float = 10_000.0
     squelch_db: float = -80.0       # the threshold set by hand
     squelch_auto: bool = True
+    notch: bool = False             # the automatic notch, which acts in NOTCH_MODES only
 
     def changed(self, changes: Mapping[str, object]) -> DemodSettings:
         """These settings with ``changes`` applied; raises ValueError, naming
@@ -131,6 +153,10 @@ class DemodSettings:
                 if not isinstance(value, bool):
                     raise ValueError("the automatic squelch must be true or false")
                 values[name] = value
+            elif name == "notch":
+                if not isinstance(value, bool):
+                    raise ValueError("the notch must be true or false")
+                values[name] = value
             else:
                 raise ValueError(f"unknown demodulator setting: {name}")
         low, high = width_range
@@ -141,7 +167,12 @@ class DemodSettings:
     def describe(self) -> dict[str, Any]:
         return {"frequency_hz": self.frequency_hz, "mode": self.mode,
                 "bandwidth_hz": self.bandwidth_hz, "squelch_db": self.squelch_db,
-                "squelch_auto": self.squelch_auto}
+                "squelch_auto": self.squelch_auto, "notch": self.notch}
+
+    @property
+    def notching(self) -> bool:
+        """Whether the automatic notch acts: on, in one of NOTCH_MODES."""
+        return self.notch and self.mode in NOTCH_MODES
 
 
 def bandwidth_range_hz(mode: str) -> tuple[float, float]:
@@ -176,6 +207,7 @@ class Meter:
     squelch_db: float | None    # threshold in use; None: no noise estimate yet
     open: bool
     sam_locked: bool | None = None  # in SAM, whether it holds a carrier; None in the other modes
+    notch_lines: int | None = None  # while the notch acts, the lines it removes now; None otherwise
 
 
 def has_channel(mode: str, rate_hz: float) -> bool:
@@ -210,12 +242,16 @@ def channel_taps(mode: str, bandwidth_hz: float, rate_hz: float) -> np.ndarray:
     return taps
 
 
-def audio_taps(mode: str, rate_hz: float) -> np.ndarray:
+def audio_taps(mode: str, rate_hz: float, notches: Sequence[float] = ()) -> np.ndarray:
     """The audio filter at the channel rate. NFM: de-emphasis with unit gain
     at 1 kHz, high-pass at 280 Hz and low-pass at 3.5 kHz. WFM: de-emphasis
     with unit gain at the lowest frequencies, as receivers apply it,
     high-pass at 40 Hz and low-pass at 15 kHz. The other modes, SAM as AM:
-    high-pass at 100 Hz and low-pass at 5 kHz."""
+    high-pass at 100 Hz and low-pass at 5 kHz, with each of ``notches``, in
+    Hz, removed: ``NOTCH_HALF_HZ`` on each side of it. The taps are as many
+    with notches as without; NFM and WFM take none."""
+    if notches and mode in ("NFM", "WFM"):
+        raise ValueError(f"the audio filter takes no notch in {mode}")
     if mode == "NFM":
         corner = 1 / (2 * math.pi * DEEMPHASIS_S)
 
@@ -230,9 +266,133 @@ def audio_taps(mode: str, rate_hz: float) -> np.ndarray:
             return deemphasis * ((frequency >= WFM_HIGH_PASS_HZ) & (frequency <= WFM_LOW_PASS_HZ))
     else:
         def response(frequency: np.ndarray) -> np.ndarray:
-            return ((frequency >= AUDIO_HIGH_PASS_HZ) & (frequency <= AUDIO_LOW_PASS_HZ)).astype(np.float64)
+            gain = ((frequency >= AUDIO_HIGH_PASS_HZ) & (frequency <= AUDIO_LOW_PASS_HZ)).astype(np.float64)
+            for notch in notches:
+                gain[np.abs(frequency - notch) <= NOTCH_HALF_HZ] = 0.0
+            return gain
 
     return shaped(response, AUDIO_TRANSITION_HZ, rate_hz, AUDIO_ATTENUATION_DB)
+
+
+@dataclass
+class _Line:
+    """A line that the notch follows."""
+
+    frequency_hz: float
+    margin_db: float
+    first_s: float      # found first, without a gap since
+    last_s: float       # found last
+    notched: bool = False
+
+
+class AutoNotch:
+    """Finds the lines to remove in the detector's output, real at
+    ``rate_hz``, before the squelch's gate and the audio filter.
+
+    Every ``NOTCH_ANALYSIS_S`` it computes a Hann-windowed FFT of the latest
+    output with bins at most ``NOTCH_BIN_HZ`` wide: 8192 samples, 5.9 Hz per
+    bin, at 48 kHz. A line is a bin between 100 Hz and 5 kHz that is the
+    highest of its neighbours, whose level falls by ``NOTCH_MARGIN_DB``
+    within ``NOTCH_WIDTH_HZ / 2`` on both sides (at most 30 Hz wide) and
+    that stands ``NOTCH_MARGIN_DB`` over the median of its surroundings,
+    ``NOTCH_SURROUNDINGS_HZ`` on each side beyond its width; a parabola
+    through the levels in dB places it. Found again within
+    ``NOTCH_MATCH_HZ`` at every analysis for ``NOTCH_STEADY_S``, it is
+    notched, four at most, those that stand highest over their
+    surroundings first, a notched line keeping its notch while it lasts,
+    whatever comes after it; a single miss starts its half second again,
+    which leaves keyed and moving tones alone. A notch is released
+    ``NOTCH_RELEASE_S`` after its line was last found, and follows its line
+    once it moved ``NOTCH_MOVE_HZ``. The analysis reads what comes before
+    the audio filter, so a notched line is still found while it lasts.
+    ``notches`` holds the frequencies notched, lowest first, as the audio
+    filter's taps have them. Not thread-safe."""
+
+    def __init__(self, rate_hz: float) -> None:
+        self.rate_hz = float(rate_hz)
+        self.size = 1 << math.ceil(math.log2(self.rate_hz / NOTCH_BIN_HZ))
+        self.bin_hz = self.rate_hz / self.size
+        self._window = hann(self.size).astype(np.float64)
+        self._low = math.ceil(NOTCH_RANGE_HZ[0] / self.bin_hz)
+        self._high = math.floor(NOTCH_RANGE_HZ[1] / self.bin_hz)
+        self._width = math.ceil(NOTCH_WIDTH_HZ / 2 / self.bin_hz)      # bins on each side of a line's peak
+        self._around = math.ceil(NOTCH_SURROUNDINGS_HZ / self.bin_hz)
+        if self._low - self._width < 1 or self._high + self._width + 1 >= self.size // 2:
+            raise ValueError(f"the notch cannot analyse audio at {self.rate_hz:g} Hz")
+        # Where each line's surroundings lie, from its peak: beyond its width, within the surroundings.
+        offsets = np.arange(-self._around, self._around + 1)
+        self._offsets = offsets[np.abs(offsets) > self._width]
+        self._recent = np.zeros(0)
+        self._since = 0
+        self._interval = max(1, round(NOTCH_ANALYSIS_S * self.rate_hz))
+        self._time_s = 0.0          # of the output read
+        self._lines: list[_Line] = []
+        self.notches: tuple[float, ...] = ()
+
+    def process(self, detected: np.ndarray) -> bool:
+        """Read ``detected``, the detector's output; whether ``notches``
+        changed."""
+        recent = np.concatenate((self._recent, detected))
+        self._recent = recent[-self.size:]
+        self._since += len(detected)
+        self._time_s += len(detected) / self.rate_hz
+        if self._since < self._interval or len(self._recent) < self.size:
+            return False
+        self._since = 0
+        self._follow(self._find(), self._time_s)
+        return self._update()
+
+    def _find(self) -> list[tuple[float, float]]:
+        """The lines of the latest output: (frequency, margin over the surroundings)."""
+        spectrum = np.fft.rfft(self._recent * self._window)
+        db = 10 * np.log10(np.maximum(spectrum.real ** 2 + spectrum.imag ** 2, 1e-30))
+        low, high, width = self._low, self._high, self._width
+        middle = db[low:high + 1]
+        below = db[low - width:high + 1 - width]
+        above = db[low + width:high + 1 + width]
+        peaks = ((middle >= db[low - 1:high]) & (middle > db[low + 1:high + 2])
+                 & (middle - below >= NOTCH_MARGIN_DB) & (middle - above >= NOTCH_MARGIN_DB))
+        found = low + np.flatnonzero(peaks)
+        if not len(found):
+            return []
+        around = np.clip(found[:, np.newaxis] + self._offsets, 0, len(db) - 1)
+        margins = db[found] - np.median(db[around], axis=1)
+        lines = []
+        for index, margin in zip(found[margins >= NOTCH_MARGIN_DB], margins[margins >= NOTCH_MARGIN_DB]):
+            left, centre, right = db[index - 1:index + 2]
+            curvature = left - 2 * centre + right
+            offset = 0.5 * (left - right) / curvature if curvature < 0 else 0.0
+            lines.append(((index + offset) * self.bin_hz, float(margin)))
+        return lines
+
+    def _follow(self, found: list[tuple[float, float]], now_s: float) -> None:
+        """Match the lines found with those followed: a line not found again
+        is dropped, unless notched, until its release."""
+        kept: list[_Line] = []
+        for line in self._lines:
+            match = min(found, key=lambda item: abs(item[0] - line.frequency_hz), default=None)
+            if match is not None and abs(match[0] - line.frequency_hz) <= NOTCH_MATCH_HZ:
+                found.remove(match)
+                line.frequency_hz, line.margin_db, line.last_s = match[0], match[1], now_s
+                kept.append(line)
+            elif line.notched and now_s - line.last_s <= NOTCH_RELEASE_S:
+                kept.append(line)
+        kept.extend(_Line(frequency, margin, now_s, now_s) for frequency, margin in found)
+        steady = sorted((line for line in kept if not line.notched and line.last_s - line.first_s >= NOTCH_STEADY_S
+                         - NOTCH_ANALYSIS_S / 2), key=lambda line: -line.margin_db)
+        room = NOTCH_MAX - sum(line.notched for line in kept)
+        for line in steady[:max(0, room)]:
+            line.notched = True
+        self._lines = kept
+
+    def _update(self) -> bool:
+        """Whether a notch came, went or moved."""
+        wanted = sorted(line.frequency_hz for line in self._lines if line.notched)
+        if len(wanted) == len(self.notches) and all(
+                abs(new - old) < NOTCH_MOVE_HZ for new, old in zip(wanted, self.notches)):
+            return False
+        self.notches = tuple(wanted)
+        return True
 
 
 class Demodulator:
@@ -270,7 +430,8 @@ class Demodulator:
         A VFO outside the received band reads nothing and stays silent; a
         receiver slower than the channel rate gives no meter, no audio and
         no channel. In SAM the carrier is sought with or without audio, so
-        that the meter says whether SAM holds one."""
+        that the meter says whether SAM holds one. The notch reads the
+        audio path's detector: without audio it removes nothing."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
@@ -307,16 +468,19 @@ class Demodulator:
             locked = self._search.locked
         else:
             self._search = None
-        meter = Meter(level_db, threshold, self._open, locked)
 
         if not audio:
             self._audio = None
-            return meter, None
+            return Meter(level_db, threshold, self._open, locked, 0 if settings.notching else None), None
         if self._audio is None or self._audio.mode != settings.mode:
-            self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation, self._search)
+            self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation, self._search,
+                                     settings.notch)
+        else:
+            self._audio.set_notch(settings.notch)
         sound = self._audio.process(channel, power, gate)
         pcm = np.clip(np.rint(sound * 32767), -32768, 32767).astype("<i2")
-        return meter, pcm
+        notches = self._audio.notches
+        return Meter(level_db, threshold, self._open, locked, None if notches is None else len(notches)), pcm
 
     def encode_audio(self, pcm: np.ndarray) -> bytes:
         """An audio frame (docs/design/protocol.md) for samples that follow the previous ones."""
@@ -388,11 +552,25 @@ class _AudioPath:
     the squelch stays open until the decisions about it are in, and the gate
     fades out before the noise that follows a carrier. The AM detector and
     the AGC use that wait to look ahead too, and SAM's band-pass lags within
-    it. SAM takes ``search``, the demodulator's, which finds its carrier."""
+    it. SAM takes ``search``, the demodulator's, which finds its carrier.
+
+    With ``notch``, in NOTCH_MODES, ``AutoNotch`` reads the detector's
+    output, before the gate, so that a line is found whether or not the
+    squelch is open, and its notches go into the audio filter's taps,
+    computed again, in the thread that processes the block, only when a
+    notch comes, goes or moves. The filter keeps the samples it remembers,
+    so the new taps would take over between two samples, and the audio
+    would step by what they remove; instead, a copy of the filter keeps the
+    old taps for ``NOTCH_FADE_S``, and the audio fades linearly from its
+    output to the new one, which runs in step: from one sample to the next
+    it moves no more than either output does, plus their difference, the
+    removed line, spread over the fade. A change during a fade fades on
+    from the same old taps to the newest."""
 
     def __init__(self, mode: str, channel_rate_hz: float, decimation: int,
-                 search: CarrierSearch | None = None) -> None:
+                 search: CarrierSearch | None = None, notch: bool = False) -> None:
         self.mode = mode
+        self._rate_hz = channel_rate_hz
         window = max(1, round(SQUELCH_WINDOW_S * channel_rate_hz))
         self._fade = max(1, round(FADE_S * channel_rate_hz))
         self._span = window + self._fade
@@ -412,12 +590,47 @@ class _AudioPath:
         self._filter = FftFilter(audio_taps(mode, channel_rate_hz), channel_rate_hz, up=1, down=decimation)
         self._decisions = np.zeros(self._span)      # the squelch's last decisions
         self._passed = np.zeros(self._fade - 1)     # the gate's last values, for the fades
+        self._notch: AutoNotch | None = None
+        self._leaving: FftFilter | None = None      # the filter with the old taps, while the audio fades from it
+        self._faded = 0                             # audio samples of that fade so far
+        self._fade_out = max(1, round(NOTCH_FADE_S * self._filter.output_rate_hz))
+        self.set_notch(notch)
+
+    @property
+    def notches(self) -> tuple[float, ...] | None:
+        """The frequencies notched, lowest first; None while the notch does
+        not act."""
+        return None if self._notch is None else self._notch.notches
+
+    def set_notch(self, on: bool) -> None:
+        """Turn the automatic notch on or off; it acts in NOTCH_MODES only.
+        Turned off, its notches leave the taps, through a fade; turned on
+        again, it starts afresh."""
+        acts = on and self.mode in NOTCH_MODES
+        if acts == (self._notch is not None):
+            return
+        if acts:
+            self._notch = AutoNotch(self._rate_hz)
+            return
+        notched = self._notch is not None and self._notch.notches
+        self._notch = None
+        if notched:
+            self._retap(())
+
+    def _retap(self, notches: Sequence[float]) -> None:
+        """New taps for the audio filter, which the audio fades into."""
+        if self._leaving is None:
+            self._leaving = copy.deepcopy(self._filter)
+            self._faded = 0
+        self._filter.set_taps(audio_taps(self.mode, self._rate_hz, notches))
 
     def process(self, channel: np.ndarray, power: np.ndarray, gate: np.ndarray) -> np.ndarray:
         """Audio for ``channel``, whose power at each sample is ``power``,
         silent where ``gate``, the squelch's decision at each channel sample,
         is closed."""
         detected = self._detector.process(channel, power)
+        if self._notch is not None and self._notch.process(detected):
+            self._retap(self._notch.notches)
         # A detected sample passes if every decision from its own to the latest is open.
         span = self._span
         decisions = np.concatenate((self._decisions, gate))
@@ -429,8 +642,16 @@ class _AudioPath:
         self._passed = recent[len(recent) - (self._fade - 1):]
         sums = np.cumsum(np.concatenate(([0.0], recent)))
         fades = (sums[self._fade:] - sums[:-self._fade]) / self._fade
-        gated = detected * fades
-        return self._filter.process(gated.astype(np.complex64)).real.astype(np.float64)
+        gated = (detected * fades).astype(np.complex64)
+        audio = self._filter.process(gated).real.astype(np.float64)
+        if self._leaving is None:
+            return audio
+        old = self._leaving.process(gated).real.astype(np.float64)
+        mix = np.minimum((self._faded + np.arange(1, len(audio) + 1)) / self._fade_out, 1.0)
+        self._faded += len(audio)
+        if self._faded >= self._fade_out:
+            self._leaving = None
+        return old + mix * (audio - old)
 
 
 class _Delay:
