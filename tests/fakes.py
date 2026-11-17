@@ -341,7 +341,8 @@ class FakeRtlTcpRuns:
 
     def events(self, pid: int) -> list[str]:
         """What one run did after it started, in order: "command C V" for
-        each command it received, then "stopping" when SIGTERM came."""
+        each command it received, then "stopping" when SIGTERM came, or
+        "ignoring" each time it came to a run that ignores it."""
         return [rest for run, rest in self._events() if run == pid and not rest.startswith("started ")]
 
     def _events(self) -> list[tuple[int, str]]:

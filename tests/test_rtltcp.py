@@ -18,14 +18,15 @@ from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcp, FakeRtlTcpRuns, fake
 
 FAST = {"settle_s": 0.15, "idle_s": 1.0, "read_wait_s": 0.2, "timeout_s": 0.5, "retry_s": (0.05, 0.2)}
 COUNT = 400         # samples per read: less than one chunk of the fake server
-# Stands in for Radiolack: runs the fake rtl_tcp program given as arguments
-# through an RtlSdrSource, says when samples arrive, then waits to be killed.
+# Stands in for Radiolack: runs the fake rtl_tcp program given as arguments,
+# for the device given first, through an RtlSdrSource, says when samples
+# arrive, then waits to be killed.
 KILLED_RADIOLACK = """
 import asyncio, sys
 from radiolack.rtltcp import RtlSdrSource
 
 async def main():
-    source = RtlSdrSource(program=sys.argv[1:], idle_s=60)
+    source = RtlSdrSource(sys.argv[1], program=sys.argv[2:], idle_s=60)
     while await source.read(1000) is None:
         pass
     print("streaming", flush=True)
@@ -1346,6 +1347,17 @@ class RtlSdrSourceTest(SourceTest):
         self.assert_ended(pid)
         self.assertEqual(self.runs.stopping(), set())
 
+    async def test_closing_while_an_idle_source_stops_rtl_tcp_still_kills_it(self):
+        # Radiolack ending a moment after its last interface closed: the
+        # source, idle, has asked rtl_tcp to stop and waits before killing it.
+        source = await self.start_sdr("stubborn", stop_s=1.0)
+        await self.read(source, timeout=10)
+        [(pid, _)] = self.runs.started()
+        await eventually(lambda: "ignoring" in self.runs.events(pid), timeout=10)
+        source.close()
+        await asyncio.wait_for(source.wait_closed(), 10)
+        self.assert_ended(pid)
+
     async def test_a_missing_program_is_a_waiting_state(self):
         source = RtlSdrSource(program=("/nonexistent/rtl_tcp",), **FAST)
         self.addCleanup(source.close)
@@ -1370,9 +1382,9 @@ class RtlSdrSourceTest(SourceTest):
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("setpriv"),
                          "setpriv, on Linux")
-    async def test_rtl_tcp_stops_when_radiolack_is_killed(self):
+    async def test_rtl_tcp_ends_when_radiolack_is_killed_even_one_that_ignores_sigterm(self):
         radiolack = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", KILLED_RADIOLACK, *FAKE_RTL_TCP, stdout=asyncio.subprocess.PIPE)
+            sys.executable, "-c", KILLED_RADIOLACK, "stubborn", *FAKE_RTL_TCP, stdout=asyncio.subprocess.PIPE)
         try:
             line = await asyncio.wait_for(radiolack.stdout.readline(), 20)
             self.assertEqual(line, b"streaming\n")
@@ -1381,7 +1393,6 @@ class RtlSdrSourceTest(SourceTest):
             radiolack.kill()
             await radiolack.wait()
         await eventually(lambda: not running(pid), timeout=10)
-        self.assertEqual(self.runs.stopping(), {pid})
 
 
 if __name__ == "__main__":
