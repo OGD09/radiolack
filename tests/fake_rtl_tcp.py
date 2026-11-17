@@ -7,7 +7,7 @@ port given. The device decides what it does:
   librtlsdr write for a missing, busy or forbidden receiver, or something
   unknown, and exits.
 - "mute": never listens, until stopped.
-- "stubborn": serves, but ignores SIGTERM.
+- "stubborn": serves, but ignores SIGTERM, logging "<pid> ignoring" each time.
 - "carrier": serves CARRIER_HZ through a crystal CARRIER_CRYSTAL_PPB off,
   its R820T's PLL computed as rtl-sdr up to 2.0.1 does, until SIGTERM.
 - any other value: serves until SIGTERM.
@@ -55,6 +55,10 @@ def stop(_signum, _frame) -> None:
     os._exit(0)
 
 
+def ignore(_signum, _frame) -> None:
+    log("ignoring")
+
+
 async def serve(port: int, device: str) -> None:
     carrier = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB,
                "tuner_pll": functools.partial(r82xx.tuned_hz, "truncating")} if device == "carrier" else {}
@@ -75,7 +79,7 @@ def main() -> None:
         text, code = FAILURES[args.d]
         sys.stderr.write(text)
         sys.exit(code)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN if args.d == "stubborn" else stop)
+    signal.signal(signal.SIGTERM, ignore if args.d == "stubborn" else stop)
     sys.stderr.write(FOUND + "Found Rafael Micro R820T tuner\nTuned to 100000000 Hz.\n")
     sys.stderr.flush()
     time.sleep(OPEN_S)

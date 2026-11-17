@@ -804,6 +804,7 @@ class RtlSdrSource(RtlTcpSource):
         self._program = tuple(program)
         self._stop_s = stop_s
         self._child: _Child | None = None      # the rtl_tcp of the current connection
+        self._stops: set[asyncio.Future[None]] = set()     # the rtl_tcp runs being stopped
 
     @property
     def settings_key(self) -> str:
@@ -830,15 +831,33 @@ class RtlSdrSource(RtlTcpSource):
         if self._child is not None and not self._powered_off:
             self._child.terminate()
 
+    async def wait_closed(self) -> None:
+        await super().wait_closed()
+        if self._stops:     # a stop that ``close`` found under way
+            await asyncio.wait(set(self._stops))
+
     async def _session(self) -> None:
         try:
             await super()._session()
         finally:
             child, self._child = self._child, None
             if child is not None:
-                if self._powered_off:
-                    await asyncio.sleep(POWER_OFF_S)
-                await child.stop(self._stop_s)
+                # In a task of its own, which ``wait_closed`` waits for: a
+                # ``close`` that cancels this one meanwhile, as when Radiolack
+                # ends a moment after its last interface closed, would
+                # otherwise give up before the kill and leave an rtl_tcp that
+                # ignored SIGTERM holding the receiver.
+                stop = asyncio.ensure_future(self._stop(child))
+                self._stops.add(stop)
+                stop.add_done_callback(self._stops.discard)
+                await asyncio.shield(stop)
+
+    async def _stop(self, child: _Child) -> None:
+        """Stop ``child``, once it has had the time to turn the antenna
+        power off."""
+        if self._powered_off:
+            await asyncio.sleep(POWER_OFF_S)
+        await child.stop(self._stop_s)
 
     async def _connect(self) -> _Connection:
         """Start rtl_tcp, then connect as soon as it listens."""
@@ -867,9 +886,12 @@ class RtlSdrSource(RtlTcpSource):
                    "-n", str(_QUEUED_BUFFERS), "-d", self.device]
         setpriv = shutil.which("setpriv") if sys.platform.startswith("linux") else None
         if setpriv is not None:
-            # The kernel stops rtl_tcp if Radiolack ends without stopping it,
-            # as when killed: the receiver does not stay busy.
-            command = [setpriv, "--pdeathsig", "TERM", "--", *command]
+            # The kernel kills rtl_tcp if Radiolack ends without stopping it,
+            # as when killed itself: the receiver does not stay busy. Not
+            # SIGTERM, which nobody would be left to follow with a kill: the
+            # rtl_tcp of rtl-sdr 0.6.0 ignores one that comes as its client
+            # leaves, and kept the receiver (seen on 2026-11-17).
+            command = [setpriv, "--pdeathsig", "KILL", "--", *command]
         return command
 
 

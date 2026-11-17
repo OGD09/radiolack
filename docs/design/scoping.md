@@ -771,6 +771,16 @@ spikes above, each with the rule that reads its result.
   the kernel stop it should Radiolack die first. A receiver that rtl_tcp
   cannot open (none found, in use, no permission) is a waiting state with
   that reason. Tested with a fake rtl_tcp program; not yet with a receiver.
+  Corrected on 2026-11-17, once seen on a receiver with rtl-sdr 0.6.0,
+  whose rtl_tcp ignores a SIGTERM that comes as its client leaves and is
+  killed after 3 s at every stop: Radiolack ended while an idle source was
+  between that SIGTERM and the kill, 2 to 5 s after its last interface
+  closed, gave the kill up and left rtl_tcp holding the receiver; killed
+  itself, it left rtl_tcp running too, the kernel's SIGTERM being ignored
+  alike. The stop now runs to its end whatever closes the source, and the
+  kernel kills rtl_tcp when Radiolack dies. On that receiver: left running
+  three times out of three before, never in eight stops after, and gone
+  within a second of Radiolack's own kill.
 - Frequency correction and DC removal, 2026-11-09: the Source panel sets the
   receiver's correction in whole ppm, -100 to +100 (rtl_tcp command 5, sent
   at each connection like the other settings, with 0.4 s of settling after a
