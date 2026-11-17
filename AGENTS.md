@@ -90,7 +90,11 @@ the history under the tag `v0.1.0`.
   resample, the Hann window), `demod` (one VFO: channel level, squelch,
   audio at 12 kHz, or 32 kHz in WFM; SAM, synchronous AM: the carrier's
   search and lock, sought with or without audio, and the detector that
-  follows it, AM's envelope without a lock, the switch faded), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  follows it, AM's envelope without a lock, the switch faded; the
+  automatic notch in AM, SAM, USB and LSB: the lines found in the
+  detector's output, before the gate, and the audio filter's taps without
+  them, computed again in the block's worker thread only when a notch
+  comes, goes or moves, the audio faded from the old taps to the new), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; direct sampling below the tuner's range for shortwave;
@@ -232,16 +236,17 @@ the history under the tag `v0.1.0`.
   never saved), which it restores, and names the driver's computation to
   choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
   `listening.py` (later-milestones.md, section 2) holds the prototypes of
-  the listening tools still to build, the automatic notch, the noise
-  blanker and the fine spectrum, which the pull requests that build them
-  move into the package, as SAM's moved into `demod`;
+  the listening tools still to build, the noise blanker and the fine
+  spectrum, which the pull requests that build them move into the
+  package, as SAM's and the notch's moved into `demod`;
   `measure_listening.py` (spike 8) times the engine's block processing on
   synthetic samples at 2.4 MS/s without them, with each and with the four,
-  SAM as the VFO's mode and the prototypes through subclasses of the
-  demodulator that put them where the design does, needing no receiver;
-  `tests/test_listening.py` checks each prototype on synthetic signals and
-  runs the measure briefly, never reading its figures, and
-  `tests/test_sam.py` checks SAM.
+  SAM as the VFO's mode, the notch as its setting and the prototypes
+  through subclasses of the demodulator that put them where the design
+  does, needing no receiver; `tests/test_listening.py` checks each
+  prototype on synthetic signals and runs the measure briefly, never
+  reading its figures, `tests/test_sam.py` checks SAM and
+  `tests/test_notch.py` the notch.
 
 ## Commands
 

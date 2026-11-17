@@ -2,7 +2,8 @@
 synthetic signals that exercise it, and for the tool that measures their
 cost (tools/measure_listening.py), whose figures they leave alone: they
 depend on the computer, the tests on nothing but the samples. Synchronous
-AM, in the package, has its own tests (test_sam.py)."""
+AM and the automatic notch, in the package, have their own tests
+(test_sam.py, test_notch.py)."""
 
 import importlib.util
 import io
@@ -14,9 +15,6 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
-
-from radiolack.demod import audio_taps
-from radiolack.dsp import FftFilter
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -34,20 +32,10 @@ measuring = load("measure_listening")
 
 RATE_HZ = 48_000.0      # the channel's rate, and the detector's output's
 BLOCK = 1_600           # the channel's samples in one of the engine's blocks at 2.4 MS/s
-AUDIO_RATE_HZ = 12_000.0
 
 
 def times(seconds):
     return np.arange(round(seconds * RATE_HZ)) / RATE_HZ
-
-
-def voice(t):
-    """A voice-like sound, 0.1 rms: harmonics of a pitch that glides, under syllables."""
-    pitch_phase = 2 * np.pi * (150 * t - 40 / (2 * np.pi * 1.7) * np.cos(2 * np.pi * 1.7 * t)
-                               - 15 / (2 * np.pi * 4.3) * np.cos(2 * np.pi * 4.3 * t))
-    sound = sum(np.sin(k * pitch_phase) / k for k in range(1, 25))
-    sound *= 0.55 + 0.45 * np.sin(2 * np.pi * 3.1 * t) ** 2
-    return 0.1 * sound / np.std(sound)
 
 
 def noise(rng, count, rms):
@@ -56,88 +44,6 @@ def noise(rng, count, rms):
 
 def blocks(signal, size=BLOCK):
     return (signal[start:start + size] for start in range(0, len(signal), size))
-
-
-class AutoNotchTest(unittest.TestCase):
-    def run_notch(self, signals, seconds):
-        """Each of ``signals``, a function of time, through its own audio
-        filter, all with the taps that the notch gives for their sum; the
-        same through the plain filter; and when the notches changed."""
-        t = times(seconds)
-        parts = [signal(t) for signal in signals]
-        notch = listening.AutoNotch(RATE_HZ)
-        notched = [FftFilter(audio_taps("AM", RATE_HZ), RATE_HZ, down=4) for _ in parts]
-        plain = [FftFilter(audio_taps("AM", RATE_HZ), RATE_HZ, down=4) for _ in parts]
-        outputs = [[] for _ in parts]
-        references = [[] for _ in parts]
-        changes = []
-        for start in range(0, len(t), BLOCK):
-            pieces = [part[start:start + BLOCK] for part in parts]
-            taps = notch.process(sum(pieces))
-            if taps is not None:
-                changes.append(((start + BLOCK) / RATE_HZ, notch.notches))
-                for audio_filter in notched:
-                    audio_filter.set_taps(taps)
-            for piece, audio_filter, output in zip(pieces, notched, outputs):
-                output.append(audio_filter.process(piece.astype(np.complex64)).real)
-            for piece, audio_filter, reference in zip(pieces, plain, references):
-                reference.append(audio_filter.process(piece.astype(np.complex64)).real)
-        return ([np.concatenate(output) for output in outputs], [np.concatenate(ref) for ref in references],
-                changes)
-
-    @staticmethod
-    def power_db(signal, start_s, stop_s):
-        window = slice(round(start_s * AUDIO_RATE_HZ), round(stop_s * AUDIO_RATE_HZ))
-        return 10 * math.log10(np.mean(signal[window] ** 2))
-
-    def test_a_whistle_goes_within_a_second_the_voice_stays_and_the_notch_is_released(self):
-        def whistle(t):
-            return 0.1 * np.sin(2 * np.pi * 1234.5 * t) * ((t >= 1) & (t < 4))
-
-        (heard_voice, heard_whistle), (voice_alone, whistle_alone), changes = self.run_notch((voice, whistle), 6.0)
-        self.assertEqual(len(changes), 2, changes)
-        (on_s, notches), (off_s, released) = changes
-        self.assertLessEqual(on_s, 2.0)                     # within a second of the whistle's start
-        self.assertGreaterEqual(on_s, 1.5)                  # not before it was steady for half a second
-        self.assertEqual(len(notches), 1)
-        self.assertAlmostEqual(notches[0], 1234.5, delta=1.0)
-        self.assertEqual(released, ())
-        self.assertGreaterEqual(off_s, 5.0)                 # a second after it stops
-        self.assertLessEqual(off_s, 5.5)
-        # The filters' delay is 21 ms: these windows hold the notched taps alone.
-        self.assertLessEqual(self.power_db(heard_whistle, 2.1, 3.9) - self.power_db(whistle_alone, 2.1, 3.9), -20)
-        self.assertAlmostEqual(self.power_db(heard_voice, 2.1, 3.9), self.power_db(voice_alone, 2.1, 3.9),
-                               delta=1.0)
-
-    def test_a_voice_alone_is_not_notched(self):
-        _, _, changes = self.run_notch((voice,), 6.0)
-        self.assertEqual(changes, [])
-
-    def test_four_lines_at_most_the_strongest_and_none_outside_100_hz_to_5_khz(self):
-        def lines(t):
-            frequencies = (300.0, 800.0, 1500.0, 2200.0, 3100.0, 4000.0)
-            levels = (0.05, 0.2, 0.03, 0.15, 0.1, 0.08)
-            return sum(level * np.sin(2 * np.pi * f * t) for f, level in zip(frequencies, levels))
-
-        def outside(t):
-            return 0.2 * (np.sin(2 * np.pi * 60 * t) + np.sin(2 * np.pi * 5_400 * t))
-
-        _, _, changes = self.run_notch((voice, lines, outside), 2.0)
-        self.assertEqual(len(changes), 1, changes)
-        self.assertEqual([round(f) for f in changes[0][1]], [800, 2200, 3100, 4000])
-
-    def test_a_wide_line_is_not_notched(self):
-        def wide(t):
-            # A tone whose frequency wanders by 60 Hz, three times a second.
-            return 0.1 * np.sin(2 * np.pi * (1000 * t - 30 / (2 * np.pi * 3) * np.cos(2 * np.pi * 3 * t)))
-
-        _, _, changes = self.run_notch((voice, wide), 3.0)
-        self.assertEqual(changes, [])
-
-    def test_the_taps_keep_the_audio_filters_length(self):
-        plain = audio_taps("AM", RATE_HZ)
-        np.testing.assert_allclose(listening.notch_taps((), RATE_HZ), plain)
-        self.assertEqual(len(listening.notch_taps((700.0, 1300.0, 2100.0, 3400.0), RATE_HZ)), len(plain))
 
 
 class NoiseBlankerTest(unittest.TestCase):
@@ -268,6 +174,7 @@ class MeasureTest(unittest.TestCase):
         run = measuring.measure(measuring.Scene(2), 0.1, 1.0)
         activity = run.activity
         self.assertGreater(activity["sam"].locked, 0)
+        self.assertGreater(activity["notch"].notches, 0)
         self.assertGreater(activity["blanker"].blanked, 0)
         self.assertGreater(activity["fine"].frames, 0)
         self.assertGreater(activity["all"].locked, 0)

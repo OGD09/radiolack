@@ -460,6 +460,7 @@ class Engine:
         self._remote_capture: tuple[float, float] | None = None    # centre and rate of those blocks
         self._demodulator = Demodulator()   # used by one block at a time
         self._sam_locked = False            # whether SAM held its carrier after the last block
+        self._notch_lines = 0               # the lines that the notch removed after the last block
         # The centre asked and the rate of the last block, and its centre in use and rate.
         self._capture: tuple[tuple[float, float], tuple[float, float]] | None = None
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
@@ -685,6 +686,7 @@ class Engine:
         client whose changes up to ``acknowledged`` have been handled."""
         return {"type": "demod", **self._demod.describe(),
                 "sam_locked": self._sam_locked if self._demod.mode == "SAM" else None,
+                "notch_lines": self._notch_lines if self._demod.notching else None,
                 "modes": list(MODES), "audio_modes": list(AUDIO_MODES), "acknowledged": acknowledged}
 
     def configure_demod(self, changes: Mapping[str, object], subscription: Subscription | None = None,
@@ -1201,6 +1203,7 @@ class Engine:
                     None if channels is None else self._bands, measure, source.rate_scale)
                 self._publish(label, power, codes, meter, pcm)
                 self._follow_sam_lock(bool(meter.sam_locked))
+                self._follow_notch(meter.notch_lines or 0)
                 if measure is not None and carrier is not None:
                     self._measured(measure, carrier, label[0])
                 self._check_carrier()
@@ -1239,6 +1242,16 @@ class Engine:
             return
         self._sam_locked = locked
         if self._demod.mode == "SAM":
+            for subscription in self._clients:
+                subscription.changed("demod")
+
+    def _follow_notch(self, lines: int) -> None:
+        """The notch removes another number of lines: while it acts, every
+        client learns it with the demodulation state, which saves nothing."""
+        if lines == self._notch_lines:
+            return
+        self._notch_lines = lines
+        if self._demod.notching:
             for subscription in self._clients:
                 subscription.changed("demod")
 

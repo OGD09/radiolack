@@ -319,6 +319,61 @@ settles what it left open:
   prototype's on the same channel, takes the same time within 1%: the
   difference is the load's.
 
+As built in pull request 3, the notch, where it departs from the prototype
+or settles what it left open:
+
+- **The notch lives in `demod.py`**: `AutoNotch` is the prototype's,
+  which now says whether its notches changed, and `audio_taps` takes the
+  notches; the audio path holds the notch, reading its detector's output
+  before the squelch's gate. `tools/listening.py` keeps no copy, and
+  `tools/measure_listening.py` measures it as the VFO's setting.
+- **Where the taps are computed**: in the audio path, in the worker thread
+  that processes the engine's block, never in the event loop. A change
+  takes 3 to 5 ms there with the fade below, measured on the owner's
+  laptop, against a block of 33 ms of signal at 2.4 MS/s and the 150 ms
+  that each interface keeps buffered: it never stalls the audio.
+- **No click at a change.** The filter keeps the samples it remembers, so
+  new taps would take over between two samples and the audio would step by
+  what they remove, up to the line's amplitude. A copy of the filter keeps
+  the old taps for 5 ms, the squelch's fade, and the audio fades linearly
+  from its output to the new one, in step: from one sample to the next it
+  moves no more than either does, plus their difference, the removed line,
+  spread over 60 samples. A test checks that bound at a change and at the
+  notch turned off, against the same taps switched at once.
+- **The setting and the state.** `notch`, off by default, is a
+  demodulation setting, saved with the receiver's and kept across modes,
+  acting in AM, SAM, USB and LSB only; a bookmark carries only its mode, as
+  before. The state's `notch_lines` is the number of lines removed now
+  while the notch acts, null otherwise: enough to tell the user that the
+  notch works on what is heard, and it changes at most when a notch comes
+  or goes, while the frequencies would change each time one moves. It
+  counts only while audio is made, for an interface or a recording,
+  since the notch reads the audio path.
+- **"The strongest" is the highest over its surroundings**, the margin the
+  analysis measures, not the line's level: a weaker whistle in a quiet part
+  of the audio counts before a stronger one inside the voice. A notched line
+  keeps its notch while it lasts, whatever comes after.
+- **Steady means found at every analysis.** A single miss starts the half
+  second again, which keeps keyed tones (Morse from 12 to 30 words a
+  minute), tones held a quarter of a second, a vibrato and beeps of 0.4 s
+  out of the notch, as the tests check. The cost: a voice's harmonic that
+  crosses a whistle during its first half second makes it wait a little
+  longer, 1.1 s from its start in one test against 0.6 to 0.7 s otherwise.
+- **Calm at the threshold.** A line found by about a quarter, half or three
+  quarters of the analyses changed the taps once a minute at most, in nine
+  minutes of noise: gained only after half a second found every time,
+  held while it is found once a second, and read before the filter, the
+  notch neither comes and goes nor moves.
+- **Its cost.** The measure, run before and after the move on the owner's
+  laptop under a light load (load average 0.7 to 1.4), gave the notch
+  0.32% of one core over a baseline of 10.64% before, and 0.48% over
+  11.13% and 0.50% over 10.89% after: a thirtieth, then a twenty-second of
+  the baseline, against spike 8's 2.9 to 4.1%. Timed in turn on the same
+  blocks, the prototype added 0.42% and the package's notch 0.47%, over
+  10.41%: the fade, a copy of the filter and one block filtered twice at
+  each of the scene's four changes in ten seconds, adds about 0.05%, and
+  the rest of the difference between the measures is theirs.
+
 ### Pull requests
 
 1. The spike and its figures.

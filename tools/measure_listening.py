@@ -4,8 +4,9 @@ receiver at 2.4 MS/s: later-milestones.md, section 2, pull request 1, and
 spike 8 of scoping.md.
 
 The tools are synchronous AM, the package's SAM mode (demod.py) since its
-pull request, and the prototypes of `tools/listening.py`: the automatic
-notch, the noise blanker and the fine spectrum. The tool feeds
+pull request, the automatic notch, the package's too since its own (the
+demodulation settings' ``notch``), and the prototypes of
+`tools/listening.py`: the noise blanker and the fine spectrum. The tool feeds
 the engine's own block processing (``engine._process_block``: DC removal,
 display spectrum, detection, the VFO's channel, its meter and its audio)
 with synthetic samples, in the engine's block size, 1/30 s of samples,
@@ -21,13 +22,13 @@ reports for each tool the median of what it added per second of signal,
 as a percentage of one core, with the lowest and the highest, against the
 rule fixed beforehand: 1.5% for each, 6% together.
 
-The tools sit where the design puts them, SAM as the VFO's mode, the
-prototypes through subclasses in this file, so that the engine's code
-stays as it is: the blanker on the samples that the demodulator receives,
-after the display spectrum has read them; SAM in place of the AM detector
-in the audio path, with the same delay, and its search for the carrier on
-the channel; the notch reading the detector's output and changing the
-audio filter's taps;
+The tools sit where the design puts them, SAM as the VFO's mode and the
+notch as its setting, the prototypes through subclasses in this file, so
+that the engine's code stays as it is: the blanker on the samples that the
+demodulator receives, after the display spectrum has read them; SAM in
+place of the AM detector in the audio path, with the same delay, and its
+search for the carrier on the channel; the notch reading the detector's
+output and changing the audio filter's taps;
 the fine spectrum reading the front filter's output, the channel at 48 kHz
 before the channel filter, whose cover the design sets at 19.2 kHz on each
 side of the VFO.
@@ -66,7 +67,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import listening  # noqa: E402
-from radiolack.demod import MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator  # noqa: E402
+from radiolack.demod import MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator, audio_taps  # noqa: E402
 from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
 from radiolack.spectrum import SpectrumAnalyzer  # noqa: E402
@@ -157,23 +158,6 @@ class _Tapped:
         return getattr(self._filter, name)
 
 
-class _Notched:
-    """A detector whose output the notch reads, changing the audio
-    filter's taps when its notches change."""
-
-    def __init__(self, detector: Any, notch: listening.AutoNotch, audio_filter: Any) -> None:
-        self._detector = detector
-        self.notch = notch
-        self._filter = audio_filter
-
-    def process(self, channel: np.ndarray, power: np.ndarray) -> np.ndarray:
-        detected = self._detector.process(channel, power)
-        taps = self.notch.process(detected)
-        if taps is not None:
-            self._filter.set_taps(taps)
-        return detected
-
-
 @dataclass
 class Activity:
     """What the tools did, so that the figures are those of tools at work."""
@@ -187,11 +171,8 @@ class Activity:
 
 class ToolDemodulator(Demodulator):
     """The engine's demodulator with the prototypes of the listening tools
-    where the design puts them; SAM is its own, through the mode. It reaches
-    into the demodulator's audio path, which the package keeps private, as
-    the pull requests that build the tools will do in demod.py itself; the
-    audio path made for the first block runs without the notch, which the
-    warm-up leaves out."""
+    where the design puts them; SAM and the notch are its own, through the
+    mode and the setting."""
 
     def __init__(self, tools: frozenset[str]) -> None:
         super().__init__()
@@ -199,8 +180,6 @@ class ToolDemodulator(Demodulator):
         self.activity = Activity()
         self._blanker = listening.NoiseBlanker() if "blanker" in tools else None
         self._fine = listening.FineSpectrum() if "fine" in tools else None
-        self._notched: _Notched | None = None
-        self._hooked: object = None
 
     def _start(self, rate_hz: float, wide: bool) -> None:
         super()._start(rate_hz, wide)
@@ -219,16 +198,9 @@ class ToolDemodulator(Demodulator):
             self.activity.blanked += blanked is not samples
             samples = blanked
         meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap)
-        path = self._audio
-        if path is not None and path is not self._hooked:
-            self._hooked = path
-            if "notch" in self.tools:
-                self._notched = _Notched(path._detector, listening.AutoNotch(self.channel_rate_hz), path._filter)
-                path._detector = self._notched
         self.activity.blocks += 1
         self.activity.locked += bool(meter.sam_locked)
-        if self._notched is not None:
-            self.activity.notches = max(self.activity.notches, len(self._notched.notch.notches))
+        self.activity.notches = max(self.activity.notches, meter.notch_lines or 0)
         return meter, pcm
 
 
@@ -241,7 +213,8 @@ class Pipeline:
         self.detector = Detector()
         self.watch = ChannelWatch()
         mode = SAM_MODE if "sam" in tools else MODE
-        self.settings = DemodSettings(CENTRE_HZ + VFO_OFFSET_HZ, mode, MODE_BANDWIDTHS_HZ[mode])
+        self.settings = DemodSettings(CENTRE_HZ + VFO_OFFSET_HZ, mode, MODE_BANDWIDTHS_HZ[mode],
+                                      notch="notch" in tools)
 
     def process(self, samples: np.ndarray) -> int:
         """Process one block as the engine does; the processor time it took, in ns."""
@@ -300,7 +273,7 @@ def redesign_ms(repeats: int = 5) -> float:
     times = []
     for _ in range(repeats):
         started = time.thread_time_ns()
-        listening.notch_taps((700.0, 1_300.0, 2_100.0, 3_400.0), rate_hz)
+        audio_taps(MODE, rate_hz, (700.0, 1_300.0, 2_100.0, 3_400.0))
         times.append((time.thread_time_ns() - started) / 1e6)
     return statistics.median(times)
 
@@ -393,8 +366,8 @@ def positive(kind: type) -> Callable[[str], Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Measure the processor time that each listening tool (SAM, then the prototypes of"
-                    " tools/listening.py) adds to the engine's processing of one receiver at 2.4 MS/s, on"
+        description="Measure the processor time that each listening tool (SAM and the notch, then the"
+                    " prototypes of tools/listening.py) adds to the engine's processing of one receiver at 2.4 MS/s, on"
                     " synthetic samples. No receiver, no network.")
     parser.add_argument("--runs", type=positive(int), default=7, help="runs, each with fresh state (default 7)")
     parser.add_argument("--seconds", type=positive(float), default=10.0,

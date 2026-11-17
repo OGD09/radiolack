@@ -355,7 +355,7 @@ class SettingsTest(unittest.TestCase):
                                 "squelch_db": -95.5, "squelch_auto": False})
         self.assertEqual(settings.describe(), {"frequency_hz": 145_500_000.0, "mode": "AM",
                                                "bandwidth_hz": 6_000.0, "squelch_db": -95.5,
-                                               "squelch_auto": False})
+                                               "squelch_auto": False, "notch": False})
 
     def test_each_mode_takes_widths_of_its_own(self):
         wide = VFO.changed({"mode": "WFM"})

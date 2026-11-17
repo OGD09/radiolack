@@ -24,7 +24,8 @@ centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, synchronous AM (SAM), USB, LSB, CW and WFM,
-broadcast FM in mono, and the interface plays the audio. The engine also
+broadcast FM in mono, with an automatic notch for whistles in AM, SAM and
+SSB, and the interface plays the audio. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)), from an
@@ -205,7 +206,7 @@ between the step buttons at the bottom on a touch screen. The menu lists
 eight menus beside the one it shows:
 
 - Radio: the mode, the band plan's mode and step, the squelch, the volume,
-  the filter width and the tuning step.
+  the automatic notch, the filter width and the tuning step.
 - Bookmarks: the bookmarks, the band plan's ranges and known frequencies
   in view and the memory scan ([Settings and bookmarks](#settings-and-bookmarks)).
 - Scan: the signals found, the sweep and the History, in three tabs
@@ -602,10 +603,10 @@ or which to choose. Its `--help` says what it needs; the Debian package does
 not install it.
 
 Also for developers, `tools/listening.py` holds prototypes of the coming
-listening tools (an automatic notch, a noise blanker and a fine spectrum of
-the VFO's channel), which Radiolack does not use yet, and
-`tools/measure_listening.py` measures the processor time that synchronous
-AM, Radiolack's SAM, and each of them add to the engine at 2.4 MS/s, on
+listening tools (a noise blanker and a fine spectrum of the VFO's channel),
+which Radiolack does not use yet, and `tools/measure_listening.py`
+measures the processor time that synchronous AM, Radiolack's SAM, the
+automatic notch and each of them add to the engine at 2.4 MS/s, on
 synthetic samples, without a receiver; it takes about three minutes and
 `--output FILE` keeps its table.
 
@@ -720,6 +721,30 @@ switch fading over 5 ms. Its limits: one carrier, the strongest within
 both sidebands, never one alone; and no lock on a weak carrier, where it
 sounds as AM. SAM adds about a twelfth to the engine's processing of a
 2.4 MS/s receiver.
+
+The automatic notch, Radio > "Automatic notch", takes whistles out of the
+audio, such as the heterodyne of a carrier beside an AM station or a tuning
+tone on an SSB voice. It acts in AM, SAM, USB and LSB; not in CW, whose
+signal is itself a steady tone, nor in NFM and WFM, where the box is greyed
+with a note. It is off at first, shared by every interface as the mode is,
+saved with the receiver's settings and kept when the mode changes; a
+bookmark does not carry it. It looks ten times a second at the audio
+before the squelch and the audio filter, and removes the lines between
+100 Hz and 5 kHz that stand 15 dB or more over the audio around them, are
+at most 30 Hz wide and have stayed for half a second: 45 Hz on each side of
+each, through the audio filter, which the audio fades into over 5 ms
+without a click. A whistle goes within about a second of its start, and
+comes back a second after it stops; one that drifts slowly is followed.
+The note under the box says how many lines it removes now, the same on
+every interface, while an interface listens or a recording runs. Its
+limits: it is automatic only, with no manual notch; it removes four lines
+at most, those that stand highest over their surroundings first, and keeps
+those it took while they last, even when stronger ones come; a whistle
+crossed by a voice's harmonic during its first half second may take a
+little longer; and a note held longer than half a second, in music or a
+long vowel, is taken for a whistle while it lasts and for a second after.
+The recordings take the notched audio. It
+adds about 4% to the engine's processing of a 2.4 MS/s receiver.
 
 Frequencies are exact to the hertz. They show in MHz with as many decimals
 as they have, from 3 to 6 (145.500, 145.6125, 7.074001); measurements keep
@@ -1057,7 +1082,7 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 (`$XDG_CONFIG_HOME/radiolack` when that variable is set):
 
 - `settings.json` holds each receiver's settings: the Receiver menu's and the
-  demodulation settings (VFO, mode, filter width, squelch). The simulated
+  demodulation settings (VFO, mode, filter width, squelch, automatic notch). The simulated
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start,
@@ -1794,8 +1819,8 @@ src/radiolack/
 tests/          tests without hardware
 tools/          measure_pll.py: measures how well Radiolack labels an
                 R820T's samples; listening.py: prototypes of the
-                listening tools, and measure_listening.py, their cost;
-                run from a checkout
+                listening tools still to build, and measure_listening.py,
+                the cost of each; run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,

@@ -71,6 +71,10 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string[]} audioModes  modes it demodulates to audio; the others are silent
  * @property {boolean | null} samLocked  in SAM, whether it holds its carrier; null in the other
  *   modes, and from an engine older than SAM
+ * @property {boolean | null} notch  whether the automatic notch is on, which acts in AM, SAM, USB
+ *   and LSB only; null from an engine older than the notch
+ * @property {number | null} notchLines  while the notch acts, the lines it removes now, 0 to 4;
+ *   null otherwise
  */
 
 /**
@@ -81,6 +85,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [bandwidthHz]
  * @property {number} [squelchDb]
  * @property {boolean} [squelchAuto]
+ * @property {boolean} [notch]
  */
 
 /**
@@ -506,6 +511,8 @@ export function decodeDemod(message) {
     modes: m.modes.slice(),
     audioModes: m.audio_modes.slice(),
     samLocked: typeof m.sam_locked === 'boolean' ? m.sam_locked : null,
+    notch: typeof m.notch === 'boolean' ? m.notch : null,
+    notchLines: Number.isSafeInteger(m.notch_lines) && m.notch_lines >= 0 ? m.notch_lines : null,
     acknowledged: m.acknowledged,
   };
 }
@@ -1062,6 +1069,7 @@ export class EngineStream {
     if (changes.bandwidthHz !== undefined) message.bandwidth_hz = changes.bandwidthHz;
     if (changes.squelchDb !== undefined) message.squelch_db = changes.squelchDb;
     if (changes.squelchAuto !== undefined) message.squelch_auto = changes.squelchAuto;
+    if (changes.notch !== undefined) message.notch = changes.notch;
     if (!this.#send(message)) return false;
     this.#lastChangeId += 1;
     this.#awaitedId = this.#lastChangeId;
