@@ -711,8 +711,9 @@ with the M key. It looks for the strongest line within 1 kHz of the VFO,
 so it needs no exact tuning, and once it holds it, follows it within 40 Hz
 on each side, so that a sideband growing over a fading carrier does not
 take its place. The line under the frequency says "locked" while it holds
-the carrier, the same on every interface, and "no lock" otherwise: under
-10 dB of carrier over the noise (within 80 Hz around it), it plays the
+the carrier, the same on every interface, and "no lock" otherwise: it
+takes a carrier from 10 dB over the noise (within 80 Hz around it, over
+half a second) and keeps it down to 7 dB; without one it plays the
 envelope, as AM does, and takes the carrier again once it comes back, the
 switch fading over 5 ms. Its limits: one carrier, the strongest within
 1 kHz, so a stronger station or heterodyne nearer the VFO takes the lock;

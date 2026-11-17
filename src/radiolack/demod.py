@@ -22,6 +22,7 @@ with the audio.
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import math
 import struct
@@ -79,6 +80,9 @@ SAM_BAND_HZ = 80.0                  # the band-pass that follows it, between its
 SAM_STAGES = 3                      # moving averages in cascade make the band-pass
 SINC_CUBED_HALF = 0.36606           # where sinc(x) ** 3, the cascade's response at x / length, is one half
 SAM_LOCK_DB = 10.0                  # carrier over the noise within the band-pass, or no lock
+SAM_HOLD_DB = 3.0                   # a lock holds this far under SAM_LOCK_DB
+SAM_LOCK_SEARCHES = 5               # the lock goes by the mean of this many searches' margins, half a second
+SAM_MARGIN_DB = (-10.0, 60.0)       # a search's margin counts within these in that mean
 SAM_SEARCH_SIZE = 4096              # the search's FFT: 11.7 Hz per bin at 48 kHz
 SAM_SEARCH_S = 0.1                  # one search this often
 SAM_LOBE_BINS = 2                   # a Hann window's main lobe, on each side of its peak
@@ -529,7 +533,11 @@ class CarrierSearch:
     noise's within the band-pass: the power of the line's main lobe, less
     the noise in its bins, over the median of the searched bins, which is
     the noise's mean power per bin times ln 2, scaled to ``SAM_BAND_HZ``.
-    Under ``SAM_LOCK_DB`` there is no lock, and the next search looks within
+    One search's margin scatters by 1 to 2 dB around the carrier's, so the
+    lock goes by the mean of the latest ``SAM_LOCK_SEARCHES``: under
+    ``SAM_LOCK_DB`` no lock is gained, and one held is lost ``SAM_HOLD_DB``
+    lower. Search by search, a carrier at 10 dB gained and lost the lock
+    five times a second. Without a lock the next search looks within
     ``SAM_SEARCH_HZ`` again. ``frequency_hz`` keeps the latest carrier found
     after a loss. Not thread-safe."""
 
@@ -538,6 +546,7 @@ class CarrierSearch:
         self.locked = False
         self.carrier_hz: float | None = None    # from the channel's 0 Hz, while locked
         self.margin_db: float | None = None     # the carrier over the noise within the band-pass, at the latest search
+        self._margins: collections.deque[float] = collections.deque(maxlen=SAM_LOCK_SEARCHES)
         self.frequency_hz = 0.0                 # the latest carrier found, from the channel's 0 Hz
         self.acquisitions = 0                   # the locks gained so far
         self._window = hann(SAM_SEARCH_SIZE)
@@ -577,7 +586,9 @@ class CarrierSearch:
         margin = (math.inf if median <= 0 else -math.inf if line <= 0 else
                   10 * math.log10(line * math.log(2) * self.rate_hz / (SAM_SEARCH_SIZE * median * SAM_BAND_HZ)))
         self.margin_db = margin
-        if margin < SAM_LOCK_DB:
+        self._margins.append(min(max(margin, SAM_MARGIN_DB[0]), SAM_MARGIN_DB[1]))
+        steady = sum(self._margins) / len(self._margins)
+        if steady < (SAM_LOCK_DB - SAM_HOLD_DB if self.locked else SAM_LOCK_DB):
             self._lose()
             return
         left, centre, right = (10 * math.log10(max(float(value), 1e-30)) for value in power[peak - 1:peak + 2])

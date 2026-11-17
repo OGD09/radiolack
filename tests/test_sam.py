@@ -8,8 +8,8 @@ import unittest
 
 import numpy as np
 
-from radiolack.demod import (AM_LEVEL, SAM_BAND_HZ, SAM_FADE_S, SAM_STAGES, CarrierSearch, DemodSettings,
-                             Demodulator, MovingAverages, SyncDetector, _AmDetector, _AudioPath,
+from radiolack.demod import (AM_LEVEL, SAM_BAND_HZ, SAM_FADE_S, SAM_LOCK_DB, SAM_STAGES, CarrierSearch,
+                             DemodSettings, Demodulator, MovingAverages, SyncDetector, _AmDetector, _AudioPath,
                              sam_band_pass_length)
 from tests.test_demod import AUDIO_RATE, CENTRE, OFFSET, am, run, tone_amplitude
 from tests.test_demod import noise as band_noise
@@ -170,6 +170,22 @@ class SyncDetectorTest(unittest.TestCase):
                     self.assertIsNone(search.carrier_hz)
                     np.testing.assert_array_equal(audio, envelope_of(channel))
 
+    def test_a_carrier_at_the_edge_does_not_gain_and_lose_the_lock_again_and_again(self):
+        # Search by search, a carrier at the lock's level changed it five
+        # times a second: the mean of several searches and the margin under
+        # which a lock holds leave a change or two in half a minute.
+        t = times(30.0)
+        carrier = 0.1 * np.exp(2j * np.pi * CARRIER_HZ * t + 0.3j)
+        for margin_db in (SAM_LOCK_DB - 1.5, SAM_LOCK_DB, SAM_LOCK_DB + 2.0):
+            with self.subTest(margin_db=margin_db):
+                channel = carrier + noise(np.random.default_rng(5), len(t), margin_rms(margin_db))
+                search = CarrierSearch(RATE_HZ)
+                locks = []
+                for block in blocks(channel.astype(np.complex64)):
+                    search.add(block)
+                    locks.append(search.locked)
+                self.assertLessEqual(sum(a != b for a, b in zip(locks, locks[1:])), 3)
+
     def test_it_locks_again_once_the_carrier_returns(self):
         t = times(4.0)
         present = ((t < 1.5) | (t >= 2.5)).astype(float)    # the station goes for a second
@@ -178,7 +194,8 @@ class SyncDetectorTest(unittest.TestCase):
         audio, locks = detect(channel, search)
         per_second = round(RATE_HZ / BLOCK)
         self.assertTrue(all(locks[per_second // 2:round(1.5 * per_second)]))
-        self.assertFalse(any(locks[round(1.8 * per_second):round(2.5 * per_second)]))
+        # Lost once the mean of the latest searches says so, half a second after it went.
+        self.assertFalse(any(locks[round(2.1 * per_second):round(2.5 * per_second)]))
         self.assertTrue(all(locks[round(2.8 * per_second):]))
         self.assertEqual(search.acquisitions, 2)
         self.assertAlmostEqual(search.carrier_hz, CARRIER_HZ, delta=1.0)

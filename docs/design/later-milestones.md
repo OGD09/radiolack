@@ -296,10 +296,15 @@ settles what it left open:
   samples. A test switches by hand in a selective fade, where the two
   differ by more than 0.2 of full scale, and checks that bound and that
   the step stays under a third of their difference.
-- **The lock has no hysteresis**: the design's 10 dB, both ways, measured
-  every 0.1 s. A carrier near 10 dB may gain and lose it several times a
-  second, each switch faded; the demodulation state follows, and goes to
-  the interfaces only when it changes.
+- **The lock goes by half a second, and holds a little lower.** One
+  search's margin scatters by 1 to 2 dB around the carrier's: by the
+  design's 10 dB alone, search by search, a carrier at 10 dB gained and
+  lost the lock five times a second, and one at 12 dB once a second. The
+  lock goes by the mean of the latest five searches' margins, gained from
+  10 dB and lost under 7 dB, which leaves under one change a minute from
+  8.5 to 12 dB. A lock is then gained 0.2 s after a carrier comes and lost
+  0.5 s after it goes. The demodulation state follows, and goes to the
+  interfaces only when it changes.
 - **The plan's AM.** The interface's `planMode` (bandplan.js) gives SAM
   where the plan names AM and the VFO is in SAM: a range tuned into, a
   known frequency or a channel pressed, and the mode of a bookmark added
