@@ -223,6 +223,16 @@ FREQUENCY_PROBE = """async () => {
       '.5', '99999', '100000', '0', '0.4 Hz', '100.1 GHz', '', 'abc', '145.5 x', '1e6', '-1', '10.489,5 M'].map(parseFrequency),
   };
 }"""
+# The mode that the band plan's mode gives (bandplan.js), from the VFO's:
+# SAM counts as AM.
+PLAN_MODE_PROBE = """async () => {
+  const { planMode } = await import(new URL('bandplan.js', document.baseURI).href);
+  return [['AM', 'SAM'], ['AM', 'NFM'], ['NFM', 'SAM'], ['USB', 'SAM'], [null, 'SAM'], [null, 'AM'], ['AM', 'AM']]
+    .map(([planned, current]) => planMode(planned, current));
+}"""
+# The interface's modes, in the order of its Mode buttons and of the M key.
+MODE_ORDER = ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"]
+ON = re.compile(r"(^|\s)on(\s|$)")   # SAM's lock, beside the mode, while it holds the carrier
 # The fill and the stroke of each path of a logo, its text's colour where
 # a browser gives the keyword currentcolor.
 LOGO_PAINT = """(logo) => [...logo.querySelectorAll('path')].map((path) => {
@@ -674,6 +684,80 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#dm-audio-note")).to_be_hidden()     # AM plays too
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
+
+    def test_sam_sits_beside_am_and_says_on_every_interface_that_noise_gives_no_lock(self):
+        # At a frequency of the simulated band where only noise lies: SAM
+        # takes AM's filter widths and the line under the frequency says that
+        # it holds no carrier; the M key reaches it after AM and leaves it for
+        # USB, and the lock goes with it.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(FRAME_RATE)
+                first.keyboard.press("Escape")      # the Receiver menu lies over the readout
+                first.locator("#freq").dblclick()
+                first.locator("#freq input").fill("145.2")
+                first.locator("#freq input").press("Enter")
+                expect(second.locator("#freq")).to_have_attribute("aria-valuenow", "145200000")
+                self.open_menu(first, "radio")
+                expect(first.locator("#mode-group button")).to_have_text(MODE_ORDER)
+                first.locator('#mode-group button[data-mode="SAM"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("SAM")
+                    expect(page.locator("#m-bw")).to_have_text("8 kHz")
+                    expect(page.locator("#m-lock")).to_have_text("no lock")
+                    expect(page.locator("#m-lock")).to_be_visible()
+                    expect(page.locator("#m-lock")).not_to_have_class(ON)
+                expect(first.locator('#mode-group button[data-mode="SAM"]')).to_have_attribute("aria-checked", "true")
+                expect(first.locator("#dm-bw")).to_have_attribute("min", "3000")
+                expect(first.locator("#dm-bw")).to_have_attribute("max", "15000")
+                expect(first.locator("#dm-audio-note")).to_be_hidden()      # SAM plays
+                first.keyboard.press("Escape")      # the menu closes
+                first.keyboard.press("m")
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("USB")
+                    expect(page.locator("#m-lock")).to_be_hidden()
+                for mode in MODE_ORDER[4:] + MODE_ORDER[:3]:     # round to SAM again
+                    first.keyboard.press("m")
+                    expect(second.locator("#m-mode")).to_have_text(mode)
+                expect(second.locator("#m-lock")).to_have_text("no lock")
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_sam_holds_a_carrier_and_stays_where_the_plan_names_am(self):
+        # The fake's carrier, at 145.010 MHz on the air, shows 465.5 Hz low
+        # through its crystal: within the kilohertz around the VFO that SAM
+        # searches. In the airband, where the plan names AM, SAM stays, with
+        # "Mode and step from the band plan" on; where it names another mode,
+        # that mode comes, SAM counting as AM alone.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource("carrier", program=FAKE_RTL_TCP))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                self.assertEqual(first.evaluate(PLAN_MODE_PROBE), ["SAM", "AM", "NFM", "USB", "SAM", "AM", "AM"])
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                for page in (first, second):
+                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                first.locator("#freq").dblclick()
+                first.locator("#freq input").fill("145.0095")
+                first.locator("#freq input").press("Enter")
+                self.open_menu(first, "radio")
+                expect(first.locator("#dm-auto")).to_be_checked()
+                first.locator('#mode-group button[data-mode="SAM"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("SAM")
+                    expect(page.locator("#m-lock")).to_have_text("locked")
+                    expect(page.locator("#m-lock")).to_have_class(ON)
+                first.keyboard.press("Escape")
+                for _ in range(7):
+                    first.keyboard.press("-")       # about 35.6 MHz wide, from 118.9 MHz
+                _, text = self.readout_at(first, 0.08)
+                self.assertRegex(text, rf"^\d+\.\d+ MHz {DOT} outside the span {DOT} Airband$")
+                first.mouse.down()
+                first.mouse.up()
+                for page in (first, second):
+                    expect(page.locator("#freq")).to_have_attribute("aria-valuenow", re.compile(r"^1[23]\d{7}$"))
+                    expect(page.locator("#m-mode")).to_have_text("SAM")
+                    expect(page.locator("#m-lock")).to_have_text("no lock")      # no carrier there
 
     def test_the_icon_beside_the_frequency_opens_the_antenna_lengths(self):
         # The lengths follow the VFO while they show, as when another

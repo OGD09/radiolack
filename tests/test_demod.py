@@ -81,7 +81,8 @@ def channel_noise_db(level_db: float, bandwidth_hz: float = 10_000.0) -> float:
 
 VFO = DemodSettings(frequency_hz=CENTRE + OFFSET)
 ALWAYS_OPEN = DemodSettings(frequency_hz=CENTRE + OFFSET, squelch_auto=False, squelch_db=-160.0)
-WIDTHS = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0}   # the interface's
+# The interface's filter widths.
+WIDTHS = {"NFM": 10_000.0, "AM": 8_000.0, "SAM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0}
 
 
 def open_in(mode: str) -> DemodSettings:
@@ -191,7 +192,7 @@ class ModeChangeTest(unittest.TestCase):
     def test_the_audio_goes_on_through_mode_changes(self):
         demodulator = Demodulator()
         signal = am(0.2, -40.0, 0.5)
-        for mode in ("NFM", "AM", "USB", "LSB", "CW", "NFM"):
+        for mode in ("NFM", "AM", "SAM", "USB", "LSB", "CW", "NFM"):
             with self.subTest(mode=mode):
                 meters, sound = run(signal, open_in(mode), demodulator=demodulator)
                 self.assertEqual(len(np.concatenate(sound)), 0.2 * AUDIO_RATE)
@@ -247,7 +248,7 @@ class WfmTest(unittest.TestCase):
 
     def test_the_automatic_squelch_reads_the_noise_beyond_the_channel(self):
         self.assertEqual(noise_clearance_hz("WFM", 180_000.0), 90_000.0)
-        for mode in ("NFM", "AM", "USB", "LSB", "CW"):
+        for mode in ("NFM", "AM", "SAM", "USB", "LSB", "CW"):
             self.assertEqual(noise_clearance_hz(mode, WIDTHS[mode]), 0.0)
 
 
@@ -376,7 +377,7 @@ class SettingsTest(unittest.TestCase):
             ({"frequency_hz": "145e6"}, "the VFO frequency must be a number"),
             ({"frequency_hz": 0}, "the VFO frequency must be between"),
             ({"frequency_hz": 10 ** 400}, "the VFO frequency must be between"),    # too large for a float
-            ({"mode": "DSB"}, "the mode must be one of NFM, AM, USB, LSB, CW, WFM"),
+            ({"mode": "DSB"}, "the mode must be one of NFM, AM, SAM, USB, LSB, CW, WFM"),
             ({"bandwidth_hz": 50}, "the filter width must be between 100 and 25000"),
             ({"bandwidth_hz": -10 ** 400}, "the filter width must be between 100 and 25000"),
             ({"bandwidth_hz": True}, "the filter width must be a number"),

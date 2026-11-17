@@ -114,12 +114,14 @@ class NameTest(unittest.TestCase):
         self.assertEqual(recording_name(STARTED + 0.9, 1_090_000_000.0, "AM", count=2),
                          "2026-11-06_21-20-00Z_1090.000000MHz_AM-2.wav")
         self.assertEqual(recording_name(STARTED, 7_074_250.0, "USB"), "2026-11-06_21-20-00Z_7.074250MHz_USB.wav")
+        self.assertEqual(recording_name(STARTED, 9_420_000.0, "SAM"), "2026-11-06_21-20-00Z_9.420000MHz_SAM.wav")
 
     def test_only_its_own_names_are_recordings(self):
-        for name in (NAME, NAME.replace(".wav", "-2.wav"), NAME.replace("NFM", "WFM")):
+        for name in (NAME, NAME.replace(".wav", "-2.wav"), NAME.replace("NFM", "WFM"), NAME.replace("NFM", "SAM"),
+                     NAME.replace("NFM", "AM").replace(".wav", "-3.wav")):
             with self.subTest(name=name):
                 self.assertTrue(is_recording_name(name))
-        for name in ("main.js", "../" + NAME, NAME + ".part", NAME.replace("NFM", "FM"),
+        for name in ("main.js", "../" + NAME, NAME + ".part", NAME.replace("NFM", "FM"), NAME.replace("NFM", "SSAM"),
                      NAME.replace(".wav", "-0.wav"), NAME.replace(".wav", "-1000.wav"), "." + NAME,
                      NAME.replace("Z_", "_"), NAME.replace("2026-11-06", "2026-13-06"),
                      NAME.replace("21-20-00", "24-20-00"), None, 12):
@@ -394,7 +396,7 @@ class IQRecordingTest(TemporaryFolder):
 
 class ListTest(TemporaryFolder):
     def test_lists_the_recordings_newest_first(self):
-        first, second = NAME, recording_name(STARTED + 60, 433_500_000.0, "AM")
+        first, second = NAME, recording_name(STARTED + 60, 9_420_000.0, "SAM")
         again = NAME.replace(".wav", "-2.wav")
         for name, seconds in ((first, 1.0), (second, 0.5), (again, 2.0)):
             write_wav(self.folder / name, seconds)
@@ -403,7 +405,7 @@ class ListTest(TemporaryFolder):
         os.symlink(self.folder / first, self.folder / recording_name(STARTED + 180, 145e6, "NFM"))
         listed = list_recordings(self.folder, running={second})
         self.assertEqual(listed["files"], [
-            {"name": second, "kind": "audio", "started": STARTED + 60, "frequency_hz": 433_500_000, "mode": "AM",
+            {"name": second, "kind": "audio", "started": STARTED + 60, "frequency_hz": 9_420_000, "mode": "SAM",
              "bytes": 44 + 12_000, "seconds": 0.5, "running": True},
             {"name": again, "kind": "audio", "started": STARTED, "frequency_hz": 145_500_000, "mode": "NFM",
              "bytes": 44 + 48_000, "seconds": 2.0, "running": False},

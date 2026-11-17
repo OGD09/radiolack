@@ -87,8 +87,10 @@ the history under the tag `v0.1.0`.
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO, or beyond a WFM
   channel), `dsp` (FIR design and overlap-save FFT filters that shift and
-  resample), `demod` (one VFO: channel level, squelch, audio at 12 kHz, or
-  32 kHz in WFM), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  resample, the Hann window), `demod` (one VFO: channel level, squelch,
+  audio at 12 kHz, or 32 kHz in WFM; SAM, synchronous AM: the carrier's
+  search and lock, sought with or without audio, and the detector that
+  follows it, AM's envelope without a lock, the switch faded), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; direct sampling below the tuner's range for shortwave;
@@ -139,7 +141,7 @@ the history under the tag `v0.1.0`.
   build step. `stream.js` (stream client), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
   `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
-  (band plan loader), `antenna.js` (antenna lengths for the VFO's
+  (band plan loader, and the mode the plan gives, SAM counting as AM), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
   input), `power.js` (the antenna power's second press), `converter.js`
@@ -230,14 +232,16 @@ the history under the tag `v0.1.0`.
   never saved), which it restores, and names the driver's computation to
   choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
   `listening.py` (later-milestones.md, section 2) holds the prototypes of
-  the listening tools, synchronous AM, the automatic notch, the noise
+  the listening tools still to build, the automatic notch, the noise
   blanker and the fine spectrum, which the pull requests that build them
-  move into the package; `measure_listening.py` (spike 8) times the
-  engine's block processing on synthetic samples at 2.4 MS/s without them,
-  with each and with the four, through subclasses of the demodulator that
-  put them where the design does, needing no receiver;
+  move into the package, as SAM's moved into `demod`;
+  `measure_listening.py` (spike 8) times the engine's block processing on
+  synthetic samples at 2.4 MS/s without them, with each and with the four,
+  SAM as the VFO's mode and the prototypes through subclasses of the
+  demodulator that put them where the design does, needing no receiver;
   `tests/test_listening.py` checks each prototype on synthetic signals and
-  runs the measure briefly, never reading its figures.
+  runs the measure briefly, never reading its figures, and
+  `tests/test_sam.py` checks SAM.
 
 ## Commands
 

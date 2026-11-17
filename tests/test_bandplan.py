@@ -6,7 +6,8 @@ import unittest
 
 from radiolack.server import WEB_DIR
 
-# The interface's demodulators (MODES in main.js).
+# The modes the band plan may name: the interface's (MODES in main.js), but SAM,
+# which counts as AM where the plan names AM.
 MODES = {"NFM", "AM", "USB", "LSB", "CW", "WFM"}
 COLOUR = re.compile(r"#[0-9a-f]{6}")
 REQUIRED_KEYS = {"from", "to", "name", "type"}

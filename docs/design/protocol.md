@@ -101,19 +101,21 @@ preferences apart from this computer's.
 
    ```json
    {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
-    "squelch_db": -80.0, "squelch_auto": true, "modes": ["NFM", "AM", "USB", "LSB", "CW", "WFM"],
-    "audio_modes": ["NFM", "AM", "USB", "LSB", "CW", "WFM"], "acknowledged": 0}
+    "squelch_db": -80.0, "squelch_auto": true, "sam_locked": null,
+    "modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"],
+    "audio_modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"], "acknowledged": 0}
    ```
 
    | Field | Meaning |
    | --- | --- |
    | `frequency_hz` | The VFO, a whole number of Hz. It starts a quarter of the span above the centre frequency. When the span changes, a VFO left outside it moves to its nearest edge; a VFO set outside the span reads nothing and stays silent. |
    | `mode` | One of `modes`. |
-   | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM, CW and WFM, above it for USB, below it for LSB. |
+   | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM, SAM, CW and WFM, above it for USB, below it for LSB. SAM takes AM's widths. |
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
    | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. In WFM, whose channel fills those bins, it takes the median of the bins from the channel's edge to 100 kHz beyond it, on the quieter side, as a neighbouring station may fill the other. |
+   | `sam_locked` | In SAM, synchronous AM, whether it holds a carrier: true while a line within 1 kHz of the VFO, once held followed within 40 Hz of it, stands 10 dB or more over the noise within 80 Hz, sought ten times a second and judged on the mean of the latest five searches, a lock held staying down to 7 dB; false otherwise, when the audio is AM's envelope. Null in the other modes. The state is sent again whenever it changes, to every interface; it is the engine's, never saved, and found whether or not an interface asked for audio. |
    | `modes` | The modes the engine takes. |
-   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All six for now. |
+   | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All seven for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
 
 4. Then the bookmarks, a JSON text message, sent again whenever they
@@ -476,15 +478,20 @@ preferences apart from this computer's.
     strength. In USB and LSB it is the channel's real part, and in CW too,
     with the VFO at 700 Hz in the channel, so that a carrier on the VFO
     sounds at 700 Hz; an AGC brings a steady signal to 0.4 of full scale and
-    lets the gain come back at 10 dB per second. AM, USB, LSB and CW audio
-    runs from 100 Hz to 5 kHz. In WFM the audio is the FM discriminator's
+    lets the gain come back at 10 dB per second. In SAM it is the channel
+    turned by the phase of its carrier, which a band-pass 80 Hz wide
+    follows, along the carrier, less the carrier, over a level that follows
+    the carrier's at once and falls at 10 dB per second: unfaded, as loud as
+    AM, and the sidebands' audio stays as it is while the carrier fades
+    alone. Without a lock (`sam_locked`) it is AM's, the switch fading over
+    5 ms. AM, SAM, USB, LSB and CW audio runs from 100 Hz to 5 kHz. In WFM the audio is the FM discriminator's
     output too, full scale at 75 kHz of deviation, broadcast's peak, with a
     50 µs de-emphasis (unit gain at the lowest frequencies) and a band from
     40 Hz to 15 kHz: mono, without the stereo pilot at 19 kHz or what lies
     above it. The audio is silent while the squelch is closed, with 5 ms
     fades, and in the modes not in `audio_modes`. It lags its samples by the
-    filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM and
-    WFM, 45 ms in USB and LSB, 60 ms in CW.
+    filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
+    and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
 14. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
@@ -1156,6 +1163,20 @@ and later.
   asks for waits for frames from the centre asked, which never come, so
   that the VFO stays where it was instead of going to the frequency
   clicked, until the next retune; a reload brings a newer interface.
+  On 2026-11-17, the SAM mode (later-milestones.md, section 2, pull
+  request 2), without a new version: `modes` and `audio_modes` gain SAM,
+  and the demodulation state gains `sam_locked`, which an older interface
+  ignores. An older interface lists SAM in no menu and drops every
+  demodulation state whose mode it does not know: while the engine is in
+  SAM, it keeps showing the VFO, mode, filter width and squelch it showed
+  last, though the VFO moves for another interface, and catches up once
+  the mode is one it knows. Its own changes, made from what it shows,
+  still reach the engine: a tune moves the VFO in SAM, a mode other than
+  the one it shows replaces SAM, while the one it shows sends nothing.
+  Its audio, its frames and its S-meter are SAM's, as for any interface.
+  A bookmark or a recording in SAM shows with its mode's name; tuning to
+  such a bookmark there moves the VFO and leaves the engine's mode as it
+  is. A reload brings a newer interface.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

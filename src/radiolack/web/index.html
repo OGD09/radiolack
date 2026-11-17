@@ -37,7 +37,7 @@
     <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Drag or wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
       <svg viewBox="0 0 15 15" aria-hidden="true"><path d="M3 1.5c1.7 0 2.7.8 3.4 2.4l5.1 9.6M7.5 6 3 13.5"/></svg>
     </button></div>
-    <div id="meta"><b id="m-mode"></b><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
+    <div id="meta"><b id="m-mode"></b><span id="m-lock" hidden></span><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
     <!-- The wheel over the S-meter, or a click or a tap on its bar, sets the squelch; the Radio menu sets it too. -->
     <div id="smeter" aria-hidden="true" title="Squelch: wheel or click"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
   </div>
@@ -75,6 +75,7 @@
             <div class="segmented" role="radiogroup" aria-label="Mode" id="mode-group">
               <button type="button" role="radio" data-mode="NFM">NFM</button>
               <button type="button" role="radio" data-mode="AM">AM</button>
+              <button type="button" role="radio" data-mode="SAM" title="Synchronous AM">SAM</button>
               <button type="button" role="radio" data-mode="USB">USB</button>
               <button type="button" role="radio" data-mode="LSB">LSB</button>
               <button type="button" role="radio" data-mode="CW">CW</button>
