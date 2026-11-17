@@ -588,10 +588,11 @@ Limits:
 - The constant comes from the driver's code, read for rtl-sdr 2.0.1 and
   2.0.2 and the RTL-SDR Blog fork, and was measured on one RTL-SDR Blog V3
   with rtl-sdr 0.6.0 near 111 MHz, at the tuner's divider 16, which covers
-  111 to 221 MHz. A driver that computes otherwise keeps the error it has,
-  and Calibrate then names neither computation; a driver changed without
-  changing the setting may put signals up to twice the constant off until
-  the next calibration.
+  111 to 221 MHz: there, with the driver identified, a carrier stayed within
+  0.2 Hz across 53 centre frequencies, where it moved by 203 Hz before. A
+  driver that computes otherwise keeps the error it has, and Calibrate then
+  names neither computation; a driver changed without changing the setting
+  may put signals up to twice the constant off until the next calibration.
 
 For developers, `tools/measure_pll.py`, run from a checkout, measures how
 well a Radiolack already running on such a receiver labels its samples: it
