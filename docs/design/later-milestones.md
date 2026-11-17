@@ -179,7 +179,7 @@ of one core. Added to it, the median of seven runs:
 
 | Tool | First version | After its rework | Rule |
 | --- | --- | --- | --- |
-| Synchronous AM | 2.14% (1.48 to 3.45) | 1.00% and 1.01% | reworked once, now within its share |
+| Synchronous AM | 2.14% (1.48 to 3.45) | 1.00% and 1.01% | reworked once, within its share; 1.58% in a third, busier measure, kept with that cost |
 | Automatic notch | 0.46% | 0.43% and 0.37% | within its share |
 | Noise blanker | 4.60% (3.50 to 5.95) | 1.40% and 1.54% | reworked once, at its share: kept, with this cost |
 | Fine spectrum | 0.52% | 0.36% and 0.42% | within its share |

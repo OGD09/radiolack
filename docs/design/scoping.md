@@ -747,8 +747,20 @@ made ten frames a second.
   blanker; the tables below were measured one after the other under a load
   average of about 2, where the baseline took 12.5 to 13.9%, as in spike 4.
   Within a measure the runs spread by about half a percent for each tool.
+- **Measured a third time** the same day, in a run of its own, with the
+  laptop's desktop busier (load average 2 to 4): the baseline took 19.1%,
+  SAM added 1.58% (0.86 to 2.06), the notch 0.78%, the blanker 2.39% (1.78
+  to 2.70), the fine spectrum 0.53% and the four together 5.03% (4.34 to
+  5.55). In proportion to the baseline the figures are those of the
+  tables below: SAM adds a twelfth to the engine's processing, the
+  blanker an eighth and the four together a quarter. What a tool costs in
+  % of one core follows how fast the processor runs at the time; together
+  the four stayed within their 6% in every measure, and SAM and the
+  blanker, both reworked once, were over their 1.5% in this one.
 - **By the rule fixed beforehand**, SAM, the notch and the fine spectrum
-  are within their share and are built as pull requests 2, 3 and 5 say.
+  are built as pull requests 2, 3 and 5 say: the notch and the fine
+  spectrum within their share in every measure, SAM within it in two and
+  just over it in the busier third, kept with that cost as the blanker is.
   The blanker, reworked once, measured 1.40% then 1.54%, at its share and
   once just over it: it is kept, with that cost, as the owner decided on
   2026-11-16. Its figure is the worst case, an impulse in every block; a
