@@ -61,6 +61,11 @@ def shaped(response: Callable[[np.ndarray], np.ndarray], transition_hz: float, r
     return np.roll(ideal, taps // 2)[:taps] * np.kaiser(taps, kaiser_beta(attenuation_db))
 
 
+def hann(size: int) -> np.ndarray:
+    """Periodic Hann window of ``size`` samples, for FFTs."""
+    return (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(size) / size)).astype(np.float32)
+
+
 class FftFilter:
     """FIR filter that runs on a stream of samples by overlap-save FFTs.
 

@@ -8,7 +8,7 @@ import { EngineStream } from './stream.js';
 import { AudioOutput } from './audio.js';
 import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
-import { loadBandPlan, rangeAt } from './bandplan.js';
+import { loadBandPlan, planMode, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
 import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
 import { POWER_CONFIRM_MS, powerPress, powerView } from './power.js';
@@ -62,6 +62,7 @@ const EDGE_SHARE = 0.1;             // share of the span by each edge that the r
 const MODES = {
   NFM: { bw: 10000, min: 4000, max: 25000, step: 500 },
   AM: { bw: 8000, min: 3000, max: 15000, step: 500 },
+  SAM: { bw: 8000, min: 3000, max: 15000, step: 500 },     // synchronous AM, with AM's filter widths
   USB: { bw: 2700, min: 1500, max: 4000, step: 100 },
   LSB: { bw: 2700, min: 1500, max: 4000, step: 100 },
   CW: { bw: 500, min: 100, max: 2000, step: 50 },
@@ -257,6 +258,7 @@ let noticeClosed = '';      // the update notice closed on this page: its status
 let remoteState = null;     // remote access (stream.js RemoteState), once received: this computer's interfaces only
 let remoteNote = '';        // why this interface's last remote access change did not happen
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
+let samLocked = null;       // in SAM, whether the engine holds the carrier, from its settings; null otherwise
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
 let pendingTune = null;     // { centre, before, f, opts, inUse }: where the VFO goes once frames come from
@@ -1052,14 +1054,27 @@ function renderFreq() {
 }
 
 // The line under the frequency, which a zoom changes with the Automatic step:
-// the known frequency or the channel the VFO is on, else its range. A text is
-// written only when it changes, as rewriting it repaints in WebKitGTK.
+// the known frequency or the channel the VFO is on, else its range; in SAM,
+// beside the mode, whether it holds the carrier. A text is written only when
+// it changes, as rewriting it repaints in WebKitGTK.
+const lockEl = $('#m-lock');
+const LOCK_TITLES = {
+  locked: 'Synchronous AM follows the carrier',
+  'no lock': 'No carrier 10 dB over the noise within 1 kHz: the envelope plays, as in AM',
+};
 function updateMeta() {
   const vfo = shownVfo(), seg = segmentAt(vfo), step = `step ${fmtBw(stepAt(vfo))}`;
   const where = nameAt(plan, vfo) ?? (seg ? seg.name : { ready: 'Outside the plan', failed: 'No band plan' }[planState]);
   for (const [sel, text] of [['#m-mode', S.mode], ['#m-bw', fmtBw(S.bw)], ['#m-seg', where ? `${where} · ${step}` : step]]) {
     const el = $(sel);
     if (el.textContent !== text) el.textContent = text;
+  }
+  const lock = S.mode !== 'SAM' || samLocked === null ? '' : samLocked ? 'locked' : 'no lock';
+  if (lockEl.textContent !== lock) {
+    lockEl.textContent = lock;
+    lockEl.title = LOCK_TITLES[lock] ?? '';
+    lockEl.classList.toggle('on', lock === 'locked');
+    lockEl.hidden = !lock;
   }
 }
 
@@ -1439,7 +1454,7 @@ function tune(f, opts = {}) {
   f = clamp(Math.round(f), Math.ceil(fStart()), Math.floor(fEnd()));
   const seg = segmentAt(f);
   if (opts.mode) applyMode(opts.mode);
-  else if (S.autoMode && seg && seg !== lastSeg && seg.mode && seg.mode !== S.mode) applyMode(seg.mode);
+  else if (S.autoMode && seg && seg !== lastSeg && planMode(seg.mode, S.mode) !== S.mode) applyMode(seg.mode);
   lastSeg = seg;
   S.vfo = f;
   sendDemod(before);
@@ -1487,6 +1502,7 @@ function applyDemod(state) {
   S.sql = state.squelchDb;
   S.sqlAuto = state.squelchAuto;
   audioModes = state.audioModes;
+  samLocked = state.samLocked;
   demodError = '';
   // While a retune is on its way, the engine keeps the VFO inside the new span
   // until frames come: the view, and the range the user tunes from, stay.
@@ -2160,7 +2176,7 @@ const targetSpan = () => (pendingTune ? spanAround(pendingCentre()) : [fStart(),
 // half, within the receiver's range. The mode is the one tune() will pick.
 // The VFO's channel at f: how far it reaches below and above f.
 function retuneChannel(f, opts) {
-  const seg = segmentAt(f), picked = opts.mode || (S.autoMode && seg && seg.mode) || S.mode;
+  const seg = segmentAt(f), picked = opts.mode || (S.autoMode && seg ? planMode(seg.mode, S.mode) : S.mode);
   const mode = MODES[picked] ? picked : S.mode, bw = mode === S.mode ? S.bw : MODES[mode].bw;
   const below = mode === 'USB' ? 0 : mode === 'LSB' ? bw : bw / 2;
   return { below, above: bw - below };
@@ -2584,7 +2600,7 @@ $('#plan-list').addEventListener('click', (e) => {
   if (!row) return;
   if (row.kind === 'range') zoomToSegment(row.range);
   else if (row.kind === 'set') zoomToSegment(row.set);
-  else if (row.kind === 'spot') tuneAnywhere(row.spot.f, row.spot.mode ? { mode: row.spot.mode } : {});
+  else if (row.kind === 'spot') tuneAnywhere(row.spot.f, row.spot.mode ? { mode: planMode(row.spot.mode, S.mode) } : {});
 });
 $('#bm-filter').addEventListener('input', () => { renderBookmarks(); renderPlanList(); });
 $('#bm-add').addEventListener('click', () => {
@@ -2651,7 +2667,7 @@ $('#hist-body').addEventListener('click', (e) => {
   if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
   else if (b.dataset.mark) {
     const f = Number(b.dataset.mark), seg = segmentAt(f);
-    const name = addBookmark(f, modeAt(plan, f) ?? (seg && seg.mode ? seg.mode : S.mode));
+    const name = addBookmark(f, planMode(modeAt(plan, f) ?? (seg ? seg.mode : null), S.mode));
     setHistoryNote(name ? `${fmtMHz(f)} MHz added to the bookmarks as ${name}.` : notConnected('no bookmark was added'));
   } else if (b.dataset.clear) {
     const f = Number(b.dataset.clear);
@@ -3193,7 +3209,7 @@ ctxEl.addEventListener('click', (e) => {
   if (!b || b.disabled) return;
   const f = snapAt(ctxF), seg = segmentAt(ctxF);
   if (b.dataset.cmd === 'tune') tuneAnywhere(f);
-  else if (b.dataset.cmd === 'bookmark') addBookmark(f, modeAt(plan, f) ?? (seg && seg.mode ? seg.mode : S.mode));
+  else if (b.dataset.cmd === 'bookmark') addBookmark(f, planMode(modeAt(plan, f) ?? (seg ? seg.mode : null), S.mode));
   else if (b.dataset.cmd === 'center') { const span = view.f1 - view.f0; setView(ctxF - span / 2, ctxF + span / 2); }
   else if (b.dataset.cmd === 'segment') zoomToSegment(seg);
   else if (b.dataset.cmd === 'ignore') sendScanner(() => stream.ignoreFrequency(f));
@@ -3366,7 +3382,7 @@ bandEl.addEventListener('pointermove', (e) => {
 bandEl.addEventListener('pointerup', (e) => {
   if (bandDrag && !bandDrag.moved) {
     const hit = stripHitAt(e);
-    if (hit) tuneAnywhere(hit.f, hit.mode ? { mode: hit.mode } : {});
+    if (hit) tuneAnywhere(hit.f, hit.mode ? { mode: planMode(hit.mode, S.mode) } : {});
     else zoomToSegment(stripItemAt(xToF(e.clientX)));
   }
   bandDrag = null;

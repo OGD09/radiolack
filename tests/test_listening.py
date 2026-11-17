@@ -1,7 +1,8 @@
 """Tests for the listening tools' prototypes (tools/listening.py), each on
 synthetic signals that exercise it, and for the tool that measures their
 cost (tools/measure_listening.py), whose figures they leave alone: they
-depend on the computer, the tests on nothing but the samples."""
+depend on the computer, the tests on nothing but the samples. Synchronous
+AM, in the package, has its own tests (test_sam.py)."""
 
 import importlib.util
 import io
@@ -14,7 +15,7 @@ from unittest import mock
 
 import numpy as np
 
-from radiolack.demod import _AmDetector, audio_taps
+from radiolack.demod import audio_taps
 from radiolack.dsp import FftFilter
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
@@ -33,7 +34,6 @@ measuring = load("measure_listening")
 
 RATE_HZ = 48_000.0      # the channel's rate, and the detector's output's
 BLOCK = 1_600           # the channel's samples in one of the engine's blocks at 2.4 MS/s
-DELAY = 720             # the AM audio path's delay at 48 kHz: 10 ms of squelch and 5 ms of fade
 AUDIO_RATE_HZ = 12_000.0
 
 
@@ -56,118 +56,6 @@ def noise(rng, count, rms):
 
 def blocks(signal, size=BLOCK):
     return (signal[start:start + size] for start in range(0, len(signal), size))
-
-
-def correlation(a, b):
-    a, b = a - a.mean(), b - b.mean()
-    return float(a @ b / math.sqrt((a @ a) * (b @ b)))
-
-
-class SyncDetectorTest(unittest.TestCase):
-    CARRIER_HZ = 150.0      # from the VFO
-
-    def station(self, carrier, modulation, rms, seed=3):
-        """An AM station, its carrier at ``carrier`` (an array, 1 unfaded)
-        of 0.1, its sidebands at ``modulation`` of three tones, over noise
-        of ``rms``; and the tones, ``DELAY`` samples late."""
-        t = times(len(carrier) / RATE_HZ)
-        tones = (np.sin(2 * np.pi * 350 * t) + 0.7 * np.sin(2 * np.pi * 900 * t + 1)
-                 + 0.5 * np.sin(2 * np.pi * 1700 * t + 2)) / 2.2
-        channel = 0.1 * (carrier + modulation * tones) * np.exp(2j * np.pi * self.CARRIER_HZ * t + 0.3j)
-        channel += noise(np.random.default_rng(seed), len(t), rms)
-        return channel.astype(np.complex64), np.concatenate((np.zeros(DELAY), tones))[:len(t)]
-
-    def run_detector(self, detector, channel):
-        audio, locks = [], []
-        for block in blocks(channel):
-            audio.append(detector.process(block, np.abs(block) ** 2))
-            locks.append(detector.locked if hasattr(detector, "locked") else None)
-        return np.concatenate(audio), locks
-
-    def test_it_locks_on_the_carrier_and_its_audio_follows_the_modulation_through_a_fade(self):
-        t = times(6.0)
-        carrier = np.ones(len(t))
-        fade = (t > 2) & (t < 4)
-        carrier[fade] = 1 - 0.9 * np.sin(np.pi * (t[fade] - 2) / 2)     # 20 dB down at 3 s, the sidebands not
-        channel, tones = self.station(carrier, 0.8, 0.001)
-        detector = listening.SyncDetector(RATE_HZ, DELAY)
-        audio, locks = self.run_detector(detector, channel)
-        envelope, _ = self.run_detector(_AmDetector(RATE_HZ, DELAY), channel)
-        self.assertEqual(len(audio), len(t))
-        self.assertTrue(all(locks[10:]))
-        self.assertAlmostEqual(detector.carrier_hz, self.CARRIER_HZ, delta=1.0)
-        for start_s in np.arange(2.5, 3.5, 0.1):     # where the carrier is below its sidebands
-            window = slice(round(start_s * RATE_HZ), round((start_s + 0.1) * RATE_HZ))
-            self.assertGreater(correlation(audio[window], tones[window]), 0.99)
-        # The envelope distorts there: what SAM is for.
-        bottom = slice(round(2.9 * RATE_HZ), round(3.1 * RATE_HZ))
-        self.assertLess(correlation(envelope[bottom], tones[bottom]), 0.7)
-        clear = slice(round(1.0 * RATE_HZ), round(1.5 * RATE_HZ))
-        self.assertGreater(correlation(audio[clear], tones[clear]), 0.99)
-        # Unfaded, as loud as the AM detector.
-        self.assertAlmostEqual(np.std(audio[clear]) / np.std(envelope[clear]), 1.0, delta=0.05)
-
-    def test_under_10_db_of_carrier_it_has_no_lock_and_detects_the_envelope(self):
-        # The noise in the band-pass's 80 Hz, from its density over the channel.
-        def rms(margin_db):
-            return 0.1 / math.sqrt(10 ** (margin_db / 10) * listening.SAM_BAND_HZ / RATE_HZ)
-
-        for margin_db, locked in ((4.0, False), (20.0, True)):
-            with self.subTest(margin_db=margin_db):
-                channel, _ = self.station(np.ones(round(2 * RATE_HZ)), 0.3, rms(margin_db))
-                detector = listening.SyncDetector(RATE_HZ, DELAY)
-                audio, locks = self.run_detector(detector, channel)
-                self.assertTrue(all(lock is locked for lock in locks[10:]), locks)
-                self.assertAlmostEqual(detector.margin_db, margin_db, delta=2.5)
-                if not locked:
-                    self.assertIsNone(detector.carrier_hz)
-                    envelope, _ = self.run_detector(_AmDetector(RATE_HZ, DELAY), channel)
-                    np.testing.assert_array_equal(audio, envelope)
-
-    def test_it_finds_the_carrier_within_a_kilohertz_and_no_further(self):
-        t = times(1.0)
-        for offset_hz, locked in ((-900.0, True), (1_300.0, False)):
-            with self.subTest(offset_hz=offset_hz):
-                channel = (0.1 * np.exp(2j * np.pi * offset_hz * t) + noise(np.random.default_rng(1), len(t), 0.001))
-                detector = listening.SyncDetector(RATE_HZ, DELAY)
-                self.run_detector(detector, channel.astype(np.complex64))
-                self.assertIs(detector.locked, locked)
-                if locked:
-                    self.assertAlmostEqual(detector.carrier_hz, offset_hz, delta=1.0)
-
-    def test_silence_stays_silent(self):
-        detector = listening.SyncDetector(RATE_HZ, DELAY)
-        audio, locks = self.run_detector(detector, np.zeros(round(RATE_HZ), np.complex64))
-        self.assertFalse(any(locks))
-        self.assertFalse(np.any(audio))
-
-    def test_the_band_pass_is_80_hz_wide_and_lags_by_less_than_the_delay(self):
-        length = listening.band_pass_length(RATE_HZ)
-        averages = listening.MovingAverages(length, listening.SAM_STAGES)
-        impulse = np.zeros(4 * length, np.complex64)
-        impulse[0] = 1
-        # In pieces, as blocks come: the cumulative sums carry over.
-        response = np.concatenate([averages.process(piece) for piece in np.array_split(impulse, 7)]).real
-        lag = listening.SAM_STAGES * (length - 1) // 2
-        self.assertEqual(int(np.argmax(response)), lag)
-        self.assertLessEqual(lag, DELAY)
-        self.assertAlmostEqual(float(response.sum()), 1.0, places=9)
-        np.testing.assert_allclose(response[:2 * lag + 1], response[2 * lag::-1], atol=1e-12)    # linear phase
-        gains = np.abs(np.fft.rfft(response, 1 << 20))
-        frequencies = np.fft.rfftfreq(1 << 20, 1 / RATE_HZ)
-
-        def gain_db(low_hz, high_hz):
-            inside = (frequencies >= low_hz) & (frequencies <= high_hz)
-            return 20 * np.log10(np.maximum(gains[inside], 1e-30))
-
-        self.assertAlmostEqual(float(gain_db(listening.SAM_BAND_HZ / 2, listening.SAM_BAND_HZ / 2 + 0.1)[0]),
-                               -6.0, delta=0.3)
-        self.assertLess(float(gain_db(100.0, 5_000.0).max()), -39.0)    # the audio, from its lowest
-
-    def test_moving_averages_need_a_length_and_a_stage(self):
-        for length, stages in ((0, 3), (5, 0)):
-            with self.subTest(length=length, stages=stages), self.assertRaises(ValueError):
-                listening.MovingAverages(length, stages)
 
 
 class AutoNotchTest(unittest.TestCase):

@@ -23,8 +23,8 @@ simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
-demodulates NFM, AM, USB, LSB, CW and WFM, broadcast FM in mono, and the
-interface plays the audio. The engine also
+demodulates NFM, AM, synchronous AM (SAM), USB, LSB, CW and WFM,
+broadcast FM in mono, and the interface plays the audio. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)), from an
@@ -602,11 +602,12 @@ or which to choose. Its `--help` says what it needs; the Debian package does
 not install it.
 
 Also for developers, `tools/listening.py` holds prototypes of the coming
-listening tools (synchronous AM, an automatic notch, a noise blanker and a
-fine spectrum of the VFO's channel), which Radiolack does not use yet, and
-`tools/measure_listening.py` measures the processor time each would add to
-the engine at 2.4 MS/s, on synthetic samples, without a receiver; it takes
-about three minutes and `--output FILE` keeps its table.
+listening tools (an automatic notch, a noise blanker and a fine spectrum of
+the VFO's channel), which Radiolack does not use yet, and
+`tools/measure_listening.py` measures the processor time that synchronous
+AM, Radiolack's SAM, and each of them add to the engine at 2.4 MS/s, on
+synthetic samples, without a receiver; it takes about three minutes and
+`--output FILE` keeps its table.
 
 ### Calibration
 
@@ -698,8 +699,26 @@ on the modulation, not on the signal's strength. USB and LSB keep their own
 sideband, and CW sounds a carrier on the VFO at 700 Hz, through a filter
 centred on the VFO, 500 Hz wide by default. A slow AGC brings SSB and CW
 signals to the same level: it takes the gain down as soon as a signal
-arrives and lets it come back at 10 dB per second. AM, SSB and CW audio runs
-from 100 Hz to 5 kHz.
+arrives and lets it come back at 10 dB per second. AM, SAM, SSB and CW
+audio runs from 100 Hz to 5 kHz.
+
+SAM, synchronous AM, is for AM stations that fade, as on shortwave. It
+follows the station's carrier and detects the audio along it, so that
+selective fading, which takes the carrier down below its sidebands and
+makes AM's envelope distort, leaves the audio clear; it plays as loud as
+AM. SAM takes AM's filter widths and comes after AM in the Radio menu and
+with the M key. It looks for the strongest line within 1 kHz of the VFO,
+so it needs no exact tuning, and once it holds it, follows it within 40 Hz
+on each side, so that a sideband growing over a fading carrier does not
+take its place. The line under the frequency says "locked" while it holds
+the carrier, the same on every interface, and "no lock" otherwise: under
+10 dB of carrier over the noise (within 80 Hz around it), it plays the
+envelope, as AM does, and takes the carrier again once it comes back, the
+switch fading over 5 ms. Its limits: one carrier, the strongest within
+1 kHz, so a stronger station or heterodyne nearer the VFO takes the lock;
+both sidebands, never one alone; and no lock on a weak carrier, where it
+sounds as AM. SAM adds about a twelfth to the engine's processing of a
+2.4 MS/s receiver.
 
 Frequencies are exact to the hertz. They show in MHz with as many decimals
 as they have, from 3 to 6 (145.500, 145.6125, 7.074001); measurements keep
@@ -739,7 +758,8 @@ from 50 to 250 kHz. Its audio has the European 50 µs de-emphasis and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
 the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
 WFM, so tuning into 87.5 to 108 MHz selects it, with Radio > "Mode and step
-from the band plan".
+from the band plan". Where the plan gives AM, SAM counts as AM: tuning
+there in SAM keeps SAM.
 
 The squelch is automatic by default: it opens 8 dB above the noise around
 the VFO, which the engine estimates from the spectrum, and closes 3 dB
@@ -1380,7 +1400,8 @@ range and its edges, and clicking it zooms to the range. Zoomed out, where a
 band's ranges would be too narrow to read, the band shows as one block of
 its colour, named in full, by a short name or not at all as room allows,
 and clicking it zooms to the band. With Radio > "Mode
-and step from the band plan", tuning into a range selects its usual mode.
+and step from the band plan", tuning into a range selects its usual mode,
+SAM staying where the plan gives AM.
 The Automatic tuning step takes the channel spacing of the ranges that have
 channels ([Demodulation and audio](#demodulation-and-audio)).
 

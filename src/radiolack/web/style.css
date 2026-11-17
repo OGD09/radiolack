@@ -145,6 +145,8 @@ html, body {
 #meta { font-size: 12px; color: var(--muted); }
 #meta b { color: var(--text); font-weight: 600; }
 #meta .dot { margin: 0 6px; opacity: 0.6; }
+#m-lock { margin-left: 5px; }
+#m-lock.on { color: var(--accent); }
 #smeter { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 5px; }
 /* The squelch on the S-meter: the wheel over it moves the threshold, a click or a tap on the bar sets it
    there. They take the pointer, unlike the rest of the readout, the bar over a wider strip than it draws. */

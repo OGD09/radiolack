@@ -4,15 +4,11 @@ starting point of the pull requests that build them for good.
 
 Each one is written as the design says and as it could move into the
 package: vectorised NumPy, block by block, with no loop per sample, and no
-knowledge of the engine, the stream or the interface.
+knowledge of the engine, the stream or the interface. Synchronous AM, the
+first, moved into the package with its pull request: demod.py's
+``CarrierSearch`` and ``SyncDetector``, the SAM mode, which the measure
+takes from there.
 
-- ``SyncDetector``, synchronous AM: a band-pass 80 Hz wide follows the
-  strongest line within 1 kHz of the VFO, the channel is turned by that
-  carrier's phase and its real part is the audio; under 10 dB of carrier
-  over the noise within the band-pass it detects the envelope, as AM, and
-  says that it has no lock. It takes the place of the AM detector in the
-  demodulator's audio path (demod.py), with the same ``process`` and the
-  same delay, so that the squelch's gate stays in step.
 - ``AutoNotch``, the automatic notch: it reads the detector's output, finds
   the lines at least 15 dB over their surroundings, at most 30 Hz wide,
   steady for half a second, between 100 Hz and 5 kHz, four at most, and
@@ -27,9 +23,7 @@ knowledge of the engine, the stream or the interface.
   last.
 
 They live in `tools/` until their pull requests move them: the Debian
-package and pip take `src/radiolack` alone. ``SyncDetector`` takes the AM
-detector from demod.py for its envelope, a name that module keeps private;
-in the package it would sit beside it.
+package and pip take `src/radiolack` alone.
 """
 
 from __future__ import annotations
@@ -40,20 +34,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from radiolack.demod import (AGC_DECAY_DB_S, AM_LEVEL, AUDIO_ATTENUATION_DB, AUDIO_HIGH_PASS_HZ, AUDIO_LOW_PASS_HZ,
-                             AUDIO_TRANSITION_HZ, _AmDetector)
-from radiolack.dsp import shaped
-
-# Synchronous AM.
-SAM_SEARCH_HZ = 1_000.0     # the carrier: the strongest line within this of the VFO
-SAM_BAND_HZ = 80.0          # the band-pass that follows it, between its half-gain points
-SAM_STAGES = 3              # moving averages in cascade make the band-pass
-SINC_CUBED_HALF = 0.36606   # where sinc(x) ** 3, a cascade's response at x / length, is one half
-SAM_LOCK_DB = 10.0          # carrier over the noise within the band-pass, or no lock
-SAM_SEARCH_SIZE = 4096      # the search's FFT: 11.7 Hz per bin at 48 kHz
-SAM_SEARCH_S = 0.1          # one search this often
-SAM_LOBE_BINS = 2           # a Hann window's main lobe, on each side of its peak
-LEVEL_FLOOR = 1e-9          # -180 dBFS: no carrier at all, silence
+from radiolack.demod import AUDIO_ATTENUATION_DB, AUDIO_HIGH_PASS_HZ, AUDIO_LOW_PASS_HZ, AUDIO_TRANSITION_HZ
+from radiolack.dsp import hann, shaped
 
 # The automatic notch.
 NOTCH_MARGIN_DB = 15.0      # a line stands this far over its surroundings
@@ -79,174 +61,6 @@ BLANKER_STRIDE = 16         # the block's median magnitude, from every 16th of i
 # The fine spectrum.
 FINE_SIZE = 8192
 FINE_FRAME_RATE = 10.0      # frames a second, about
-
-
-def hann(size: int) -> np.ndarray:
-    """Periodic Hann window."""
-    return (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(size) / size)).astype(np.float32)
-
-
-def band_pass_length(rate_hz: float) -> int:
-    """The length of each of SAM's moving averages at ``rate_hz``: odd, so
-    that each lags by a whole number of samples, and such that the cascade
-    has half its gain at ``SAM_BAND_HZ / 2`` from 0 Hz."""
-    return max(1, round(SINC_CUBED_HALF * rate_hz / (SAM_BAND_HZ / 2))) | 1
-
-
-class MovingAverages:
-    """``stages`` moving averages of ``length`` samples in cascade, on a
-    stream of complex samples, each by cumulative sums: a low-pass filter
-    whose response is sinc(f * length / rate) to the power ``stages``,
-    lagging by ``stages * (length - 1) / 2`` samples, whose cost does not
-    grow with its length."""
-
-    def __init__(self, length: int, stages: int) -> None:
-        if length < 1 or stages < 1:
-            raise ValueError(f"cannot average {stages} times over {length} samples")
-        self.length = length
-        self._histories = [np.zeros(length - 1, np.complex128) for _ in range(stages)]
-
-    def process(self, values: np.ndarray) -> np.ndarray:
-        length = self.length
-        for stage, history in enumerate(self._histories):
-            both = np.concatenate((history, values))
-            self._histories[stage] = both[len(both) - (length - 1):]
-            sums = np.concatenate(([0], np.cumsum(both)))
-            values = (sums[length:] - sums[:-length]) / length
-        return values
-
-
-class SyncDetector:
-    """Synchronous AM detector for the channel at ``channel_rate_hz``, whose
-    0 Hz is the VFO, ``delay`` samples late, as the AM detector it replaces.
-
-    Every ``SAM_SEARCH_S`` it finds the strongest line within
-    ``SAM_SEARCH_HZ`` of the VFO in an FFT of the latest channel, or once
-    locked within the band-pass around the carrier it follows, placed by
-    a parabola through the levels in dB, and its margin over the noise
-    within the band-pass: the line's power over the median of the searched
-    bins, which is the noise's mean power per bin times ln 2, scaled to the
-    band-pass's width, the noise's own share of the line's bins taken off.
-    The channel is turned by a phase that runs at that frequency, then
-    filtered by the band-pass, three moving averages in cascade
-    (``MovingAverages``, ``band_pass_length``), which keeps the carrier and
-    its slow drifts; the angle of what comes out is the carrier's phase.
-    The audio is the real part of the channel turned by that phase, less
-    the carrier's amplitude, over a level that follows the carrier's at
-    once and falls at the SSB AGC's 10 dB a second: a carrier that fades
-    alone, as in selective fading, leaves the sidebands' audio as it is.
-    Without a lock, the envelope, as AM. The band-pass lags by less than
-    ``delay``; the channel waits for the rest. Not thread-safe."""
-
-    def __init__(self, channel_rate_hz: float, delay: int) -> None:
-        if delay < 1:
-            raise ValueError(f"SAM needs a delay of at least one sample, not {delay}")
-        self.rate_hz = float(channel_rate_hz)
-        self.delay = delay
-        self.locked = False
-        self.carrier_hz: float | None = None    # from the channel's 0 Hz, while locked
-        self.margin_db: float | None = None     # the carrier over the noise within the band-pass
-        length = band_pass_length(self.rate_hz)
-        lag = SAM_STAGES * (length - 1) // 2
-        if lag > delay:
-            raise ValueError(f"SAM's band-pass lags by {lag} samples, more than the delay of {delay}")
-        self._filter = MovingAverages(length, SAM_STAGES)
-        self._envelope = _AmDetector(self.rate_hz, delay)
-        self._early = np.zeros(delay - lag, np.complex64)   # the channel, waiting for the rest of the delay
-        self._turned = np.zeros(lag, np.complex64)          # the turned channel, waiting for the band-pass
-        self._phase = 0.0                                   # radians, of the turn
-        self._frequency_hz = 0.0                            # of the turn
-        self._level: float | None = None                    # the carrier's level at the end of the last block
-        self._window = hann(SAM_SEARCH_SIZE)
-        frequencies = np.fft.fftfreq(SAM_SEARCH_SIZE, 1 / self.rate_hz)
-        order = np.argsort(frequencies)
-        self._bins = order[np.abs(frequencies[order]) <= SAM_SEARCH_HZ]    # the searched bins, lowest first
-        self._frequencies = frequencies[self._bins]
-        self._recent = np.zeros(0, np.complex64)            # the latest channel, for the search
-        self._since = 0                                     # samples since the last search
-        self._interval = max(1, round(SAM_SEARCH_S * self.rate_hz))
-
-    def process(self, channel: np.ndarray, power: np.ndarray) -> np.ndarray:
-        """The audio of ``channel``, ``delay`` samples late; ``power`` is the
-        channel's power at each sample, which the envelope detector takes."""
-        count = len(channel)
-        envelope = self._envelope.process(channel, power)
-        if not count:
-            return envelope
-        self._search(channel)
-        if len(self._early):
-            waiting = np.concatenate((self._early, channel))
-            self._early = waiting[count:]
-            channel = waiting[:count]
-        step = 2 * np.pi * self._frequency_hz / self.rate_hz
-        phases = (self._phase + step * np.arange(count)).astype(np.float32)
-        self._phase = float((self._phase + step * count) % (2 * np.pi))
-        turned = channel * (np.cos(phases) - 1j * np.sin(phases)).astype(np.complex64)
-        carrier = self._filter.process(turned)
-        waiting = np.concatenate((self._turned, turned))
-        self._turned = waiting[count:]
-        late = waiting[:count]              # in step with the band-pass's output
-        amplitude = np.abs(carrier)
-        level = self._carrier_level(float(amplitude.mean()), count)
-        if not self.locked or level[-1] <= LEVEL_FLOOR:
-            return envelope
-        # Where the carrier vanishes, so does the part of the channel along it.
-        in_phase = (late.real * carrier.real + late.imag * carrier.imag) / np.maximum(amplitude, LEVEL_FLOOR)
-        return AM_LEVEL * (in_phase - amplitude) / np.maximum(level, LEVEL_FLOOR)
-
-    def _carrier_level(self, mean: float, count: int) -> np.ndarray:
-        """The level across this block: from the last block's to this one's,
-        which follows the carrier's mean amplitude at once when it rises and
-        falls no faster than the AGC's decay."""
-        previous = mean if self._level is None else self._level
-        decayed = previous * 10 ** (-AGC_DECAY_DB_S * count / self.rate_hz / 20)
-        self._level = max(mean, decayed)
-        return np.linspace(previous, self._level, count + 1)[1:]
-
-    def _search(self, channel: np.ndarray) -> None:
-        """Find the carrier again once ``SAM_SEARCH_S`` of channel came."""
-        recent = np.concatenate((self._recent, channel))
-        self._recent = recent[-SAM_SEARCH_SIZE:]
-        self._since += len(channel)
-        if self._since < self._interval or len(self._recent) < SAM_SEARCH_SIZE:
-            return
-        self._since = 0
-        spectrum = np.fft.fft(self._recent * self._window)[self._bins]
-        power = spectrum.real.astype(np.float64) ** 2 + spectrum.imag.astype(np.float64) ** 2
-        median = float(np.median(power))
-        if self.locked:
-            # Held: the carrier is followed within the band-pass, so that a
-            # sideband's line that outgrows a fading carrier does not take it.
-            near = np.flatnonzero(np.abs(self._frequencies - self._frequency_hz) <= SAM_BAND_HZ / 2)
-            peak = int(near[np.argmax(power[near])]) if len(near) else 0
-        else:
-            peak = int(np.argmax(power))
-        if not 0 < peak < len(power) - 1 or power[peak] <= 0:
-            self._lose()
-            return
-        lobe = power[max(0, peak - SAM_LOBE_BINS):peak + SAM_LOBE_BINS + 1]
-        # The carrier's power over the noise's within the band-pass, from the
-        # bins' sums: Parseval for the line, less the noise in its bins, and
-        # an exponential median for the noise.
-        line = float(lobe.sum()) - len(lobe) * median / math.log(2)
-        margin = (math.inf if median <= 0 else -math.inf if line <= 0 else
-                  10 * math.log10(line * math.log(2) * self.rate_hz / (SAM_SEARCH_SIZE * median * SAM_BAND_HZ)))
-        self.margin_db = margin
-        if margin < SAM_LOCK_DB:
-            self._lose()
-            return
-        floor = 1e-30
-        left, centre, right = (10 * math.log10(max(float(value), floor)) for value in power[peak - 1:peak + 2])
-        curvature = left - 2 * centre + right
-        offset = 0.5 * (left - right) / curvature if curvature < 0 else 0.0
-        bin_hz = self.rate_hz / SAM_SEARCH_SIZE
-        self._frequency_hz = float(self._frequencies[peak] + offset * bin_hz)
-        self.carrier_hz = self._frequency_hz
-        self.locked = True
-
-    def _lose(self) -> None:
-        self.locked = False
-        self.carrier_hz = None
 
 
 def notch_response(frequencies: np.ndarray, notches: Sequence[float]) -> np.ndarray:

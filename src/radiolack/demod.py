@@ -1,5 +1,5 @@
 """Demodulation of one channel: the VFO's signal, its level, the squelch and
-its audio at 12 kHz, in NFM, AM, USB, LSB and CW, or at 32 kHz in WFM.
+its audio at 12 kHz, in NFM, AM, SAM, USB, LSB and CW, or at 32 kHz in WFM.
 
 The receiver's samples go through three FFT filters (dsp.FftFilter). The
 front filter brings the VFO's frequency to 0 Hz, or in CW to the CW pitch,
@@ -10,11 +10,14 @@ detector, the audio filter keeps the audio band and brings the rate down to
 de-emphasis and a high-pass filter against CTCSS tones; WFM, broadcast FM
 in mono, through the same discriminator, then a 50 µs de-emphasis and a
 low-pass filter at 15 kHz, below the stereo pilot; AM through an envelope
-detector that follows the carrier's level; USB, LSB and CW through the
-channel's real part, which is the sideband's audio, under an AGC. The
-squelch compares the channel level with a threshold, set by hand or,
-automatically, 8 dB above the noise that the spectrum shows around the VFO;
-it opens and closes in 5 ms fades, in step with the audio.
+detector that follows the carrier's level; SAM, synchronous AM, through the
+channel turned by its carrier's phase, which a band-pass 80 Hz wide follows
+(``CarrierSearch``, ``SyncDetector``), or AM's envelope while it has no
+lock; USB, LSB and CW through the channel's real part, which is the
+sideband's audio, under an AGC. The squelch compares the channel level with
+a threshold, set by hand or, automatically, 8 dB above the noise that the
+spectrum shows around the VFO; it opens and closes in 5 ms fades, in step
+with the audio.
 """
 
 from __future__ import annotations
@@ -28,9 +31,9 @@ from typing import Any
 
 import numpy as np
 
-from .dsp import FftFilter, lowpass, rate_ratio, shaped
+from .dsp import FftFilter, hann, lowpass, rate_ratio, shaped
 
-MODES = ("NFM", "AM", "USB", "LSB", "CW", "WFM")
+MODES = ("NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM")
 AUDIO_MODES = MODES                 # every mode plays
 CHANNEL_RATE_HZ = 48_000.0
 WFM_CHANNEL_RATE_HZ = 320_000.0     # WFM: room for its widest channel
@@ -39,8 +42,8 @@ WFM_AUDIO_DECIMATION = 10           # WFM: 32 kHz audio, which holds broadcast's
 BANDWIDTH_RANGE_HZ = (100.0, 25_000.0)
 WFM_BANDWIDTH_RANGE_HZ = (50_000.0, 250_000.0)
 # Each mode's filter width once tuned to a bookmark, as the interface's (main.js MODES).
-MODE_BANDWIDTHS_HZ = {"NFM": 10_000.0, "AM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0, "CW": 500.0,
-                      "WFM": 180_000.0}
+MODE_BANDWIDTHS_HZ = {"NFM": 10_000.0, "AM": 8_000.0, "SAM": 8_000.0, "USB": 2_700.0, "LSB": 2_700.0,
+                      "CW": 500.0, "WFM": 180_000.0}
 SQUELCH_RANGE_DB = (-160.0, 0.0)
 SQUELCH_MARGIN_DB = 8.0             # automatic squelch: noise + 8 dB
 SQUELCH_HYSTERESIS_DB = 3.0         # closes this far below the threshold
@@ -55,8 +58,8 @@ WFM_MAX_DEVIATION_HZ = 75_000.0     # WFM: full-scale audio, broadcast's peak de
 WFM_DEEMPHASIS_S = 50e-6            # WFM de-emphasis in Europe, -6 dB per octave above 3.2 kHz
 WFM_HIGH_PASS_HZ = 40.0             # WFM: removes the offset of a station tuned beside its centre
 WFM_LOW_PASS_HZ = 15_000.0          # WFM: broadcast's audio, without the 19 kHz stereo pilot
-AUDIO_HIGH_PASS_HZ = 100.0          # AM, SSB and CW: no hum, nothing left of a carrier
-AUDIO_LOW_PASS_HZ = 5_000.0         # AM, SSB and CW: below the 6 kHz that 12 kHz audio holds
+AUDIO_HIGH_PASS_HZ = 100.0          # AM, SAM, SSB and CW: no hum, nothing left of a carrier
+AUDIO_LOW_PASS_HZ = 5_000.0         # AM, SAM, SSB and CW: below the 6 kHz that 12 kHz audio holds
 AUDIO_TRANSITION_HZ = 60.0
 AUDIO_ATTENUATION_DB = 45.0
 FRONT_CUTOFF_HZ = 20_000.0          # flat to 16 kHz, -70 dB from 24 kHz
@@ -66,10 +69,21 @@ WFM_FRONT_TRANSITION_HZ = 35_000.0
 CHANNEL_ATTENUATION_DB = 70.0
 CW_PITCH_HZ = 700.0                 # a carrier on the VFO sounds at this pitch in CW
 AM_WINDOW_S = 0.010                 # AM: the carrier's level, over the 10 ms before and after each sample
-AM_LEVEL = 0.8                      # AM: audio amplitude at 100% modulation
+AM_LEVEL = 0.8                      # AM and SAM: audio amplitude at 100% modulation
 AGC_LEVEL = 0.4                     # SSB and CW: audio amplitude of a steady signal
 AGC_DECAY_DB_S = 10.0               # SSB and CW: how fast the gain comes back after a signal (slow AGC)
 AGC_FLOOR_DB = -200.0               # SSB and CW: the AGC's level before any signal
+# Synchronous AM (later-milestones.md, section 2).
+SAM_SEARCH_HZ = 1_000.0             # the carrier: the strongest line within this of the VFO, without a lock
+SAM_BAND_HZ = 80.0                  # the band-pass that follows it, between its half-gain points
+SAM_STAGES = 3                      # moving averages in cascade make the band-pass
+SINC_CUBED_HALF = 0.36606           # where sinc(x) ** 3, the cascade's response at x / length, is one half
+SAM_LOCK_DB = 10.0                  # carrier over the noise within the band-pass, or no lock
+SAM_SEARCH_SIZE = 4096              # the search's FFT: 11.7 Hz per bin at 48 kHz
+SAM_SEARCH_S = 0.1                  # one search this often
+SAM_LOBE_BINS = 2                   # a Hann window's main lobe, on each side of its peak
+SAM_FLOOR = 1e-9                    # -180 dBFS: no carrier at all, silence
+SAM_FADE_S = FADE_S                 # the switch between the synchronous detector and the envelope
 
 # Audio frame header, little-endian: kind, version, reserved, position of the
 # first sample (counted at the audio rate, modulo 2^32), audio rate (Hz);
@@ -157,6 +171,7 @@ class Meter:
     level_db: float | None      # channel power in dBFS; None: nothing received there
     squelch_db: float | None    # threshold in use; None: no noise estimate yet
     open: bool
+    sam_locked: bool | None = None  # in SAM, whether it holds a carrier; None in the other modes
 
 
 def has_channel(mode: str, rate_hz: float) -> bool:
@@ -195,8 +210,8 @@ def audio_taps(mode: str, rate_hz: float) -> np.ndarray:
     """The audio filter at the channel rate. NFM: de-emphasis with unit gain
     at 1 kHz, high-pass at 280 Hz and low-pass at 3.5 kHz. WFM: de-emphasis
     with unit gain at the lowest frequencies, as receivers apply it,
-    high-pass at 40 Hz and low-pass at 15 kHz. The other modes: high-pass at
-    100 Hz and low-pass at 5 kHz."""
+    high-pass at 40 Hz and low-pass at 15 kHz. The other modes, SAM as AM:
+    high-pass at 100 Hz and low-pass at 5 kHz."""
     if mode == "NFM":
         corner = 1 / (2 * math.pi * DEEMPHASIS_S)
 
@@ -233,6 +248,7 @@ class Demodulator:
         self._powers = np.zeros(0)          # the last channel powers, for the moving average
         self._open = False
         self._audio: _AudioPath | None = None
+        self._search: CarrierSearch | None = None   # in SAM, with or without audio
         self.position = 0                   # audio samples sent, modulo 2^32
 
     @property
@@ -249,7 +265,8 @@ class Demodulator:
         detector: its 0 Hz is the VFO's frequency less ``vfo_position_hz``.
         A VFO outside the received band reads nothing and stays silent; a
         receiver slower than the channel rate gives no meter, no audio and
-        no channel."""
+        no channel. In SAM the carrier is sought with or without audio, so
+        that the meter says whether SAM holds one."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
@@ -278,13 +295,21 @@ class Demodulator:
         else:
             threshold = settings.squelch_db
         gate = self._squelch(power, threshold)
-        meter = Meter(level_db, threshold, self._open)
+        locked = None
+        if settings.mode == "SAM":
+            if self._search is None:
+                self._search = CarrierSearch(self.channel_rate_hz)
+            self._search.add(channel)
+            locked = self._search.locked
+        else:
+            self._search = None
+        meter = Meter(level_db, threshold, self._open, locked)
 
         if not audio:
             self._audio = None
             return meter, None
         if self._audio is None or self._audio.mode != settings.mode:
-            self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation)
+            self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation, self._search)
         sound = self._audio.process(channel, power, gate)
         pcm = np.clip(np.rint(sound * 32767), -32768, 32767).astype("<i2")
         return meter, pcm
@@ -306,6 +331,7 @@ class Demodulator:
             self._front = None
             self._open = False
             self._audio = None
+            self._search = None
             return
         up, down = rate_ratio(rate_hz, target_hz)
         cutoff_hz, transition_hz = ((WFM_FRONT_CUTOFF_HZ, WFM_FRONT_TRANSITION_HZ) if wide
@@ -320,6 +346,7 @@ class Demodulator:
             self._window = max(1, round(SQUELCH_WINDOW_S * channel_rate))
             self._powers = np.zeros(self._window - 1)
             self._audio = None
+            self._search = None
 
     def _squelch(self, power: np.ndarray, threshold_db: float | None) -> np.ndarray:
         """Open (1) or closed (0) at each channel sample: it opens once the
@@ -356,20 +383,26 @@ class _AudioPath:
     long, plus a fade, for the gate to look ahead: a sample passes only if
     the squelch stays open until the decisions about it are in, and the gate
     fades out before the noise that follows a carrier. The AM detector and
-    the AGC use that wait to look ahead too."""
+    the AGC use that wait to look ahead too, and SAM's band-pass lags within
+    it. SAM takes ``search``, the demodulator's, which finds its carrier."""
 
-    def __init__(self, mode: str, channel_rate_hz: float, decimation: int) -> None:
+    def __init__(self, mode: str, channel_rate_hz: float, decimation: int,
+                 search: CarrierSearch | None = None) -> None:
         self.mode = mode
         window = max(1, round(SQUELCH_WINDOW_S * channel_rate_hz))
         self._fade = max(1, round(FADE_S * channel_rate_hz))
         self._span = window + self._fade
-        self._detector: _FmDetector | _AmDetector | _SidebandDetector
+        self._detector: _FmDetector | _AmDetector | SyncDetector | _SidebandDetector
         if mode == "NFM":
             self._detector = _FmDetector(channel_rate_hz, self._span, MAX_DEVIATION_HZ)
         elif mode == "WFM":
             self._detector = _FmDetector(channel_rate_hz, self._span, WFM_MAX_DEVIATION_HZ)
         elif mode == "AM":
             self._detector = _AmDetector(channel_rate_hz, self._span)
+        elif mode == "SAM":
+            if search is None:
+                raise ValueError("SAM needs the search for its carrier")
+            self._detector = SyncDetector(channel_rate_hz, self._span, search)
         else:
             self._detector = _SidebandDetector(channel_rate_hz, self._span, window)
         self._filter = FftFilter(audio_taps(mode, channel_rate_hz), channel_rate_hz, up=1, down=decimation)
@@ -451,6 +484,225 @@ class _AmDetector:
         heard = carrier > 1e-9                  # -180 dBFS: no carrier at all, silence
         audio[heard] = envelope[window:window + count][heard] / carrier[heard] - 1
         return audio * AM_LEVEL
+
+
+def sam_band_pass_length(rate_hz: float) -> int:
+    """The length of each of SAM's moving averages at ``rate_hz``: odd, so
+    that each lags by a whole number of samples, and such that the cascade
+    has half its gain at ``SAM_BAND_HZ / 2`` from 0 Hz."""
+    return max(1, round(SINC_CUBED_HALF * rate_hz / (SAM_BAND_HZ / 2))) | 1
+
+
+class MovingAverages:
+    """``stages`` moving averages of ``length`` samples in cascade, on a
+    stream of complex samples, each by cumulative sums: a low-pass filter
+    whose response is sinc(f * length / rate) to the power ``stages``,
+    lagging by ``stages * (length - 1) / 2`` samples, whose cost does not
+    grow with its length. Not thread-safe."""
+
+    def __init__(self, length: int, stages: int) -> None:
+        if length < 1 or stages < 1:
+            raise ValueError(f"cannot average {stages} times over {length} samples")
+        self.length = length
+        self._histories = [np.zeros(length - 1, np.complex128) for _ in range(stages)]
+
+    def process(self, values: np.ndarray) -> np.ndarray:
+        length = self.length
+        for stage, history in enumerate(self._histories):
+            both = np.concatenate((history, values))
+            self._histories[stage] = both[len(both) - (length - 1):]
+            sums = np.concatenate(([0], np.cumsum(both)))
+            values = (sums[length:] - sums[:-length]) / length
+        return values
+
+
+class CarrierSearch:
+    """SAM's carrier in the channel at ``channel_rate_hz``, whose 0 Hz is the
+    VFO, and its lock.
+
+    Every ``SAM_SEARCH_S`` it takes an FFT of the latest ``SAM_SEARCH_SIZE``
+    samples of the channel (Hann) and finds the strongest line within
+    ``SAM_SEARCH_HZ`` of the VFO, or, while locked, within the band-pass
+    around the carrier it follows, so that a sideband's line that outgrows a
+    fading carrier does not take it; the line is placed by a parabola
+    through the levels in dB. Its margin is the line's power over the
+    noise's within the band-pass: the power of the line's main lobe, less
+    the noise in its bins, over the median of the searched bins, which is
+    the noise's mean power per bin times ln 2, scaled to ``SAM_BAND_HZ``.
+    Under ``SAM_LOCK_DB`` there is no lock, and the next search looks within
+    ``SAM_SEARCH_HZ`` again. ``frequency_hz`` keeps the latest carrier found
+    after a loss. Not thread-safe."""
+
+    def __init__(self, channel_rate_hz: float) -> None:
+        self.rate_hz = float(channel_rate_hz)
+        self.locked = False
+        self.carrier_hz: float | None = None    # from the channel's 0 Hz, while locked
+        self.margin_db: float | None = None     # the carrier over the noise within the band-pass, at the latest search
+        self.frequency_hz = 0.0                 # the latest carrier found, from the channel's 0 Hz
+        self.acquisitions = 0                   # the locks gained so far
+        self._window = hann(SAM_SEARCH_SIZE)
+        frequencies = np.fft.fftfreq(SAM_SEARCH_SIZE, 1 / self.rate_hz)
+        order = np.argsort(frequencies)
+        self._bins = order[np.abs(frequencies[order]) <= SAM_SEARCH_HZ]    # the searched bins, lowest first
+        self._frequencies = frequencies[self._bins]
+        self._recent = np.zeros(0, np.complex64)    # the latest channel
+        self._since = 0                             # samples since the last search
+        self._interval = max(1, round(SAM_SEARCH_S * self.rate_hz))
+
+    def add(self, channel: np.ndarray) -> None:
+        """Take a block of the channel; search again once ``SAM_SEARCH_S`` of
+        it came."""
+        recent = np.concatenate((self._recent, channel))
+        self._recent = recent[-SAM_SEARCH_SIZE:]
+        self._since += len(channel)
+        if self._since < self._interval or len(self._recent) < SAM_SEARCH_SIZE:
+            return
+        self._since = 0
+        spectrum = np.fft.fft(self._recent * self._window)[self._bins]
+        power = spectrum.real.astype(np.float64) ** 2 + spectrum.imag.astype(np.float64) ** 2
+        median = float(np.median(power))
+        if self.locked:
+            near = np.flatnonzero(np.abs(self._frequencies - self.frequency_hz) <= SAM_BAND_HZ / 2)
+            peak = int(near[np.argmax(power[near])]) if len(near) else 0
+        else:
+            peak = int(np.argmax(power))
+        if not 0 < peak < len(power) - 1 or power[peak] <= 0:
+            self._lose()
+            return
+        lobe = power[max(0, peak - SAM_LOBE_BINS):peak + SAM_LOBE_BINS + 1]
+        # The carrier's power over the noise's within the band-pass, from the
+        # bins' sums: Parseval for the line, less the noise in its bins, and
+        # an exponential median for the noise.
+        line = float(lobe.sum()) - len(lobe) * median / math.log(2)
+        margin = (math.inf if median <= 0 else -math.inf if line <= 0 else
+                  10 * math.log10(line * math.log(2) * self.rate_hz / (SAM_SEARCH_SIZE * median * SAM_BAND_HZ)))
+        self.margin_db = margin
+        if margin < SAM_LOCK_DB:
+            self._lose()
+            return
+        left, centre, right = (10 * math.log10(max(float(value), 1e-30)) for value in power[peak - 1:peak + 2])
+        curvature = left - 2 * centre + right
+        offset = 0.5 * (left - right) / curvature if curvature < 0 else 0.0
+        self.frequency_hz = float(self._frequencies[peak] + offset * self.rate_hz / SAM_SEARCH_SIZE)
+        self.carrier_hz = self.frequency_hz
+        if not self.locked:
+            self.acquisitions += 1
+        self.locked = True
+
+    def _lose(self) -> None:
+        self.locked = False
+        self.carrier_hz = None
+
+
+class SyncDetector:
+    """Synchronous AM detector for the channel at ``channel_rate_hz``, whose
+    0 Hz is the VFO, ``delay`` samples late, as the AM detector; ``search``,
+    given each block of the channel before this detector, finds the carrier.
+
+    The channel is turned by a phase that runs at the carrier's frequency,
+    then filtered by the band-pass, three moving averages in cascade
+    (``MovingAverages``, ``sam_band_pass_length``), which keeps the carrier
+    and its slow drifts; the angle of what comes out is the carrier's
+    phase. The audio is the real part of the channel turned by that phase,
+    less the carrier's amplitude, over a level that follows the carrier's at
+    once and falls at the SSB AGC's 10 dB a second: a carrier that fades
+    alone, as in selective fading, leaves the sidebands' audio as it is.
+    The band-pass lags by less than ``delay``; the channel waits for the
+    rest, so that the squelch's gate stays in step.
+
+    Without a lock, the envelope, as AM, which is computed for every block.
+    A lock gained waits for the band-pass to hold only the carrier found,
+    its span of samples, then the level starts from the larger of the
+    carrier's mean amplitude and the channel's, AM's level, so that a lock
+    gained in a fade of the carrier alone is no louder than AM. The switch
+    between the two detectors fades over ``SAM_FADE_S``, from one's output to
+    the other's, which are in step: the audio moves no further than they
+    differ. Not thread-safe."""
+
+    def __init__(self, channel_rate_hz: float, delay: int, search: CarrierSearch) -> None:
+        if delay < 1:
+            raise ValueError(f"SAM needs a delay of at least one sample, not {delay}")
+        self.rate_hz = float(channel_rate_hz)
+        self.search = search
+        length = sam_band_pass_length(self.rate_hz)
+        lag = SAM_STAGES * (length - 1) // 2
+        if lag > delay:
+            raise ValueError(f"SAM's band-pass lags by {lag} samples, more than the delay of {delay}")
+        self._filter = MovingAverages(length, SAM_STAGES)
+        self._span = SAM_STAGES * (length - 1) + 1         # the band-pass's response, in samples
+        self._envelope = _AmDetector(self.rate_hz, delay)
+        self._early = np.zeros(delay - lag, np.complex64)   # the channel, waiting for the rest of the delay
+        self._turned = np.zeros(lag, np.complex64)          # the turned channel, waiting for the band-pass
+        self._phase = 0.0                                   # radians, of the turn
+        self._level: float | None = None                    # the carrier's level at the end of the last block
+        self._acquisitions = search.acquisitions            # the search's, as this detector last saw them
+        self._settling = self._span if search.locked else 0     # samples before the band-pass holds the carrier
+        self._fade = max(1, round(SAM_FADE_S * self.rate_hz))
+        self._mix = 0.0                                     # 0: the envelope, 1: synchronous, at the last sample
+
+    def process(self, channel: np.ndarray, power: np.ndarray) -> np.ndarray:
+        """The audio of ``channel``, ``delay`` samples late; ``power`` is the
+        channel's power at each sample, which the envelope detector takes."""
+        count = len(channel)
+        envelope = self._envelope.process(channel, power)
+        if not count:
+            return envelope
+        search = self.search
+        if search.acquisitions != self._acquisitions:
+            self._acquisitions = search.acquisitions
+            self._settling = self._span
+        if len(self._early):
+            waiting = np.concatenate((self._early, channel))
+            self._early = waiting[count:]
+            channel = waiting[:count]
+        step = 2 * np.pi * search.frequency_hz / self.rate_hz
+        phases = (self._phase + step * np.arange(count)).astype(np.float32)
+        self._phase = float((self._phase + step * count) % (2 * np.pi))
+        turned = channel * (np.cos(phases) - 1j * np.sin(phases)).astype(np.complex64)
+        carrier = self._filter.process(turned)
+        waiting = np.concatenate((self._turned, turned))
+        self._turned = waiting[count:]
+        late = waiting[:count]              # in step with the band-pass's output
+        amplitude = np.abs(carrier)
+        mean = float(amplitude.mean())
+        start = mean if self._level is None else self._level
+        if self._level is None and self._settling <= 0:
+            start = max(mean, float(np.abs(late).mean()))
+        level = self._carrier_level(start, mean, count)
+        heard = level[-1] > SAM_FLOOR
+        wanted = search.locked and heard and self._settling <= 0
+        if self._settling > 0:
+            # The band-pass still fills: the level starts again from the
+            # block after, rather than rise across it.
+            self._level = None
+            self._settling = max(0, self._settling - count)
+        if not wanted and self._mix <= 0.0:
+            return envelope
+        sync = self._synchronous(late, carrier, amplitude, level) if heard else envelope
+        if wanted and self._mix >= 1.0:
+            return sync
+        ramp = np.arange(1, count + 1) / self._fade
+        mix = np.clip(self._mix + ramp if wanted else self._mix - ramp, 0.0, 1.0)
+        self._mix = float(mix[-1])
+        return envelope + mix * (sync - envelope)
+
+    @staticmethod
+    def _synchronous(late: np.ndarray, carrier: np.ndarray, amplitude: np.ndarray,
+                     level: np.ndarray) -> np.ndarray:
+        """The synchronous detector's output: ``late``, the turned channel in
+        step with ``carrier``, the band-pass's output, along the carrier, less
+        its ``amplitude``, over ``level``."""
+        # Where the carrier vanishes, so does the part of the channel along it.
+        in_phase = (late.real * carrier.real + late.imag * carrier.imag) / np.maximum(amplitude, SAM_FLOOR)
+        return AM_LEVEL * (in_phase - amplitude) / np.maximum(level, SAM_FLOOR)
+
+    def _carrier_level(self, previous: float, mean: float, count: int) -> np.ndarray:
+        """The level across this block: from ``previous``, the last block's,
+        to this one's, which follows ``mean``, the carrier's mean amplitude,
+        at once when it rises and falls no faster than the AGC's decay."""
+        decayed = previous * 10 ** (-AGC_DECAY_DB_S * count / self.rate_hz / 20)
+        self._level = max(mean, decayed)
+        return np.linspace(previous, self._level, count + 1)[1:]
 
 
 class _SidebandDetector:

@@ -69,6 +69,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {boolean} squelchAuto  the threshold follows the noise instead
  * @property {string[]} modes       modes the engine takes
  * @property {string[]} audioModes  modes it demodulates to audio; the others are silent
+ * @property {boolean | null} samLocked  in SAM, whether it holds its carrier; null in the other
+ *   modes, and from an engine older than SAM
  */
 
 /**
@@ -503,6 +505,7 @@ export function decodeDemod(message) {
     squelchAuto: m.squelch_auto,
     modes: m.modes.slice(),
     audioModes: m.audio_modes.slice(),
+    samLocked: typeof m.sam_locked === 'boolean' ? m.sam_locked : null,
     acknowledged: m.acknowledged,
   };
 }

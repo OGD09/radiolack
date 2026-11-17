@@ -265,6 +265,55 @@ this section wrong; pull requests 2 to 5 rely on these:
   alone took 0.7% of one core, against 0.2% at 48 kHz; the engine's
   processing was measured in AM only.
 
+As built in pull request 2, SAM, where it departs from the prototype or
+settles what it left open:
+
+- **SAM lives in `demod.py`**: `CarrierSearch` finds the carrier and holds
+  the lock, `SyncDetector` follows it, `MovingAverages` is the band-pass;
+  `tools/listening.py` keeps no copy, and `tools/measure_listening.py`
+  measures SAM as the VFO's mode, which puts it where the prototype was,
+  in place of AM's detector, with the search on the channel.
+- **The search belongs to the demodulator**, not to the detector, and runs
+  in SAM whether or not an interface asked for audio, so that every
+  interface learns the lock: an FFT of 4096 samples every 0.1 s.
+- **A lock gained waits for the band-pass.** Before a lock, the turn runs
+  at the latest carrier found, 0 Hz at first, and the band-pass holds what
+  that leaves of the carrier; the carrier found takes the band-pass's span,
+  1315 samples (27 ms), to fill it. The prototype switched at once, and on
+  a test station its audio leapt to 27 times full scale, before the audio
+  filter, in the block after its first lock. SAM now gives the envelope
+  until the span has passed, a block at 2.4 MS/s.
+- **The level after a lock gained** starts from the larger of the
+  carrier's mean amplitude and the channel's, which is AM's level, then
+  follows the carrier as designed. The prototype's level rose across the
+  block from what the band-pass held before the lock, too loud for that
+  block; and a lock gained during a fade of the carrier alone would start
+  from the faded carrier, far louder than AM.
+- **The switch between the detectors** fades linearly over 5 ms, the
+  squelch's fade, from one output to the other: both have AM's delay, so
+  they are in step, and the audio moves no more from one sample to the
+  next than either output does, plus their difference spread over 240
+  samples. A test switches by hand in a selective fade, where the two
+  differ by more than 0.2 of full scale, and checks that bound and that
+  the step stays under a third of their difference.
+- **The lock has no hysteresis**: the design's 10 dB, both ways, measured
+  every 0.1 s. A carrier near 10 dB may gain and lose it several times a
+  second, each switch faded; the demodulation state follows, and goes to
+  the interfaces only when it changes.
+- **The plan's AM.** The interface's `planMode` (bandplan.js) gives SAM
+  where the plan names AM and the VFO is in SAM: a range tuned into, a
+  known frequency or a channel pressed, and the mode of a bookmark added
+  from the plan, the History or the spectrum's menu.
+- **Its cost** is the prototype's. The measure's tool, run before and
+  after the move on the owner's laptop under a far heavier load than
+  spike 8's, its baseline about twice as long, gave SAM 2.35% of one core
+  over a baseline of 27.17% before (load average 4.2, 9.0 at the end) and
+  2.94% over 25.76% after (8.5, then 7.3): a twelfth, then a ninth. The
+  other tools, unchanged, rose as well (the four together from 7.63% to
+  8.52%), and the detector with its search, timed in turn with the
+  prototype's on the same channel, takes the same time within 1%: the
+  difference is the load's.
+
 ### Pull requests
 
 1. The spike and its figures.

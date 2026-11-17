@@ -5,7 +5,8 @@
  * strip, the readouts and the automatic mode and step, and the bands stay
  * whole beside it, for the band strip when a band's segments are too narrow
  * to read. Its channel sets and known frequencies (spots) are checked and
- * kept in frequency order, each set with every one of its channels.
+ * kept in frequency order, each set with every one of its channels. The
+ * plan names AM, never SAM: `planMode` gives the mode a range takes.
  */
 
 export const BAND_PLAN_FORMAT = 2;
@@ -268,6 +269,19 @@ function readSpot(item, bands, colours, modes) {
   if (rgb === undefined) fail(`${name}: unknown type ${String(item.type)}`);
   if (item.reference !== undefined && item.reference !== true) fail(`${name}: reference must be true or absent`);
   return { f, name, rgb, mode: readMode(item.mode, name, modes), reference: item.reference === true };
+}
+
+/**
+ * The mode to take where the band plan names `planned`, the VFO being in
+ * `current`: SAM counts as AM, so that synchronous AM stays where the plan
+ * names AM; where it names none, the mode stays.
+ * @param {string | null | undefined} planned
+ * @param {string} current
+ * @returns {string}
+ */
+export function planMode(planned, current) {
+  if (!planned) return current;
+  return planned === 'AM' && current === 'SAM' ? current : planned;
 }
 
 /**

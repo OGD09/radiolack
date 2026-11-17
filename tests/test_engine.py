@@ -119,6 +119,13 @@ def is_audio(message) -> bool:
     return isinstance(message, bytes) and message[0] == FRAME_KIND_AUDIO
 
 
+async def next_demod(subscription: Subscription) -> dict:
+    """The next demodulation state that a client receives."""
+    while not isinstance(message := await next_message(subscription), dict) or message["type"] != "demod":
+        pass
+    return message
+
+
 def waiting(subscription: Subscription) -> list:
     """Every message ready now, without waiting for more."""
     messages = []
@@ -171,8 +178,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(subscription.get_nowait(), {
             "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
-            "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "modes": list(MODES),
-            "audio_modes": list(MODES), "acknowledged": 0,
+            "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "sam_locked": None,
+            "modes": list(MODES), "audio_modes": list(MODES), "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
         self.assertEqual(subscription.get_nowait(), scanner_state())
@@ -344,6 +351,33 @@ class DemodulationTest(unittest.IsolatedAsyncioTestCase):
         while self.source.reads < reads + 3:
             await asyncio.sleep(0.01)
         self.assertFalse(any(is_audio(message) for message in waiting(listener)))
+
+    async def test_sam_s_lock_reaches_every_client_and_is_null_in_the_other_modes(self):
+        clients = [self.engine.subscribe() for _ in range(2)]
+        for subscription in clients:
+            self.assertIsNone(waiting(subscription)[STATES.index("demod")]["sam_locked"])
+        self.engine.configure_demod({"frequency_hz": round(FAKE_TONE_HZ), "mode": "SAM", "bandwidth_hz": 8_000})
+        self.assertIs(self.engine.demod_state()["sam_locked"], False)     # until a block finds the carrier
+        for subscription in clients:
+            state = await next_demod(subscription)
+            self.assertEqual((state["mode"], state["bandwidth_hz"]), ("SAM", 8_000.0))
+            self.assertIn("SAM", state["modes"])
+            self.assertIn("SAM", state["audio_modes"])
+            while state["sam_locked"] is not True:      # the carrier on the VFO
+                self.assertIs(state["sam_locked"], False)
+                state = await next_demod(subscription)
+        self.assertIs(self.engine.demod_state()["sam_locked"], True)
+        self.engine.configure_demod({"mode": "AM"})
+        for subscription in clients:
+            state = await next_demod(subscription)
+            self.assertEqual((state["mode"], state["sam_locked"]), ("AM", None))
+        # In AM, SAM's lock goes without a word.
+        reads = self.source.reads
+        while self.source.reads < reads + 5:
+            await asyncio.sleep(0.01)
+        for subscription in clients:
+            self.assertFalse([message for message in waiting(subscription)
+                              if isinstance(message, dict) and message["type"] == "demod"])
 
     async def test_a_new_span_brings_the_vfo_inside_it(self):
         subscription = self.engine.subscribe()
@@ -550,6 +584,21 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
                          {"type": "preferences", "values": {"volume": 40, "palette": "classic"}})
         self.assertEqual(engine.storage_state(),
                          {"type": "storage", "directory": str(self.directory), "saving": True, "problem": ""})
+
+    async def test_sam_and_a_bookmark_in_sam_come_back_after_a_restart(self):
+        engine = self.engine(save_delay_s=0.01)
+        engine.configure_demod({"frequency_hz": 145_010_000, "mode": "SAM", "bandwidth_hz": 8_000})
+        bookmark = {"frequency_hz": 145_020_000.0, "name": "Synchronous", "mode": "SAM", "scan": False}
+        engine.edit_bookmarks({"action": "add", **bookmark})
+        await self.stop(engine)
+        demod = self.read(SETTINGS_FILE)["receivers"]["test"]["demod"]
+        self.assertEqual((demod["mode"], demod["bandwidth_hz"]), ("SAM", 8_000.0))
+        self.assertNotIn("sam_locked", demod)      # a state, not a setting
+        again = self.engine()
+        state = again.demod_state()
+        self.assertEqual((state["frequency_hz"], state["mode"], state["bandwidth_hz"], state["sam_locked"]),
+                         (145_010_000.0, "SAM", 8_000.0, False))
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
 
     async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
         self.write(SETTINGS_FILE, {"receivers": {"test": {
@@ -2447,6 +2496,15 @@ class RecordingTest(RecordingCase):
         await asyncio.sleep(0.3)
         self.assertLessEqual(source.reads, reads + 1)
 
+    async def test_a_recording_in_sam_is_named_after_it(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        engine.configure_demod({"frequency_hz": round(FAKE_TONE_HZ), "mode": "SAM"})
+        engine.configure_recording({"audio": True})
+        audio = (await next_recording(subscription, with_file))["audio"]
+        self.assertRegex(audio["file"], r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}Z_\d+\.\d{6}MHz_SAM\.wav$")
+        self.assertEqual(audio["mode"], "SAM")
+
     async def test_never_on_the_simulated_band(self):
         engine = self.engine(SimulatedBandSource())
         with self.assertRaisesRegex(ValueError, "^the simulated band is not recorded$"):
@@ -2928,7 +2986,7 @@ class CarrierTest(unittest.IsolatedAsyncioTestCase):
     async def test_measures_the_frequency_on_the_air_in_every_mode(self):
         air_hz = 145_012_345.6
         # The VFO on the carrier, or beside it in SSB, so that it lies within the filter.
-        vfos = {"NFM": 0, "AM": 0, "USB": -1000, "LSB": 1000, "CW": 0, "WFM": 0}
+        vfos = {"NFM": 0, "AM": 0, "SAM": 0, "USB": -1000, "LSB": 1000, "CW": 0, "WFM": 0}
         for crystal_ppb in (0, 37_420):
             # WFM last, at a sample rate that holds its channel; the others at the lowest, which is faster.
             engine, subscription, fake = await self.start({air_hz: 0.2}, crystal_ppb=crystal_ppb, rate_hz=240_000.0,
