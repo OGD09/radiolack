@@ -165,8 +165,105 @@ dropped them as dead controls on 2026-11-15.
 ### Spike, first pull request
 
 Each tool on the owner's laptop at 2.4 MS/s. Together they may add 6% of
-one core. A tool over its share is reworked once; still over, the owner
-sees the figures and chooses between it and its cost.
+one core, 1.5% each, as the planning session set the shares. A tool over
+its share is reworked once; still over, it is kept and its measured cost
+documented, as the owner decided on 2026-11-16 ([`scoping.md`](scoping.md),
+Decisions).
+
+Measured on 2026-11-17 ([`scoping.md`](scoping.md), spike 8, with the
+tables), with `tools/measure_listening.py` and the prototypes of
+`tools/listening.py`, which pull requests 2 to 5 start from: on the
+owner's laptop (Intel Core i7-7500U, Python 3.11, NumPy 1.24), the engine's
+processing of one receiver at 2.4 MS/s, the VFO in AM, takes 12.5 to 13.9%
+of one core. Added to it, the median of seven runs:
+
+| Tool | First version | After its rework | Rule |
+| --- | --- | --- | --- |
+| Synchronous AM | 2.14% (1.48 to 3.45) | 1.00% and 1.01% | reworked once, now within its share |
+| Automatic notch | 0.46% | 0.43% and 0.37% | within its share |
+| Noise blanker | 4.60% (3.50 to 5.95) | 1.40% and 1.54% | reworked once, at its share: kept, with this cost |
+| Fine spectrum | 0.52% | 0.36% and 0.42% | within its share |
+| The four together | 7.90% | 3.16% and 3.27% | within 6% |
+
+The first version's figures are those of a measure made under the same
+load as the reworked version's two (load average about 2 on four logical
+processors); a measure made earlier under heavier load (about 7) gave
+2.93% and 5.83% for the two tools reworked, against a baseline of 18.9%.
+
+As built, where the prototypes left a choice open or showed a point of
+this section wrong; pull requests 2 to 5 rely on these:
+
+- **SAM holds its carrier.** "The strongest line within 1 kHz" finds the
+  carrier, but cannot follow it: in a selective fade, where the carrier
+  falls below its sidebands, a sideband's steady line outgrows it, and the
+  prototype jumped to it. Once locked, the search keeps to the band-pass,
+  40 Hz on each side of the carrier followed; it searches the whole 1 kHz
+  again only without a lock.
+- **SAM's lock.** Every 0.1 s, an FFT of 4096 samples of the channel
+  (11.7 Hz per bin at 48 kHz, Hann): the carrier's power is that of the
+  five bins of its main lobe, less the noise in them; the noise is the
+  median of the bins within 1 kHz over ln 2, scaled to 80 Hz. Under 10 dB,
+  no lock, and the envelope as AM, the switch made at a block's start; a
+  short crossfade there is for pull request 2.
+- **SAM's band-pass is three moving averages in cascade**, of 439 samples
+  each at 48 kHz, by cumulative sums: half gain at 40 Hz, at least 39 dB
+  down from 100 Hz, where AM's audio starts, a lag of 657 samples. A Kaiser
+  filter of 1441 taps through `dsp.FftFilter`, the first version's, took
+  more than half of SAM's time and put it over its share. Within AM's audio path
+  delay of 720 samples (10 ms of squelch and a 5 ms fade), the rest is a
+  plain delay: SAM keeps AM's delay, and the squelch's gate stays in step.
+- **SAM's audio**: the real part of the channel turned by the carrier's
+  phase, less the carrier's amplitude, over a level that follows the
+  carrier's mean amplitude at once when it rises and falls at the SSB
+  AGC's 10 dB a second. Unfaded, it plays as loud as AM; a carrier that
+  fades alone leaves the sidebands' audio as it is, where the envelope
+  folds.
+- **A notch through the audio filter's response is wider than the line.**
+  The audio filter's transition is 60 Hz: a zero 30 Hz wide in its
+  response would take a few decibels off the line. Each notch zeroes the
+  line's 30 Hz and half the transition on each side, 90 Hz in all, which
+  removed a whistle by more than 50 dB and a voice-like sound around it by
+  less than 0.1 dB on test signals (the tests ask for 20 dB and 1 dB). The filter keeps its length, so a notch
+  costs no filtering; computing the taps takes about 2 ms, when a notch
+  comes, goes or follows its line by 5 Hz or more. `demod.audio_taps`
+  gains the notches.
+- **The notch reads the detector's output**, at 48 kHz before the gate and
+  the audio filter, so that a notched line is still seen while it lasts:
+  every 0.1 s, an FFT of 8192 samples (5.9 Hz per bin, Hann). "At most
+  30 Hz wide": the line's level falls by 15 dB within 17.6 Hz on both
+  sides; "its surroundings": the median of the bins within 300 Hz beyond
+  that; "steady": found within 9 Hz at every analysis for half a second.
+  The release comes 1.0 to 1.2 s after the line stops, as the analysis's
+  0.17 s still holds it for a while. On AM's envelope a heterodyne gives a
+  second, weaker line at twice its pitch, which is notched too.
+- **The blanker's median is taken from every 16th sample**, 5000 of a
+  block at 2.4 MS/s, which estimates the block's median within about 1% for
+  noise; the impulses are sought in the samples' real and imaginary parts,
+  and only those over the limit over the square root of 2 have their
+  magnitude computed. A whole block's median took most of the first
+  version's time. The figure is the worst case, impulses in every
+  block (100 a second): a block without them is given back as it is,
+  without a copy. An impulse at a block's start does not reach back into
+  the previous block, two samples (0.8 µs) at most. It acts on the samples
+  that the demodulator receives, after the display's FFT has read them, so
+  that Calibrate's carrier measure, which taps the channel, reads the
+  blanked samples too.
+- **The fine spectrum reads the front filter's output**, the 48 kHz before
+  the channel filter: the channel that Calibrate's tap gives is the mode's
+  passband only. The demodulator gains a second tap. The cover's edges,
+  19.2 kHz from the VFO, lie in the front filter's transition: flat to
+  16 kHz, 0.8 dB down at 18 kHz and 3.1 dB at 19.2 kHz. Kept as designed:
+  the lit window's decor marks the edge, and narrowing the cover to 16 kHz
+  would shrink the deep zoom for a level that only the last 3 kHz lose.
+  In CW the channel's 0 Hz is the VFO less the CW pitch, which the frames'
+  labels take into account.
+- **The fine spectrum's FFTs**: Hann, not the wide spectrum's
+  Blackman-Harris, whose main lobe, 4 bins (23 Hz) on each side, merges
+  two carriers 20 Hz apart, which Hann shows apart. One FFT every 4800
+  samples at 48 kHz, overlapping, each a frame; at WFM's 320 kHz one every
+  8192 samples, a frame the mean of about four. At 320 kHz the prototype
+  alone took 0.7% of one core, against 0.2% at 48 kHz; the engine's
+  processing was measured in AM only.
 
 ### Pull requests
 

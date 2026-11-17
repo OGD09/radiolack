@@ -130,11 +130,13 @@ class SyncDetector:
     The channel is turned by a phase that runs at that frequency, then
     filtered by the band-pass, three moving averages in cascade
     (``MovingAverages``, ``band_pass_length``), which keeps the carrier and
-    its slow drifts; the angle of what comes out is the carrier's phase. The audio is the real part of the channel turned
-    by that phase, less the carrier's amplitude, over a level that follows
-    the carrier's at once and falls at the SSB AGC's 10 dB a second: a
-    carrier that fades alone, as in selective fading, leaves the sidebands'
-    audio as it is. Without a lock, the envelope, as AM. Not thread-safe."""
+    its slow drifts; the angle of what comes out is the carrier's phase.
+    The audio is the real part of the channel turned by that phase, less
+    the carrier's amplitude, over a level that follows the carrier's at
+    once and falls at the SSB AGC's 10 dB a second: a carrier that fades
+    alone, as in selective fading, leaves the sidebands' audio as it is.
+    Without a lock, the envelope, as AM. The band-pass lags by less than
+    ``delay``; the channel waits for the rest. Not thread-safe."""
 
     def __init__(self, channel_rate_hz: float, delay: int) -> None:
         if delay < 1:
@@ -150,18 +152,18 @@ class SyncDetector:
             raise ValueError(f"SAM's band-pass lags by {lag} samples, more than the delay of {delay}")
         self._filter = MovingAverages(length, SAM_STAGES)
         self._envelope = _AmDetector(self.rate_hz, delay)
-        self._early = np.zeros(delay - lag, np.complex64)  # the channel, waiting for the rest of the delay
-        self._turned = np.zeros(lag, np.complex64)         # the turned channel, waiting for the band-pass
-        self._phase = 0.0                               # radians, of the turn
-        self._frequency_hz = 0.0                        # of the turn
-        self._level: float | None = None                # the carrier's level at the end of the last block
+        self._early = np.zeros(delay - lag, np.complex64)   # the channel, waiting for the rest of the delay
+        self._turned = np.zeros(lag, np.complex64)          # the turned channel, waiting for the band-pass
+        self._phase = 0.0                                   # radians, of the turn
+        self._frequency_hz = 0.0                            # of the turn
+        self._level: float | None = None                    # the carrier's level at the end of the last block
         self._window = hann(SAM_SEARCH_SIZE)
         frequencies = np.fft.fftfreq(SAM_SEARCH_SIZE, 1 / self.rate_hz)
         order = np.argsort(frequencies)
         self._bins = order[np.abs(frequencies[order]) <= SAM_SEARCH_HZ]    # the searched bins, lowest first
         self._frequencies = frequencies[self._bins]
-        self._recent = np.zeros(0, np.complex64)        # the latest channel, for the search
-        self._since = 0                                 # samples since the last search
+        self._recent = np.zeros(0, np.complex64)            # the latest channel, for the search
+        self._since = 0                                     # samples since the last search
         self._interval = max(1, round(SAM_SEARCH_S * self.rate_hz))
 
     def process(self, channel: np.ndarray, power: np.ndarray) -> np.ndarray:
