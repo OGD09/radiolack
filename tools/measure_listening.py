@@ -362,7 +362,7 @@ def report(runs: Sequence[Run], options: argparse.Namespace, started: datetime, 
         "What the tools did in the timed blocks and the warm-up, over every run:",
         "",
         f"- SAM held a lock after {sum(a.locked for a in sam)} of {sum(a.blocks for a in sam)} blocks.",
-        f"- The notch had at most {max(a.notches for a in activity['notch'])} notch at once; computing the"
+        f"- The notch removed at most {max(a.notches for a in activity['notch'])} lines at once; computing the"
         f" audio filter's taps with four notches, when they change, takes {redesign_ms():.1f} ms.",
         f"- The blanker zeroed impulses in {sum(a.blanked for a in activity['blanker'])} of"
         f" {sum(a.blocks for a in activity['blanker'])} blocks.",

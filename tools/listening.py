@@ -42,12 +42,13 @@ import numpy as np
 
 from radiolack.demod import (AGC_DECAY_DB_S, AM_LEVEL, AUDIO_ATTENUATION_DB, AUDIO_HIGH_PASS_HZ, AUDIO_LOW_PASS_HZ,
                              AUDIO_TRANSITION_HZ, _AmDetector)
-from radiolack.dsp import FftFilter, kaiser_beta, shaped
+from radiolack.dsp import shaped
 
 # Synchronous AM.
 SAM_SEARCH_HZ = 1_000.0     # the carrier: the strongest line within this of the VFO
 SAM_BAND_HZ = 80.0          # the band-pass that follows it, between its half-gain points
-SAM_ATTENUATION_DB = 50.0   # the band-pass's stopband
+SAM_STAGES = 3              # moving averages in cascade make the band-pass
+SINC_CUBED_HALF = 0.36606   # where sinc(x) ** 3, a cascade's response at x / length, is one half
 SAM_LOCK_DB = 10.0          # carrier over the noise within the band-pass, or no lock
 SAM_SEARCH_SIZE = 4096      # the search's FFT: 11.7 Hz per bin at 48 kHz
 SAM_SEARCH_S = 0.1          # one search this often
@@ -73,6 +74,7 @@ NOTCH_HALF_HZ = NOTCH_WIDTH_HZ / 2 + AUDIO_TRANSITION_HZ / 2
 # The noise blanker.
 BLANKER_FACTOR = 6.0        # samples over this many times the block's median magnitude are impulses
 BLANKER_SIDES = 2           # samples zeroed on each side of one
+BLANKER_STRIDE = 16         # the block's median magnitude, from every 16th of its samples
 
 # The fine spectrum.
 FINE_SIZE = 8192
@@ -84,15 +86,34 @@ def hann(size: int) -> np.ndarray:
     return (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(size) / size)).astype(np.float32)
 
 
-def band_pass_taps(delay: int, rate_hz: float) -> np.ndarray:
-    """SAM's band-pass, centred on 0 Hz: ``2 * delay + 1`` taps, so that
-    it lags by ``delay`` samples, half gain at ``SAM_BAND_HZ / 2``, unit
-    gain at 0 Hz."""
-    taps = 2 * delay + 1
-    t = np.arange(taps) - delay
-    band = SAM_BAND_HZ / rate_hz
-    h = band * np.sinc(band * t) * np.kaiser(taps, kaiser_beta(SAM_ATTENUATION_DB))
-    return h / h.sum()
+def band_pass_length(rate_hz: float) -> int:
+    """The length of each of SAM's moving averages at ``rate_hz``: odd, so
+    that each lags by a whole number of samples, and such that the cascade
+    has half its gain at ``SAM_BAND_HZ / 2`` from 0 Hz."""
+    return max(1, round(SINC_CUBED_HALF * rate_hz / (SAM_BAND_HZ / 2))) | 1
+
+
+class MovingAverages:
+    """``stages`` moving averages of ``length`` samples in cascade, on a
+    stream of complex samples, each by cumulative sums: a low-pass filter
+    whose response is sinc(f * length / rate) to the power ``stages``,
+    lagging by ``stages * (length - 1) / 2`` samples, whose cost does not
+    grow with its length."""
+
+    def __init__(self, length: int, stages: int) -> None:
+        if length < 1 or stages < 1:
+            raise ValueError(f"cannot average {stages} times over {length} samples")
+        self.length = length
+        self._histories = [np.zeros(length - 1, np.complex128) for _ in range(stages)]
+
+    def process(self, values: np.ndarray) -> np.ndarray:
+        length = self.length
+        for stage, history in enumerate(self._histories):
+            both = np.concatenate((history, values))
+            self._histories[stage] = both[len(both) - (length - 1):]
+            sums = np.concatenate(([0], np.cumsum(both)))
+            values = (sums[length:] - sums[:-length]) / length
+        return values
 
 
 class SyncDetector:
@@ -105,10 +126,11 @@ class SyncDetector:
     a parabola through the levels in dB, and its margin over the noise
     within the band-pass: the line's power over the median of the searched
     bins, which is the noise's mean power per bin times ln 2, scaled to the
-    band-pass's width. The channel is turned by a phase that runs at that
-    frequency, then filtered by the band-pass (``band_pass_taps``), which
-    keeps the carrier and its slow drifts; the angle of what comes out is
-    the carrier's phase. The audio is the real part of the channel turned
+    band-pass's width, the noise's own share of the line's bins taken off.
+    The channel is turned by a phase that runs at that frequency, then
+    filtered by the band-pass, three moving averages in cascade
+    (``MovingAverages``, ``band_pass_length``), which keeps the carrier and
+    its slow drifts; the angle of what comes out is the carrier's phase. The audio is the real part of the channel turned
     by that phase, less the carrier's amplitude, over a level that follows
     the carrier's at once and falls at the SSB AGC's 10 dB a second: a
     carrier that fades alone, as in selective fading, leaves the sidebands'
@@ -122,9 +144,14 @@ class SyncDetector:
         self.locked = False
         self.carrier_hz: float | None = None    # from the channel's 0 Hz, while locked
         self.margin_db: float | None = None     # the carrier over the noise within the band-pass
-        self._filter = FftFilter(band_pass_taps(delay, self.rate_hz), self.rate_hz)
+        length = band_pass_length(self.rate_hz)
+        lag = SAM_STAGES * (length - 1) // 2
+        if lag > delay:
+            raise ValueError(f"SAM's band-pass lags by {lag} samples, more than the delay of {delay}")
+        self._filter = MovingAverages(length, SAM_STAGES)
         self._envelope = _AmDetector(self.rate_hz, delay)
-        self._turned = np.zeros(delay, np.complex64)    # the turned channel, waiting for the band-pass
+        self._early = np.zeros(delay - lag, np.complex64)  # the channel, waiting for the rest of the delay
+        self._turned = np.zeros(lag, np.complex64)         # the turned channel, waiting for the band-pass
         self._phase = 0.0                               # radians, of the turn
         self._frequency_hz = 0.0                        # of the turn
         self._level: float | None = None                # the carrier's level at the end of the last block
@@ -145,20 +172,24 @@ class SyncDetector:
         if not count:
             return envelope
         self._search(channel)
-        steps = self._phase + 2 * np.pi * self._frequency_hz / self.rate_hz * np.arange(count)
-        self._phase = float((self._phase + 2 * np.pi * self._frequency_hz / self.rate_hz * count) % (2 * np.pi))
-        turned = channel * np.exp(-1j * steps).astype(np.complex64)
+        if len(self._early):
+            waiting = np.concatenate((self._early, channel))
+            self._early = waiting[count:]
+            channel = waiting[:count]
+        step = 2 * np.pi * self._frequency_hz / self.rate_hz
+        phases = (self._phase + step * np.arange(count)).astype(np.float32)
+        self._phase = float((self._phase + step * count) % (2 * np.pi))
+        turned = channel * (np.cos(phases) - 1j * np.sin(phases)).astype(np.complex64)
         carrier = self._filter.process(turned)
         waiting = np.concatenate((self._turned, turned))
         self._turned = waiting[count:]
         late = waiting[:count]              # in step with the band-pass's output
-        amplitude = np.abs(carrier).astype(np.float64)
+        amplitude = np.abs(carrier)
         level = self._carrier_level(float(amplitude.mean()), count)
         if not self.locked or level[-1] <= LEVEL_FLOOR:
             return envelope
-        heard = amplitude > LEVEL_FLOOR
-        in_phase = np.zeros(count)
-        in_phase[heard] = ((late.real * carrier.real + late.imag * carrier.imag)[heard] / amplitude[heard])
+        # Where the carrier vanishes, so does the part of the channel along it.
+        in_phase = (late.real * carrier.real + late.imag * carrier.imag) / np.maximum(amplitude, LEVEL_FLOOR)
         return AM_LEVEL * (in_phase - amplitude) / np.maximum(level, LEVEL_FLOOR)
 
     def _carrier_level(self, mean: float, count: int) -> np.ndarray:
@@ -191,11 +222,13 @@ class SyncDetector:
         if not 0 < peak < len(power) - 1 or power[peak] <= 0:
             self._lose()
             return
-        lobe = float(power[max(0, peak - SAM_LOBE_BINS):peak + SAM_LOBE_BINS + 1].sum())
+        lobe = power[max(0, peak - SAM_LOBE_BINS):peak + SAM_LOBE_BINS + 1]
         # The carrier's power over the noise's within the band-pass, from the
-        # bins' sums: Parseval for the line, an exponential median for the noise.
-        margin = (math.inf if median <= 0 else
-                  10 * math.log10(lobe * math.log(2) * self.rate_hz / (SAM_SEARCH_SIZE * median * SAM_BAND_HZ)))
+        # bins' sums: Parseval for the line, less the noise in its bins, and
+        # an exponential median for the noise.
+        line = float(lobe.sum()) - len(lobe) * median / math.log(2)
+        margin = (math.inf if median <= 0 else -math.inf if line <= 0 else
+                  10 * math.log10(line * math.log(2) * self.rate_hz / (SAM_SEARCH_SIZE * median * SAM_BAND_HZ)))
         self.margin_db = margin
         if margin < SAM_LOCK_DB:
             self._lose()
@@ -343,11 +376,21 @@ class AutoNotch:
 class NoiseBlanker:
     """Zeroes the impulses of the samples that go to the VFO's channel:
     those whose magnitude exceeds ``BLANKER_FACTOR`` times the block's
-    median, with ``BLANKER_SIDES`` samples on each side. An impulse at the
-    end of a block zeroes the first samples of the next; one at the start
-    of a block does not reach back into the previous one, which has gone.
-    A block more than half of whose samples are exact zeros is left alone.
-    Not thread-safe."""
+    median, with ``BLANKER_SIDES`` samples on each side.
+
+    The median is that of every ``BLANKER_STRIDE``th sample, 5000 of a block
+    at 2.4 MS/s, which estimates the block's within about 1% for noise, far
+    finer than the factor of 6; a whole block's median took most of the
+    blanker's time. The impulses are sought in the samples' real and
+    imaginary parts, which NumPy compares far faster than it computes
+    magnitudes: a magnitude over the limit has a part over the limit over
+    the square root of 2, and only the samples with such a part have their
+    magnitude computed.
+
+    An impulse at the end of a block zeroes the first samples of the next;
+    one at the start of a block does not reach back into the previous one,
+    which has gone. A block whose median magnitude is 0, more than half of
+    its samples exact zeros, is left alone. Not thread-safe."""
 
     def __init__(self) -> None:
         self._pending = 0           # samples to zero at the start of the next block
@@ -359,9 +402,16 @@ class NoiseBlanker:
         pending, self._pending = min(self._pending, count), max(0, self._pending - count)
         if not count:
             return samples
-        power = samples.real ** 2 + samples.imag ** 2
-        median = float(np.median(power))
-        hits = np.flatnonzero(power > BLANKER_FACTOR ** 2 * median) if median > 0 else np.zeros(0, np.intp)
+        every = samples[::BLANKER_STRIDE]
+        median = float(np.median(every.real.astype(np.float64) ** 2 + every.imag.astype(np.float64) ** 2))
+        hits = np.zeros(0, np.intp)
+        if median > 0:
+            limit = BLANKER_FACTOR ** 2 * median
+            parts = np.ascontiguousarray(samples, np.complex64).view(np.float32)
+            candidates = np.unique(np.flatnonzero(np.abs(parts) > math.sqrt(limit / 2)) // 2)
+            if len(candidates):
+                values = samples[candidates]
+                hits = candidates[values.real.astype(np.float64) ** 2 + values.imag.astype(np.float64) ** 2 > limit]
         if not len(hits) and not pending:
             return samples
         blanked = samples.copy()
