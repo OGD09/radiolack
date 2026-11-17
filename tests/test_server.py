@@ -253,7 +253,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
                               "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
-                              "measures": ["carrier"]})
+                              "measures": ["carrier", "driver_pll"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -477,7 +477,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "report", "text": "mine"}': ("report", "unknown report field: text"),
             '{"type": "report", "page": "two\\nlines"}': (
                 "report", "page must be a line of text of at most 300 characters"),
-            '{"type": "carrier"}': ("carrier", "a carrier message takes the action measure"),
+            '{"type": "carrier"}': ("carrier", "a carrier message takes the action measure or identify"),
             '{"type": "carrier", "action": "measure", "id": -1}': (
                 "carrier", "a request id must be a whole number from 1"),
         }
@@ -811,6 +811,20 @@ class CarrierStreamTest(ReportStreamTest):
             await asking.send_json({"type": "scanner", "threshold_db": 20})
             while (message := await next_text(other))["type"] != "scanner":
                 self.assertNotEqual(message["type"], "carrier")
+
+    async def test_answers_a_check_of_the_driver_to_the_interface_that_asks(self):
+        async with self.connect() as asking, self.connect() as other:
+            for ws in (asking, other):
+                await read_start(self, ws)
+            await asking.send_json({"type": "carrier", "action": "identify", "id": 5})
+            while (message := await next_text(asking))["type"] != "driver_pll":
+                self.assertNotEqual(message["type"], "error")
+            # A source without an R820T or R828D has no driver to identify.
+            self.assertEqual(message, {"type": "driver_pll", "id": 5, "driver_pll": None, "previous": None,
+                                       "reason": "receiver"})
+            await asking.send_json({"type": "scanner", "threshold_db": 20})
+            while (message := await next_text(other))["type"] != "scanner":
+                self.assertNotEqual(message["type"], "driver_pll")
 
 
 async def read_start(test: unittest.TestCase, ws) -> dict[str, dict]:

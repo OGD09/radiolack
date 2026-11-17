@@ -19,6 +19,7 @@ from unittest import mock
 
 import numpy as np
 
+from radiolack.converter import Conversion
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack import __version__, r82xx, recordings
 from radiolack.engine import Engine, Source, Subscription
@@ -3117,3 +3118,306 @@ class CarrierRequestTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.engine.measure_carrier(changes, subscription)
         self.assertIsNone(self.engine._carrier)
+
+
+async def next_driver(subscription: Subscription, timeout: float = 30.0) -> dict:
+    """The next answer to a check of the driver's computation that
+    ``subscription`` receives."""
+    async def wait() -> dict:
+        while True:
+            message = await subscription.get()
+            if isinstance(message, dict) and message["type"] == "driver_pll":
+                return message
+    return await asyncio.wait_for(wait(), timeout)
+
+
+class DriverCheckTest(unittest.IsolatedAsyncioTestCase):
+    """The check of the driver's computation, on the fake rtl_tcp whose
+    tuner follows either computation: the computation found whatever the
+    crystal, the correction and the computation set; the receiver back on
+    its centre and its grid whatever ends the check; the refusals; and the
+    correction that a calibration then computes."""
+
+    RATE_HZ = 240_000.0
+    CENTRE_HZ = 145_000_000.0       # placed at 145.025 MHz at this rate
+    OFFSET_HZ = 35_000.4            # the carrier, from the centre asked, on the tuner's frequencies
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+
+    async def start(self, computation: str | None = "truncating", *, crystal_ppb: int = 37_420, ppm: float = 0.0,
+                    driver_pll: str = "unknown", tuner_type: int = 5, converter: dict | None = None,
+                    **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
+        """An engine on the fake rtl_tcp with a carrier OFFSET_HZ above the
+        centre asked, its tuner following ``computation`` (exact when None)
+        and its crystal ``crystal_ppb`` off, with the correction ``ppm``,
+        the driver set to ``driver_pll`` and the VFO on the carrier as it
+        measures, in AM; it saves into a temporary folder, and records
+        there."""
+        conversion = Conversion(converter["converter"], converter["converter_lo_hz"]) if converter else Conversion()
+        tuned_carrier = self.CENTRE_HZ + self.OFFSET_HZ
+        fake = FakeRtlTcp(carriers={tuned_carrier: 0.2}, crystal_ppb=crystal_ppb, chunk_bytes=16_384,
+                          interval_s=0.004, tuner_type=tuner_type,
+                          tuner_pll=None if computation is None else functools.partial(r82xx.tuned_hz, computation))
+        await fake.__aenter__()
+        self.addAsyncCleanup(fake.__aexit__, None, None, None)
+        source = RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=self.RATE_HZ, settle_s=0.1)
+        engine = Engine(source, store=Store(self.base / "config"), recordings=self.base / "recordings",
+                        save_delay_s=0.05)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop_engine():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=15)
+
+        self.addAsyncCleanup(stop_engine)
+        subscription = engine.subscribe()
+        await eventually(lambda: engine.state()["status"] == "streaming")     # the tuner known
+        if converter:
+            engine.configure(converter)
+        engine.configure({**settings, "ppm": ppm, "driver_pll": driver_pll,
+                          "centre_hz": conversion.air(self.CENTRE_HZ)})
+        # Where the carrier measures, near enough: the crystal's error less the correction.
+        engine.configure_demod({"frequency_hz": round(conversion.air(
+            tuned_carrier * (1 + ppm / 1e6) / (1 + crystal_ppb / 1e9))), "mode": "AM"})
+        self.home = engine.state()["centre_hz"]
+        self.air_hz = conversion.air(tuned_carrier)
+        return engine, subscription, fake
+
+    async def identify(self, engine: Engine, subscription: Subscription, request_id: int = 1) -> dict:
+        engine.measure_carrier({"action": "identify", "id": request_id}, subscription)
+        answer = await next_driver(subscription)
+        self.assertEqual(answer["id"], request_id)
+        return answer
+
+    @staticmethod
+    async def off_the_grid(engine: Engine) -> None:
+        """Return once the check moved the receiver off its grid."""
+        await eventually(lambda: not engine.state()["tuner_grid"])
+
+    async def assert_back(self, engine: Engine, fake: FakeRtlTcp | None = None) -> None:
+        """The receiver on the centre and the grid of the check's start,
+        and with ``fake``, asked for the grid's point again."""
+        state = engine.state()
+        self.assertEqual((state["centre_hz"], state["tuner_grid"]), (self.home, True))
+        self.assertIsNone(engine._driver_check)
+        request = engine.source.pll_tuning()[0]
+        self.assertEqual((request + r82xx.rate_if_hz(int(self.RATE_HZ))) % r82xx.GRID_HZ, 0)    # on the grid
+        if fake is not None:
+            await eventually(lambda: fake.frequency_hz == request)
+
+    def saved_source(self) -> dict | None:
+        """The receiver's settings as saved, None before the first write."""
+        path = self.base / "config" / SETTINGS_FILE
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))["receivers"]["rtl_tcp"]["source"]
+
+    async def test_names_the_computation_whatever_the_crystal_the_correction_and_the_one_set(self):
+        # The crystal 37.42 ppm off, the correction none, wrong or nearly right, the computation set
+        # unknown or the other one; behind a converter that inverts the spectrum too.
+        inverted = {"converter": "down_inverted", "converter_lo_hz": 1_000_000_000.0}
+        cases = (("truncating", "unknown", 0.0, None), ("rounding", "truncating", -12.5, None),
+                 ("truncating", "rounding", 50.0, None), ("rounding", "unknown", 37.42, None),
+                 ("truncating", "unknown", 5.0, inverted))
+        for computation, driver_pll, ppm, converter in cases:
+            with self.subTest(computation=computation, driver_pll=driver_pll, ppm=ppm, converter=converter):
+                engine, subscription, fake = await self.start(computation, ppm=ppm, driver_pll=driver_pll,
+                                                               converter=converter)
+                answer = await self.identify(engine, subscription)
+                self.assertEqual(answer, {"type": "driver_pll", "id": 1, "driver_pll": computation,
+                                          "previous": driver_pll, "reason": None})
+                self.assertEqual(engine.state()["driver_pll"], computation)
+                await self.assert_back(engine, fake)
+                engine.close()          # the next receiver alone streams
+                fake.sending = False
+
+    async def test_saves_the_computation_found_with_the_centre_asked(self):
+        engine, subscription, _ = await self.start("rounding")
+        await self.identify(engine, subscription)
+        await eventually(lambda: (self.saved_source() or {}).get("driver_pll") == "rounding")
+        saved = self.saved_source()
+        self.assertEqual(saved["centre_hz"], self.CENTRE_HZ)
+        self.assertNotIn("tuner_grid", saved)
+
+    async def test_after_the_check_the_correction_is_the_crystal_s_alone(self):
+        for computation, crystal_ppb in (("truncating", 37_420), ("rounding", -23_450), ("truncating", -51_230)):
+            with self.subTest(computation=computation, crystal_ppb=crystal_ppb):
+                engine, subscription, fake = await self.start(computation, crystal_ppb=crystal_ppb)
+                self.assertEqual((await self.identify(engine, subscription))["driver_pll"], computation)
+                engine.measure_carrier({"action": "measure", "id": 2}, subscription)
+                measured = await next_carrier(subscription)
+                self.assertEqual(measured["id"], 2)
+                ppm = calibrated_ppm(0.0, measured["frequency_hz"], self.air_hz)
+                self.assertAlmostEqual(ppm, crystal_ppb / 1000, delta=0.01)
+                engine.close()
+                fake.sending = False
+
+    async def test_a_measure_asked_meanwhile_waits_and_takes_the_label_found(self):
+        # The crystal corrected, the older computation found: the carrier measures where it is.
+        engine, subscription, _ = await self.start("truncating", ppm=37.42)
+        engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+        engine.measure_carrier({"action": "measure", "id": 2}, subscription)
+        answers = []
+        while not answers or answers[-1]["type"] != "carrier":
+            message = await asyncio.wait_for(subscription.get(), 30)
+            if isinstance(message, dict) and message["type"] in ("carrier", "driver_pll"):
+                answers.append(message)
+        self.assertEqual([answer["type"] for answer in answers], ["driver_pll", "carrier"])
+        self.assertEqual(answers[0]["driver_pll"], "truncating")
+        self.assertAlmostEqual(answers[1]["frequency_hz"], self.air_hz, delta=1.0)
+
+    async def test_a_second_calibration_replaces_a_computation_that_changed(self):
+        engine, subscription, fake = await self.start("truncating")
+        self.assertEqual((await self.identify(engine, subscription))["driver_pll"], "truncating")
+        fake.tuner_pll = functools.partial(r82xx.tuned_hz, "rounding")      # the driver upgraded
+        answer = await self.identify(engine, subscription, 2)
+        self.assertEqual((answer["driver_pll"], answer["previous"], answer["reason"]),
+                         ("rounding", "truncating", None))
+        self.assertEqual(engine.state()["driver_pll"], "rounding")
+        await eventually(lambda: (self.saved_source() or {}).get("driver_pll") == "rounding")
+
+    async def test_a_tuner_that_follows_neither_computation_leaves_the_one_set(self):
+        engine, subscription, fake = await self.start(None, driver_pll="truncating")     # an exact tuner
+        answer = await self.identify(engine, subscription)
+        self.assertEqual((answer["driver_pll"], answer["previous"], answer["reason"]),
+                         (None, "truncating", "neither"))
+        self.assertEqual(engine.state()["driver_pll"], "truncating")
+        await self.assert_back(engine, fake)
+
+    async def test_a_carrier_or_a_receiver_lost_meanwhile_leaves_the_computation_set(self):
+        for lost in ("carrier", "receiver"):
+            with self.subTest(lost=lost):
+                engine, subscription, fake = await self.start("truncating", driver_pll="rounding")
+                with mock.patch("radiolack.engine.CHECK_POINT_TIMEOUT_S", 1.0):
+                    engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+                    await self.off_the_grid(engine)
+                    if lost == "carrier":
+                        fake.carriers = {}      # no line: the point's measure ends at once
+                    else:
+                        fake.sending = False    # nothing more comes: the point's time runs out
+                    answer = await next_driver(subscription)
+                self.assertEqual((answer["driver_pll"], answer["previous"], answer["reason"]),
+                                 (None, "rounding", "lost"))
+                self.assertEqual(engine.state()["driver_pll"], "rounding")
+                await self.assert_back(engine)
+                engine.close()
+                fake.sending = False
+
+    async def test_an_interface_that_leaves_brings_the_receiver_back(self):
+        engine, subscription, fake = await self.start("truncating")
+        engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+        await self.off_the_grid(engine)
+        engine.unsubscribe(subscription)
+        self.assertEqual(engine.state()["driver_pll"], "unknown")
+        await self.assert_back(engine, fake)
+        self.assertNotIn("driver_pll", [message["type"] for message in ready_messages(subscription)
+                                        if isinstance(message, dict)])
+
+    async def test_another_interface_waits_for_the_same_check(self):
+        engine, first, _ = await self.start("rounding")
+        second = engine.subscribe()
+        engine.measure_carrier({"action": "identify", "id": 4}, first)
+        engine.measure_carrier({"action": "identify", "id": 9}, second)
+        check = engine._driver_check
+        engine.unsubscribe(first)       # the other still waits: the check goes on
+        self.assertIs(engine._driver_check, check)
+        answer = await next_driver(second)
+        self.assertEqual((answer["id"], answer["driver_pll"]), (9, "rounding"))
+
+    async def test_an_interface_s_change_stops_it_and_applies_to_the_receiver_as_it_was(self):
+        for change in ("centre", "vfo", "gain"):
+            with self.subTest(change=change):
+                engine, subscription, fake = await self.start("truncating")
+                engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+                await self.off_the_grid(engine)
+                if change == "centre":
+                    engine.configure({"centre_hz": 145_200_000.0})
+                elif change == "vfo":
+                    engine.configure_demod({"frequency_hz": engine.demod_state()["frequency_hz"] + 500})
+                else:
+                    engine.configure({"gain_db": 20.7})
+                answer = await next_driver(subscription)
+                self.assertEqual((answer["driver_pll"], answer["reason"]), (None, "stopped"))
+                state = engine.state()
+                self.assertEqual((state["driver_pll"], state["tuner_grid"]), ("unknown", True))
+                self.assertEqual(state["centre_hz"], 145_200_000.0 if change == "centre" else self.CENTRE_HZ)
+                engine.close()
+                fake.sending = False
+
+    async def test_a_scan_or_an_i_q_recording_that_starts_stops_it(self):
+        for start in ("scan", "iq"):
+            with self.subTest(start=start):
+                engine, subscription, fake = await self.start("truncating")
+                engine.edit_bookmarks({"action": "add", "frequency_hz": 145_060_000.0, "name": "Carrier",
+                                       "mode": "AM", "scan": True})
+                engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+                await self.off_the_grid(engine)
+                if start == "scan":
+                    engine.configure_scanner({"scan": "memory"})
+                else:
+                    engine.configure_recording({"iq": True})
+                self.assertEqual((await next_driver(subscription))["reason"], "stopped")
+                self.assertEqual(engine.state()["centre_hz"], self.CENTRE_HZ)    # where it began
+                self.assertTrue(engine.state()["tuner_grid"])
+                engine.configure_scanner({"scan": None})
+                engine.configure_recording({"iq": False})
+                engine.close()
+                fake.sending = False
+
+    async def test_the_engine_s_stop_brings_the_receiver_back_and_saves_the_centre_asked(self):
+        engine, subscription, _ = await self.start("truncating")
+        engine.measure_carrier({"action": "identify", "id": 1}, subscription)
+        await self.off_the_grid(engine)
+        self.assertEqual(engine._receiver_settings()["source"]["centre_hz"], self.CENTRE_HZ)
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), 15)
+        await self.assert_back(engine)
+        saved = self.saved_source()
+        self.assertEqual((saved["centre_hz"], saved["driver_pll"]), (self.CENTRE_HZ, "unknown"))
+
+    async def test_refused_where_it_cannot_run_moving_nothing(self):
+        cases = (("scan", {}, None), ("iq", {}, None),
+                 ("direct", {"hf_input": "q"}, 7_100_000.0),
+                 ("receiver", {"tuner_type": 1}, None),         # an Elonics E4000
+                 ("range", {"tuner_type": 6, "hf_input": "tuner"}, 20_000_000.0),   # an R828D below 28.8 MHz
+                 ("position", {}, "vfo"),
+                 ("lost", {}, "wfm"))       # no WFM channel at 240 kS/s: no carrier to measure
+        for reason, settings, change in cases:
+            with self.subTest(reason=reason):
+                engine, subscription, fake = await self.start("truncating", **settings)
+                if reason == "scan":
+                    engine.edit_bookmarks({"action": "add", "frequency_hz": 145_060_000.0, "name": "Carrier",
+                                           "mode": "AM", "scan": True})
+                    engine.configure_scanner({"scan": "memory"})
+                elif reason == "iq":
+                    engine.configure_recording({"iq": True})
+                elif change == "vfo":       # 1.5 kHz from the centre in use: within the check's moves
+                    engine.configure_demod({"frequency_hz": engine.state()["centre_in_use_hz"] + 1500})
+                elif change == "wfm":
+                    engine.configure_demod({"mode": "WFM"})
+                elif change is not None:
+                    engine.configure({"centre_hz": change})
+                before = engine.state()
+                answer = await self.identify(engine, subscription)
+                self.assertEqual(answer, {"type": "driver_pll", "id": 1, "driver_pll": None, "previous": "unknown",
+                                          "reason": reason})
+                self.assertIsNone(engine._driver_check)
+                self.assertEqual(engine.state(), before)
+                engine.configure_scanner({"scan": None})
+                engine.configure_recording({"iq": False})
+                engine.close()
+                fake.sending = False
+
+    async def test_refused_on_the_simulated_band(self):
+        engine = Engine(FakeSource())
+        task = asyncio.ensure_future(engine.run())
+        self.addAsyncCleanup(stop, engine, task)
+        subscription = engine.subscribe()
+        engine.measure_carrier({"action": "identify"}, subscription)
+        answer = await next_driver(subscription)
+        self.assertEqual(answer, {"type": "driver_pll", "id": None, "driver_pll": None, "previous": None,
+                                  "reason": "receiver"})

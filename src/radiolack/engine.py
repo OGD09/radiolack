@@ -80,7 +80,11 @@ interface may ask for the measure of the carrier at the VFO (carrier.py),
 to calibrate the receiver's frequency correction: the engine gathers the
 VFO's channel, before the demodulator, only while an interface waits for a
 measure, which every interface that asked meanwhile shares and receives,
-each alone.
+each alone. On an R820T or R828D, an interface may also ask which of the
+rtl-sdr driver's computations its PLL follows (pllcheck.py): the engine
+measures that carrier at the centre in use and at centres off the tuner's
+grid, for every interface, brings the receiver back whatever ends the
+check, and saves the computation found with the receiver.
 
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
@@ -117,6 +121,7 @@ from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
                     has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
 from .observations import Observations
+from .pllcheck import LOST, MAX_MOVE_HZ, Point, choose_points, identify
 from .preferences import check_preferences, saved_preferences
 from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, check_folder, chosen_folder,
                          delete_recording, is_recording_file, is_recording_name, list_recordings, meta_name)
@@ -147,6 +152,9 @@ SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "sweep_low_hz", "sw
 OBSERVATIONS_FIELDS = ("clear", "clear_all")
 CARRIER_TIMEOUT_S = 6.0     # a carrier's measure that settings kept starting again ends this long after it began
 MAX_REQUEST_ID = 2 ** 53 - 1    # the largest whole number JavaScript counts exactly
+CHECK_POINT_TIMEOUT_S = 6.0     # a point of the driver's check whose carrier is not measured within this ends it
+CHECK_CLEARANCE_HZ = 1_000.0    # the VFO stays this far from the centre at every point of the driver's check
+STOPPED = "stopped"     # a driver's check that an interface's change, or the engine's stop, ended
 RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the clients this often
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
@@ -176,7 +184,9 @@ class Source(Protocol):
     truly samples, as the source alone corrects it, which scales the VFO's
     distance from the centre. ``centre_in_use`` gives the centre in use
     for a centre asked, and ``grid_hz`` how far apart those lie for a
-    receiver that places its centres on a grid (rtltcp.py), 0 for others.
+    receiver that places its centres on a grid (rtltcp.py), 0 for others;
+    ``pll_tuning`` and ``centre_off_grid`` are what the check of the
+    driver's computation needs of such a receiver (pllcheck.py).
     ``describe`` gives the state the interfaces show
     (docs/design/protocol.md), and the source calls ``on_change`` whenever
     that state changes. ``settings_key`` names the receiver whose settings
@@ -201,6 +211,15 @@ class Source(Protocol):
 
     def centre_in_use(self, centre_hz: float) -> float:
         """The centre in use that asking for ``centre_hz`` would give."""
+
+    def pll_tuning(self) -> tuple[int, int] | str:
+        """The frequency asked of an R820T's or R828D's tuner, and the
+        sample rate, where the driver's computation applies; otherwise why
+        not: "receiver", "direct" or "range" (rtltcp.RtlTcpSource)."""
+
+    def centre_off_grid(self, request_hz: int) -> float | None:
+        """The centre asked for which the tuner, off its grid, is asked for
+        ``request_hz``; None when none is."""
 
     @property
     def settings_key(self) -> str:
@@ -257,6 +276,12 @@ class FixedSource:
 
     def centre_in_use(self, centre_hz: float) -> float:
         return centre_hz
+
+    def pll_tuning(self) -> tuple[int, int] | str:
+        return "receiver"
+
+    def centre_off_grid(self, request_hz: int) -> float | None:
+        return None
 
     @property
     def settings_key(self) -> str:
@@ -544,6 +569,8 @@ class Engine:
         self._carrier_waiting: dict[Subscription, int | None] = {}
         self._carrier_began = 0.0
         self._source_changes = 0
+        # The check of the driver's computation while one runs (pllcheck.py).
+        self._driver_check: _DriverCheck | None = None
         self._adopt()
         self._watch_bookmarks()
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
@@ -584,6 +611,11 @@ class Engine:
         self._carrier_waiting.pop(subscription, None)
         if not self._carrier_waiting:
             self._carrier = None        # nobody waits: nothing more to measure
+        check = self._driver_check
+        if check is not None:
+            check.waiting.pop(subscription, None)
+            if not check.waiting:
+                self._end_driver_check(STOPPED)     # nobody waits: the receiver comes back
         if self._idle():
             self._wanted.clear()
 
@@ -608,7 +640,10 @@ class Engine:
         in front of the receiver does all of these, which its change of
         frequencies calls for, and the VFO and the signals found follow it:
         the VFO stays on the signal it was on, and the signals found
-        through the previous converter are forgotten."""
+        through the previous converter are forgotten. A check of the
+        driver's computation that runs stops first, bringing the receiver
+        back, so that the change applies to the receiver as it was."""
+        self._end_driver_check(STOPPED)
         self._configure(changes, restoring=False)
 
     def _configure(self, changes: Mapping[str, object], *, restoring: bool) -> None:
@@ -656,11 +691,16 @@ class Engine:
         when one is refused; otherwise every client receives the new
         settings. ``change_id`` acknowledges the change to ``subscription``,
         the client that asked for it, which receives the settings in either
-        case. Tuning the VFO stops a scan."""
+        case. Tuning the VFO stops a scan; tuning it, or another mode or
+        filter, stops a check of the driver's computation, whose carrier it
+        moves."""
         if subscription is not None and change_id is not None:
             subscription.acknowledged = change_id
             subscription.changed("demod")
         demod = self._demod.changed(changes)
+        if (demod.frequency_hz, demod.mode, demod.bandwidth_hz) != (
+                self._demod.frequency_hz, self._demod.mode, self._demod.bandwidth_hz):
+            self._end_driver_check(STOPPED)
         if demod.frequency_hz != self._demod.frequency_hz:
             self._stop_scan("tuned")
         self._demod = demod
@@ -953,23 +993,79 @@ class Engine:
 
     def measure_carrier(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Measure the carrier at the VFO for ``subscription``, which then
-        receives the result alone: ``action`` must be ``measure``, and
-        ``id``, if given, a whole number that the result repeats. A client
-        that asks again while a measure runs waits for that one, with its
-        new id. Raises ValueError when refused."""
+        receives the result alone: ``action`` must be ``measure``, or
+        ``identify`` for a check of the driver's computation on that
+        carrier (``identify_driver``), and ``id``, if given, a whole number
+        that the result repeats. A client that asks again while a measure
+        runs waits for that one, with its new id; a measure asked while the
+        check runs waits for the check's end. Raises ValueError when
+        refused."""
         for name in changes:
             if name not in ("action", "id"):
                 raise ValueError(f"unknown carrier field: {str(name)[:40]}")
-        if changes.get("action") != "measure":
-            raise ValueError("a carrier message takes the action measure")
+        action = changes.get("action")
+        if action not in ("measure", "identify"):
+            raise ValueError("a carrier message takes the action measure or identify")
         request_id = changes.get("id")
         if request_id is not None and (isinstance(request_id, bool) or not isinstance(request_id, int)
                                        or not 0 < request_id <= MAX_REQUEST_ID):
             raise ValueError("a request id must be a whole number from 1")
+        if action == "identify":
+            self.identify_driver(subscription, request_id)
+            return
         self._carrier_waiting[subscription] = request_id
         if self._carrier is None:
             self._carrier = CarrierMeasure()
             self._carrier_began = time.monotonic()
+
+    def identify_driver(self, subscription: Subscription, request_id: int | None) -> None:
+        """Check which of the driver's computations an R820T's or R828D's
+        PLL follows, on the carrier at the VFO (pllcheck.py), for
+        ``subscription``, which then receives the result alone, with
+        ``request_id``; a client that asks while a check runs waits for that
+        one. The receiver's tuner moves off its grid, to centre frequencies
+        within MAX_MOVE_HZ, for every interface, then comes back, whatever
+        ends the check. A computation found is saved with the receiver,
+        replacing the one set. Refused, with the reason in the answer and
+        nothing moved, with another receiver, in direct sampling, below
+        where the PLL is computed, while a scan runs or an I/Q recording is
+        made, with a VFO whose channel receives nothing at the sample rate,
+        or too near the centre or the span's edge for the moves, and where
+        the computations cannot be told apart."""
+        check = self._driver_check
+        if check is not None:
+            check.waiting[subscription] = request_id
+            return
+        described = self.source.describe()
+        tuning = self.source.pll_tuning()
+        points: tuple[Point, ...] = ()
+        if isinstance(tuning, str):
+            reason: str | None = tuning
+        elif self._scanning():
+            reason = "scan"
+        elif self._iq is not None:
+            reason = "iq"
+        elif not has_channel(self._demod.mode, tuning[1]):
+            reason = LOST       # the VFO's channel receives nothing at this rate: no carrier to measure
+        else:
+            request_hz, rate_hz = tuning
+            distance = abs(self._demod.frequency_hz - described["centre_in_use_hz"])
+            if (distance < MAX_MOVE_HZ + CHECK_CLEARANCE_HZ
+                    or distance + MAX_MOVE_HZ + self._demod.bandwidth_hz > rate_hz / 2):
+                reason = "position"
+            else:
+                points = choose_points(request_hz, rate_hz, self.source.centre_off_grid)
+                reason = None if points else "indistinct"
+        if reason is not None:
+            subscription.reply(_driver_answer(request_id, None, described["driver_pll"], reason))
+            return
+        centre_hz = described["centre_hz"]
+        self._driver_check = _DriverCheck(
+            {subscription: request_id}, rate_hz, (Point(centre_hz, request_hz), *points),
+            (centre_hz, described["tuner_grid"]), described["driver_pll"],
+            (centre_hz, described["centre_in_use_hz"]), time.monotonic())
+        log.info("checking the driver's computation at %d Hz, then off the grid at %s Hz", request_hz,
+                 ", ".join(str(point.request_hz) for point in points))
 
     def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's recordings message, which without any field asks
@@ -1002,7 +1098,9 @@ class Engine:
     def close(self) -> None:
         """Stop for good: every client's messages end with ``None``, the
         source is closed, the recordings that run stop and a running update
-        check stops. Safe to repeat."""
+        check stops; a check of the driver's computation brings the receiver
+        back first. Safe to repeat."""
+        self._end_driver_check(STOPPED)
         self._closed = True
         for subscription in self._clients:
             subscription.end()
@@ -1091,18 +1189,16 @@ class Engine:
                 # receiver: none while the samples still come from another.
                 channels = self._watched if self._memory is not None and capture == self._span() else None
                 sweep = self._sweep
-                measure = self._carrier_measure(label)
+                measure = self._carrier_measure(capture, label)
                 power, codes, meter, pcm, detections, levels, carrier = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
                     *label, self._dc_removal, self._demod, audio, threshold_db,
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
                     None if channels is None else self._bands, measure, source.rate_scale)
                 self._publish(label, power, codes, meter, pcm)
-                if measure is not None and measure[0] is self._carrier:
-                    if carrier is not None:
-                        self._answer_carrier(carrier, measure[2])
-                    else:
-                        self._check_carrier()
+                if measure is not None and carrier is not None:
+                    self._measured(measure, carrier, label[0])
+                self._check_carrier()
                 if self._audio is not None and pcm is not None and len(pcm):
                     self._record_audio(pcm)
                 # Detection turned off, or another source, meanwhile: these signals are not news.
@@ -1142,28 +1238,129 @@ class Engine:
             subscription.changed("remote")
         self._settings_changed()
 
-    def _carrier_measure(self, capture: tuple[float, float]
+    def _carrier_measure(self, capture: tuple[float, float], label: tuple[float, float]
                          ) -> tuple[CarrierMeasure, tuple[Any, ...], float] | None:
         """What a block measures of the carrier, while an interface waits for
-        it: the measure, the setting its samples come from, which starts it
-        again when it changes, and the frequency on the air of the channel's
-        0 Hz. A VFO whose channel receives nothing, outside the span or in a
-        mode that the sample rate cannot hold, answers at once: there is
-        nothing to measure."""
+        it, from the centre asked and the rate of its samples, ``capture``,
+        and their centre in use, ``label``: the measure, the setting its
+        samples come from, which starts it again when it changes, and the
+        frequency on the air of the channel's 0 Hz. A VFO whose channel
+        receives nothing, outside the span or in a mode that the sample rate
+        cannot hold, answers at once: there is nothing to measure. While a
+        check of the driver's computation runs, it alone measures, from the
+        samples of the point it waits for."""
+        demod = self._demod
+        check = self._driver_check
+        if check is not None:
+            if (capture[0], label[0]) != check.expected:
+                return None         # the receiver still settles on the point
+            key = (len(check.offsets), capture, label, self._dc_removal)
+            return check.gatherer, key, demod.frequency_hz - vfo_position_hz(demod.mode)
         if self._carrier is None:
             return None
-        demod, (centre_hz, rate_hz) = self._demod, capture
+        centre_hz, rate_hz = label
         if not has_channel(demod.mode, rate_hz) or not abs(demod.frequency_hz - centre_hz) <= rate_hz / 2:
             self._answer_carrier(Carrier(None, None, SILENT), 0.0)
             return None
-        key = (self._source_changes, demod.frequency_hz, demod.mode, demod.bandwidth_hz, capture, self._dc_removal)
+        key = (self._source_changes, demod.frequency_hz, demod.mode, demod.bandwidth_hz, label, self._dc_removal)
         return self._carrier, key, demod.frequency_hz - vfo_position_hz(demod.mode)
+
+    def _measured(self, measure: tuple[CarrierMeasure, tuple[Any, ...], float], carrier: Carrier,
+                  label_hz: float) -> None:
+        """A measure ended with ``carrier``, from samples labelled
+        ``label_hz``: for the point of the driver's check that waited for
+        it, or for the interfaces waiting for a carrier's measure, unless it
+        no longer counts."""
+        check = self._driver_check
+        if check is not None:
+            if measure[0] is check.gatherer:
+                measured_hz = None if carrier.frequency_hz is None else measure[2] + carrier.frequency_hz
+                self._driver_point(check, measured_hz, label_hz)
+        elif measure[0] is self._carrier:
+            self._answer_carrier(carrier, measure[2])
 
     def _check_carrier(self) -> None:
         """End a carrier's measure that settings kept starting again, or for
-        which no samples came, once it ran for CARRIER_TIMEOUT_S."""
-        if self._carrier is not None and time.monotonic() - self._carrier_began >= CARRIER_TIMEOUT_S:
+        which no samples came, once it ran for CARRIER_TIMEOUT_S, and a
+        point of the driver's check once it ran for CHECK_POINT_TIMEOUT_S:
+        the measures asked meanwhile wait for the check's end."""
+        now = time.monotonic()
+        check = self._driver_check
+        if check is not None:
+            if now - check.began >= CHECK_POINT_TIMEOUT_S:
+                self._end_driver_check(LOST)
+        elif self._carrier is not None and now - self._carrier_began >= CARRIER_TIMEOUT_S:
             self._answer_carrier(Carrier(None, None, UNSTABLE if self._carrier.received else SILENT), 0.0)
+
+    def _driver_point(self, check: _DriverCheck, measured_hz: float | None, label_hz: float) -> None:
+        """The carrier measured at ``measured_hz`` on the air, None when it
+        was not, at the point of the driver's check that ``check`` waited
+        for, from samples labelled ``label_hz``: the receiver goes to the
+        next point, or the check ends."""
+        if measured_hz is None:
+            self._end_driver_check(LOST)
+            return
+        conversion = _conversion(self.source.describe())
+        check.offsets.append(conversion.tuned(measured_hz) - conversion.tuned(label_hz))
+        if len(check.offsets) == len(check.points):
+            self._end_driver_check(None)
+            return
+        point = check.points[len(check.offsets)]
+        try:
+            self.source.configure({"tuner_grid": False, "centre_hz": point.centre_hz})
+        except ValueError as error:
+            log.warning("the driver's check did not move the receiver to %.0f Hz: %s", point.centre_hz, error)
+            self._end_driver_check(STOPPED)
+            return
+        check.expected = (point.centre_hz, self.source.describe()["centre_in_use_hz"])
+        check.gatherer = CarrierMeasure()
+        check.began = time.monotonic()
+
+    def _end_driver_check(self, reason: str | None) -> None:
+        """End the check of the driver's computation that runs, if one does:
+        with every point measured when ``reason`` is None, otherwise for
+        ``reason``. The receiver comes back to the centre and the grid of
+        the check's start, and takes the computation found, unless already
+        set; the interfaces waiting learn what was found, and the carrier's
+        measures that waited start from the samples labelled as now."""
+        check, self._driver_check = self._driver_check, None
+        if check is None:
+            return
+        found = None
+        if reason is None:
+            identification = identify(check.rate_hz, check.points, check.offsets)
+            found, reason = identification.computation, identification.reason
+            log.info("the driver's check found %s; each move from its prediction: %s", found or reason,
+                     "; ".join(f"{name} " + ", ".join(f"{value:+.1f} Hz" for value in residuals)
+                               for name, residuals in identification.residuals_hz.items()))
+        else:
+            log.info("the driver's check ended without a result: %s", reason)
+        described = self.source.describe()
+        centre_hz, grid = check.home
+        back: dict[str, object] = {}
+        if described["tuner_grid"] != grid:
+            back["tuner_grid"] = grid
+        if described["centre_hz"] != centre_hz:
+            back["centre_hz"] = centre_hz
+        changes = dict(back)
+        if found is not None and found != described["driver_pll"]:
+            changes["driver_pll"] = found
+        if changes:
+            try:
+                self.source.configure(changes)
+            except ValueError as error:
+                log.warning("the receiver did not come back to %.0f Hz after the driver's check: %s",
+                            centre_hz, error)
+                if "tuner_grid" in back:
+                    try:
+                        self.source.configure({"tuner_grid": grid})
+                    except ValueError as again:
+                        log.warning("the receiver did not come back to its grid either: %s", again)
+        for subscription, request_id in check.waiting.items():
+            subscription.reply(_driver_answer(request_id, found, check.previous, reason))
+        if self._carrier is not None:
+            self._carrier = CarrierMeasure()
+            self._carrier_began = time.monotonic()
 
     def _answer_carrier(self, carrier: Carrier, origin_hz: float) -> None:
         """Send the measure's result to every interface waiting for it, each
@@ -1274,6 +1471,7 @@ class Engine:
         if self._iq is not None or self._closed:
             return
         folder = self._recording_folder()
+        self._end_driver_check(STOPPED)     # the recording starts where the receiver comes back
         source = self.source
         # Named after the centre asked; its metadata gives the centre in use, as the samples are labelled.
         centre_hz, rate_hz = self._span()
@@ -1494,6 +1692,7 @@ class Engine:
     def _start_memory(self) -> None:
         if not self._memory_ids:    # from the span a sweep brings the receiver back to
             raise ValueError("no ticked bookmark lies within the receiver's reach")
+        self._end_driver_check(STOPPED)     # which brings the receiver back too
         self._stop_scan(None)       # the sweep, which brings the receiver back
         centre_hz = self._span()[0]
         self._memory = MemoryScan()
@@ -1508,6 +1707,7 @@ class Engine:
         if "centre_hz" not in self.source.describe()["settable"]:
             raise ValueError("the sweep needs a receiver that tunes, such as an RTL-SDR")
         windows = self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)
+        self._end_driver_check(STOPPED)
         self._stop_scan(None)       # the memory scan
         self._sweep = Sweep(windows, search_blocks(self._sweep_window_s, self._frame_rate), time.monotonic())
         self._home = (self._span()[0], self._demod.frequency_hz)
@@ -1765,7 +1965,9 @@ class Engine:
 
     def _receiver_settings(self) -> dict[str, Any]:
         """The settings saved for the receiver in use: while a scan runs,
-        with the centre frequency and the VFO at its start."""
+        with the centre frequency and the VFO at its start, and while a
+        check of the driver's computation runs, with the centre frequency
+        at its start."""
         state = self.state()
         source = {name: state[name] for name in state["settable"] if name not in UNSAVED_SETTINGS}
         demod = self._demod.describe()
@@ -1773,6 +1975,8 @@ class Engine:
             centre_hz, demod["frequency_hz"] = self._home
             if "centre_hz" in source:       # not with a source that does not tune
                 source["centre_hz"] = centre_hz
+        if self._driver_check is not None and "centre_hz" in source:
+            source["centre_hz"] = self._driver_check.home[0]
         return {"source": source, "demod": demod}
 
     def _restore_source(self, saved: object) -> None:
@@ -1987,6 +2191,34 @@ class Engine:
                              codes, meter.level_db, meter.squelch_db, meter.open)
         self._remote_sequence = (self._remote_sequence + 1) & 0xFFFFFFFF
         return frame
+
+
+@dataclasses.dataclass
+class _DriverCheck:
+    """A check of the driver's computation as it runs (pllcheck.py): the
+    interfaces waiting for it, with the id each gave; the sample rate; the
+    points, the centre in use first; the centre asked and the grid's
+    setting at its start, which come back at its end, and the computation
+    set then; the centre asked and the centre in use of the samples that the
+    point it waits for takes, its measure and when it began; and where the
+    carrier lay at each point measured, on the tuner's frequencies, from
+    the samples' label."""
+
+    waiting: dict[Subscription, int | None]
+    rate_hz: int
+    points: tuple[Point, ...]
+    home: tuple[float, bool]
+    previous: str
+    expected: tuple[float, float]
+    began: float
+    gatherer: CarrierMeasure = dataclasses.field(default_factory=CarrierMeasure)
+    offsets: list[float] = dataclasses.field(default_factory=list)
+
+
+def _driver_answer(request_id: int | None, found: str | None, previous: object, reason: str | None
+                   ) -> dict[str, Any]:
+    """The answer to a check of the driver's computation (docs/design/protocol.md)."""
+    return {"type": "driver_pll", "id": request_id, "driver_pll": found, "previous": previous, "reason": reason}
 
 
 def _open_saved(sources: SourceOpener, saved: object) -> Source:

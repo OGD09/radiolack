@@ -73,7 +73,7 @@ _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
-MEASURES = ("carrier",)     # what the engine measures when an interface asks, as the hello tells
+MEASURES = ("carrier", "driver_pll")   # what the engine measures when an interface asks, as the hello tells
 _DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport

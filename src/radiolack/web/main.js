@@ -20,7 +20,8 @@ import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, strip
 import { modeRateNote } from './rates.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { ppmText, typedPpm } from './correction.js';
-import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, startingTrueText } from './calibration.js';
+import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
+  tunerNoteShown } from './calibration.js';
 import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
@@ -430,9 +431,23 @@ const stream = new EngineStream({
     if (!calibrateDialog.open || measure.id !== carrierId) return;
     carrierMeasure = measure;
     carrierError = '';
+    // A steady carrier: the driver's check, if due, runs on it.
+    if (measure.frequencyHz !== null && driverCheck.state === 'due' && driverCheckWanted(source, stream.measures)) {
+      driverCheckId += 1;
+      if (stream.identifyDriver(driverCheckId)) driverCheck = { state: 'running', answer: null };
+    }
     renderCalibration();
     clearTimeout(carrierTimer);
     carrierTimer = setTimeout(askCarrier, Math.max(0, MEASURE_EVERY_MS - (performance.now() - carrierAsked)));
+  },
+  onDriverCheck: (check) => {
+    if (!calibrateDialog.open || check.id !== driverCheckId) return;
+    // Stopped by a change meanwhile: checked again on the next carrier measured.
+    driverCheck = check.reason === 'stopped' ? { state: 'due', answer: null } : { state: 'done', answer: check };
+    // No measure asked before the check's end computes a correction.
+    carrierMeasure = null;
+    askCarrier();
+    renderCalibration();
   },
   onError: (message, command) => {
     if (command === 'demod' || command === 'audio') {
@@ -519,7 +534,11 @@ const stream = new EngineStream({
     syncRecording();
     updateStatus();
     if (state === 'open' && historyShown()) askHistory();
-    if (state === 'open') carrierKey = '';      // a new connection: the measure is asked again
+    if (state === 'open') {
+      carrierKey = '';      // a new connection: the measure is asked again
+      // The engine stopped the check of a stream that dropped: it runs again.
+      if (driverCheck.state === 'running') driverCheck = { state: 'due', answer: null };
+    }
     syncCalibration();
     if (state === 'open' && recordShown()) askRecordings();
   },
@@ -3432,7 +3451,10 @@ antennaEl.addEventListener('click', () => {
 // as any change of the correction, and tunes the VFO there, where the
 // carrier then lies, keeping the dialog open on the next measures. Only the latest request's answer counts, and a change of the
 // receiver's settings or of the VFO asks again: no measure taken before the
-// change computes a correction.
+// change computes a correction. On an R820T or R828D, the first steady
+// carrier measured also has the engine identify the rtl-sdr driver, once
+// per opening: the correction waits for its answer, and the measures asked
+// after it.
 const CARRIER_LOST_MS = 10000;  // an answer lost with a dropped stream is asked again after this
 const calibrateButton = $('#src-calibrate');
 const openCalibrateDialog = bindDialog(calibrateDialog, calibrateButton);
@@ -3444,11 +3466,19 @@ let carrierError = '';          // why the engine refused a request or a correct
 let carrierKey = '';            // the settings the measure depends on: another asks again
 let trueTyped = false;          // the user typed the true frequency: it no longer follows the VFO
 let calibrationApplied = false; // a correction went: Cancel reads Close
-// What a measure depends on: the receiver, its correction, converter and span, and the VFO's channel.
+let driverCheckId = 0;          // the latest driver check's id
+/** @type {import('./calibration.js').DriverCheckState} */
+let driverCheck = { state: 'idle', answer: null };
+// What a measure depends on: the receiver, its correction, converter, span
+// and the driver's computation, which labels the samples, and the VFO's channel.
 function carrierSetting() {
   if (!source) return '';
   return JSON.stringify([source.kind, source.address, source.ppm, source.converter, source.converterLoHz,
-    source.centreHz, source.rateHz, source.dcRemoval, S.vfo, S.mode, S.bw]);
+    source.centreHz, source.centreInUseHz, source.driverPll, source.rateHz, source.dcRemoval, S.vfo, S.mode, S.bw]);
+}
+// The driver's check holds the correction back until it answers.
+function driverCheckHolds() {
+  return (driverCheck.state === 'due' || driverCheck.state === 'running') && driverCheckWanted(source, stream.measures);
 }
 function askCarrier() {
   clearTimeout(carrierTimer);
@@ -3463,6 +3493,9 @@ function askCarrier() {
 // frequency, until the user types another.
 function syncCalibration() {
   if (!calibrateDialog.open) return;
+  if (driverCheck.state === 'idle' && driverCheckWanted(source, stream.measures)) {
+    driverCheck = { state: 'due', answer: null };
+  }
   const key = carrierSetting();
   if (key !== carrierKey && streamState === 'open') {
     carrierKey = key;
@@ -3478,14 +3511,17 @@ function setText(el, text) { if (el.textContent !== text) el.textContent = text;
 function renderCalibration() {
   if (!calibrateDialog.open || !source) return;
   const entry = calibrateEntry(source, stream.measures, streamState === 'open');
-  const view = calibrationView({ measure: carrierMeasure, trueText: $('#calibrate-true').value, source, vfoHz: S.vfo });
+  const view = calibrationView({ measure: carrierMeasure, trueText: $('#calibrate-true').value, source, vfoHz: S.vfo,
+    holding: driverCheckHolds() });
   setText($('#calibrate-measured'), streamState === 'open' ? view.measured : notConnected('nothing is measured'));
+  $('#calibrate-driver-field').hidden = !driverPllView(source).shown;
+  setText($('#calibrate-driver'), driverCheckText(driverCheck, source));
   setText($('#calibrate-in-use'), view.inUse);
   setText($('#calibrate-correction'), view.correction);
   setText($('#calibrate-note'), carrierError || entry.note || view.note);
   $('#calibrate-apply').disabled = !entry.enabled || view.apply === null;
   $('#calibrate-converter').hidden = !source.converter || source.converter === 'none';
-  $('#calibrate-tuner').hidden = source.direct || !source.hfInputs.some((input) => input === 'q' || input === 'i');
+  $('#calibrate-tuner').hidden = !tunerNoteShown(source);
   setText($('#calibrate-cancel'), calibrationApplied ? 'Close' : 'Cancel');
 }
 calibrateButton.addEventListener('click', () => {
@@ -3493,6 +3529,7 @@ calibrateButton.addEventListener('click', () => {
   trueTyped = calibrationApplied = false;
   carrierError = carrierKey = '';
   carrierMeasure = null;
+  driverCheck = { state: 'idle', answer: null };      // every calibration checks the driver again
   setValue($('#calibrate-true'), startingTrueText(S.vfo));
   openCalibrateDialog();
   syncCalibration();
@@ -3501,7 +3538,9 @@ calibrateDialog.addEventListener('close', () => {
   clearTimeout(carrierTimer);
   carrierTimer = 0;
   carrierId += 1;               // an answer still on its way is ignored
+  driverCheckId += 1;           // so is a driver check's, which the engine still saves
   carrierMeasure = null;
+  driverCheck = { state: 'idle', answer: null };
 });
 $('#calibrate-true').addEventListener('input', () => {
   trueTyped = true;
@@ -3509,7 +3548,7 @@ $('#calibrate-true').addEventListener('input', () => {
 });
 $('#calibrate-apply').addEventListener('click', () => {
   const trueText = $('#calibrate-true').value, trueHz = parseFrequency(trueText);
-  const view = calibrationView({ measure: carrierMeasure, trueText, source, vfoHz: S.vfo });
+  const view = calibrationView({ measure: carrierMeasure, trueText, source, vfoHz: S.vfo, holding: driverCheckHolds() });
   if (view.apply === null || trueHz === null) return;
   if (!stream.sendSource({ ppm: view.apply })) {
     carrierError = notConnected('no correction was applied');

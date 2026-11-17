@@ -23,7 +23,7 @@ preferences apart from this computer's.
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
     "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
-    "measures": ["carrier"]}
+    "measures": ["carrier", "driver_pll"]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -44,8 +44,10 @@ preferences apart from this computer's.
    `recording`: it records nothing; one older than the I/Q recordings lists
    `audio` alone. `measures` lists what the engine measures when an
    interface asks: `carrier`, the carrier at the VFO (the carrier's
-   measure, below). An engine older than the calibration sends no
-   `measures`: it measures nothing.
+   measure, below), and `driver_pll`, the check of the rtl-sdr driver's
+   computation on that carrier (the driver's check, below). An engine
+   older than the calibration sends no `measures`: it measures nothing;
+   one older than the driver's check lists `carrier` alone.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -579,7 +581,41 @@ preferences apart from this computer's.
     and each receives it alone, with its own latest `id`; one that goes
     away stops waiting, and once none waits nothing more is measured.
 
-18. An error, to one interface only, when the engine refuses a message from
+18. A driver's check, a JSON text message, to the interfaces that asked
+    for it (`carrier` message with the action `identify`) only: which of
+    the rtl-sdr driver's two computations an R820T's or R828D's PLL
+    follows, or why none was named.
+
+    ```json
+    {"type": "driver_pll", "id": 3, "driver_pll": "truncating", "previous": "unknown", "reason": null}
+    {"type": "driver_pll", "id": 4, "driver_pll": null, "previous": "rounding", "reason": "scan"}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `id` | The `id` of the interface's `identify` message, or null when it gave none. |
+    | `driver_pll` | `truncating` or `rounding`: the computation the carrier followed, now the source's `driver_pll`, saved with the receiver; null when none was named, and `reason` says why. |
+    | `previous` | The source's `driver_pll` when the check began: `unknown`, `truncating` or `rounding`; null for a source without it. An answer equal to it confirms it; another replaced it. |
+    | `reason` | Null with a computation. Otherwise, before anything moved: `receiver`, the source is not an RTL-SDR whose tuner is an R820T or R828D; `direct`, it samples directly; `range`, the tuner is not placed on its grid there (`centre_in_use_hz`); `scan`, a memory scan or a sweep runs; `iq`, an I/Q recording runs; `position`, the VFO lies within 3 kHz of the centre in use, or nearer the span's edge than the filter's width and 2 kHz, where a move of the centre would bring the DC residue onto the carrier or take it out of the span; `indistinct`, no centre within 2 kHz of the centre in use lets the two computations differ by 40 Hz or more. `lost`, before anything moved, the VFO's channel receives nothing at this sample rate (WFM below 320 kHz), or, after the check moved the receiver, a point had no steady carrier within 6 s (the carrier's measure's `silent`, `no_signal`, `several` or `unstable`, or no samples). Once every point is measured: `neither`, the carrier's moves followed neither computation within 5 Hz at every point; `both`, they followed both. And `stopped`: the check stopped before its end: an interface changed the source's settings or the VFO's frequency, mode or filter, a scan or an I/Q recording started, every interface that asked went away, or Radiolack stopped. A failed check leaves `driver_pll` as it was. An interface shows a reason it does not know as a failed check. |
+
+    The engine measures the carrier, as for a carrier's measure, at the
+    centre in use, then at three centres off the tuner's grid
+    (`tuner_grid` false), within 2 kHz of it, chosen where the two
+    computations put the carrier 40 Hz apart at least, and compares how
+    far the carrier moved from one centre to the next with what each
+    computation predicts: what the crystal's error, the correction, the
+    `driver_pll` set and the true frequency add is the same at every point,
+    and cancels out. Whatever ends the check, the receiver goes back to its
+    centre and its grid, with the computation found in the same change,
+    and the source state goes out to every interface before the answer.
+    The check takes about ten seconds, and every interface sees the
+    centre move. The interfaces that ask while it runs wait for the same
+    one; each receives the answer with its own latest `id`. While it runs,
+    a carrier's measure waits for its end, and is then taken from the
+    receiver as it is back. An interface that goes away stops waiting;
+    once none waits, the check stops.
+
+19. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -592,13 +628,13 @@ the demodulation settings, the bookmarks, the scanner state, the signals
 found, the recording state, the storage state, the update state and remote
 access's state, each when it changed (and the preferences at the start),
 then the observations, the recordings, the reports, the carrier's
-measures and errors, in the
+measures, the driver's checks and errors, in the
 order of the messages they answer, then audio frames, then spectrum frames. A client
 that reads too slowly loses its oldest frames: the engine keeps the latest
 four spectrum frames and fifteen audio frames (half a second) for it and
 never slows down for one client; it keeps its latest states, and up to
-eight observations, recordings, reports, carrier's measures and errors
-together. When
+eight observations, recordings, reports, carrier's measures, driver's
+checks and errors together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -832,10 +868,16 @@ which comes to the sender alone (the carrier's measure, above):
 {"type": "carrier", "action": "measure", "id": 12}
 ```
 
-`action` is `measure`; `id`, optional, a whole number from 1 to 2⁵³ − 1,
-which the measure repeats. An interface that asks again before its measure
-comes waits for the same one, which carries its new id. The engine refuses
-other fields and values.
+```json
+{"type": "carrier", "action": "identify", "id": 3}
+```
+
+`action` is `measure`, or `identify`, which asks for the driver's check
+on the carrier at the VFO (the driver's check, above) instead; `id`,
+optional, a whole number from 1 to 2⁵³ − 1, which the measure or the check
+repeats. An interface that asks again before its measure comes waits for
+the same one, which carries its new id; likewise for a check. The engine
+refuses other fields and values.
 
 A `remote` message changes remote access ([Remote access](#remote-access)),
 one setting at a time:
@@ -985,6 +1027,15 @@ and later.
   the measures of older ids, after a change of the source's settings or
   of the VFO's frequency, mode or filter, so that no measure taken before
   the change computes a correction. Closing the dialog asks for no more.
+  When the hello lists `driver_pll` and the receiver has an R820T or R828D
+  on its tuner, the dialog asks for the driver's check once per opening,
+  at the first carrier measured, and offers no correction until the check
+  answers: then it measures again, so that the correction comes from a
+  measure labelled with the computation found. A check answered `stopped`
+  is asked again at the next carrier measured; any other failure lets the
+  calibration go on with the computation set. Closing the dialog during a
+  check ignores its answer, but the check runs to its end and saves what
+  it found.
 - The interface asks for the observations when its History shows, then
   every 30 s while it shows and its page is visible.
 - An interface whose hello does not list `audio` in its `recording`, as an
@@ -1090,6 +1141,12 @@ and later.
   as every interface does. Later that day, the calibration: the hello's
   `measures`, which an older interface ignores, and the `carrier`
   messages, which an older interface never sends, and so never receives.
+  Later, the driver's check (coverage-and-precision.md, pull request 14b):
+  `driver_pll` in the hello's `measures`, the `carrier` message's action
+  `identify` and the `driver_pll` answer, which an older interface never
+  asks for, and so never receives. It sees another interface's check as
+  the centre in use moving for about ten seconds, then `driver_pll`
+  changing in the source state.
   Later, the tuner's grid (coverage-and-precision.md, pull request 14a):
   the source state's `centre_in_use_hz`, `driver_pll` and `tuner_grid`,
   the last two settable in a `source` message, which an older interface

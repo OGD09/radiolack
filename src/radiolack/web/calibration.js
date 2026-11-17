@@ -3,12 +3,16 @@
  * engine measures the carrier at the VFO (carrier.py); the user types its
  * true frequency, and the dialog shows the frequency correction that brings
  * the carrier there, beside the one in use, to apply as any change of the
- * correction.
+ * correction. On an R820T or R828D, the dialog first has the engine check
+ * which computation the rtl-sdr driver follows on that carrier
+ * (pllcheck.py), so that the correction it offers comes from a carrier
+ * labelled by the computation found.
  */
 
 import { formatFrequency, parseFrequency } from './frequency.js';
 import { tunedFrequency } from './converter.js';
 import { ppmText } from './correction.js';
+import { DRIVER_PLL_NAMES, PLL_TUNERS, isDriverPll } from './tunerpll.js';
 
 /** The corrections a receiver takes, in ppm (correction.py). */
 export const PPM_RANGE = /** @type {const} */ ([-100, 100]);
@@ -111,6 +115,94 @@ export function calibrateEntry(source, measures, open) {
 }
 
 /**
+ * Why a check of the rtl-sdr driver named no computation, for the user.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const DRIVER_CHECK_REASONS = {
+  receiver: 'The driver is identified on an RTL-SDR whose tuner is an R820T or R828D.',
+  direct: 'The driver is identified on the tuner, not in direct sampling.',
+  range: 'The driver is identified where Radiolack places the tuner on its grid: not below about 26 MHz, '
+    + 'nor below 28.8 MHz on an R828D.',
+  scan: 'A scan runs, and the check would move the centre frequency.',
+  iq: 'An I/Q recording runs, and the check would move the centre frequency.',
+  position: 'The VFO lies too near the centre frequency or the edge of the span for the check: move the '
+    + 'centre frequency.',
+  indistinct: 'The two computations cannot be told apart near this frequency.',
+  lost: 'The carrier was not measured steadily at every centre frequency, or the VFO receives nothing.',
+  neither: 'The carrier followed neither computation: the driver computes otherwise, or the carrier moved.',
+  both: 'The carrier followed both computations.',
+  stopped: 'The receiver or the VFO changed during the check.',
+};
+
+/**
+ * The dialog's check of the rtl-sdr driver: "idle" while it asks for none;
+ * "due" once it will ask, at the first carrier measured; "running" while
+ * the answer is on its way; "done" with the answer.
+ * @typedef {object} DriverCheckState
+ * @property {'idle' | 'due' | 'running' | 'done'} state
+ * @property {import('./stream.js').DriverCheck | null} answer  with "done"
+ */
+
+/**
+ * Whether the dialog checks the rtl-sdr driver for ``source``: an engine
+ * that can, and a receiver with an R820T or R828D, on its tuner, whose
+ * driver setting the interface may change.
+ * @param {import('./stream.js').SourceState | null} source
+ * @param {string[]} measures  what the engine measures, as its hello listed it
+ * @returns {boolean}
+ */
+export function driverCheckWanted(source, measures) {
+  return measures.includes('driver_pll') && source !== null && PLL_TUNERS.includes(source.tuner ?? '')
+    && !source.direct && isDriverPll(source.driverPll) && source.settable.includes('driver_pll');
+}
+
+/**
+ * What the dialog says of the rtl-sdr driver, for ``source`` and the
+ * dialog's ``check``: the computation set, and what the check does or found.
+ * @param {DriverCheckState} check
+ * @param {import('./stream.js').SourceState} source
+ * @returns {string}
+ */
+export function driverCheckText(check, source) {
+  const current = isDriverPll(source.driverPll) ? DRIVER_PLL_NAMES[source.driverPll] : '';
+  if (check.state === 'running') return 'Identifying: the centre frequency moves for about ten seconds.';
+  if (check.state === 'due') {
+    return `${current}. Identified once a steady carrier is measured: the centre frequency then moves for about ten `
+      + 'seconds.';
+  }
+  const answer = check.state === 'done' ? check.answer : null;
+  if (answer === null) return current ? `${current}.` : '';
+  const found = answer.driverPll;
+  if (found !== null && isDriverPll(found)) {
+    const name = DRIVER_PLL_NAMES[found];
+    if (answer.previous === found) return `${name}: confirmed.`;
+    if (isDriverPll(answer.previous) && answer.previous !== 'unknown') {
+      return `${name}: identified, and saved with the receiver. It changed: it was `
+        + `${DRIVER_PLL_NAMES[answer.previous]}, as the driver was upgraded or another one runs.`;
+    }
+    return `${name}: identified, and saved with the receiver.`;
+  }
+  const why = answer.reason !== null && Object.hasOwn(DRIVER_CHECK_REASONS, answer.reason)
+    ? DRIVER_CHECK_REASONS[answer.reason] : 'The check failed.';
+  return current ? `Not identified. ${why} The setting stays: ${current}.` : `Not identified. ${why}`;
+}
+
+/**
+ * Whether the dialog notes that the result also takes in the tuner's own
+ * error: on the tuner of a receiver that could sample directly, unless the
+ * tuner is an R820T or R828D whose driver's computation is known, which
+ * labels the samples where the tuner truly sits.
+ * @param {import('./stream.js').SourceState} source
+ * @returns {boolean}
+ */
+export function tunerNoteShown(source) {
+  if (source.direct || !source.hfInputs.some((input) => input === 'q' || input === 'i')) return false;
+  const known = PLL_TUNERS.includes(source.tuner ?? '') && isDriverPll(source.driverPll)
+    && source.driverPll !== 'unknown';
+  return !known;
+}
+
+/**
  * What the dialog shows.
  * @typedef {object} CalibrationView
  * @property {string} measured   the carrier measured, or why not
@@ -122,15 +214,18 @@ export function calibrateEntry(source, measures, open) {
 
 /**
  * The dialog for the latest ``measure``, null while the first is on its
- * way, and the true frequency typed, ``trueText``.
+ * way, and the true frequency typed, ``trueText``. While ``holding``, as
+ * the rtl-sdr driver is being identified, no correction is offered: the
+ * measure may still be labelled by the computation set before.
  * @param {object} state
  * @param {import('./stream.js').CarrierMeasure | null} state.measure
  * @param {string} state.trueText
  * @param {import('./stream.js').SourceState} state.source
  * @param {number} state.vfoHz
+ * @param {boolean} [state.holding]
  * @returns {CalibrationView}
  */
-export function calibrationView({ measure, trueText, source, vfoHz }) {
+export function calibrationView({ measure, trueText, source, vfoHz, holding = false }) {
   const ppmInUse = source.ppm ?? 0;
   /** @type {CalibrationView} */
   const view = { measured: 'Measuring…', inUse: `${ppmText(ppmInUse)} ppm`, correction: '—', note: '', apply: null };
@@ -156,6 +251,10 @@ export function calibrationView({ measure, trueText, source, vfoHz }) {
     return view;
   }
   if (measure === null || measure.frequencyHz === null) return view;
+  if (holding) {
+    view.note = 'The correction comes once the rtl-sdr driver is identified.';
+    return view;
+  }
   const offset = measure.frequencyHz - trueHz;
   view.measured += `, ${Math.abs(offset).toFixed(1)} Hz ${offset >= 0 ? 'above' : 'below'} its true frequency`;
   const exact = calibratedPpm(ppmInUse, measure.frequencyHz, trueHz, source);
