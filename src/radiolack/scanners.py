@@ -30,14 +30,22 @@ waits the resume time once it closes, then watches them all again. With a
 receiver that tunes, the ticked bookmarks outside the span take as few
 windows of the receiver as ``memory_windows`` finds, and ``MemoryTour``
 visits them in turn: VISIT_S on each once its noise is known, and again
-after each channel the scan stopped on.
+after each channel the scan stopped on. A receiver that places its centre
+frequencies on a grid (``Placement``) gets windows whose centres in use
+hold the bookmarks; the scans tell a window's samples by the centre they
+asked, which the source gives with each block.
 
 The sweep steps the receiver across a range in overlapping windows
 (``sweep_windows``), as the airband explorer did: the first and last
 windows' centres lie a tenth of the rate inside the range, and the windows
 at most a quarter of the rate apart, so that every frequency of the range
 lies in the part of some window that detection searches, its centre and its
-edges included, even with the receiver's centre off by 15% of the rate.
+edges included, even with the receiver's centre off by 15% of the rate:
+an R820T's grid moves it by 56.25 kHz at most, within that from 375 kS/s,
+and by up to 112.5 kHz at the very ends of its range. Below, the grid's
+points still lie within each other's searched part at 300 kS/s; at
+240 kS/s they do not, and 3 kHz on either side of each, every 112.5 kHz,
+escape the sweep and the memory scan alike.
 ``Sweep`` follows its progress: once the samples of a window come, it reads
 there the blocks of SWEEP_SEARCHES searches, so that a signal found in two
 of them is listed without the next window's help, then asks for the next
@@ -49,7 +57,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -482,45 +490,82 @@ class MemoryScan:
         self.bookmark_id = None
 
 
-def memory_window(frequency_hz: float, rate_hz: float, low_hz: float, high_hz: float) -> float | None:
+@dataclasses.dataclass(frozen=True)
+class Placement:
+    """Where a receiver puts the centre frequencies asked of it: ``place``
+    gives the centre in use on the air for one asked, and ``step_hz`` is
+    how far apart the centres in use lie where it places them on a grid, as
+    an R820T's on its tuner (rtltcp.py), 0 when it uses every one asked.
+    Without either, every centre asked is the one in use."""
+
+    place: Callable[[float], float] | None = None
+    step_hz: float = 0.0
+
+    def in_use(self, centre_hz: float) -> float:
+        return centre_hz if self.place is None else self.place(centre_hz)
+
+    def at_or_below(self, centre_hz: float) -> tuple[float, float] | None:
+        """The highest centre in whole Hz at or below ``centre_hz`` whose
+        centre in use lies at or below it too, with that centre in use;
+        None when the receiver puts none there."""
+        asked = float(math.floor(centre_hz))
+        used = self.in_use(asked)
+        if used > centre_hz and self.step_hz > 0:
+            asked = float(round(used - self.step_hz))
+            used = self.in_use(asked)
+        return (asked, used) if used <= centre_hz else None
+
+
+def memory_window(frequency_hz: float, rate_hz: float, low_hz: float, high_hz: float,
+                  placement: Placement = Placement()) -> float | None:
     """The centre frequency, in whole Hz, of the highest window whose
     searched part holds ``frequency_hz``, as ``watched_channels`` finds it,
-    with a receiver that samples at ``rate_hz`` and tunes from ``low_hz`` to
-    ``high_hz``: the frequency lies in the window's lower half, unless the
-    receiver does not tune that high; None when no window holds it."""
-    above = min(math.floor(frequency_hz + USABLE_FRACTION * rate_hz), math.floor(high_hz))
-    if above - frequency_hz > DC_GAP_HZ and above >= low_hz:
-        return float(above)
-    below = min(math.ceil(frequency_hz - DC_GAP_HZ) - 1, math.floor(high_hz))
-    if frequency_hz - below <= USABLE_FRACTION * rate_hz and below >= low_hz:
-        return float(below)
+    with a receiver that samples at ``rate_hz``, tunes from ``low_hz`` to
+    ``high_hz`` and puts its centres in use by ``placement``: the frequency
+    lies in the window's lower half, unless the receiver does not tune that
+    high; None when no window holds it."""
+    found = _memory_window(frequency_hz, rate_hz, low_hz, high_hz, placement)
+    return None if found is None else found[0]
+
+
+def _memory_window(frequency_hz: float, rate_hz: float, low_hz: float, high_hz: float,
+                   placement: Placement) -> tuple[float, float] | None:
+    """``memory_window``'s centre, with its centre in use."""
+    above = placement.at_or_below(min(frequency_hz + USABLE_FRACTION * rate_hz, math.floor(high_hz)))
+    if above is not None and above[1] - frequency_hz > DC_GAP_HZ and above[0] >= low_hz:
+        return above
+    below = placement.at_or_below(min(math.ceil(frequency_hz - DC_GAP_HZ) - 1, math.floor(high_hz)))
+    if below is not None and frequency_hz - below[1] <= USABLE_FRACTION * rate_hz and below[0] >= low_hz:
+        return below
     return None
 
 
 def memory_windows(frequencies: Iterable[float], rate_hz: float, low_hz: float,
-                   high_hz: float) -> tuple[float, ...]:
+                   high_hz: float, placement: Placement = Placement()) -> tuple[float, ...]:
     """The centre frequencies, lowest first, of as few windows as it takes
     for each of ``frequencies`` that a window can hold (``memory_window``)
     to lie in the searched part of one, with a receiver that samples at
-    ``rate_hz`` and tunes from ``low_hz`` to ``high_hz``. From the lowest
-    frequency up, each window is the highest that holds the lowest
-    frequency left, or lies just below a frequency that would fall in its DC
-    gap, if it still holds that lowest one."""
+    ``rate_hz``, tunes from ``low_hz`` to ``high_hz`` and puts its centres
+    in use by ``placement``. From the lowest frequency up, each window is
+    the highest that holds the lowest frequency left, or lies just below a
+    frequency that would fall in its DC gap, if it still holds that lowest
+    one."""
     reach = USABLE_FRACTION * rate_hz
     left = sorted({frequency for frequency in frequencies
-                   if memory_window(frequency, rate_hz, low_hz, high_hz) is not None})
+                   if _memory_window(frequency, rate_hz, low_hz, high_hz, placement) is not None})
     centres = []
     while left:
         lowest = left[0]
-        centre = memory_window(lowest, rate_hz, low_hz, high_hz)
-        assert centre is not None
-        in_gap = [frequency for frequency in left if abs(frequency - centre) <= DC_GAP_HZ]
-        if in_gap and centre > lowest:
-            lower = math.ceil(min(in_gap) - DC_GAP_HZ) - 1
-            if lower - lowest > DC_GAP_HZ and lower >= low_hz:
-                centre = float(lower)
+        window = _memory_window(lowest, rate_hz, low_hz, high_hz, placement)
+        assert window is not None
+        centre, used = window
+        in_gap = [frequency for frequency in left if abs(frequency - used) <= DC_GAP_HZ]
+        if in_gap and used > lowest:
+            lower = placement.at_or_below(math.ceil(min(in_gap) - DC_GAP_HZ) - 1)
+            if lower is not None and lower[1] - lowest > DC_GAP_HZ and lower[0] >= low_hz:
+                centre, used = lower
         centres.append(centre)
-        left = [frequency for frequency in left if not DC_GAP_HZ < abs(frequency - centre) <= reach]
+        left = [frequency for frequency in left if not DC_GAP_HZ < abs(frequency - used) <= reach]
     return tuple(sorted(centres))
 
 

@@ -93,8 +93,17 @@ the history under the tag `v0.1.0`.
   turned off before the source closes; the converter in front of the
   receiver, converting only the frequency it sends and swapping I and Q
   behind an inverted one; the correction's whole ppm by command 0x05 and
-  the rest by the frequency it asks for; hands the raw samples to an I/Q
-  recording's tap),
+  the rest by the frequency it asks for; an R820T or R828D on its tuner
+  placed on its grid, none of the correction by 0x05, its samples labelled
+  with the centre in use, where the driver's computation that the
+  receiver's `driver_pll` names puts the tuner, and the VFO's shift scaled
+  by the correction (coverage-and-precision.md, pull request 14a); hands
+  the raw samples to an I/Q recording's tap),
+  `r82xx` (rtl-sdr's two computations of an R820T's or R828D's PLL, ported
+  from the driver, GPL-2.0-or-later, whose docstring names the versions
+  and commits and keeps the notice that `packaging/copyright` repeats; the
+  tuner's IF for the sample rate, and the grid where the error is the same
+  at every centre frequency),
   `correction` (the frequency correction in hundredths of ppm: its checks,
   the whole part a receiver takes itself and the frequency to ask for the
   rest), `carrier` (the measure of a carrier in the VFO's channel, before
@@ -125,7 +134,9 @@ the history under the tag `v0.1.0`.
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
   input), `power.js` (the antenna power's second press), `converter.js`
-  (the Receiver menu's converter, and the view that follows its change), `tuning.js` (the
+  (the Receiver menu's converter, and the view that follows its change), `tunerpll.js` (the
+  Receiver menu's rtl-sdr driver, the centre in use, and the grid's point
+  a retune takes to keep the VFO's channel clear of the centre), `tuning.js` (the
   Automatic step), `channels.js` (the band plan's channels and known
   frequencies: what the VFO is on, the Automatic step along a set's
   channels, what the band strip draws of them and what a press there lands
@@ -198,17 +209,16 @@ the history under the tag `v0.1.0`.
   an empty GnuPG home in it, which the
   programs the tests start inherit; those that import the package too keep
   it rather than make their own, and the run removes it at its end.
-  `r82xx_pll.py` holds rtl-sdr's two computations of the R820T's PLL,
-  ported from the driver (GPL-2.0-or-later; its docstring names the
-  versions and commits), for the fake rtl_tcp's optional tuner error and
-  `tools/measure_pll.py`.
+  The fake rtl_tcp's optional tuner error takes `radiolack.r82xx`'s
+  computations, as `tools/measure_pll.py` does.
 - `tools/`: development tools, run from a checkout and never installed:
   the Debian package and pip take `src/radiolack` alone.
-  `measure_pll.py` (coverage-and-precision.md, pull request 13) measures
-  the tuner's PLL error through a Radiolack already running on a receiver,
-  through its stream on 127.0.0.1, moving only the centre frequency, which
-  it restores; `tests/test_measure_pll.py` runs it against the fake
-  rtl_tcp.
+  `measure_pll.py` (coverage-and-precision.md, pull requests 13 and 14a)
+  measures how well a Radiolack already running on a receiver with an
+  R820T or R828D labels its samples, through its stream on 127.0.0.1,
+  moving only the centre frequency and the tuner's grid (`tuner_grid`,
+  never saved), which it restores, and names the driver's computation to
+  choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
 
 ## Commands
 

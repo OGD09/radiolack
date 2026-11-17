@@ -9,6 +9,17 @@ Comment: The name in Radiolack's logo is drawn from the outlines of Saira
  (https://github.com/Omnibus-Type/Saira), under the SIL Open Font License,
  version 1.1. The logo is artwork, not a font: no font ships with Radiolack.
 
+Files: src/radiolack/r82xx.py
+Copyright: 2012-2014 Steve Markgraf <steve@steve-m.de>
+ 2012 Dimitri Stolnikov <horiz0n@gmx.net>
+ 2013 Mauro Carvalho Chehab <mchehab@redhat.com>
+ 2026 OGD09
+License: GPL-3+
+Comment: A port to Python of rtl-sdr's computations of the R820T's and
+ R828D's PLL (src/tuner_r82xx.c and src/librtlsdr.c), which rtl-sdr
+ licenses under the GNU General Public License, version 2 or later; the
+ port is under version 3 or later, as the "or later" allows.
+
 License: GPL-3+
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

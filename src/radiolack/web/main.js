@@ -18,6 +18,7 @@ import { automaticStep } from './tuning.js';
 import { PLAN_LIST_MAX, planRows } from './planlist.js';
 import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
+import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, startingTrueText } from './calibration.js';
 import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
@@ -257,8 +258,9 @@ let remoteNote = '';        // why this interface's last remote access change di
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
-let pendingTune = null;     // { centre, before, f, opts }: where the VFO goes once frames come from centre;
-                            // before lists the centres the engine may report on the way
+let pendingTune = null;     // { centre, before, f, opts, inUse }: where the VFO goes once frames come from
+                            // the centre in use for centre, inUse once the engine reported it; before lists
+                            // the centres the engine may report on the way
 let newSource = false;      // the next frames come from another receiver, or another converter: every buffer starts again
 let codeDbMin = NaN, codeDbStep = NaN;
 const codeToLin = new Float32Array(256);
@@ -295,7 +297,7 @@ function setCapture(centre, rate, bins) {
   if (slides) slideBuffers(from); else resetBuffers();
   if (framed) setView(fStart(), fEnd()); else setView(view.f0, view.f1);
   const pending = pendingTune;
-  if (pending && pending.centre === centre) {
+  if (pending && pendingCentre() === centre) {
     pendingTune = null;
     tune(pending.f, pending.opts);
   } else {
@@ -338,6 +340,7 @@ const stream = new EngineStream({
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
     if (pendingTune && state.centreHz !== pendingTune.centre && !pendingTune.before.includes(state.centreHz)) dropPendingTune();
+    else if (pendingTune && state.centreHz === pendingTune.centre && !converted) pendingPlaced(state);
     if (converted) {
       const f0 = convertedFrequency(view.f0, before, state), f1 = convertedFrequency(view.f1, before, state);
       setView(Math.min(f0, f1), Math.max(f0, f1));
@@ -1081,7 +1084,7 @@ function updateOverlays() {
   vfoEl.style.transform = `translateX(${x0}px)`;
   vfoEl.style.width = `${Math.max(1, x1 - x0)}px`;
   vfoLine.style.transform = `translateX(${Math.round(fToX(vfo))}px)`;
-  showNextSpan(pendingTune ? spanAround(pendingTune.centre) : null);
+  showNextSpan(pendingTune ? spanAround(pendingCentre()) : null);
   syncVfoReturn(vfo);
   syncSpanFit();
   renderMarks();
@@ -1937,6 +1940,10 @@ function syncSource() {
   const centreEl = $('#src-center');
   if (!typingIn.has(centreEl)) centreEl.value = formatFrequency(source ? source.centreHz : S.fc);
   centreEl.disabled = !settable.has('centre_hz');
+  const centreNote = centreInUseNote(source);
+  const centreNoteEl = $('#src-center-note');
+  centreNoteEl.hidden = !centreNote;
+  centreNoteEl.textContent = centreNote;
   const rateEl = $('#src-rate');
   selectRate(rateEl, source ? source.rateHz : S.fs);
   rateEl.disabled = !settable.has('sample_rate_hz');
@@ -1984,6 +1991,12 @@ function syncSource() {
   const calibrate = calibrateEntry(source, stream.measures, streamState === 'open');
   $('#src-calibrate').disabled = !calibrate.enabled;
   $('#src-calibrate-note').textContent = calibrate.note;
+  const driver = driverPllView(source);
+  $('#src-driver-field').hidden = !driver.shown;
+  const driverEl = $('#src-driver');
+  driverEl.value = driver.value;
+  driverEl.disabled = !settable.has('driver_pll');
+  $('#src-driver-note').textContent = driver.note;
   const dcEl = $('#src-dc');
   dcEl.checked = Boolean(source?.dcRemoval);
   dcEl.disabled = !settable.has('dc_removal');
@@ -2073,6 +2086,11 @@ $('#src-hf').addEventListener('change', (e) => {
   if (!source || hfInput === source.hfInput || !stream.sendSource({ hfInput })) syncSource();
 });
 $('#src-rtl-agc').addEventListener('change', (e) => { if (!stream.sendSource({ rtlAgc: e.target.checked })) syncSource(); });
+// The driver's computation: the samples' label changes, the receiver stays where it is.
+$('#src-driver').addEventListener('change', (e) => {
+  const driverPll = e.target.value;
+  if (!source || driverPll === source.driverPll || !stream.sendSource({ driverPll })) syncSource();
+});
 // Another converter or oscillator: the receiver stays where it is tuned, and
 // the engine refuses one that would put it beyond its reach on the air.
 $('#src-converter').addEventListener('change', (e) => {
@@ -2117,15 +2135,19 @@ function reachable(f) { return withinReach(f, reach()); }
 const beyondReach = (f) => streamState === 'open' && source !== null && !reachable(f);
 const spanAround = (centre) => [centre - (source ? source.rateHz : S.fs) / 2, centre + (source ? source.rateHz : S.fs) / 2];
 // The span the VFO has to lie in: the one a retune on its way brings, else the one in use.
-const targetSpan = () => (pendingTune ? spanAround(pendingTune.centre) : [fStart(), fEnd()]);
+const targetSpan = () => (pendingTune ? spanAround(pendingCentre()) : [fStart(), fEnd()]);
 // Where the span goes for the VFO to sit at f: nearly centred, f a little
 // above the centre, clear of the DC residue there and of the channel's lower
 // half, within the receiver's range. The mode is the one tune() will pick.
-function retuneCentre(f, opts) {
+// The VFO's channel at f: how far it reaches below and above f.
+function retuneChannel(f, opts) {
   const seg = segmentAt(f), picked = opts.mode || (S.autoMode && seg && seg.mode) || S.mode;
   const mode = MODES[picked] ? picked : S.mode, bw = mode === S.mode ? S.bw : MODES[mode].bw;
   const below = mode === 'USB' ? 0 : mode === 'LSB' ? bw : bw / 2;
-  const offset = Math.max(source.rateHz * RETUNE_SHARE, below + RETUNE_MARGIN_HZ);
+  return { below, above: bw - below };
+}
+function retuneCentre(f, opts) {
+  const offset = Math.max(source.rateHz * RETUNE_SHARE, retuneChannel(f, opts).below + RETUNE_MARGIN_HZ);
   return Math.round(clamp(f - offset, source.rangeHz[0], source.rangeHz[1]));
 }
 // Move the span for the VFO to sit at f; false when the span would stay where
@@ -2135,14 +2157,35 @@ function retuneFor(f, opts) {
   return centre !== (pendingTune ? pendingTune.centre : source.centreHz) && requestCentre(centre, f, opts);
 }
 // Ask the engine for the span around centre; the VFO goes to f once frames
-// come from it. A newer request replaces one still on its way.
+// come from where the receiver sits for it, the centre in use, which the
+// engine reports. A newer request replaces one still on its way.
 function requestCentre(centre, f, opts) {
   if (!stream.sendSource({ centreHz: centre })) return false;
   const before = pendingTune ? [...pendingTune.before, pendingTune.centre] : [source.centreHz];
-  pendingTune = { centre, before, f, opts };
+  pendingTune = { centre, before, f, opts, inUse: null };
   viewChanged();      // the outlines, and the tip under a pointer that has not moved
   return true;
 }
+// The engine reported the centre in use for the retune on its way: a tuner
+// placed on its grid may have left the VFO's channel over the DC residue,
+// in which case the retune goes to a point of the grid below; frames
+// already from there end it at once.
+function pendingPlaced(state) {
+  const pending = pendingTune;
+  pending.inUse = state.centreInUseHz;
+  const { below, above } = retuneChannel(pending.f, pending.opts);
+  const centre = clearedCentre({
+    f: pending.f, asked: pending.centre, inUse: pending.inUse, clearHz: below + RETUNE_MARGIN_HZ, aboveHz: above,
+    stepHz: gridStepHz(state), rateHz: state.rateHz, lowestHz: state.rangeHz[0],
+  });
+  if (centre !== null && centre !== pending.centre && requestCentre(centre, pending.f, pending.opts)) return;
+  if (pending.inUse === S.fc && state.rateHz === S.fs && !newSource) {
+    pendingTune = null;
+    tune(pending.f, pending.opts);
+  }
+}
+// The centre of the span a retune on its way brings: the one in use once known.
+const pendingCentre = () => pendingTune.inUse ?? pendingTune.centre;
 function dropPendingTune() {
   if (!pendingTune) return;
   pendingTune = null;

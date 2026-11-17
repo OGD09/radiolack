@@ -32,6 +32,25 @@ source corrects the rest by scaling the frequency it asks for, after the
 converter's conversion, on the tuner and in direct sampling alike. The
 samples keep the frequency asked as their label.
 
+An R820T or R828D tuner is placed on its grid (coverage-and-precision.md,
+pull request 14a, and r82xx.py): its driver programs the tuner's PLL
+exactly, or one constant off, only where the tuner's oscillator, the
+frequency asked plus the intermediate frequency of the sample rate, is a
+multiple of 112.5 kHz. On its tuner, the source asks for the frequency
+nearest the one it would ask whose oscillator is such a multiple, 56.25 kHz
+away at most (``r82xx.on_grid``), and labels its samples with the centre
+in use: where that puts the receiver on the air, and, once the receiver's
+``driver_pll`` setting names the driver's computation, where the tuner
+truly sits by that computation (``r82xx.tuned_hz``). The driver's own
+correction stays at 0 with such a tuner, since a corrected crystal moves
+the grid: the source corrects the whole of it, by the frequency it asks
+for, by the label, and by ``rate_scale``, the factor by which the receiver
+then samples faster than its nominal rate, which the engine applies to the
+VFO's distance from the centre. Direct sampling, a frequency below the
+tuner's range, an R828D below 28.8 MHz, where an RTL-SDR Blog V4's driver
+upconverts, and ``tuner_grid`` turned off, as a measure does, ask the
+frequency as before, labelled by the computation where it applies.
+
 Shortwave comes two ways, chosen per receiver by its ``hf_input``
 setting. Direct sampling (``q`` or ``i``) makes the RTL2832 sample one of
 its inputs at 28.8 MS/s without the tuner: the source switches to it by
@@ -79,6 +98,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import math
 import os
@@ -95,6 +115,7 @@ from typing import Any
 import numpy as np
 
 from .converter import DEFAULT_LO_HZ, HIGHEST_HZ, Conversion, checked_converter, checked_lo, mhz
+from . import r82xx
 from .correction import checked_ppm, corrected_hz, whole_ppm
 
 DEFAULT_ADDRESS = ("127.0.0.1", 1234)  # where rtl_tcp listens unless told otherwise
@@ -136,12 +157,16 @@ POWER_OFF_S = 0.3       # an rtl_tcp that RtlSdrSource stops first applies the p
 HF_INPUTS = ("none", "q", "i", "tuner")
 _DIRECT_INPUTS = {"q": 2, "i": 1}   # the value of command 0x09 for each input
 DIRECT_SAMPLING_HZ = 28_800_000.0   # the RTL2832's own rate: what direct sampling covers
+# What a receiver knows of its driver's computation of an R820T's or R828D's
+# PLL (r82xx.py): nothing, rtl-sdr up to 2.0.1 and the RTL-SDR Blog fork's,
+# or rtl-sdr 2.0.2 and later's.
+DRIVER_PLLS = ("unknown", "truncating", "rounding")
 # In the order the engine restores them: the input, the converter and the
 # rate before the centre frequency, whose reach depends on them; the
 # converter's oscillator before the converter, which keeps the receiver
 # where it is tuned.
 _SETTINGS = ("hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db", "ppm",
-             "rtl_agc", "bias_tee")
+             "driver_pll", "tuner_grid", "rtl_agc", "bias_tee")
 # Full-scale value of each unsigned 8-bit sample.
 _LEVELS = (np.arange(256, dtype=np.float32) - np.float32(127.5)) / np.float32(127.5)
 
@@ -163,6 +188,10 @@ class Tuner:
     # Whether a dongle with this tuner may cover shortwave by itself, as the
     # RTL-SDR Blog V4 does: rtl_tcp announces a V4 as any R828D.
     shortwave: bool = False
+    # An R820T or R828D, whose PLL r82xx.py computes: placed on its grid.
+    pll: bool = False
+    # Below this, a dongle with this tuner may upconvert (an RTL-SDR Blog V4's R828D).
+    upconversion_hz: float = 0.0
 
 
 _R82XX_GAINS_DB = (0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4,
@@ -176,8 +205,9 @@ TUNERS = {
              (-9.9, -7.3, -6.5, -6.3, -6.0, -5.8, -5.4, 5.8, 6.1, 6.3, 6.5, 6.7, 6.8, 7.0, 7.1,
               17.9, 18.1, 18.2, 18.4, 18.6, 18.8, 19.1, 19.7)),
     4: Tuner("FCI FC2580", (146e6, 924e6), ()),
-    5: Tuner("Rafael Micro R820T", (24e6, 1766e6), _R82XX_GAINS_DB, shortwave=True),
-    6: Tuner("Rafael Micro R828D", (24e6, 1766e6), _R82XX_GAINS_DB, shortwave=True),
+    5: Tuner("Rafael Micro R820T", (24e6, 1766e6), _R82XX_GAINS_DB, shortwave=True, pll=True),
+    6: Tuner("Rafael Micro R828D", (24e6, 1766e6), _R82XX_GAINS_DB, shortwave=True, pll=True,
+             upconversion_hz=float(r82xx.UPCONVERSION_HZ)),
 }
 # A command carries the frequency in 32 bits: the only limits for an unknown tuner.
 _ANY_FREQUENCY_HZ = (1.0, float(0xFFFF_FFFF))
@@ -257,14 +287,18 @@ class Settings:
     bias_tee: bool = False          # antenna power, never saved
     converter: str = "none"         # one of converter.CONVERTERS
     converter_lo_hz: float = DEFAULT_LO_HZ  # the converter's oscillator, in whole hertz
+    driver_pll: str = "unknown"     # one of DRIVER_PLLS
+    tuner_grid: bool = True         # an R820T or R828D on its grid; never saved
 
 
 class RtlTcpSource:
     """An RTL-SDR receiver served by rtl_tcp, read like any source.
 
     ``centre_hz`` and ``sample_rate_hz`` describe the samples ``read`` last
-    returned. ``describe`` gives the settings asked of the receiver and the
-    connection state, and ``on_change`` is called whenever they change.
+    returned, with ``exact_centre_hz``, the centre in use that labels them,
+    and ``rate_scale`` (module docstring). ``describe`` gives the settings
+    asked of the receiver and the connection state, and ``on_change`` is
+    called whenever they change.
 
     Without ``host`` and ``port``, the source reads rtl_tcp's default
     address until the engine gives it the saved one; with either of them,
@@ -272,8 +306,6 @@ class RtlTcpSource:
     """
 
     kind = "rtl_tcp"
-    # librtlsdr takes the whole part of the correction itself (command 0x05).
-    hardware_correction = True
 
     def __init__(self, host: str | None = None, port: int | None = None, *,
                  centre_hz: float = DEFAULT_CENTRE_HZ, sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
@@ -295,6 +327,8 @@ class RtlTcpSource:
                                           "gain_db": gain_db, "ppm": ppm}, None)
         self.centre_hz = self._settings.centre_hz
         self.sample_rate_hz = self._settings.sample_rate_hz
+        self.exact_centre_hz = self.centre_hz
+        self.rate_scale = 1.0
         self.on_change: Callable[[], None] | None = None
         self.status = "idle"        # "connecting", "streaming", "waiting" or "idle"
         self.detail = ""            # why the source waits
@@ -392,8 +426,11 @@ class RtlTcpSource:
         del self._buffer[:size]
         # The buffer only ever holds samples of the current setting.
         settings = self._settings
+        tuning = _tuning(settings, self.tuner)
         self.centre_hz = settings.centre_hz
         self.sample_rate_hz = settings.sample_rate_hz
+        self.exact_centre_hz = tuning.centre_hz
+        self.rate_scale = tuning.scale
         pairs = _LEVELS[np.frombuffer(data, np.uint8)].reshape(-1, 2)
         if _conversion(settings).inverted:
             pairs = np.ascontiguousarray(pairs[:, ::-1])     # Q, I: the band as it is on the air
@@ -410,6 +447,7 @@ class RtlTcpSource:
             "address": self.address,
             "tuner": tuner.name if tuner else None,
             "centre_hz": settings.centre_hz,
+            "centre_in_use_hz": _tuning(settings, tuner).centre_hz,
             "sample_rate_hz": settings.sample_rate_hz,
             "gain_db": settings.gain_db,
             "ppm": settings.ppm,
@@ -422,15 +460,37 @@ class RtlTcpSource:
             "bias_tee": settings.bias_tee,
             "converter": settings.converter,
             "converter_lo_hz": settings.converter_lo_hz,
+            "driver_pll": settings.driver_pll,
+            "tuner_grid": settings.tuner_grid,
             "settable": self._settable(),
         }
+
+    def centre_in_use(self, centre_hz: float) -> float:
+        """The centre in use on the air that asking for ``centre_hz`` would
+        give with the other settings as they are, without checking that the
+        receiver reaches it: ``centre_hz`` itself until the tuner is known,
+        and within half a hertz of it wherever the receiver is not placed on
+        the grid."""
+        settings = replace(self._settings, centre_hz=float(round(centre_hz)))
+        return _tuning(settings, self.tuner).centre_hz
+
+    @property
+    def grid_hz(self) -> float:
+        """How far apart, on the air, the centres in use lie where the
+        receiver is placed on the grid: 0 with a receiver that is never
+        placed (module docstring)."""
+        tuner, settings = self.tuner, self._settings
+        if tuner is None or not tuner.pll or not settings.tuner_grid:
+            return 0.0
+        return r82xx.GRID_HZ * (1 + settings.ppm / 1e6)
 
     def configure(self, changes: Mapping[str, object]) -> None:
         """Change ``address`` (as ``parse_address`` reads it), ``centre_hz``,
         ``sample_rate_hz``, ``gain_db`` (``None`` for automatic gain),
         ``ppm``, ``hf_input`` (one of ``HF_INPUTS``), ``rtl_agc``,
-        ``bias_tee``, ``converter`` (one of ``converter.CONVERTERS``) and
-        ``converter_lo_hz``, then call ``on_change``.
+        ``bias_tee``, ``converter`` (one of ``converter.CONVERTERS``),
+        ``converter_lo_hz``, ``driver_pll`` (one of ``DRIVER_PLLS``) and
+        ``tuner_grid``, then call ``on_change``.
 
         Raises ValueError, changing nothing, when a setting is unknown or
         invalid. A gain becomes the nearest the tuner offers. Another input
@@ -456,8 +516,7 @@ class RtlTcpSource:
         new = _changed(old, changes, tuner)
         self._settings = new
         old_input, new_input = _direct_input(old, tuner), _direct_input(new, tuner)
-        retuned = ((new.centre_hz, new.sample_rate_hz, new.ppm, new_input, _conversion(new).key)
-                   != (old.centre_hz, old.sample_rate_hz, old.ppm, old_input, _conversion(old).key))
+        retuned = _tuning_key(new, tuner) != _tuning_key(old, tuner)
         if address is not None:
             self._power_off(old)    # the receiver left behind
             self.host, self.port = address
@@ -476,8 +535,8 @@ class RtlTcpSource:
             if new.gain_db != old.gain_db and not old_input and not new_input:
                 _send_gain(connection, new.gain_db)
             # The receiver retunes on 0x05: it goes only when the whole part changes.
-            whole = self._whole_ppm(new)
-            if whole != self._whole_ppm(old):
+            whole = _whole(new, connection.tuner)
+            if whole != _whole(old, connection.tuner):
                 connection.send(_SET_FREQUENCY_CORRECTION, whole)
             if new.sample_rate_hz != old.sample_rate_hz and not restarted:
                 connection.send(_SET_SAMPLE_RATE, int(new.sample_rate_hz))
@@ -496,7 +555,7 @@ class RtlTcpSource:
                 # converter, so that the receiver applies it whatever the
                 # librtlsdr version; after 0x05, which retuned to the
                 # previous request with the new whole part.
-                connection.send(_SET_FREQUENCY, _requested_hz(new, connection.tuner, whole))
+                connection.send(_SET_FREQUENCY, _tuning(new, connection.tuner).request_hz)
             if restarted:
                 _send_forgotten(connection, new)
         if retuned:
@@ -608,11 +667,10 @@ class RtlTcpSource:
         self.tuner = tuner
         settings = self._settings = _fitted(self._settings, tuner)
         direct = _direct_input(settings, tuner)
-        whole = self._whole_ppm(settings)
-        connection.send(_SET_FREQUENCY_CORRECTION, whole)
+        connection.send(_SET_FREQUENCY_CORRECTION, _whole(settings, tuner))
         connection.send(_SET_DIRECT_SAMPLING, direct)
         connection.send(_SET_RTL_AGC, int(bool(direct) and settings.rtl_agc))
-        connection.send(_SET_FREQUENCY, _requested_hz(settings, tuner, whole))
+        connection.send(_SET_FREQUENCY, _tuning(settings, tuner).request_hz)
         if direct:
             connection.send(_SET_SAMPLE_RATE, int(settings.sample_rate_hz))
         else:
@@ -662,14 +720,10 @@ class RtlTcpSource:
             swapped[0::2], swapped[1::2] = data[1::2], data[0::2]
             data = bytes(swapped)
         try:
-            self._tap(data, settings.centre_hz, settings.sample_rate_hz, joined)
+            self._tap(data, _tuning(settings, self.tuner).centre_hz, settings.sample_rate_hz, joined)
         except Exception:
             log.exception("the samples' tap failed: it is left")
             self._tap = None
-
-    def _whole_ppm(self, settings: Settings) -> int:
-        """The part of the correction that the receiver takes itself."""
-        return whole_ppm(settings.ppm, self.hardware_correction)
 
     def _new_setting(self) -> None:
         """Drop the samples of the previous setting, with those still on their way."""
@@ -989,6 +1043,16 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
         settings = replace(settings, gain_db=gain)
     if "ppm" in changes:
         settings = replace(settings, ppm=checked_ppm(changes["ppm"]))
+    if "driver_pll" in changes:
+        value = changes["driver_pll"]
+        if not isinstance(value, str) or value not in DRIVER_PLLS:
+            raise ValueError(f"the driver's computation must be one of: {', '.join(DRIVER_PLLS)}")
+        settings = replace(settings, driver_pll=value)
+    if "tuner_grid" in changes:
+        value = changes["tuner_grid"]
+        if not isinstance(value, bool):
+            raise ValueError("the tuner's grid must be true or false")
+        settings = replace(settings, tuner_grid=value)
     return settings
 
 
@@ -1037,6 +1101,82 @@ def _requested_hz(settings: Settings, tuner: Tuner, whole: int) -> int:
             low = max(low, tuner.range_hz[0])
         high = min(high, tuner.range_hz[1])
     return int(min(max(corrected_hz(_tuned_hz(settings), settings.ppm, whole), low), high))
+
+
+def _whole(settings: Settings, tuner: Tuner | None) -> int:
+    """The part of the correction that the receiver takes itself (command
+    0x05): none with an R820T or R828D, whose grid a corrected crystal
+    would move, and otherwise its nearest whole number."""
+    return whole_ppm(settings.ppm, tuner is None or not tuner.pll)
+
+
+@dataclass(frozen=True)
+class _Tuning:
+    """How the receiver tunes for a setting: the frequency command's value,
+    the centre in use on the air that labels the samples, and how much
+    faster than its nominal rate the receiver samples, which Radiolack
+    alone corrects."""
+
+    request_hz: int
+    centre_hz: float
+    scale: float = 1.0
+
+
+@functools.lru_cache(maxsize=64)
+def _tuning(settings: Settings, tuner: Tuner | None) -> _Tuning:
+    """How the receiver tunes for ``settings`` with ``tuner`` (module
+    docstring). A tuner other than an R820T or R828D takes the request of
+    section 9, labelled with the centre asked. With one, the whole of the
+    correction is Radiolack's: the request goes on the grid where it
+    applies, and the label is where that puts the receiver on the air, by
+    the driver's computation once ``driver_pll`` names it, the crystal
+    taken as corrected. Until the tuner is known nothing is asked, and the
+    samples, of no receiver yet, keep the centre asked."""
+    if tuner is None:
+        return _Tuning(0, settings.centre_hz)
+    request = _requested_hz(settings, tuner, _whole(settings, tuner))
+    if not tuner.pll:
+        return _Tuning(request, settings.centre_hz)
+    scale = 1 + settings.ppm / 1e6
+    tuned = float(request)
+    if not _direct_input(settings, tuner) and _computed(request, settings, tuner):
+        if settings.tuner_grid:
+            try:
+                placed = r82xx.on_grid(request, r82xx.rate_if_hz(int(settings.sample_rate_hz)),
+                                       max(tuner.range_hz[0], tuner.upconversion_hz), tuner.range_hz[1])
+            except ValueError:      # no oscillator on the grid within the range: unplaced
+                placed = request
+            if _computed(placed, settings, tuner):
+                request = placed
+                tuned = float(placed)
+        if settings.driver_pll != "unknown":
+            tuned = r82xx.tuned_hz(settings.driver_pll, request, int(settings.sample_rate_hz))
+    return _Tuning(request, _conversion(settings).air(tuned * scale), scale)
+
+
+def _tuning_key(settings: Settings, tuner: Tuner | None) -> tuple[Any, ...]:
+    """What the receiver is asked for ``settings``: a change retunes it,
+    and its samples settle (module docstring). Until the tuner is known,
+    the settings that make it."""
+    if tuner is None:
+        return (settings.centre_hz, settings.sample_rate_hz, settings.ppm, settings.hf_input,
+                _conversion(settings).key)
+    return (_tuning(settings, tuner).request_hz, settings.sample_rate_hz, _whole(settings, tuner),
+            _direct_input(settings, tuner), _conversion(settings).key)
+
+
+def _computed(request_hz: int, settings: Settings, tuner: Tuner) -> bool:
+    """Whether the tuner, asked for ``request_hz``, sets what r82xx.py
+    computes: from its range's start, which a tuner that covers shortwave
+    may go below, from where a V4's driver stops upconverting, and with an
+    oscillator that its PLL can make."""
+    if request_hz < max(tuner.range_hz[0], tuner.upconversion_hz):
+        return False
+    try:
+        r82xx.mix_divider(r82xx.oscillator_hz(request_hz, int(settings.sample_rate_hz)))
+    except ValueError:
+        return False
+    return True
 
 
 def _centre_ranges(settings: Settings, tuner: Tuner | None) -> list[tuple[float, float, str]]:

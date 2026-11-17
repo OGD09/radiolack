@@ -1,32 +1,29 @@
 #!/usr/bin/env python3
-"""Measure the error of an RTL-SDR tuner's PLL through a Radiolack that is
-already running on the receiver: coverage-and-precision.md, pull request 13.
+"""Measure how well a Radiolack labels the samples of an RTL-SDR whose
+tuner is an R820T or R828D: coverage-and-precision.md, pull requests 13
+and 14.
 
-It drives that Radiolack through its stream on 127.0.0.1, as an interface
-does, and changes nothing but the centre frequency, which it restores at
-the end, on success, on failure and on Ctrl-C. With the VFO on one steady
-carrier above 24 MHz, it moves the centre frequency through 40 values
-1.234 kHz apart, then through values that put the tuner's oscillator on
-multiples of 112.5 kHz, and asks the engine to measure the carrier at each
-(carrier.py). No reference is needed: the carrier stays where it is on the
-air, so an error of the PLL shows as a carrier that moves with the centre
-frequency. The two computations of the driver (tests/r82xx_pll.py) predict
-how it moves.
+It drives a Radiolack that is already running on the receiver through its
+stream on 127.0.0.1, as an interface does, and changes nothing but the
+centre frequency and the tuner's grid (``tuner_grid``, never saved), which
+it restores at the end, on success, on failure and on Ctrl-C. With the VFO
+on one steady carrier above 24 MHz, it asks the engine to measure the
+carrier (carrier.py) at each of these centre frequencies:
 
-The tuner's oscillator: the centre frequency plus the tuner's intermediate
-frequency (IF), which depends on what librtlsdr did to the tuner last
-(r82xx_pll.TUNER_STATES): the IF of the sample rate once the sample rate
-gave the tuner its bandwidth, or 3.57 MHz once command 0x09 with 0 started
-the tuner again. Every prediction is made under each IF, so that the
-measures tell which one the tuner ran at, and the table and the
-conclusion name the one they follow. Only the second sweep must take one
-beforehand, to put the oscillator on multiples of 112.5 kHz: it takes the
-IF of the sample rate (``ASSUMED_STATE``). Radiolack sends the sample rate
-after 0x09 since the fix that followed this measure's first run; a
-Radiolack from before it, back to the shortwave pull request, left the
-tuner at 3.57 MHz, which the conclusion then says. The tool cannot tell
-them apart at start: the calibration that the measure needs came between
-the two, without a release, so that both say the same version.
+- 40 values 1.234 kHz apart, the grid turned off, so that the tuner's
+  oscillator goes where neither of the driver's computations is exact and
+  each errs by another amount at each one;
+- up to 8 values whose oscillator is a multiple of 112.5 kHz, the grid
+  turned on, as Radiolack places them by itself.
+
+No reference is needed: the carrier stays where it is on the air, so a
+label that is not where the tuner sits shows as a carrier that moves with
+the centre frequency. Radiolack labels the samples by the driver's
+computation that its Receiver menu names (``driver_pll``), or as if the
+tuner were exact while it is unknown. The tool takes the same request,
+checks that the label Radiolack reports is the one it expects, and
+predicts, for each of the driver's two computations (``radiolack.r82xx``),
+how the carrier moves if the tuner follows it.
 
 Drift: the crystal warms up and drifts over the minutes a run takes, which
 moves the carrier too, slowly and whatever the centre frequency. The tool
@@ -34,24 +31,22 @@ measures the first centre again every few points and at the end, takes
 each point's offset from the reference interpolated in time between the
 measures around it, and reports the drift beside the spread. When the
 reference moves too much between two of its measures, the interpolation
-cannot be trusted and no rule applies: the owner sees the table.
+cannot be trusted and no verdict applies: the owner sees the table.
 
-The rule, fixed beforehand: a spread of 30 Hz or more near 145 MHz (the
-tuner's divider of 145 MHz) that follows one of the two predictions, pull
-request 14 is built; under 10 Hz, the error is recorded as not observed; in
-between, the owner sees the table. A run that stops midway gives no
-verdict.
+The verdicts: a spread under 10 Hz, the labels hold, which is pull request
+14's "done when" once the driver's computation is set; a spread of 30 Hz or
+more that follows one computation, the receiver's driver computes that way,
+and the tool names the Receiver menu's choice to make; anything else, the
+owner sees the table. A run that stops midway gives no verdict.
 
-It takes its predictions from tests/r82xx_pll.py and the correction's
-arithmetic from Radiolack's own source, so it runs from a checkout of the
-repository; the Debian package does not install it.
+It takes its arithmetic from Radiolack's own source, so it runs from a
+checkout of the repository; the Debian package does not install it.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import sys
 import time
@@ -65,60 +60,44 @@ import aiohttp
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
-from radiolack.correction import corrected_hz, whole_ppm  # noqa: E402
-
-
-def _load_pll() -> Any:
-    """tests/r82xx_pll.py, by its path: importing the tests' package would
-    point the configuration folders elsewhere for the whole process."""
-    spec = importlib.util.spec_from_file_location("r82xx_pll", REPOSITORY / "tests" / "r82xx_pll.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-PLL = _load_pll()
+from radiolack import r82xx  # noqa: E402
+from radiolack.correction import corrected_hz  # noqa: E402
+from radiolack.rtltcp import TUNERS as _TUNERS  # noqa: E402
 
 HOST = "127.0.0.1"
 PROTOCOL = 6
 STEP_HZ = 1234              # the first sweep's step
 STEPS = 40                  # and its centre frequencies, the first one included
-MULTIPLE_HZ = 112_500       # the second sweep's oscillators are multiples of this
-MULTIPLES = 8
+MULTIPLES = 8               # the second sweep's centre frequencies, on the grid
 REFERENCE_EVERY = 10        # the first centre measured again after this many points
 ATTEMPTS = 2                # measures asked at one point before the carrier counts as lost
 TIMEOUT_S = 20.0            # for a retune or a measure to come back
 
-BUILD_HZ = 30.0             # the rule: this spread or more near 145 MHz, following a prediction
-NOT_OBSERVED_HZ = 10.0      # under this spread, the error is not observed
+HOLDS_HZ = 10.0             # under this spread, the labels hold
+FOLLOWS_HZ = 30.0           # this spread or more, following one computation, names it
 FOLLOW_HZ = 5.0             # a prediction is followed when every offset lies this close to it
 DRIFT_STEP_HZ = 5.0         # the reference may move this much between two of its measures
-RULE_HZ = 145_000_000       # the rule holds for the tuner's divider of this frequency
+LABEL_HZ = 0.01             # the label reported may differ this much from the one expected
 
-TUNERS = ("Rafael Micro R820T", "Rafael Micro R828D")
+TUNERS = {tuner.name: tuner for tuner in _TUNERS.values() if tuner.pll}
 CENTRED_MODES = ("AM", "NFM", "CW")     # their filter is centred on the VFO
-TUNER_LOW_HZ = 24_000_000
-V4_UPCONVERSION_HZ = 28_800_000         # an RTL-SDR Blog V4 upconverts below this
 DC_CLEARANCE_HZ = 1000.0    # the filter's edge stays this far from the centre frequency
 SPAN_USE = 0.4              # and within this share of the sample rate from it
 FILTER_MARGIN_HZ = 200.0    # the carrier stays this far inside the filter at every prediction
 
+COMPUTATIONS = tuple(r82xx.COMPUTATIONS)     # the driver's, by name
 PREDICTIONS = {
     "truncating": "rtl-sdr up to 2.0.1, Debian 12's 0.6.0 among them, and the RTL-SDR Blog fork",
     "rounding": "rtl-sdr 2.0.2 and later",
 }
 NAMES = {"truncating": "up to 2.0.1", "rounding": "2.0.2 on"}
-# The tuner's IF in each of its states (the module docstring).
-STATE_NAMES = {"rate": "IF of the rate", "started": "IF 3.57 MHz"}
-STATES = {
-    "rate": "the IF that librtlsdr sets with the sample rate",
-    "started": "3.57 MHz, the IF of a tuner that command 0x09 with 0 has just started again, until the next "
-               "sample rate",
+# The Receiver menu's choices for the driver's computation, word for word.
+MENU = {
+    "unknown": "Unknown",
+    "truncating": "rtl-sdr up to 2.0.1, RTL-SDR Blog",
+    "rounding": "rtl-sdr 2.0.2 and later",
 }
-ASSUMED_STATE = "rate"      # the IF that the second sweep takes
-# Every prediction: a computation of the driver, with the tuner in one of its states.
-HYPOTHESES = tuple((computation, state) for computation in PLL.COMPUTATIONS for state in PLL.TUNER_STATES)
-STEP, MULTIPLE, REFERENCE = "1.234 kHz step", "112.5 kHz oscillator", "reference"
+STEP, GRID, REFERENCE = "1.234 kHz step", "on the grid", "reference"
 
 EXIT_VERDICT, EXIT_FAILED, EXIT_INTERRUPTED = 0, 1, 130
 
@@ -132,68 +111,86 @@ class Incomplete(Exception):
 
 
 @dataclass(frozen=True)
+class Point:
+    kind: str
+    centre_hz: int
+    grid: bool                  # the tuner's grid on at this point
+
+
+@dataclass(frozen=True)
 class Receiver:
     """What the measure needs of the receiver's settings, read at start."""
 
     centre_hz: int
     rate_hz: int
     ppm: float
-    whole_ppm: int
     vfo_hz: int
     mode: str
     bandwidth_hz: float
     tuner: str
+    setting: str                # the driver's computation that Radiolack labels by
     lowest_hz: float
     highest_hz: float
 
-    def asked_hz(self, centre_hz: int) -> int:
-        """The frequency that Radiolack asks of rtl_tcp for ``centre_hz``."""
-        return corrected_hz(centre_hz, self.ppm, self.whole_ppm)
+    @property
+    def scale(self) -> float:
+        """How much faster than asked the crystal runs: Radiolack corrects
+        the whole of the correction itself on such a tuner."""
+        return 1 + self.ppm / 1e6
 
-    def oscillator_hz(self, centre_hz: int, state: str = ASSUMED_STATE) -> int:
-        """The oscillator that librtlsdr asks of the tuner for ``centre_hz``,
-        the tuner in ``state``."""
-        return PLL.oscillator_hz(self.asked_hz(centre_hz), self.rate_hz, state)
+    @property
+    def intermediate_hz(self) -> int:
+        return r82xx.rate_if_hz(self.rate_hz)
 
-    def true_centre_hz(self, hypothesis: tuple[str, str], centre_hz: int) -> float:
-        """The centre the receiver truly tunes for ``centre_hz`` by
-        ``hypothesis``, the driver's computation with the tuner in one of
-        its states, the crystal as corrected."""
-        computation, state = hypothesis
-        scale = (1 + self.ppm / 1e6) / (1 + self.whole_ppm / 1e6)
-        return PLL.tuned_hz(computation, self.asked_hz(centre_hz), self.rate_hz, self.whole_ppm, state) * scale
+    def request_hz(self, point: Point) -> int:
+        """The frequency that Radiolack asks of rtl_tcp at ``point``: the
+        centre for the crystal as corrected, on the grid when it is on."""
+        request = corrected_hz(point.centre_hz, self.ppm, 0)
+        if point.grid:
+            tuner = TUNERS[self.tuner]
+            request = r82xx.on_grid(request, self.intermediate_hz, max(tuner.range_hz[0], tuner.upconversion_hz),
+                                    tuner.range_hz[1])
+        return request
 
-    def predicted_hz(self, hypothesis: tuple[str, str], centre_hz: int) -> float:
-        """How far the carrier moves from its first measure at
-        ``centre_hz`` by ``hypothesis``, a computation and a state of the
-        tuner: it shows at the centre asked plus its distance from the
-        centre truly tuned."""
-        def shift(centre: int) -> float:
-            return centre - self.true_centre_hz(hypothesis, centre)
-        return shift(centre_hz) - shift(self.centre_hz)
+    def oscillator_hz(self, point: Point) -> int:
+        return r82xx.oscillator_hz(self.request_hz(point), self.rate_hz)
 
-    def fits(self, centre_hz: int) -> str | None:
-        """Why the VFO's channel cannot be measured at ``centre_hz``, or None."""
-        distance = abs(self.vfo_hz - centre_hz)
-        lowest = max(self.lowest_hz, TUNER_LOW_HZ)
-        if not lowest <= centre_hz <= self.highest_hz:
-            return f"{centre_hz} Hz lies beyond the tuner's range"
-        if distance < self.bandwidth_hz / 2 + DC_CLEARANCE_HZ:
-            return f"the VFO would lie within its filter of the centre frequency {centre_hz} Hz"
-        if distance + self.bandwidth_hz / 2 > SPAN_USE * self.rate_hz:
-            return f"the VFO would lie too close to the edge of the span around {centre_hz} Hz"
+    def tuned_hz(self, computation: str, point: Point) -> float:
+        """Where the receiver sits on the air at ``point`` if its driver
+        follows ``computation``, or is exact ("unknown")."""
+        request = self.request_hz(point)
+        tuned = request if computation == "unknown" else r82xx.tuned_hz(computation, request, self.rate_hz)
+        return tuned * self.scale
+
+    def label_hz(self, point: Point) -> float:
+        """The centre in use that Radiolack labels the samples with."""
+        return self.tuned_hz(self.setting, point)
+
+    def predicted_hz(self, computation: str, point: Point, first: Point) -> float:
+        """How far the carrier moves from its first measure at ``first``
+        when the tuner follows ``computation``: it shows at the label plus
+        its distance from where the tuner truly sits."""
+        def shift(at: Point) -> float:
+            return self.label_hz(at) - self.tuned_hz(computation, at)
+        return shift(point) - shift(first)
+
+    def fits(self, point: Point) -> str | None:
+        """Why the VFO's channel cannot be measured at ``point``, or None."""
+        centre = point.centre_hz
+        if not self.lowest_hz <= centre <= self.highest_hz:
+            return f"{centre} Hz lies beyond the tuner's range"
         try:
-            for hypothesis in HYPOTHESES:
-                self.true_centre_hz(hypothesis, centre_hz)
+            in_use = self.label_hz(point)
+            for computation in COMPUTATIONS:
+                self.tuned_hz(computation, point)
         except ValueError as problem:
             return str(problem)
+        distance = abs(self.vfo_hz - in_use)
+        if distance < self.bandwidth_hz / 2 + DC_CLEARANCE_HZ:
+            return f"the VFO would lie within its filter of the centre frequency {centre} Hz"
+        if distance + self.bandwidth_hz / 2 > SPAN_USE * self.rate_hz:
+            return f"the VFO would lie too close to the edge of the span around {centre} Hz"
         return None
-
-
-@dataclass(frozen=True)
-class Point:
-    kind: str
-    centre_hz: int
 
 
 @dataclass
@@ -202,6 +199,7 @@ class Measure:
     carrier_hz: float
     margin_db: float
     at: float                   # monotonic time
+    label_hz: float             # the centre in use that Radiolack reported
     drift_hz: float = 0.0       # the reference at that time, from the first measure
     offset_hz: float = 0.0      # from the first measure, the drift taken off
 
@@ -209,53 +207,50 @@ class Measure:
 @dataclass
 class Analysis:
     spread_hz: float
-    residual_hz: dict[tuple[str, str], float]   # by hypothesis
-    follows: list[tuple[str, str]]              # the hypotheses followed
-    state: str                  # the tuner's state that the measures show, or else the one assumed
+    residual_hz: dict[str, float]   # by computation
+    follows: list[str]              # the computations followed
     references: list[float]
     drift_hz: float
     drift_step_hz: float
-    near_rule: bool
     verdict: str
     reason: str = ""
 
 
 def plan(receiver: Receiver, steps: int, multiples: int) -> list[Point]:
     """The centre frequencies to measure, the first one first: ``steps``
-    1.234 kHz apart, upwards or else downwards, then up to ``multiples``
-    whose oscillators, with the IF assumed (``ASSUMED_STATE``), lie on
-    multiples of 112.5 kHz, nearest to the first one's; Refused when the
-    first sweep fits neither way."""
+    1.234 kHz apart, upwards or else downwards, the grid off, then up to
+    ``multiples`` on the grid, nearest to the first one's oscillator;
+    Refused when the first sweep fits neither way."""
     first = receiver.centre_hz
     why = ""
     for direction in (1, -1):
-        centres = [first + direction * k * STEP_HZ for k in range(steps)]
-        problems = [problem for problem in map(receiver.fits, centres) if problem]
+        points = [Point(STEP, first + direction * k * STEP_HZ, False) for k in range(steps)]
+        problems = [problem for problem in map(receiver.fits, points) if problem]
         if not problems:
             break
         why = why or problems[0]
     else:
         raise Refused(f"the centre frequency cannot move by {STEP_HZ} Hz {steps - 1} times either way: {why}. "
                       f"Put the VFO further from the centre frequency, within the span.")
-    points = [Point(STEP, centre) for centre in centres]
-    intermediate = PLL.intermediate_hz(receiver.rate_hz, ASSUMED_STATE)
-    scale = (1 + receiver.ppm / 1e6) / (1 + receiver.whole_ppm / 1e6)
-    nearest = round(receiver.oscillator_hz(first) / MULTIPLE_HZ)
+    intermediate = receiver.intermediate_hz
+    nearest = round(receiver.oscillator_hz(points[0]) / r82xx.GRID_HZ)
     found: list[int] = []
-    reach = int(receiver.rate_hz // MULTIPLE_HZ) + 2
+    reach = int(receiver.rate_hz // r82xx.GRID_HZ) + 2
     for j in sorted(range(-reach, reach + 1), key=abs):
         if len(found) >= multiples:
             break
-        centre = round(((nearest + j) * MULTIPLE_HZ - intermediate) * scale)
-        if receiver.fits(centre) is None and centre not in found:
+        centre = round(((nearest + j) * r82xx.GRID_HZ - intermediate) * receiver.scale)
+        point = Point(GRID, centre, True)
+        if (receiver.fits(point) is None and centre not in found
+                and receiver.oscillator_hz(point) == (nearest + j) * r82xx.GRID_HZ):
             found.append(centre)
-    return points + [Point(MULTIPLE, centre) for centre in sorted(found)]
+    return points + [Point(GRID, centre, True) for centre in sorted(found)]
 
 
 def schedule(points: Sequence[Point], reference_every: int) -> list[Point]:
     """The measures in their order: the points, with the first centre
     measured again after every ``reference_every`` of them and at the end."""
-    reference = Point(REFERENCE, points[0].centre_hz)
+    reference = Point(REFERENCE, points[0].centre_hz, points[0].grid)
     order: list[Point] = [points[0]]
     for index, point in enumerate(points[1:], start=1):
         order.append(point)
@@ -284,114 +279,102 @@ def remove_drift(measures: list[Measure]) -> None:
 
 
 def analyse(receiver: Receiver, measures: list[Measure]) -> Analysis:
-    """The spread, the predictions followed, the drift and the verdict."""
+    """The spread, the computations followed, the drift and the verdict."""
     remove_drift(measures)
+    first = measures[0].point
     points = [measure for measure in measures if measure.point.kind != REFERENCE]
     offsets = [measure.offset_hz for measure in points]
     spread = max(offsets) - min(offsets)
-    residual = {hypothesis: max(abs(measure.offset_hz - receiver.predicted_hz(hypothesis, measure.point.centre_hz))
-                                for measure in points)
-                for hypothesis in HYPOTHESES}
-    follows = [hypothesis for hypothesis, value in residual.items() if value <= FOLLOW_HZ]
-    # The tuner's state, when the predictions followed agree on it.
-    shown = {state for _, state in follows}
-    state = shown.pop() if len(shown) == 1 else ASSUMED_STATE
+    residual = {computation: max(abs(measure.offset_hz - receiver.predicted_hz(computation, measure.point, first))
+                                 for measure in points)
+                for computation in COMPUTATIONS}
+    follows = [computation for computation, value in residual.items() if value <= FOLLOW_HZ]
     references = [measures[0].carrier_hz] + [measure.carrier_hz for measure in measures[1:]
                                              if measure.point.kind == REFERENCE]
     drift = max(references) - min(references)
     drift_step = max((abs(b - a) for a, b in zip(references, references[1:])), default=0.0)
-    intermediate = PLL.intermediate_hz(receiver.rate_hz, state)
-    near_rule = (PLL.mix_divider(receiver.oscillator_hz(receiver.centre_hz, state))
-                 == PLL.mix_divider(RULE_HZ + intermediate))
-    analysis = Analysis(spread, residual, follows, state, references, drift, drift_step, near_rule, "table")
+    analysis = Analysis(spread, residual, follows, references, drift, drift_step, "table")
     if drift_step > DRIFT_STEP_HZ:
         analysis.reason = (f"the reference moved {drift_step:.1f} Hz between two of its measures, more than "
                            f"{DRIFT_STEP_HZ:g} Hz: let the receiver warm up and measure again")
-    elif not near_rule:
-        analysis.reason = ("the rule was fixed near 145 MHz, and this carrier is measured with another divider "
-                           "of the tuner")
-    elif spread >= BUILD_HZ and follows:
-        analysis.verdict = "build"
-    elif spread < NOT_OBSERVED_HZ:
-        analysis.verdict = "not_observed"
-    elif spread >= BUILD_HZ:
-        analysis.reason = f"a spread of {BUILD_HZ:g} Hz or more that follows no prediction, under either IF"
+    elif spread < HOLDS_HZ:
+        analysis.verdict = "holds"
+    elif spread >= FOLLOWS_HZ and len(follows) == 1:
+        analysis.verdict = "follows"
+    elif spread >= FOLLOWS_HZ:
+        analysis.reason = (f"a spread of {FOLLOWS_HZ:g} Hz or more that follows "
+                           + ("both computations" if follows else "neither computation"))
     else:
-        analysis.reason = f"a spread from {NOT_OBSERVED_HZ:g} to {BUILD_HZ:g} Hz"
+        analysis.reason = f"a spread from {HOLDS_HZ:g} to {FOLLOWS_HZ:g} Hz"
     return analysis
 
 
 def table(receiver: Receiver, measures: Sequence[Measure]) -> list[str]:
     """The measures as a Markdown table."""
-    columns = ["#", "Kind", "Centre asked (Hz)", f"Oscillator, {STATE_NAMES[ASSUMED_STATE]} (Hz)", "Carrier (Hz)",
-               "Drift (Hz)", "Offset (Hz)", *(f"Predicted, {name(hypothesis)} (Hz)" for hypothesis in HYPOTHESES)]
+    first = measures[0].point
+    columns = ["#", "Kind", "Centre asked (Hz)", "Oscillator (Hz)", "Centre in use (Hz)", "Carrier (Hz)",
+               "Drift (Hz)", "Offset (Hz)", *(f"Predicted, {NAMES[computation]} (Hz)" for computation in COMPUTATIONS)]
     lines = ["| " + " | ".join(columns) + " |", "|" + " --- |" * len(columns)]
     for number, measure in enumerate(measures, start=1):
-        centre = measure.point.centre_hz
-        cells = [str(number), measure.point.kind, str(centre), str(receiver.oscillator_hz(centre)),
-                 f"{measure.carrier_hz:.1f}", f"{measure.drift_hz:+.1f}", f"{measure.offset_hz:+.1f}",
-                 *(f"{receiver.predicted_hz(hypothesis, centre):+.1f}" for hypothesis in HYPOTHESES)]
+        point = measure.point
+        cells = [str(number), point.kind, str(point.centre_hz), str(receiver.oscillator_hz(point)),
+                 f"{measure.label_hz:.1f}", f"{measure.carrier_hz:.1f}", f"{measure.drift_hz:+.1f}",
+                 f"{measure.offset_hz:+.1f}",
+                 *(f"{receiver.predicted_hz(computation, point, first):+.1f}" for computation in COMPUTATIONS)]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
 
 
-def name(hypothesis: tuple[str, str]) -> str:
-    """A hypothesis's short name, as the table's columns give it."""
-    computation, state = hypothesis
-    return f"{NAMES[computation]}, {STATE_NAMES[state]}"
-
-
 def describe(receiver: Receiver, started: datetime) -> list[str]:
-    intermediate = PLL.intermediate_hz(receiver.rate_hz, ASSUMED_STATE)
-    divider = PLL.mix_divider(receiver.oscillator_hz(receiver.centre_hz))
+    first = Point(STEP, receiver.centre_hz, False)
+    divider = r82xx.mix_divider(receiver.oscillator_hz(first))
     return [
         f"PLL measure of {started:%Y-%m-%d %H:%M} UTC: {receiver.tuner}, {receiver.rate_hz} S/s "
-        f"(IF of the rate {intermediate} Hz), correction {receiver.ppm:g} ppm, VFO at {receiver.vfo_hz} Hz in "
-        f"{receiver.mode} with a {receiver.bandwidth_hz:g} Hz filter, first centre {receiver.centre_hz} Hz, "
-        f"tuner divider {divider}.",
+        f"(IF {receiver.intermediate_hz} Hz), correction {receiver.ppm:g} ppm, driver set to "
+        f"\"{MENU[receiver.setting]}\", VFO at {receiver.vfo_hz} Hz in {receiver.mode} with a "
+        f"{receiver.bandwidth_hz:g} Hz filter, first centre {receiver.centre_hz} Hz, tuner divider {divider}.",
         "",
-        f"Oscillator: the one librtlsdr asks of the tuner with the {STATE_NAMES[ASSUMED_STATE]}; the second sweep "
-        "puts it on multiples of 112.5 kHz, as Radiolack sends the sample rate after command 0x09 since the fix "
-        "that followed the first measure. Offset: the carrier's distance from its first measure, without the drift, "
-        "the first centre measured again at the time, interpolated. "
-        f"Predicted: where each computation of the driver moves the carrier, under each IF; up to 2.0.1: "
-        f"{PREDICTIONS['truncating']}; 2.0.2 on: {PREDICTIONS['rounding']}; IF of the rate: {STATES['rate']}; "
-        f"IF 3.57 MHz: {STATES['started']}. A 28.8 MHz crystal is assumed.",
+        "Oscillator: the frequency asked of the tuner plus the IF of the sample rate. The steps go with the grid "
+        "off; the points on the grid with it on. Centre in use: where Radiolack labels the samples, by the driver "
+        "it is set to, or as if the tuner were exact while that is unknown. Offset: the carrier's distance from its "
+        "first measure, without the drift, the first centre measured again at the time, interpolated. "
+        f"Predicted: where the carrier goes if the driver computes as up to 2.0.1: {PREDICTIONS['truncating']}; "
+        f"2.0.2 on: {PREDICTIONS['rounding']}. A 28.8 MHz crystal is assumed.",
         "",
     ]
 
 
-def conclusion(analysis: Analysis) -> list[str]:
+def conclusion(receiver: Receiver, analysis: Analysis) -> list[str]:
     spread = f"Spread: {analysis.spread_hz:.1f} Hz, the drift taken off."
     references = len(analysis.references)
     drift = (f"Drift: the first centre measured {references} times moved by {analysis.drift_hz:.1f} Hz in all, "
              f"at most {analysis.drift_step_hz:.1f} Hz between two of its measures.")
-    followed = [f"{name(hypothesis)} ({PREDICTIONS[hypothesis[0]]}), largest difference "
-                f"{analysis.residual_hz[hypothesis]:.1f} Hz" for hypothesis in analysis.follows]
-    others = [f"{name(hypothesis)}, largest difference {analysis.residual_hz[hypothesis]:.1f} Hz"
-              for hypothesis in HYPOTHESES if hypothesis not in analysis.follows]
+    followed = [f"{NAMES[computation]} ({PREDICTIONS[computation]}), largest difference "
+                f"{analysis.residual_hz[computation]:.1f} Hz" for computation in analysis.follows]
+    others = [f"{NAMES[computation]}, largest difference {analysis.residual_hz[computation]:.1f} Hz"
+              for computation in COMPUTATIONS if computation not in analysis.follows]
     follows = (f"Follows, within {FOLLOW_HZ:g} Hz at every point: " + "; ".join(followed) if followed
-               else f"Follows no prediction within {FOLLOW_HZ:g} Hz, under either IF")
+               else f"Follows neither computation within {FOLLOW_HZ:g} Hz")
     if others and followed:
         follows += "; not " + "; ".join(others)
     elif others:
         follows += ": " + "; ".join(others)
     lines = ["", spread, drift, follows + "."]
-    if analysis.follows and analysis.state == "started":
-        lines.append(f"The tuner ran at the {STATE_NAMES['started']}, not at the {STATE_NAMES[ASSUMED_STATE]} "
-                     "that the second sweep assumed, whose oscillators are therefore not on multiples of 112.5 kHz: "
-                     "command 0x09 with 0 had started the tuner again after the sample rate, as Radiolack sent "
-                     "them from shortwave until the fix that followed the first measure, and the tuner's filter "
-                     "did not follow the sample rate.")
-    followed_names = " or ".join(name(hypothesis) for hypothesis in analysis.follows)
-    verdicts = {
-        "build": f"Verdict: a spread of {BUILD_HZ:g} Hz or more near 145 MHz that follows one prediction, "
-                 f"{followed_names}: pull request 14 is built.",
-        "not_observed": f"Verdict: a spread under {NOT_OBSERVED_HZ:g} Hz: the PLL's error is recorded as not "
-                        "observed, and nothing is built.",
-        "table": f"Verdict: neither rule applies, {analysis.reason}: the owner decides from the table.",
-    }
-    return [*lines, verdicts[analysis.verdict]]
+    setting = f"the driver set to \"{MENU[receiver.setting]}\""
+    if analysis.verdict == "holds":
+        verdict = (f"Verdict: a spread under {HOLDS_HZ:g} Hz with {setting}: the samples are labelled where the "
+                   "tuner sits.")
+        if receiver.setting == "unknown":
+            verdict += (" With the driver unknown, Radiolack labels as if the tuner were exact, as it was here: "
+                        "set the driver all the same if a computation is known.")
+    elif analysis.verdict == "follows":
+        [computation] = analysis.follows
+        verdict = (f"Verdict: a spread of {FOLLOWS_HZ:g} Hz or more with {setting}, that follows the computation "
+                   f"of {PREDICTIONS[computation]}: choose \"{MENU[computation]}\" as the driver in the Receiver "
+                   f"menu and measure again, which should give a spread under {HOLDS_HZ:g} Hz.")
+    else:
+        verdict = f"Verdict: none applies, {analysis.reason}: the owner decides from the table."
+    return [*lines, verdict]
 
 
 class Stream:
@@ -481,6 +464,7 @@ class Measurement:
         self.session: aiohttp.ClientSession | None = None
         self.receiver: Receiver | None = None
         self.first_centre_hz: int | None = None     # the centre found, to restore
+        self.first_grid = True                      # and the grid's state found, to restore
         self.retuned = False
         self.allowed: set[int] = set()              # centres the source state may show
         self.baseline: tuple = ()                   # the settings that must not change
@@ -562,7 +546,7 @@ class Measurement:
             self.report_incomplete(str(problem))
             return EXIT_FAILED
         analysis = analyse(receiver, self.measures)
-        lines = table(receiver, self.measures) + conclusion(analysis)
+        lines = table(receiver, self.measures) + conclusion(receiver, analysis)
         self.say(*lines)
         return EXIT_VERDICT if self.write(describe(receiver, self.started) + lines) else EXIT_FAILED
 
@@ -605,6 +589,8 @@ class Measurement:
             raise Refused("the receiver in use is not an RTL-SDR")
         if source.get("tuner") not in TUNERS:
             raise Refused(f"the tuner is {source.get('tuner')}, not an R820T or an R828D")
+        if "tuner_grid" not in (source.get("settable") or []) or source.get("driver_pll") not in MENU:
+            raise Refused("this Radiolack does not place its tuner on the grid: it is older than pull request 14")
         if source.get("direct"):
             raise Refused("the receiver samples directly: the measure needs its tuner")
         if source.get("converter") not in (None, "none"):
@@ -616,18 +602,19 @@ class Measurement:
         if demod.get("mode") not in CENTRED_MODES:
             raise Refused(f"the mode is {demod.get('mode')}: set AM, NFM or CW, whose filter is centred on the VFO")
         centre, vfo = round(source["centre_hz"]), round(demod["frequency_hz"])
-        lowest, highest = source.get("range_hz") or (TUNER_LOW_HZ, 1_766_000_000)
-        if source.get("hf_input") == "tuner":
-            lowest = max(lowest, V4_UPCONVERSION_HZ)
-        if vfo < max(lowest, TUNER_LOW_HZ):
-            raise Refused(f"the VFO lies at {vfo} Hz: the measure needs a carrier above {max(lowest, TUNER_LOW_HZ)} Hz")
-        ppm = float(source.get("ppm") or 0.0)
-        self.receiver = Receiver(centre, round(source["sample_rate_hz"]), ppm, whole_ppm(ppm, True), vfo,
-                                 demod["mode"], float(demod["bandwidth_hz"]), source["tuner"], lowest, highest)
+        tuner = TUNERS[source["tuner"]]
+        lowest = max(tuner.range_hz[0], tuner.upconversion_hz)
+        highest = tuner.range_hz[1]
+        if vfo < lowest:
+            raise Refused(f"the VFO lies at {vfo} Hz: the measure needs a carrier above {lowest:.0f} Hz")
+        self.receiver = Receiver(centre, round(source["sample_rate_hz"]), float(source.get("ppm") or 0.0), vfo,
+                                 demod["mode"], float(demod["bandwidth_hz"]), source["tuner"], source["driver_pll"],
+                                 lowest, highest)
         self.first_centre_hz = centre
+        self.first_grid = bool(source["tuner_grid"])
         self.allowed = {centre}
         self.baseline = (self.source_key(source), self.demod_key(demod))
-        problem = self.receiver.fits(centre)
+        problem = self.receiver.fits(Point(STEP, centre, False))
         if problem:
             raise Refused(problem)
         return self.receiver
@@ -635,7 +622,7 @@ class Measurement:
     @staticmethod
     def source_key(state: dict) -> tuple:
         return tuple(state.get(name) for name in ("kind", "address", "sample_rate_hz", "ppm", "direct",
-                                                  "hf_input", "converter", "converter_lo_hz"))
+                                                  "hf_input", "converter", "converter_lo_hz", "driver_pll"))
 
     @staticmethod
     def demod_key(state: dict) -> tuple:
@@ -655,29 +642,40 @@ class Measurement:
     def check_filter(self, first: Measure, points: Sequence[Point]) -> None:
         """Refused when the carrier would leave the filter at a prediction."""
         receiver = self.receiver
-        moves = [abs(receiver.predicted_hz(hypothesis, point.centre_hz))
-                 for hypothesis in HYPOTHESES for point in points]
+        moves = [abs(receiver.predicted_hz(computation, point, points[0]))
+                 for computation in COMPUTATIONS for point in points]
         needed = abs(first.carrier_hz - receiver.vfo_hz) + max(moves) + FILTER_MARGIN_HZ
         if needed > receiver.bandwidth_hz / 2:
             raise Refused(f"the carrier may move by up to {max(moves):.0f} Hz, beyond the filter: widen it to "
                           f"{2 * needed:.0f} Hz at least, or put the VFO on the carrier")
 
-    async def retune(self, centre_hz: int) -> None:
+    def tuned_to(self, centre_hz: int, grid: bool) -> bool:
+        state = self.stream.states["source"]
+        return round(state["centre_hz"]) == centre_hz and state.get("tuner_grid") is grid
+
+    async def retune(self, point: Point) -> float:
+        """Tune to ``point``; the centre in use that Radiolack reports there,
+        Incomplete when it is not the one the tool expects."""
         stream = self.stream
-        if round(stream.states["source"]["centre_hz"]) == centre_hz:
-            return
-        self.allowed = {round(stream.states["source"]["centre_hz"]), centre_hz}
-        self.retuned = True
-        await stream.send({"type": "source", "centre_hz": centre_hz})
-        await stream.until(lambda: round(stream.states["source"]["centre_hz"]) == centre_hz
-                           and stream.states["source"].get("status") == "streaming",
-                           self.options.timeout_s, f"the receiver tuned to {centre_hz} Hz")
-        self.allowed = {centre_hz}
+        if not self.tuned_to(point.centre_hz, point.grid):
+            self.allowed = {round(stream.states["source"]["centre_hz"]), point.centre_hz}
+            self.retuned = True
+            await stream.send({"type": "source", "centre_hz": point.centre_hz, "tuner_grid": point.grid})
+            await stream.until(lambda: self.tuned_to(point.centre_hz, point.grid)
+                               and stream.states["source"].get("status") == "streaming",
+                               self.options.timeout_s, f"the receiver tuned to {point.centre_hz} Hz")
+            self.allowed = {point.centre_hz}
+        reported = float(stream.states["source"]["centre_in_use_hz"])
+        expected = self.receiver.label_hz(point)
+        if abs(reported - expected) > LABEL_HZ:
+            raise Incomplete(f"Radiolack labels {point.centre_hz} Hz with {reported:.3f} Hz, the tool expected "
+                             f"{expected:.3f} Hz")
+        return reported
 
     async def measure_at(self, point: Point, attempts: int) -> Measure:
         """The carrier measured at ``point``; Refused at the first point and
         Incomplete at the others when ``attempts`` measures in a row fail."""
-        await self.retune(point.centre_hz)
+        label = await self.retune(point)
         reasons = []
         for _ in range(attempts):
             request = self.next_id
@@ -687,7 +685,7 @@ class Measurement:
                                              self.options.timeout_s, "the carrier's measure")
             if answer.get("frequency_hz") is not None:
                 return Measure(point, float(answer["frequency_hz"]), float(answer.get("margin_db") or 0.0),
-                               time.monotonic())
+                               time.monotonic(), label)
             margin = answer.get("margin_db")
             reasons.append(f"{answer.get('reason')}" + ("" if margin is None else f" (margin {margin} dB)"))
         why = f"the carrier does not measure cleanly at {point.centre_hz} Hz: {', '.join(reasons)}"
@@ -696,9 +694,10 @@ class Measurement:
         raise Incomplete(why)
 
     async def restore(self) -> bool:
-        """Put the centre frequency back where it was found, through a new
-        connection if the stream closed; False, said, when it cannot."""
-        centre = self.first_centre_hz
+        """Put the centre frequency and the grid back as they were found,
+        through a new connection if the stream closed; False, said, when it
+        cannot."""
+        centre, grid = self.first_centre_hz, self.first_grid
         try:
             if self.stream is None or self.stream.closed:
                 await self.disconnect()
@@ -707,10 +706,10 @@ class Measurement:
             stream = self.stream
             stream.guard = None
             stream.errors.clear()
-            if round(stream.states["source"]["centre_hz"]) != centre:
-                await stream.send({"type": "source", "centre_hz": centre})
-            await stream.until(lambda: round(stream.states["source"]["centre_hz"]) == centre,
-                               self.options.timeout_s, f"the receiver tuned back to {centre} Hz")
+            if not self.tuned_to(centre, grid):
+                await stream.send({"type": "source", "centre_hz": centre, "tuner_grid": grid})
+            await stream.until(lambda: self.tuned_to(centre, grid), self.options.timeout_s,
+                               f"the receiver tuned back to {centre} Hz")
         except (Refused, Incomplete) as problem:
             self.say(f"The centre frequency could not be restored to {centre} Hz: {problem}. Set it again in "
                      "Radiolack.")
@@ -738,24 +737,26 @@ def positive(kind: type) -> Callable[[str], Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="measure_pll.py",
-        description="Measure the error of an RTL-SDR tuner's PLL through a Radiolack already running on the "
-                    "receiver. It TUNES THE RECEIVER BEHIND THAT RADIOLACK: it moves the centre frequency "
-                    "step by step for a few minutes, then restores it. Before: the receiver streams on its tuner, "
-                    "without a converter or a scan, its crystal warmed up; the VFO on one steady carrier above "
-                    "24 MHz, alone in its filter and 20 dB above the noise, in AM, NFM or CW with a filter of a "
-                    "few kHz.",
-        epilog="It connects to 127.0.0.1 only, and changes nothing but the centre frequency. Ctrl-C stops it "
-               "and restores the centre frequency; a second Ctrl-C leaves at once. Exit status: 0 with a verdict, "
-               "1 without one or when the centre frequency could not be restored, 130 after Ctrl-C.")
+        description="Measure how well a Radiolack already running on an RTL-SDR with an R820T or R828D labels "
+                    "its samples, and which computation of the tuner's PLL its driver follows. It TUNES THE "
+                    "RECEIVER BEHIND THAT RADIOLACK: it moves the centre frequency step by step for a few minutes, "
+                    "then restores it. Before: the receiver streams on its tuner, without a converter or a scan, "
+                    "its crystal warmed up; the VFO on one steady carrier above 24 MHz, alone in its filter and "
+                    "20 dB above the noise, in AM, NFM or CW with a filter of a few kHz.",
+        epilog="It connects to 127.0.0.1 only, and changes nothing but the centre frequency and the tuner's grid, "
+               "never saved. Ctrl-C stops it and restores both; a second Ctrl-C leaves at once. Exit status: 0 "
+               "with a verdict, 1 without one or when the centre frequency could not be restored, 130 after "
+               "Ctrl-C.")
     parser.add_argument("port", type=port_number,
                         help="the port of that Radiolack on 127.0.0.1 (its address http://127.0.0.1:PORT/)")
     parser.add_argument("--output", type=Path, metavar="FILE",
                         help="also write the table and the verdict to FILE, in Markdown")
     parser.add_argument("--steps", type=positive(int), default=STEPS,
-                        help=f"centre frequencies {STEP_HZ} Hz apart, the first one included (default {STEPS})")
+                        help=f"centre frequencies {STEP_HZ} Hz apart, the grid off, the first one included "
+                             f"(default {STEPS})")
     parser.add_argument("--multiples", type=positive(int), default=MULTIPLES,
-                        help=f"centre frequencies whose oscillator is a multiple of {MULTIPLE_HZ} Hz "
-                             f"(default {MULTIPLES})")
+                        help=f"centre frequencies on the grid, whose oscillator is a multiple of {r82xx.GRID_HZ} "
+                             f"Hz (default {MULTIPLES})")
     parser.add_argument("--reference-every", type=positive(int), default=REFERENCE_EVERY,
                         help=f"measure the first centre again after this many points, and at the end "
                              f"(default {REFERENCE_EVERY})")

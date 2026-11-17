@@ -245,9 +245,18 @@
               <option value="2880000">2.880 MS/s</option>
             </select>
           </div>
-          <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" disabled></div>
+          <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" aria-describedby="src-center-note" disabled><p class="note" id="src-center-note" hidden></p></div>
           <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.01" value="0" disabled></div>
           <div class="row"><button type="button" class="btn" id="src-calibrate" aria-haspopup="dialog" aria-controls="calibrate-dialog" disabled>Calibrate</button><span class="note" id="src-calibrate-note"></span></div>
+          <div class="field" id="src-driver-field" hidden>
+            <label for="src-driver">rtl-sdr driver</label>
+            <select id="src-driver" aria-describedby="src-driver-note" disabled>
+              <option value="unknown">Unknown</option>
+              <option value="truncating">rtl-sdr up to 2.0.1, RTL-SDR Blog</option>
+              <option value="rounding">rtl-sdr 2.0.2 and later</option>
+            </select>
+            <p class="note" id="src-driver-note"></p>
+          </div>
           <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
         </div>
       </section>
