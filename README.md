@@ -25,7 +25,8 @@ address of an rtl_tcp server, and turns the removal of the DC spike on or
 off; antenna power comes next. The engine
 demodulates NFM, AM, synchronous AM (SAM), USB, LSB, CW and WFM,
 broadcast FM in mono, with an automatic notch for whistles in AM, SAM and
-SSB, and the interface plays the audio. The engine also
+SSB and a noise blanker for crackle in every mode, and the interface plays
+the audio. The engine also
 finds the signals in the span, which every interface lists, watches the
 ticked bookmarks, outside the span too with a receiver that tunes, and
 sweeps a range with such a receiver ([Scanners](#scanners)), from an
@@ -206,7 +207,8 @@ between the step buttons at the bottom on a touch screen. The menu lists
 eight menus beside the one it shows:
 
 - Radio: the mode, the band plan's mode and step, the squelch, the volume,
-  the automatic notch, the filter width and the tuning step.
+  the automatic notch, the noise blanker, the filter width and the tuning
+  step.
 - Bookmarks: the bookmarks, the band plan's ranges and known frequencies
   in view and the memory scan ([Settings and bookmarks](#settings-and-bookmarks)).
 - Scan: the signals found, the sweep and the History, in three tabs
@@ -602,13 +604,14 @@ measures one steady carrier at each, and says whether the driver set holds
 or which to choose. Its `--help` says what it needs; the Debian package does
 not install it.
 
-Also for developers, `tools/listening.py` holds prototypes of the coming
-listening tools (a noise blanker and a fine spectrum of the VFO's channel),
-which Radiolack does not use yet, and `tools/measure_listening.py`
-measures the processor time that synchronous AM, Radiolack's SAM, the
-automatic notch and each of them add to the engine at 2.4 MS/s, on
-synthetic samples, without a receiver; it takes about three minutes and
-`--output FILE` keeps its table.
+Also for developers, `tools/listening.py` holds the prototype of the last
+listening tool to come, a fine spectrum of the VFO's channel, which
+Radiolack does not use yet, and `tools/measure_listening.py` measures the
+processor time that synchronous AM, Radiolack's SAM, the automatic notch,
+the noise blanker and that prototype each add to the engine at 2.4 MS/s,
+on synthetic samples, without a receiver; it takes about three minutes,
+`--output FILE` keeps its table and `--without-impulses` leaves the
+scene's impulses out, the usual case for the blanker.
 
 ### Calibration
 
@@ -745,6 +748,37 @@ little longer; and a note held longer than half a second, in music or a
 long vowel, is taken for a whistle while it lasts and for a second after.
 The recordings take the notched audio. It
 adds about 4% to the engine's processing of a 2.4 MS/s receiver.
+
+The noise blanker, Radio > "Noise blanker", thins crackle: the short
+impulses of ignition, electric fences, switching supplies and distant
+lightning. It acts in every mode, on the receiver's samples before the
+VFO's channel is made of them, where an impulse is still a few samples
+long rather than spread over the channel's filter. It is off at first,
+shared by every interface as the mode is, saved with the receiver's
+settings and kept when the mode changes; a bookmark does not carry it. In
+every block of samples, a thirtieth of a second, it zeroes the samples
+whose magnitude is more than six times the block's median, with two
+samples on each side. What is longer than 16 samples over that limit is a
+signal, such as a strong carrier keyed on, and is left as it is, and so is
+a block where it would zero more than 2% of the samples; a strong AM
+station at full modulation, a broadcast FM station or a carrier that
+fills the block never cross the limit. The note under the box says how
+many impulses it zeroed in the latest second, the same on every interface,
+at most once a second. The audio, its recordings, the S-meter and the
+squelch take the blanked channel, so crackle no longer opens the squelch;
+the spectrum, the waterfall, the signals found, the scans' search, the I/Q
+recordings and Calibrate, its measure and its check of the driver, take
+what the receiver sent, so that they show and measure the same with the
+blanker on or off. Its limits: the
+threshold is fixed, with no strength to set; it removes only impulses
+shorter than a few samples at the receiver's rate, 16 at most, 7 µs at
+2.4 MS/s, and those that stand six times over the median of everything the
+receiver takes in, which a strong station elsewhere in the span raises; it
+does nothing against steady noise, hiss or hum, nor against impulses
+longer than that, such as a lightning crash; and a strong signal that
+starts or stops within the last or first 16 samples of a block loses
+those, with two more. It adds about an eighth to the engine's processing
+of a 2.4 MS/s receiver while impulses come, less without them.
 
 Frequencies are exact to the hertz. They show in MHz with as many decimals
 as they have, from 3 to 6 (145.500, 145.6125, 7.074001); measurements keep
@@ -1082,7 +1116,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 (`$XDG_CONFIG_HOME/radiolack` when that variable is set):
 
 - `settings.json` holds each receiver's settings: the Receiver menu's and the
-  demodulation settings (VFO, mode, filter width, squelch, automatic notch). The simulated
+  demodulation settings (VFO, mode, filter width, squelch, automatic notch,
+  noise blanker). The simulated
   band and each receiver plugged into this computer, by index or serial
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start,
@@ -1818,8 +1853,8 @@ src/radiolack/
   web/          interface: ES modules served as they are, no build step
 tests/          tests without hardware
 tools/          measure_pll.py: measures how well Radiolack labels an
-                R820T's samples; listening.py: prototypes of the
-                listening tools still to build, and measure_listening.py,
+                R820T's samples; listening.py: the prototype of the
+                last listening tool to build, and measure_listening.py,
                 the cost of each; run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview

@@ -10,6 +10,8 @@ port given. The device decides what it does:
 - "stubborn": serves, but ignores SIGTERM, logging "<pid> ignoring" each time.
 - "carrier": serves CARRIER_HZ through a crystal CARRIER_CRYSTAL_PPB off,
   its R820T's PLL computed as rtl-sdr up to 2.0.1 does, until SIGTERM.
+- "crackle": serves noise with an impulse of CRACKLE_SAMPLES samples every
+  CRACKLE_PERIOD, which a noise blanker removes, until SIGTERM.
 - any other value: serves until SIGTERM.
 
 Like rtl_tcp, it opens the receiver for a moment before it listens. Each run
@@ -32,6 +34,8 @@ from tests.fakes import FakeRtlTcp
 OPEN_S = 0.2    # rtl_tcp opens the receiver before it listens
 CARRIER_HZ = 145_010_000            # the "carrier" device's carrier, on the air
 CARRIER_CRYSTAL_PPB = 3_210         # and its crystal's error
+CRACKLE_PERIOD = 2_000              # the "crackle" device's impulses: one every this many samples,
+CRACKLE_SAMPLES = 2                 # each this long
 FOUND = ("Found 1 device(s):\n  0:  Realtek, RTL2838UHIDIR, SN: 00000001\n\n"
          "Using device 0: Generic RTL2832U OEM\n")
 FAILURES = {
@@ -60,9 +64,13 @@ def ignore(_signum, _frame) -> None:
 
 
 async def serve(port: int, device: str) -> None:
-    carrier = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB,
-               "tuner_pll": functools.partial(r82xx.tuned_hz, "truncating")} if device == "carrier" else {}
-    async with FakeRtlTcp(port=port, chunk_bytes=8000, **carrier) as fake:
+    scene = {}
+    if device == "carrier":
+        scene = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB,
+                 "tuner_pll": functools.partial(r82xx.tuned_hz, "truncating")}
+    elif device == "crackle":
+        scene = {"carriers": {}, "impulses": (CRACKLE_PERIOD, CRACKLE_SAMPLES)}
+    async with FakeRtlTcp(port=port, chunk_bytes=8000, **scene) as fake:
         fake.on_command = lambda command, value: log(f"command {command} {value}")
         await asyncio.Event().wait()
 

@@ -158,13 +158,20 @@ class FakeRtlTcp:
     takes it to run, such as one of the driver's computations in
     r82xx.py, whose IF depends on that state. The crystal's error then
     scales it; it does not apply in direct sampling.
+
+    ``impulses``, with ``carriers``, is a period and a length in samples:
+    from the first sample sent, that many samples of each period are an
+    impulse that a noise blanker removes, at a phase of its own, at random,
+    and full scale: their I or their Q byte, or both, is 0 or 255, which
+    carriers and noise well within full scale never reach.
     """
 
     def __init__(self, *, port: int = 0, magic: bytes = b"RTL0", tuner_type: int = 5,
                  gain_count: int = 29, header: bool = True, chunk_bytes: int = 1000,
                  interval_s: float = 0.002, apply_delay_s: float = 0.05,
                  carriers: dict[float, float] | None = None, noise: float = 0.02,
-                 crystal_ppb: int = 0, tuner_pll: Callable[[int, int, int, str], float] | None = None) -> None:
+                 crystal_ppb: int = 0, tuner_pll: Callable[[int, int, int, str], float] | None = None,
+                 impulses: tuple[int, int] | None = None) -> None:
         self.port = port
         self.magic = magic
         self.tuner_type = tuner_type
@@ -177,6 +184,7 @@ class FakeRtlTcp:
         self.noise = noise
         self.crystal_ppb = crystal_ppb
         self.tuner_pll = tuner_pll
+        self.impulses = impulses
         self.sending = True             # False: send no samples
         self.frequency_hz = 100_000_000     # left by a previous client
         self.sample_rate_hz = 2_048_000
@@ -298,13 +306,18 @@ class FakeRtlTcp:
         if self.tuner_pll is not None and not self.direct_sampling:
             tuned_hz = self.tuner_pll(self.frequency_hz, self.sample_rate_hz, self.correction_ppm, self.tuner_state)
         rate = float(self.sample_rate_hz)
-        t = (self._sent + np.arange(count)) / (rate * scale)
+        index = self._sent + np.arange(count)
+        t = index / (rate * scale)
         self._sent += count
         samples = self._rng.normal(0.0, self.noise, count) + 1j * self._rng.normal(0.0, self.noise, count)
         for frequency_hz, amplitude in self.carriers.items():
             offset_hz = frequency_hz - tuned_hz * scale
             if abs(offset_hz) < rate / 2:
                 samples += amplitude * np.exp(2j * np.pi * offset_hz * t)
+        if self.impulses is not None:
+            period, length = self.impulses
+            hit = index % period < length
+            samples[hit] = math.sqrt(2) * np.exp(2j * np.pi * self._rng.random(int(hit.sum())))
         pairs = np.column_stack((samples.real, samples.imag))
         return np.clip(np.rint(pairs * 127.5 + 127.5), 0, 255).astype(np.uint8).tobytes()
 

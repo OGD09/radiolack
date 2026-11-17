@@ -131,7 +131,7 @@ const S = {
   avg: 0.6, fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
   showPlan: true, showMarks: true, showChannels: true, split: 0.4,
-  sql: -80, sqlAuto: true, notch: false, volume: 70,    // notch: the engine's, null from an engine without it
+  sql: -80, sqlAuto: true, notch: false, blanker: false, volume: 70,    // notch, blanker: the engine's, null from an engine without them
   peakMarks: true,
   autoHide: true,
 };
@@ -260,6 +260,7 @@ let remoteNote = '';        // why this interface's last remote access change di
 let audioModes = ['NFM'];   // modes the engine demodulates to audio, from its settings
 let samLocked = null;       // in SAM, whether the engine holds the carrier, from its settings; null otherwise
 let notchLines = null;      // while the engine's notch acts, the lines it removes now; null otherwise
+let blankerImpulses = null; // while the engine's blanker is on, the impulses it zeroed in the latest second; null otherwise
 let audioState = 'off';     // audio.js AudioState
 let audioWanted = false;    // the engine sends this interface audio
 let pendingTune = null;     // { centre, before, f, opts, inUse }: where the VFO goes once frames come from
@@ -1426,7 +1427,9 @@ function applyMode(mode) {
   S.mode = mode;
   S.bw = MODES[mode].bw;
 }
-const demodSnapshot = () => ({ vfo: S.vfo, mode: S.mode, bw: S.bw, sql: S.sql, sqlAuto: S.sqlAuto, notch: S.notch });
+const demodSnapshot = () => ({
+  vfo: S.vfo, mode: S.mode, bw: S.bw, sql: S.sql, sqlAuto: S.sqlAuto, notch: S.notch, blanker: S.blanker,
+});
 // Send the engine the settings changed since `before`.
 function sendDemod(before) {
   const changes = {};
@@ -1436,6 +1439,7 @@ function sendDemod(before) {
   if (S.sql !== before.sql) changes.squelchDb = S.sql;
   if (S.sqlAuto !== before.sqlAuto) changes.squelchAuto = S.sqlAuto;
   if (S.notch !== before.notch) changes.notch = S.notch;
+  if (S.blanker !== before.blanker) changes.blanker = S.blanker;
   if (Object.keys(changes).length) stream.sendDemod(changes);
 }
 // Show the VFO's settings, bringing the VFO into view unless keepView. A view
@@ -1507,6 +1511,8 @@ function applyDemod(state) {
   samLocked = state.samLocked;
   S.notch = state.notch;
   notchLines = state.notchLines;
+  S.blanker = state.blanker;
+  blankerImpulses = state.blankerImpulses;
   demodError = '';
   // While a retune is on its way, the engine keeps the VFO inside the new span
   // until frames come: the view, and the range the user tunes from, stay.
@@ -2241,6 +2247,7 @@ function syncDemod() {
   $('#dm-step').value = S.step;
   syncSql();
   syncNotch();
+  syncBlanker();
 }
 // The threshold set by hand, or the automatic one in use. Also refreshed
 // while the Radio menu shows: only what changed is written.
@@ -2275,6 +2282,29 @@ notchEl.addEventListener('change', () => {
   S.notch = notchEl.checked;
   sendDemod(before);
   syncNotch();
+});
+// The noise blanker, the engine's setting, shared by every interface: it acts
+// in every mode, and says how many impulses it zeroed in the latest second.
+// Only what changed is written.
+const blankerEl = $('#dm-nb');
+function syncBlanker() {
+  const known = S.blanker !== null;
+  if (blankerEl.checked !== Boolean(S.blanker)) blankerEl.checked = Boolean(S.blanker);
+  if (blankerEl.disabled !== !known) blankerEl.disabled = !known;
+  let text = '';
+  if (!known) text = 'The noise blanker needs Radiolack to restart.';
+  else if (S.blanker && blankerImpulses) {
+    text = `Blanking ${blankerImpulses} ${blankerImpulses === 1 ? 'impulse' : 'impulses'} a second.`;
+  }
+  const el = $('#dm-nb-note');
+  if (el.textContent !== text) el.textContent = text;
+  if (el.hidden !== !text) el.hidden = !text;
+}
+blankerEl.addEventListener('change', () => {
+  const before = demodSnapshot();
+  S.blanker = blankerEl.checked;
+  sendDemod(before);
+  syncBlanker();
 });
 // Why this interface plays nothing, if it does not.
 function syncAudioNote() {

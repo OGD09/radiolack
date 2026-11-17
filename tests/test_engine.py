@@ -19,6 +19,7 @@ from unittest import mock
 
 import numpy as np
 
+from radiolack.carrier import CarrierMeasure
 from radiolack.converter import Conversion
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
 from radiolack import __version__, r82xx, recordings
@@ -179,8 +180,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.get_nowait(), {
             "type": "demod", "frequency_hz": FAKE_CENTRE_HZ + FAKE_RATE_HZ / 4, "mode": "NFM",
             "bandwidth_hz": 10_000.0, "squelch_db": -80.0, "squelch_auto": True, "notch": False,
-            "sam_locked": None, "notch_lines": None, "modes": list(MODES), "audio_modes": list(MODES),
-            "acknowledged": 0,
+            "blanker": False, "sam_locked": None, "notch_lines": None, "blanker_impulses": None,
+            "modes": list(MODES), "audio_modes": list(MODES), "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
         self.assertEqual(subscription.get_nowait(), scanner_state())
@@ -423,6 +424,89 @@ class DemodulationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message["frequency_hz"], 146_000_000.0 - FAKE_RATE_HZ / 2)
 
 
+class ImpulsesSource(FakeSource):
+    """The fake source's tone, continuous across reads, over weak noise,
+    with an impulse of three samples every ``period`` samples, at a phase of
+    its own: 120 a second at first, in step with the seconds of samples."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.period = 2_048
+        self._sent = 0
+        self._rng = np.random.default_rng(5)
+
+    async def read(self, count: int) -> np.ndarray | None:
+        await asyncio.sleep(0.005)
+        self.reads += 1
+        index = self._sent + np.arange(count)
+        self._sent += count
+        offset_hz = (FAKE_TONE_BIN - 4096) * FAKE_RATE_HZ / 8192
+        samples = 0.01 * np.exp(2j * np.pi * offset_hz * index / FAKE_RATE_HZ)
+        samples += 0.001 * (self._rng.standard_normal(count) + 1j * self._rng.standard_normal(count))
+        hit = index % self.period < 3
+        samples[hit] = 0.5 * np.exp(2j * np.pi * self._rng.random(int(hit.sum())))
+        return samples.astype(np.complex64)
+
+
+class BlankerTest(unittest.IsolatedAsyncioTestCase):
+    """The noise blanker: shared by every client as the mode is, and a
+    count of what it blanks that changes at most once a second."""
+
+    async def asyncSetUp(self):
+        self.source = ImpulsesSource()
+        self.engine = Engine(self.source)
+        self.task = asyncio.ensure_future(self.engine.run())
+
+    async def asyncTearDown(self):
+        self.engine.close()
+        await asyncio.wait_for(self.task, timeout=5)
+
+    async def demod_states(self, subscription: Subscription, reads: int) -> list[dict]:
+        """The demodulation states that a client receives while the source
+        gives ``reads`` more blocks."""
+        states, until = [], self.source.reads + reads
+        while self.source.reads < until:
+            states += [message for message in waiting(subscription)
+                       if isinstance(message, dict) and message["type"] == "demod"]
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)       # the block in progress
+        return states + [message for message in waiting(subscription)
+                         if isinstance(message, dict) and message["type"] == "demod"]
+
+    async def test_shared_by_every_client_saying_what_it_blanks_once_a_second_at_most(self):
+        listener, other = self.engine.subscribe(), self.engine.subscribe()
+        for subscription in (listener, other):
+            state = waiting(subscription)[STATES.index("demod")]
+            self.assertEqual((state["blanker"], state["blanker_impulses"]), (False, None))
+        self.engine.set_audio(listener, True)
+        self.engine.configure_demod({"frequency_hz": round(FAKE_TONE_HZ), "mode": "AM", "blanker": True}, other, 4)
+        for subscription in (listener, other):
+            state = await next_demod(subscription)      # the state as it is when the client reads it
+            self.assertEqual((state["mode"], state["blanker"]), ("AM", True))
+            self.assertEqual(state["acknowledged"], 4 if subscription is other else 0)
+            while state["blanker_impulses"] != 120:     # after its first second of samples
+                self.assertEqual(state["blanker_impulses"], 0)
+                state = await next_demod(subscription)
+        # Steady impulses in step with the seconds: nothing more to say.
+        self.assertEqual(await self.demod_states(other, 90), [])
+        # Out of step, 122.88 a second: once a second at most, 30 blocks of 8192 samples.
+        self.source.period = 2_000
+        states = await self.demod_states(other, 150)
+        self.assertLessEqual(len(states), 6)
+        self.assertTrue(states)
+        self.assertTrue(all(state["blanker_impulses"] in (122, 123) for state in states[1:]), states)
+        # Kept across modes; off, it says nothing.
+        self.engine.configure_demod({"mode": "USB"})
+        self.assertEqual((await next_demod(listener))["blanker"], True)
+        self.engine.configure_demod({"blanker": False})
+        for subscription in (listener, other):
+            state = (await self.demod_states(subscription, 1))[-1]
+            self.assertEqual((state["blanker"], state["blanker_impulses"]), (False, None))
+        self.assertEqual(await self.demod_states(other, 40), [])
+        with self.assertRaisesRegex(ValueError, "^the noise blanker must be true or false$"):
+            self.engine.configure_demod({"blanker": "on"})
+
+
 class DcRemovalTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.engine = Engine(FakeSource(dc_offset=0.05))    # -26 dBFS on the centre frequency
@@ -615,6 +699,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(engine.state()["dc_removal"])
         self.assertEqual({key: engine.demod_state()[key] for key in demod}, demod)
         self.assertIs(engine.demod_state()["notch"], False)    # saved before the notch: off
+        self.assertIs(engine.demod_state()["blanker"], False)  # and before the blanker
         self.assertEqual(engine.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
         self.assertEqual(engine.preferences_state(),
                          {"type": "preferences", "values": {"volume": 40, "palette": "classic"}})
@@ -656,6 +741,28 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             third = self.engine()
         self.assertIn("the saved setting notch is not used: the notch must be true or false", logs.output[0])
         self.assertEqual((third.demod_state()["mode"], third.demod_state()["notch"]), ("AM", False))
+
+    async def test_the_blanker_comes_back_after_a_restart_and_no_bookmark_carries_it(self):
+        engine = self.engine(save_delay_s=0.01)
+        engine.configure_demod({"frequency_hz": 145_010_000, "mode": "AM", "blanker": True})
+        bookmark = {"frequency_hz": 145_020_000.0, "name": "Crackle", "mode": "AM", "scan": False}
+        engine.edit_bookmarks({"action": "add", **bookmark})
+        await self.stop(engine)
+        demod = self.read(SETTINGS_FILE)["receivers"]["test"]["demod"]
+        self.assertIs(demod["blanker"], True)
+        self.assertNotIn("blanker_impulses", demod)     # a state, not a setting
+        again = self.engine()
+        state = again.demod_state()
+        self.assertEqual((state["mode"], state["blanker"], state["blanker_impulses"]), ("AM", True, 0))
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+        await self.stop(again)
+        # A saved blanker that is not true or false is left off.
+        self.write(SETTINGS_FILE, {"receivers": {"test": {"demod": {"mode": "AM", "blanker": 1}}}})
+        with self.assertLogs("radiolack", "WARNING") as logs:
+            third = self.engine()
+        self.assertIn("the saved setting blanker is not used: the noise blanker must be true or false",
+                      logs.output[0])
+        self.assertEqual((third.demod_state()["mode"], third.demod_state()["blanker"]), ("AM", False))
 
     async def test_a_saved_setting_that_is_refused_keeps_its_default(self):
         self.write(SETTINGS_FILE, {"receivers": {"test": {
@@ -2774,6 +2881,28 @@ class IQRecordingTest(RecordingCase):
             self.assertTrue(segment)
             self.assertEqual((set(segment[0::2]), set(segment[1::2])), ({i_code}, {q_code}))
 
+    async def test_holds_the_impulses_as_received_with_the_noise_blanker_on(self):
+        self.fake = FakeRtlTcp(carriers={145_010_000.0: 0.1}, impulses=(1_000, 2))
+        await self.fake.__aenter__()
+        self.addAsyncCleanup(self.fake.__aexit__, None, None, None)
+        engine = self.engine(RtlTcpSource(LOOPBACK, self.fake.port, sample_rate_hz=240_000, settle_s=0.1))
+        subscription = engine.subscribe()
+        engine.configure_demod({"frequency_hz": 145_010_000, "mode": "AM", "blanker": True})
+        await eventually(lambda: engine.demod_state()["blanker_impulses"])      # 240 a second, blanked
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription, lambda state: with_iq_file(state) and state["iq"]["bytes"] >= 400_000)
+        engine.configure_recording({"iq": False})
+        await self.stopped(engine)
+        data = np.frombuffer((self.folder / state["iq"]["file"]).read_bytes(), np.uint8).reshape(-1, 2)
+        # Every impulse the fake sent, two samples every 1000, as it sent them.
+        full = np.flatnonzero(np.any((data == 0) | (data == 255), axis=1))
+        starts = full[np.concatenate(([True], np.diff(full) > 1))]
+        ends = full[np.concatenate((np.diff(full) > 1, [True]))]
+        self.assertGreater(len(starts), 150)
+        # The first and the last may be cut by the recording's start and end.
+        self.assertEqual(set(np.diff(starts)[1:].tolist()), {1_000})
+        self.assertEqual(set((ends - starts + 1)[1:-1].tolist()), {2})
+
     async def test_goes_on_without_any_client(self):
         engine = self.engine(await self.receiver())
         subscription = engine.subscribe()
@@ -3012,10 +3141,10 @@ class CarrierTest(unittest.IsolatedAsyncioTestCase):
     computes from it, which brings the carrier to its true frequency."""
 
     async def start(self, carriers: dict[float, float], *, crystal_ppb: int = 0, rate_hz: float = 1_024_000.0,
-                    centre_hz: float = 145_000_000.0, tuner_pll=None,
+                    centre_hz: float = 145_000_000.0, tuner_pll=None, impulses: tuple[int, int] | None = None,
                     **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
         fake = FakeRtlTcp(carriers=carriers, crystal_ppb=crystal_ppb, chunk_bytes=16_384, interval_s=0.004,
-                          tuner_pll=tuner_pll)
+                          tuner_pll=tuner_pll, impulses=impulses)
         await fake.__aenter__()
         self.addAsyncCleanup(fake.__aexit__, None, None, None)
         source = RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1)
@@ -3145,6 +3274,24 @@ class CarrierTest(unittest.IsolatedAsyncioTestCase):
             for measured_hz, air_hz in found:
                 self.assertAlmostEqual(measured_hz - air_hz, 1757.8 / divider, delta=1.0, msg=f"divider {divider}")
 
+    async def test_takes_the_channel_as_received_with_the_noise_blanker_on(self):
+        # Two samples of impulse every 500, which raise the noise within the
+        # filter tenfold: blanked, the channel would give a margin about
+        # 10 dB higher (test_blanker.py); the measure takes it unblanked.
+        air_hz = 145_010_000.0
+        engine, subscription, _ = await self.start({air_hz: 0.1}, rate_hz=240_000.0, impulses=(500, 2))
+        engine.configure_demod({"frequency_hz": round(air_hz), "mode": "AM"})
+        plain = await self.measure(engine, subscription)
+        engine.configure_demod({"blanker": True})
+        await eventually(lambda: engine.demod_state()["blanker_impulses"])      # 480 a second
+        self.assertGreater(engine.demod_state()["blanker_impulses"], 400)
+        blanked = await self.measure(engine, subscription, 2)
+        for result in (plain, blanked):
+            self.assertIsNone(result["reason"])
+            self.assertAlmostEqual(result["frequency_hz"], air_hz, delta=1.0)
+        self.assertAlmostEqual(blanked["frequency_hz"], plain["frequency_hz"], delta=0.2)
+        self.assertAlmostEqual(blanked["margin_db"], plain["margin_db"], delta=1.0)
+
     async def test_says_why_it_gives_no_frequency(self):
         air_hz = 145_010_000.0
         engine, subscription, _ = await self.start({air_hz: 0.2}, rate_hz=240_000.0)
@@ -3264,17 +3411,19 @@ class DriverCheckTest(unittest.IsolatedAsyncioTestCase):
 
     async def start(self, computation: str | None = "truncating", *, crystal_ppb: int = 37_420, ppm: float = 0.0,
                     driver_pll: str = "unknown", tuner_type: int = 5, converter: dict | None = None,
+                    level: float = 0.2, impulses: tuple[int, int] | None = None,
                     **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
         """An engine on the fake rtl_tcp with a carrier OFFSET_HZ above the
         centre asked, its tuner following ``computation`` (exact when None)
         and its crystal ``crystal_ppb`` off, with the correction ``ppm``,
         the driver set to ``driver_pll`` and the VFO on the carrier as it
         measures, in AM; it saves into a temporary folder, and records
-        there."""
+        there. The carrier's amplitude is ``level``, and the fake's
+        ``impulses`` come with it."""
         conversion = Conversion(converter["converter"], converter["converter_lo_hz"]) if converter else Conversion()
         tuned_carrier = self.CENTRE_HZ + self.OFFSET_HZ
-        fake = FakeRtlTcp(carriers={tuned_carrier: 0.2}, crystal_ppb=crystal_ppb, chunk_bytes=16_384,
-                          interval_s=0.004, tuner_type=tuner_type,
+        fake = FakeRtlTcp(carriers={tuned_carrier: level}, crystal_ppb=crystal_ppb, chunk_bytes=16_384,
+                          interval_s=0.004, tuner_type=tuner_type, impulses=impulses,
                           tuner_pll=None if computation is None else functools.partial(r82xx.tuned_hz, computation))
         await fake.__aenter__()
         self.addAsyncCleanup(fake.__aexit__, None, None, None)
@@ -3349,6 +3498,31 @@ class DriverCheckTest(unittest.IsolatedAsyncioTestCase):
                 await self.assert_back(engine, fake)
                 engine.close()          # the next receiver alone streams
                 fake.sending = False
+
+    async def test_takes_the_samples_as_received_with_the_noise_blanker_on(self):
+        # The impulses of CarrierTest's: blanked, every point's margin would rise by about 10 dB.
+        engine, subscription, _ = await self.start("rounding", level=0.1, impulses=(500, 2))
+        engine.configure_demod({"blanker": True})
+        margins = []
+        add = CarrierMeasure.add
+
+        def spy(measure, *args, **kwargs):
+            result = add(measure, *args, **kwargs)
+            check = engine._driver_check
+            if result is not None and check is not None and measure is check.gatherer:
+                margins.append(result.margin_db)
+            return result
+        with mock.patch.object(CarrierMeasure, "add", spy):
+            answer = await self.identify(engine, subscription)
+        self.assertEqual((answer["driver_pll"], answer["reason"]), ("rounding", None))
+        self.assertGreater(engine.demod_state()["blanker_impulses"], 400)
+        self.assertGreaterEqual(len(margins), 3)
+        engine.configure_demod({"blanker": False})
+        engine.measure_carrier({"action": "measure", "id": 2}, subscription)
+        plain = await next_carrier(subscription)
+        self.assertIsNone(plain["reason"])
+        for margin in margins:
+            self.assertAlmostEqual(margin, plain["margin_db"], delta=1.5)
 
     async def test_saves_the_computation_found_with_the_centre_asked(self):
         engine, subscription, _ = await self.start("rounding")

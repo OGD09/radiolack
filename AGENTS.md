@@ -35,7 +35,8 @@ the history under the tag `v0.1.0`.
   sources, restores and saves the settings and the source in use; sends a
   problem report to this computer's interface that asks; measures the
   carrier at the VFO for the interfaces that ask, gathering the VFO's
-  channel only while one waits, and sends each the result alone; checks
+  channel, unblanked, only while one waits, and sends each the result
+  alone; checks
   the rtl-sdr driver's computation on that carrier for the interfaces that
   ask, moving an R820T's or R828D's centre off its grid for a few points,
   then back whatever ends the check, and saves what it found; keeps the
@@ -94,7 +95,12 @@ the history under the tag `v0.1.0`.
   automatic notch in AM, SAM, USB and LSB: the lines found in the
   detector's output, before the gate, and the audio filter's taps without
   them, computed again in the block's worker thread only when a notch
-  comes, goes or moves, the audio faded from the old taps to the new), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  comes, goes or moves, the audio faded from the old taps to the new; the
+  noise blanker in every mode: the impulses of the receiver's samples
+  zeroed before the front filter, a signal longer than an impulse and a
+  block where it would zero too much left whole, the impulses of the
+  latest second counted, and the channel of the samples as received for
+  the measure's tap, through filters of its own while it blanks), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; direct sampling below the tuner's range for shortwave;
@@ -235,18 +241,20 @@ the history under the tag `v0.1.0`.
   moving only the centre frequency and the tuner's grid (`tuner_grid`,
   never saved), which it restores, and names the driver's computation to
   choose; `tests/test_measure_pll.py` runs it against the fake rtl_tcp.
-  `listening.py` (later-milestones.md, section 2) holds the prototypes of
-  the listening tools still to build, the noise blanker and the fine
-  spectrum, which the pull requests that build them move into the
-  package, as SAM's and the notch's moved into `demod`;
+  `listening.py` (later-milestones.md, section 2) holds the prototype of
+  the last listening tool to build, the fine spectrum, which its pull
+  request moves into the package, as SAM's, the notch's and the
+  blanker's moved into `demod`;
   `measure_listening.py` (spike 8) times the engine's block processing on
   synthetic samples at 2.4 MS/s without them, with each and with the four,
-  SAM as the VFO's mode, the notch as its setting and the prototypes
-  through subclasses of the demodulator that put them where the design
-  does, needing no receiver; `tests/test_listening.py` checks each
+  SAM as the VFO's mode, the notch and the blanker as its settings and the
+  prototype through a subclass of the demodulator that puts it where the
+  design does, needing no receiver, with the scene's impulses or without
+  them (`--without-impulses`); `tests/test_listening.py` checks the
   prototype on synthetic signals and runs the measure briefly, never
-  reading its figures, `tests/test_sam.py` checks SAM and
-  `tests/test_notch.py` the notch.
+  reading its figures, `tests/test_sam.py` checks SAM,
+  `tests/test_notch.py` the notch and `tests/test_blanker.py` the
+  blanker.
 
 ## Commands
 
@@ -274,7 +282,7 @@ the history under the tag `v0.1.0`.
   `python3 tools/measure_pll.py PORT [--output FILE]` (its `--help` says
   what to set first). It tunes that receiver.
 - Listening tools' cost: `python3 tools/measure_listening.py [--runs N]
-  [--seconds S] [--output FILE]`, synthetic samples only; about three
+  [--seconds S] [--without-impulses] [--output FILE]`, synthetic samples only; about three
   minutes with its defaults. Figures depend on the computer's other work:
   compare configurations within one measure, not across measures.
 - Release, only when the owner asks: `python3 packaging/release.py X.Y.Z` on

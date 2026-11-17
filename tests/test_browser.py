@@ -28,6 +28,7 @@ from unittest import mock
 
 import radiolack
 from radiolack import PROJECT_URL, __version__, r82xx
+from radiolack.engine import Engine
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
@@ -64,8 +65,9 @@ SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
 MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receiver",
          "display": "Display", "settings": "Settings", "about": "About"}
 # The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md); the
-# notch came back, working, with the listening tools (later-milestones.md, section 2).
-REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", "#dm-nb", '#src-device option[value="soapy"]',
+# notch and the noise blanker came back, working, with the listening tools (later-milestones.md,
+# section 2).
+REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", '#src-device option[value="soapy"]',
                     '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
                     "#st-wake", "#brand", "#toolbar", "#panel", "#mem-list")
 S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left end to its right end (main.js)
@@ -833,6 +835,81 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#dm-notch")).not_to_be_checked()
                     expect(page.locator("#dm-notch-note")).to_be_hidden()
+
+    def test_the_blanker_is_one_box_shared_by_every_interface_in_every_mode(self):
+        # On the simulated band, which has no impulses: off at first and
+        # enabled in every mode; ticked in one interface, ticked in the other
+        # and kept across modes, saying nothing; unticked from the keyboard in
+        # the other.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#status")).to_contain_text(FRAME_RATE)
+                for page in (first, second):
+                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    self.open_menu(page, "radio")
+                box, note = first.locator("#dm-nb"), first.locator("#dm-nb-note")
+                expect(first.locator('label:has(#dm-nb)')).to_have_text("Noise blanker")
+                for page in (first, second):
+                    expect(page.locator("#dm-nb")).not_to_be_checked()
+                    expect(page.locator("#dm-nb")).to_be_enabled()
+                    expect(page.locator("#dm-nb-note")).to_be_hidden()
+                box.check()
+                expect(second.locator("#dm-nb")).to_be_checked()
+                for mode in ("AM", "SAM", "USB", "LSB", "CW", "WFM", "NFM"):
+                    second.locator(f'#mode-group button[data-mode="{mode}"]').click()
+                    for page in (first, second):
+                        expect(page.locator("#m-mode")).to_have_text(mode)
+                        expect(page.locator("#dm-nb")).to_be_checked()      # kept across modes
+                        expect(page.locator("#dm-nb")).to_be_enabled()
+                expect(note).to_be_hidden()     # nothing to blank there
+                second.locator("#dm-nb").focus()
+                second.keyboard.press("Space")
+                for page in (first, second):
+                    expect(page.locator("#dm-nb")).not_to_be_checked()
+                expect(second.locator("#menu")).to_be_visible()     # the key stayed with the box
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_blanker_blanks_a_crackle_and_every_interface_says_so(self):
+        # The fake's noise with an impulse every 2000 samples: about a
+        # thousand a second at the receiver's rate.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource("crackle", program=FAKE_RTL_TCP))
+        blanking = re.compile(r"^Blanking \d+ impulses a second\.$")
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                for page in (first, second):
+                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    self.open_menu(page, "radio")
+                expect(second.locator("#dm-nb-note")).to_be_hidden()
+                first.locator("#dm-nb").check()
+                for page in (first, second):
+                    expect(page.locator("#dm-nb")).to_be_checked()
+                    expect(page.locator("#dm-nb-note")).to_have_text(blanking)
+                second.locator("#dm-nb").uncheck()
+                for page in (first, second):
+                    expect(page.locator("#dm-nb")).not_to_be_checked()
+                    expect(page.locator("#dm-nb-note")).to_be_hidden()
+
+    def test_an_engine_without_the_blanker_greys_its_box(self):
+        # An engine older than the blanker sends neither field.
+        state = Engine.demod_state
+
+        def older(engine, acknowledged=0):
+            return {name: value for name, value in state(engine, acknowledged).items()
+                    if name not in ("blanker", "blanker_impulses")}
+        self.enterContext(mock.patch.object(Engine, "demod_state", older))
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")
+                self.open_menu(page, "radio")
+                expect(page.locator("#dm-nb")).to_be_disabled()
+                expect(page.locator("#dm-nb")).not_to_be_checked()
+                expect(page.locator("#dm-nb-note")).to_have_text("The noise blanker needs Radiolack to restart.")
+                expect(page.locator("#dm-notch")).to_be_attached()      # the rest of the menu as before
 
     def test_the_icon_beside_the_frequency_opens_the_antenna_lengths(self):
         # The lengths follow the VFO while they show, as when another

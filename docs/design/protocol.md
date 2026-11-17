@@ -101,8 +101,8 @@ preferences apart from this computer's.
 
    ```json
    {"type": "demod", "frequency_hz": 145600000.0, "mode": "NFM", "bandwidth_hz": 10000.0,
-    "squelch_db": -80.0, "squelch_auto": true, "notch": false, "sam_locked": null, "notch_lines": null,
-    "modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"],
+    "squelch_db": -80.0, "squelch_auto": true, "notch": false, "blanker": false, "sam_locked": null,
+    "notch_lines": null, "blanker_impulses": null, "modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"],
     "audio_modes": ["NFM", "AM", "SAM", "USB", "LSB", "CW", "WFM"], "acknowledged": 0}
    ```
 
@@ -114,8 +114,10 @@ preferences apart from this computer's.
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
    | `squelch_auto` | Whether the threshold follows the noise instead: 8 dB above the noise power in the channel, which the engine estimates from the median of the spectrum's bins within 100 kHz of the VFO. In WFM, whose channel fills those bins, it takes the median of the bins from the channel's edge to 100 kHz beyond it, on the quieter side, as a neighbouring station may fill the other. |
    | `notch` | Whether the automatic notch is on: off by default, saved with the receiver's settings, kept across modes, and acting in AM, SAM, USB and LSB only, not in CW, whose signal is a steady tone, nor in NFM and WFM. While it acts it removes from the audio the lines that stand 15 dB or more over their surroundings, are at most 30 Hz wide, are found at every analysis, ten times a second, for half a second, and lie between 100 Hz and 5 kHz, four at most, those that stand highest first; each one leaves a second after it was last found. A bookmark does not carry it. |
+   | `blanker` | Whether the noise blanker is on: off by default, saved with the receiver's settings, kept across modes, and acting in every mode, on the samples that make the VFO's channel alone, before its filters. In each block of samples it zeroes the impulses, samples whose magnitude exceeds six times the block's median, estimated on every 16th sample, with two samples on each side, an impulse at a block's end reaching two samples into the next. Samples over that limit whose zeroed spans touch make one impulse; one that spans more than 16 samples is a signal, left as it is, and a block where impulses would zero more than 2% of its samples is left whole. The channel level, the squelch, SAM's search, the notch's analysis, the audio and its recordings take the blanked channel; the spectrum frames, the signals found, the scans' search, the carrier's measure, the driver's check and the I/Q recordings take the samples as received. A bookmark does not carry it. |
    | `sam_locked` | In SAM, synchronous AM, whether it holds a carrier: true while a line within 1 kHz of the VFO, once held followed within 40 Hz of it, stands 10 dB or more over the noise within 80 Hz, sought ten times a second and judged on the mean of the latest five searches, a lock held staying down to 7 dB; false otherwise, when the audio is AM's envelope. Null in the other modes. The state is sent again whenever it changes, to every interface; it is the engine's, never saved, and found whether or not an interface asked for audio. |
    | `notch_lines` | While the notch acts, the lines it removes now, 0 to 4; null when it is off, in the modes where it does not act, and from an engine older than the notch. The engine finds them in the audio it makes: 0 while no interface asks for audio and nothing is recorded. The state is sent again whenever it changes, to every interface; it is the engine's, never saved. |
+   | `blanker_impulses` | While the blanker is on, the impulses it zeroed in the latest second of samples, counted over the whole blocks that make it up and scaled to a second, 0 before the first second; null when it is off, and from an engine older than the blanker. It changes at most once a second, whether or not an interface asked for audio, and the state is sent again whenever it changes, to every interface; it is the engine's, never saved. |
    | `modes` | The modes the engine takes. |
    | `audio_modes` | The modes it demodulates to audio; the others are measured, level and squelch, but silent. All seven for now. |
    | `acknowledged` | The `id` of this interface's last `demod` message that the engine handled, 0 before any (see "From the interface"). |
@@ -446,7 +448,9 @@ preferences apart from this computer's.
 
     The channel level is the mean power, over the same samples, in the VFO's
     channel: a full-scale carrier on the VFO reads 0 dBFS. It is NaN when
-    the VFO lies outside the span. The squelch opens once the power averaged
+    the VFO lies outside the span. With the noise blanker (`blanker`) it is
+    that of the blanked channel, as the squelch's, while the frame's bins
+    show the samples as received. The squelch opens once the power averaged
     over 10 ms reaches the threshold and closes 3 dB below it; the flag gives
     its state at the end of the samples. The threshold is `squelch_db`, or
     the automatic one, which is NaN while the engine has no noise estimate
@@ -486,7 +490,9 @@ preferences apart from this computer's.
     the carrier's at once and falls at 10 dB per second: unfaded, as loud as
     AM, and the sidebands' audio stays as it is while the carrier fades
     alone. Without a lock (`sam_locked`) it is AM's, the switch fading over
-    5 ms. AM, SAM, USB, LSB and CW audio runs from 100 Hz to 5 kHz; with
+    5 ms. With the noise blanker (`blanker`), in every mode, each of these
+    takes the channel of the samples with their impulses zeroed. AM, SAM,
+    USB, LSB and CW audio runs from 100 Hz to 5 kHz; with
     the notch (`notch`), in AM, SAM, USB and LSB, less 45 Hz on each side of
     each line it removes, the audio fading over 5 ms from the filter before
     a change to the filter after it. In WFM the audio is the FM discriminator's
@@ -567,7 +573,8 @@ preferences apart from this computer's.
 17. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
-    channel, before the demodulator.
+    channel, before the demodulator, and unblanked whether the noise
+    blanker is on or not: the measure does not change with it.
 
     ```json
     {"type": "carrier", "id": 12, "frequency_hz": 9999987.3, "margin_db": 47.2, "reason": null}
@@ -610,7 +617,8 @@ preferences apart from this computer's.
     | `previous` | The source's `driver_pll` when the check began: `unknown`, `truncating` or `rounding`; null for a source without it. An answer equal to it confirms it; another replaced it. |
     | `reason` | Null with a computation. Otherwise, before anything moved: `receiver`, the source is not an RTL-SDR whose tuner is an R820T or R828D; `direct`, it samples directly; `range`, the tuner is not placed on its grid there (`centre_in_use_hz`); `scan`, a memory scan or a sweep runs; `iq`, an I/Q recording runs; `position`, the VFO lies within 3 kHz of the centre in use, or nearer the span's edge than the filter's width and 2 kHz, where a move of the centre would bring the DC residue onto the carrier or take it out of the span; `indistinct`, no centre within 2 kHz of the centre in use lets the two computations differ by 40 Hz or more. `lost`, before anything moved, the VFO's channel receives nothing at this sample rate (WFM below 320 kHz), or, after the check moved the receiver, a point had no steady carrier within 6 s (the carrier's measure's `silent`, `no_signal`, `several` or `unstable`, or no samples). Once every point is measured: `neither`, the carrier's moves followed neither computation within 5 Hz at every point; `both`, they followed both. And `stopped`: the check stopped before its end: an interface changed the source's settings or the VFO's frequency, mode or filter, a scan or an I/Q recording started, every interface that asked went away, or Radiolack stopped. A failed check leaves `driver_pll` as it was. An interface shows a reason it does not know as a failed check. |
 
-    The engine measures the carrier, as for a carrier's measure, at the
+    The engine measures the carrier, as for a carrier's measure, on the
+    channel unblanked whether the noise blanker is on or not, at the
     centre in use, then at three centres off the tuner's grid
     (`tuner_grid` false), within 2 kHz of it, chosen where the two
     computations put the carrier 40 Hz apart at least, and compares how
@@ -697,6 +705,7 @@ A `demod` message changes the demodulation settings it names, the same way:
 | `squelch_db` | From -160 to 0 dBFS. |
 | `squelch_auto` | `true` or `false`. |
 | `notch` | `true` or `false`. |
+| `blanker` | `true` or `false`. |
 | `id` | Optional: a whole number from 1 to 2^53 - 1, which the engine returns in `acknowledged`. |
 
 The engine handles an `id` even when it refuses the changes: the sender then
@@ -1191,6 +1200,15 @@ and later.
   the notched audio, as every interface does. A reload brings a newer
   interface. A newer interface reads a demodulation state without
   `notch`, an older engine's, as one without the notch, and greys its box.
+  Later that day, the noise blanker (later-milestones.md, section 2, pull
+  request 4), without a new version: the demodulation state gains
+  `blanker` and `blanker_impulses`, and the `demod` message `blanker`. An
+  older interface ignores both fields and never sends `blanker`: it shows
+  no box, its changes leave the blanker as another interface set it, and
+  its audio, S-meter and squelch are those of the blanked channel, as
+  every interface's. A reload brings a newer interface. A newer interface
+  reads a demodulation state without `blanker`, an older engine's, as one
+  without the blanker, and greys its box with a note.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

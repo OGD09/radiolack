@@ -11,7 +11,9 @@ state and the demodulation settings to every client, and the clients'
 changes to them: a change reaches every client at once, and the last change
 wins. Each client also learns which of its own demodulation changes the
 engine has handled, so that it can tell an echo of an older change from the
-latest state.
+latest state. The noise blanker, a demodulation setting, acts on the
+samples that make the VFO's channel alone: the display frames, detection
+and the scans' search take every block as received.
 
 DC removal is the engine's own setting, on by default and shared by every
 client like the source's: it takes each block's mean off its samples, so that
@@ -78,10 +80,11 @@ This computer's interfaces may ask for a problem report (report.py), which
 the engine sends to the one that asked, for its user to share or not. Any
 interface may ask for the measure of the carrier at the VFO (carrier.py),
 to calibrate the receiver's frequency correction: the engine gathers the
-VFO's channel, before the demodulator, only while an interface waits for a
-measure, which every interface that asked meanwhile shares and receives,
-each alone. On an R820T or R828D, an interface may also ask which of the
-rtl-sdr driver's computations its PLL follows (pllcheck.py): the engine
+VFO's channel, before the demodulator and unblanked whether or not the
+noise blanker is on, only while an interface waits for a measure, which
+every interface that asked meanwhile shares and receives, each alone. On
+an R820T or R828D, an interface may also ask which of the rtl-sdr
+driver's computations its PLL follows (pllcheck.py): the engine
 measures that carrier at the centre in use and at centres off the tuner's
 grid, for every interface, brings the receiver back whatever ends the
 check, and saves the computation found with the receiver.
@@ -461,6 +464,7 @@ class Engine:
         self._demodulator = Demodulator()   # used by one block at a time
         self._sam_locked = False            # whether SAM held its carrier after the last block
         self._notch_lines = 0               # the lines that the notch removed after the last block
+        self._blanker_impulses = 0          # the impulses that the blanker zeroed in the latest second
         # The centre asked and the rate of the last block, and its centre in use and rate.
         self._capture: tuple[tuple[float, float], tuple[float, float]] | None = None
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
@@ -687,6 +691,7 @@ class Engine:
         return {"type": "demod", **self._demod.describe(),
                 "sam_locked": self._sam_locked if self._demod.mode == "SAM" else None,
                 "notch_lines": self._notch_lines if self._demod.notching else None,
+                "blanker_impulses": self._blanker_impulses if self._demod.blanker else None,
                 "modes": list(MODES), "audio_modes": list(AUDIO_MODES), "acknowledged": acknowledged}
 
     def configure_demod(self, changes: Mapping[str, object], subscription: Subscription | None = None,
@@ -1204,6 +1209,7 @@ class Engine:
                 self._publish(label, power, codes, meter, pcm)
                 self._follow_sam_lock(bool(meter.sam_locked))
                 self._follow_notch(meter.notch_lines or 0)
+                self._follow_blanker(meter.blanker_impulses or 0)
                 if measure is not None and carrier is not None:
                     self._measured(measure, carrier, label[0])
                 self._check_carrier()
@@ -1252,6 +1258,17 @@ class Engine:
             return
         self._notch_lines = lines
         if self._demod.notching:
+            for subscription in self._clients:
+                subscription.changed("demod")
+
+    def _follow_blanker(self, impulses: int) -> None:
+        """The blanker zeroed another number of impulses in the latest
+        second, which changes at most once a second: while it is on, every
+        client learns it with the demodulation state, which saves nothing."""
+        if impulses == self._blanker_impulses:
+            return
+        self._blanker_impulses = impulses
+        if self._demod.blanker:
             for subscription in self._clients:
                 subscription.changed("demod")
 
@@ -2307,7 +2324,10 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     and the memory scan's channels are not watched without ``bands``, their
     passbands and noise clearances. The VFO's distance from ``centre_hz``
     shrinks by ``rate_scale``, the factor by which the receiver samples
-    faster than ``rate_hz``: the samples show it that much nearer."""
+    faster than ``rate_hz``: the samples show it that much nearer. The
+    noise blanker acts within the demodulator, on the VFO's channel alone:
+    the bin powers, detection, the memory scan's channels and the measure
+    take the samples as received."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
