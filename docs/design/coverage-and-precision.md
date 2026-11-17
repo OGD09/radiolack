@@ -1039,6 +1039,11 @@ As built, where this section left a choice open or a rule had to bend:
 Done when, on the owner's V3: `tools/measure_pll.py`, with the grid and
 the computation identified, reports a spread under 10 Hz.
 
+Measured on 2026-11-17 on the owner's V3 with rtl-sdr 0.6.0 (scoping.md,
+spike 6, measured again): Calibrate's check named the older computation in
+9.4 s, and the tool then found a spread of 0.2 Hz over 53 measures at
+2.4 MS/s, 0.1 Hz at 1.024 MS/s, where it had found 203 Hz.
+
 Limits: it rests on the driver's internals, so a driver that computes
 otherwise is left unknown by the check and keeps the error it has; a
 driver changed without a new calibration keeps the old setting until the

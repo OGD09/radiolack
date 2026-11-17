@@ -675,6 +675,34 @@ Not measured: the owner's other computer, whose rtl-sdr 2.0.1 has the same
 computation and the same `rtlsdr_set_direct_sampling`; another divider of
 the tuner than 16; an RTL-SDR Blog V4.
 
+### Spike 6, measured again (2026-11-17)
+
+Measured again once pull requests 14a and 14b were merged, on the same
+receiver, driver, carrier and settings as the first time, with Radiolack
+at commit 719215c of `main`.
+
+- **Calibrate's check names the driver.** Asked through the stream as the
+  dialog asks it, with the driver's setting unknown, it answered the older
+  computation, of rtl-sdr up to 2.0.1, in 9.4 s, and saved it; asked again
+  it confirmed it, and again at 1.024 MS/s. With the setting known, the
+  carrier read 109.9 Hz lower than with it unknown, the constant that the
+  older computation leaves at the divider 16.
+- **The spread is gone.** `tools/measure_pll.py` over 40 centre frequencies
+  1.234 kHz apart, the grid off, then eight on the grid, 53 measures with
+  those of the first centre: a spread of 0.2 Hz, where the first run found
+  203 Hz, each measure within 0.1 Hz of the older computation's
+  prediction, the crystal drifting by 0.5 Hz meanwhile. At 1.024 MS/s,
+  over 16 centres and six on the grid: 0.1 Hz. Pull request 14's "done
+  when", a spread under 10 Hz, holds.
+- **The command order fix holds on the receiver.** Those predictions take
+  the tuner's oscillator at the frequency asked plus the intermediate
+  frequency of the sample rate, 1.815 MHz at 2.4 MS/s and 1.7 MHz at
+  1.024 MS/s, no longer 3.57 MHz.
+
+Not measured: another divider of the tuner, rtl-sdr 2.0.1 or 2.0.2, the
+RTL-SDR Blog fork, an RTL-SDR Blog V4, and the check through a filter
+narrower than 6 kHz.
+
 ## Preparing a public release
 
 Public distribution multiplies the work. These choices are cheap now and
