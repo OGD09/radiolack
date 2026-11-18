@@ -19,15 +19,49 @@ sources, it releases the device once nobody has read for a while, so that
 the device stays free for other programs while no interface listens.
 
 Receive only: the source sets up one receive stream on channel 0, and
-nothing else. Its range, its sample rates and, where it has one, its gain
-come from the device, and the source state describes them as the other
-sources' do. Rates are those the device lists, or lies within the ranges
-it gives, up to 8 MS/s (spike 7): a rate between two measured ones costs
-no more than the higher. An analogue bandwidth, where the device has one,
-is the nearest at or below 0.8 times the sample rate. A device with one
+nothing else. Its range, its sample rates, its gains, its antenna sockets
+and its other settings come from the device, and the source state
+describes them as the other sources' do. Rates are those the device lists,
+or lies within the ranges it gives, up to 8 MS/s (spike 7): a rate between
+two measured ones costs no more than the higher. An analogue bandwidth,
+where the device has one, is the nearest at or below 0.8 times the sample
+rate.
+
+Gains (later-milestones.md, section 1, pull request 4): a device with one
 gain stage takes ``gain_db`` as that stage's gain, or automatic gain where
-it offers it; a device with several, such as a HackRF's three, keeps its
-own gains until the gains per stage come (pull request 4).
+it offers it. A device with several, such as a HackRF's three, takes
+``gain_db`` through SoapySDR's overall gain, which the device's module
+spreads across its stages, and ``stage_gains_db``, each stage's own; after
+either, the source reads back what the device holds, the stages and the
+overall gain, which the state then shows. A stage named in
+``HELD_STAGES``, the HackRF's input amplifier ``AMP``, which strong signals
+can damage, starts at its lowest at a device's first opening without saved
+settings, whatever the device's default, and the overall gain never moves
+it, not even for a moment: SoapyHackRF's own spread switches it on above
+51 dB, so on a device with such a stage the overall gain never goes
+through the module's, and the source spreads it, less the held stages'
+gain, over the other stages as SoapySDR's default spread does, in the
+order the device lists them (``_overall``).
+
+The device's antenna sockets, when it lists several, become ``antenna``,
+at the device's own choice until changed. Its settings (``getSettingInfo``,
+the device's and the receive channel's) become ``device_settings``, as the
+device describes them: a box, a choice or a number within a range, under
+the device's names, bounded in count and length, at the device's values
+until changed; a free text, which the module would parse, and a number
+without a range are left out, as is any setting named for transmission.
+Antenna power (``is_antenna_power``) never shows there: it becomes
+``bias_tee``, under the rtl_tcp sources' rules. Every antenna-power setting
+is turned off as soon as the device opens, whatever the device or a saved
+file says, and again before the device is released, however the session
+ends; ``bias_tee`` drives one of them (``Capabilities.power``), and only a
+``configure`` turns it on: the user's second press, or ``--bias-tee`` at
+start, which, given before the device opens, applies once it does, or is
+ignored, saying so, for a device without antenna power. It is never saved.
+
+The thread alone writes gains, antennas and settings, between its reads;
+what the device refuses shows in ``device_refusal``, and the state keeps
+what the device holds.
 
 Samples come in the device's native format among CS8, CS16 and CF32: the
 first of those it lists, as SoapySDR 0.8's binding cannot ask for the
@@ -71,19 +105,22 @@ driver's computation here: those belong to the rtl_tcp sources' R820T and
 R828D.
 
 A converter in front of the receiver (converter.py) moves the
-frequencies as with the rtl_tcp sources. Not here yet: antenna power,
-antenna sockets, the device's other settings and shortwave inputs
-(pull request 4), and I/Q recordings, which ``tap`` refuses until they
-take the device's own format (pull request 5).
+frequencies as with the rtl_tcp sources. The rtlsdr module's direct
+sampling (``direct_samp``) is one of the device's settings, a choice: no
+shortwave input here, as the rtl_tcp sources have, since the module
+declares the tuner's range alone. Not here yet: I/Q recordings, which
+``tap`` refuses until they take the device's own format (pull request 5).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import importlib
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -109,6 +146,22 @@ REPORT_S = 60.0                 # the losses are logged at most this often
 STOP_S = 5.0                    # the reading thread stops within a read and a stop; a warning after this
 MAX_ARGS = 256                  # characters in the device arguments
 MAX_GAINS = 128                 # gains offered at most, the steps widened beyond
+# What a device may declare, at most: more is left out. Its texts reach the
+# interfaces, which show them as text.
+MAX_STAGES = 8
+MAX_ANTENNAS = 16
+MAX_DEVICE_SETTINGS = 32
+MAX_OPTIONS = 32                # a choice's options
+MAX_NAME_CHARS = 64             # a key, a name, an option or an antenna
+MAX_DESCRIPTION_CHARS = 300
+# Gain stages that start at their lowest and that the overall gain never
+# moves: the HackRF's input amplifier, which strong signals can damage.
+HELD_STAGES = ("AMP",)
+# What makes a setting antenna power: its key or name, lower case and with
+# letters and digits alone, holds one of these, such as SoapySDR's modules'
+# biastee, bias_tx and biasT_ctrl. Wide on purpose: a setting taken for
+# antenna power is only kept off unless asked.
+POWER_WORDS = ("bias", "antennapower", "antpower")
 # The full scale of the native format of the drivers whose modules' code
 # was read (later-milestones.md, section 1, As built): bladeRF's CS16 has
 # 12 bits. Another driver, or another format, reads CF32.
@@ -117,11 +170,16 @@ FULL_SCALES = {"rtlsdr": ("CS8", 128.0), "hackrf": ("CS8", 128.0), "sdrplay": ("
 # Rates offered by a device that gives ranges without a list, where they fit.
 COMMON_RATES_HZ = (250_000.0, 1_024_000.0, 2_048_000.0, 2_400_000.0, 3_200_000.0, 4_000_000.0, 5_000_000.0,
                    6_000_000.0, 8_000_000.0)
-# In the order the engine restores them, as for the rtl_tcp sources.
-_SETTINGS = ("converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db", "ppm")
+# In the order the engine restores them, as for the rtl_tcp sources: the
+# stages after the overall gain, which they replace when both come.
+_SETTINGS = ("converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db", "stage_gains_db", "antenna",
+             "ppm", "device_settings", "bias_tee")
 _ANY_HZ = ((1.0, HIGHEST_HZ),)  # until the device is known
 _CHECK_S = 0.1                  # how often the source checks whether to stop its thread
 _TEXT_CHARS = 200               # of a module's message, in a detail
+# SoapySDR::ArgInfo::Type, as the binding gives a setting's type.
+_ARG_BOOL, _ARG_INT, _ARG_FLOAT, _ARG_STRING = 0, 1, 2, 3
+_TRUE, _FALSE = ("true", "1", "on", "yes", "enabled", "enable"), ("false", "0", "off", "no", "disabled", "disable")
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +395,118 @@ def args_text(pairs: Mapping[str, str]) -> str:
 
 
 Range = tuple[float, float, float]      # lowest, highest and step (0: any value between)
+Value = bool | int | float | str        # a device setting's value, as the state gives it
+
+
+def gain_values(span: Range) -> tuple[float, ...]:
+    """The gains offered within ``span``, lowest first, in its steps, or
+    1 dB without one, MAX_GAINS at most, the steps widened beyond; empty
+    for a span that is not finite."""
+    low, high, step = span
+    if not (math.isfinite(low) and math.isfinite(high)) or high < low:
+        return ()
+    step = step if step > 0 else 1.0
+    count = math.floor((high - low) / step + 1e-9) + 1
+    if count > MAX_GAINS:
+        step = (high - low) / (MAX_GAINS - 1)
+        count = MAX_GAINS
+    values = [round(low + index * step, 2) for index in range(count)]
+    if values[-1] < round(high, 2):
+        values.append(round(high, 2))
+    return tuple(values)
+
+
+@dataclass(frozen=True)
+class Stage:
+    """One of a device's gain stages, under the device's name for it."""
+
+    name: str
+    span: Range
+
+    @property
+    def held(self) -> bool:
+        """Whether it starts at its lowest and the overall gain never moves it."""
+        return self.name.upper() in HELD_STAGES
+
+    def gains_db(self) -> tuple[float, ...]:
+        return gain_values(self.span)
+
+
+@dataclass(frozen=True)
+class DeviceSetting:
+    """One of a device's settings, as it describes it: ``kind`` "bool", a
+    box, "choice", one of ``options`` (value and name), or "number", within
+    ``span``. ``channel``: the receive channel's own, not the device's."""
+
+    key: str
+    name: str
+    description: str
+    kind: str
+    channel: bool = False
+    options: tuple[tuple[str, str], ...] = ()
+    span: Range | None = None
+    integer: bool = False
+
+    def checked(self, value: object) -> Value:
+        """``value`` as the device takes it; raises ValueError, saying why."""
+        if self.kind == "bool":
+            if not isinstance(value, bool):
+                raise ValueError(f"{self.name} must be true or false")
+            return value
+        if self.kind == "choice":
+            values = [option for option, _ in self.options]
+            if not isinstance(value, str) or value not in values:
+                raise ValueError(f"{self.name} must be one of: {', '.join(values)}")
+            return value
+        number = finite_number(value, self.name)
+        assert self.span is not None
+        low, high, step = self.span
+        if not low - 1e-9 <= number <= high + 1e-9:
+            raise ValueError(f"{self.name} must be from {low:g} to {high:g}")
+        if step > 0:
+            number = min(low + round((number - low) / step) * step, high)
+        return int(round(number)) if self.integer else float(number)
+
+    def text(self, value: Value) -> str:
+        """``value`` as SoapySDR writes it."""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def parsed(self, text: object) -> Value | None:
+        """A value the device gave, or None for one that is not this
+        setting's."""
+        if not isinstance(text, str):
+            return None
+        text = text.strip()
+        if self.kind == "bool":
+            lowered = text.lower()
+            return True if lowered in _TRUE else False if lowered in _FALSE else None
+        if self.kind == "choice":
+            return text if any(option == text for option, _ in self.options) else None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        if not math.isfinite(number):
+            return None
+        return int(round(number)) if self.integer else number
+
+    def describe(self) -> dict[str, Any]:
+        return {"key": self.key, "name": self.name, "description": self.description, "type": self.kind,
+                "options": [{"value": value, "name": name} for value, name in self.options],
+                "range": list(self.span) if self.span is not None else None, "integer": self.integer}
+
+
+@dataclass(frozen=True)
+class PowerSetting:
+    """A setting that puts power on an antenna socket: what turns it off,
+    and on, None where the source cannot tell."""
+
+    key: str
+    channel: bool
+    off: str
+    on: str | None
 
 
 @dataclass(frozen=True)
@@ -359,6 +529,18 @@ class Capabilities:
     corr_component: bool            # whether that is a CORR frequency component
     sample_format: Format
     full_scale: float
+    # Several gain stages: each stage, its gain when it opened, and the
+    # overall gain's range, which SoapySDR spreads across them.
+    stages: tuple[Stage, ...] = ()
+    stage_gains_db: tuple[tuple[str, float], ...] = ()
+    overall_range: Range | None = None
+    antennas: tuple[str, ...] = ()  # its sockets, when it lists several
+    antenna: str = ""               # the socket in use when it opened
+    settings: tuple[DeviceSetting, ...] = ()
+    setting_values: tuple[tuple[str, Value], ...] = ()     # when it opened
+    # Its antenna-power settings: the one that ``bias_tee`` drives first,
+    # if any, the others kept off.
+    power: tuple[PowerSetting, ...] = ()
 
     def offers(self, rate_hz: float) -> bool:
         """Whether ``rate_hz`` is one of the rates offered."""
@@ -419,22 +601,47 @@ class Capabilities:
         or 1 dB without one; empty without such a stage."""
         if self.gain_stage is None or self.gain_range is None:
             return ()
-        low, high, step = self.gain_range
-        if not (math.isfinite(low) and math.isfinite(high)) or high < low:
+        return gain_values(self.gain_range)
+
+    @property
+    def several_stages(self) -> bool:
+        return self.overall_range is not None
+
+    def overall_gains_db(self, stage_gains: Sequence[tuple[str, float]]) -> tuple[float, ...]:
+        """The overall gains offered with the held stages at their gains in
+        ``stage_gains``, which the overall gain leaves as they are: the
+        device's overall range, less what those stages cannot give or take."""
+        if self.overall_range is None:
             return ()
-        step = step if step > 0 else 1.0
-        count = math.floor((high - low) / step + 1e-9) + 1
-        if count > MAX_GAINS:
-            step = (high - low) / (MAX_GAINS - 1)
-            count = MAX_GAINS
-        values = [round(low + index * step, 2) for index in range(count)]
-        if values[-1] < round(high, 2):
-            values.append(round(high, 2))
-        return tuple(values)
+        low, high, step = self.overall_range
+        gains = dict(stage_gains)
+        for stage in self.stages:
+            if stage.held and stage.name in gains:
+                low += gains[stage.name] - stage.span[0]
+                high -= stage.span[1] - gains[stage.name]
+        return gain_values((low, max(low, high), step))
+
+    def offered_gains_db(self, stage_gains: Sequence[tuple[str, float]]) -> tuple[float, ...]:
+        """The values of ``gain_db``: the one stage's, or the overall ones."""
+        return self.overall_gains_db(stage_gains) if self.several_stages else self.gains_db()
 
     @property
     def gain_settable(self) -> bool:
-        return bool(self.gains_db())
+        return self.several_stages or bool(self.gains_db())
+
+    @property
+    def driven_power(self) -> PowerSetting | None:
+        """The antenna-power setting that ``bias_tee`` drives, if any."""
+        return self.power[0] if self.power and self.power[0].on is not None else None
+
+    def setting(self, key: str) -> DeviceSetting | None:
+        return next((setting for setting in self.settings if setting.key == key), None)
+
+    def holdings(self, settings: Settings) -> Settings:
+        """``settings`` with what the device held when it opened: its gains,
+        its socket and its settings' values."""
+        return replace(settings, stage_gains=self.stage_gains_db, antenna=self.antenna or None,
+                       device_settings=self.setting_values)
 
 
 def _within_range(value: float, span: Range) -> bool:
@@ -487,27 +694,216 @@ def read_capabilities(soapy: ModuleType, device: Any, listing: Mapping[str, str]
                                if math.isfinite(float(width)) and float(width) > 0}))
     bandwidth_ranges = tuple(span for span in _ranges(_optional(lambda: device.getBandwidthRange(receive, 0), ()))
                              if span[1] > 0)
-    stages = list(_optional(lambda: device.listGains(receive, 0), ()))
-    stage = str(stages[0]) if len(stages) == 1 else None
+    listed = list(_optional(lambda: device.listGains(receive, 0), ()))
+    stage = _identifier(listed[0]) if len(listed) == 1 else None
     gain_range = gain_db = None
     gain_mode = False
+    stages: tuple[Stage, ...] = ()
+    stage_gains: tuple[tuple[str, float], ...] = ()
+    overall_range = None
+    if listed:
+        gain_mode = bool(_optional(lambda: device.hasGainMode(receive, 0), False))
     if stage is not None:
         spans = _ranges([device.getGainRange(receive, 0, stage)])
         gain_range = spans[0] if spans else None
-        gain_mode = bool(_optional(lambda: device.hasGainMode(receive, 0), False))
         gain_db = float(device.getGain(receive, 0, stage))
+    elif len(listed) > 1:
+        stages, stage_gains, overall_range = _read_stages(receive, device, listed)
     components = [str(name) for name in _optional(lambda: device.listFrequencies(receive, 0), ())]
     corr = "CORR" in components
     correction = bool(_optional(lambda: device.hasFrequencyCorrection(receive, 0), corr))
     sample_format, full_scale = stream_format(soapy, device, driver)
+    antennas = _unique(_identifier(name) for name in _optional(lambda: device.listAntennas(receive, 0), ()))
+    antennas = antennas[:MAX_ANTENNAS] if len(antennas) > 1 else ()
+    antenna = _identifier(_optional(lambda: device.getAntenna(receive, 0), "")) if antennas else None
+    settings, values, power = _read_settings(receive, device)
     capabilities = Capabilities(
         driver=driver, serial=str(listing.get("serial", "")), hardware=str(_optional(device.getHardwareKey, "")),
         frequency_ranges=frequencies, rates_hz=rates, rate_ranges=rate_ranges, bandwidths_hz=bandwidths,
         bandwidth_ranges=bandwidth_ranges, gain_stage=stage, gain_range=gain_range, gain_mode=gain_mode,
         gain_db=gain_db if gain_db is not None and math.isfinite(gain_db) else None, correction=correction,
-        corr_component=corr, sample_format=sample_format, full_scale=full_scale)
+        corr_component=corr, sample_format=sample_format, full_scale=full_scale, stages=stages,
+        stage_gains_db=stage_gains, overall_range=overall_range, antennas=antennas,
+        antenna=antenna if antenna in antennas else (antennas[0] if antennas else ""),
+        settings=settings, setting_values=values, power=power)
     capabilities.nearest_rate(DEFAULT_SAMPLE_RATE_HZ)      # raises for a device without a rate offered
     return capabilities
+
+
+def _identifier(value: object) -> str | None:
+    """A name the source gives back to the device, such as a key, a stage,
+    an antenna or an option: itself, or None unless it is printable text on
+    one line, without spaces at its ends, of MAX_NAME_CHARS at most."""
+    if not isinstance(value, str):
+        value = str(value) if value is not None else ""
+    if not value or len(value) > MAX_NAME_CHARS or not value.isprintable() or value != value.strip():
+        return None
+    return value
+
+
+def _label(value: object, limit: int) -> str:
+    """A device's text for the interfaces, such as a name or a description:
+    on one line, its control characters left out, cut at ``limit``."""
+    text = " ".join("".join(char if char.isprintable() else " " for char in str(value or "")).split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _unique(names: Any) -> tuple[str, ...]:
+    """``names`` without None and without repeats, in their order."""
+    return tuple(dict.fromkeys(name for name in names if name is not None))
+
+
+def _read_stages(receive: int, device: Any, listed: Sequence[object]
+                 ) -> tuple[tuple[Stage, ...], tuple[tuple[str, float], ...], Range | None]:
+    """A device's several gain stages, their gains when it opened and the
+    overall gain's range: SoapySDR's, or the stages' sum where the binding
+    lacks it. A stage without a finite range or gain is left out."""
+    stages, gains = [], []
+    for name in _unique(_identifier(name) for name in listed)[:MAX_STAGES]:
+        spans = _ranges([device.getGainRange(receive, 0, name)])
+        gain = float(device.getGain(receive, 0, name))
+        if spans and math.isfinite(gain):
+            stages.append(Stage(name, spans[0]))
+            gains.append((name, round(gain, 2)))
+    if not stages:
+        return (), (), None
+    try:
+        spans = _ranges([device.getGainRange(receive, 0)])
+    except (AttributeError, NotImplementedError, TypeError):
+        spans = ()
+    overall = spans[0] if spans else (sum(stage.span[0] for stage in stages),
+                                       sum(stage.span[1] for stage in stages), 0.0)
+    return tuple(stages), tuple(gains), overall
+
+
+def is_antenna_power(key: str, name: str) -> bool:
+    """Whether a setting puts power on an antenna socket, by its key or its
+    name (POWER_WORDS): biastee, bias_tx, biasT_ctrl, "Bias Tee" and the
+    like, whatever their case."""
+    return any(word in "".join(char for char in text.lower() if char.isalnum())
+               for text in (key, name) for word in POWER_WORDS)
+
+
+def transmit_named(key: str, name: str) -> bool:
+    """Whether a setting is named for transmission, by a word of its key or
+    name that starts with "tx" or "transmit": the source neither shows nor
+    writes such a setting, unless it is antenna power."""
+    words = re.split(r"[^a-z0-9]+", f"{key} {name}".lower())
+    return any(word.startswith(("tx", "transmit")) for word in words)
+
+
+def _power_values(info: Any, kind: int, options: Sequence[str]) -> tuple[str | None, str | None]:
+    """What turns an antenna-power setting off and on: a box's false and
+    true, a choice's options that say so, or 0 and 1 within a number's
+    range; None for what cannot be told."""
+    if kind == _ARG_BOOL:
+        return "false", "true"
+    if options:
+        off = next((option for option in options if option.lower() in _FALSE), None)
+        on = next((option for option in options if option.lower() in _TRUE), None)
+        return off, on
+    if kind in (_ARG_INT, _ARG_FLOAT):
+        spans = _ranges([info.range])
+        if spans and spans[0][0] <= 0 <= spans[0][1]:
+            return "0", "1" if spans[0][0] <= 1 <= spans[0][1] else None
+    return None, None
+
+
+def _read_settings(receive: int, device: Any
+                   ) -> tuple[tuple[DeviceSetting, ...], tuple[tuple[str, Value], ...], tuple[PowerSetting, ...]]:
+    """A device's settings as it describes them (module docstring), the
+    device's own and then its receive channel's, with their values when it
+    opened, and its antenna-power settings, the one ``bias_tee`` drives
+    first: one of the receive channel's before the device's, one not named
+    for transmission first, then in the order declared. A module that
+    cannot list them gives none."""
+    declared: list[tuple[bool, Any]] = []
+    for channel, call in ((False, lambda: device.getSettingInfo()),
+                          (True, lambda: device.getSettingInfo(receive, 0))):
+        try:
+            declared += [(channel, info) for info in call() or ()]
+        except (AttributeError, NotImplementedError, TypeError):
+            pass                    # a binding without it
+        except Exception as error:
+            log.warning("the device's %s settings cannot be read: %s", "channel's" if channel else "own",
+                        _text(error))
+    settings: list[DeviceSetting] = []
+    values: list[tuple[str, Value]] = []
+    power: list[tuple[tuple[bool, bool, int], PowerSetting]] = []
+    keys: set[str] = set()
+    for order, (channel, info) in enumerate(declared):
+        key = _identifier(getattr(info, "key", None))
+        if key is None or key in keys:
+            continue
+        keys.add(key)
+        name = _label(getattr(info, "name", ""), MAX_NAME_CHARS) or key
+        kind = int(getattr(info, "type", _ARG_STRING))
+        options = [_identifier(option) for option in list(getattr(info, "options", ()) or ())[:MAX_OPTIONS]]
+        if is_antenna_power(key, name):
+            off, on = _power_values(info, kind, [option for option in options if option is not None])
+            if off is None:
+                log.warning("the antenna power %r is left as it is: its off value cannot be told", key)
+                continue
+            power.append(((not channel, transmit_named(key, name), order), PowerSetting(key, channel, off, on)))
+            continue
+        setting = _device_setting(info, key, name, kind, options, channel)
+        if setting is None or transmit_named(key, name) or len(settings) >= MAX_DEVICE_SETTINGS:
+            continue
+        value = setting.parsed(_read(receive, device, setting.channel, key))
+        if value is None:
+            value = setting.parsed(getattr(info, "value", None))
+        if value is None:
+            continue
+        settings.append(setting)
+        values.append((key, value))
+    ordered = tuple(setting for _, setting in sorted(power, key=lambda entry: entry[0]))
+    driven = next((setting for setting in ordered if setting.on is not None), None)
+    if driven is not None:
+        ordered = (driven, *(setting for setting in ordered if setting is not driven))
+    if len(ordered) > 1:
+        log.info("antenna power: %s follows the antenna power, %s stay off", ordered[0].key,
+                 ", ".join(setting.key for setting in ordered[1:]))
+    return tuple(settings), tuple(values), ordered
+
+
+def _device_setting(info: Any, key: str, name: str, kind: int, options: Sequence[str | None],
+                    channel: bool) -> DeviceSetting | None:
+    """A setting as the interfaces show it, or None for one they do not: a
+    free text, which the module would parse, a number without a range, or
+    a choice whose options are not all names the source can give back."""
+    description = _label(getattr(info, "description", ""), MAX_DESCRIPTION_CHARS)
+    if kind == _ARG_BOOL:
+        return DeviceSetting(key, name, description, "bool", channel)
+    if options:
+        if None in options:
+            return None
+        names = list(getattr(info, "optionNames", ()) or ())
+        labelled = tuple((option, _label(names[index], MAX_NAME_CHARS) if index < len(names) else option)
+                         for index, option in enumerate(options) if option is not None)
+        return DeviceSetting(key, name, description, "choice", channel,
+                             options=tuple((value, label or value) for value, label in labelled))
+    if kind in (_ARG_INT, _ARG_FLOAT):
+        spans = _ranges([info.range]) if getattr(info, "range", None) is not None else ()
+        if spans and spans[0][0] < spans[0][1]:
+            return DeviceSetting(key, name, description, "number", channel, span=spans[0],
+                                 integer=kind == _ARG_INT)
+    return None
+
+
+def _read(receive: int, device: Any, channel: bool, key: str) -> object:
+    """A setting's value as the device gives it, or None."""
+    try:
+        return device.readSetting(receive, 0, key) if channel else device.readSetting(key)
+    except Exception as error:
+        log.debug("the setting %s cannot be read: %s", key, error)
+        return None
+
+
+def _write(receive: int, device: Any, channel: bool, key: str, text: str) -> None:
+    if channel:
+        device.writeSetting(receive, 0, key, text)
+    else:
+        device.writeSetting(key, text)
 
 
 # ------------------------------------------------------------- settings
@@ -523,6 +919,11 @@ class Settings:
     ppm: float                      # frequency correction, in parts per million to the hundredth
     converter: str = "none"         # one of converter.CONVERTERS
     converter_lo_hz: float = DEFAULT_LO_HZ
+    # A device with several gain stages: each stage's gain, by name.
+    stage_gains: tuple[tuple[str, float], ...] = ()
+    antenna: str | None = None      # None: the device's own choice
+    device_settings: tuple[tuple[str, Value], ...] = ()     # by key
+    bias_tee: bool = False          # antenna power, never saved
 
 
 @dataclass(frozen=True)
@@ -620,6 +1021,9 @@ def changed(settings: Settings, changes: Mapping[str, object], capabilities: Cap
         settings = replace(settings, centre_hz=centre)
     elif "sample_rate_hz" in changes:
         settings = _within_reach(settings, capabilities)
+    if "stage_gains_db" in changes:
+        settings = replace(settings, stage_gains=_changed_stages(settings.stage_gains, changes["stage_gains_db"],
+                                                                 capabilities))
     if "gain_db" in changes:
         value = changes["gain_db"]
         gain = None if value is None else finite_number(value, "the gain")
@@ -627,11 +1031,79 @@ def changed(settings: Settings, changes: Mapping[str, object], capabilities: Cap
             if gain is None and not capabilities.gain_mode:
                 raise ValueError("this device has no automatic gain")
             if gain is not None:
-                gain = _nearest(capabilities.gains_db(), gain)
+                gain = _nearest(capabilities.offered_gains_db(settings.stage_gains), gain)
         settings = replace(settings, gain_db=gain)
+    if "antenna" in changes:
+        value = changes["antenna"]
+        if value is not None and (not isinstance(value, str) or _identifier(value) is None):
+            raise ValueError("the antenna must be one of the device's, by its name")
+        if capabilities is not None and value not in capabilities.antennas:
+            raise ValueError(f"the antenna must be one of: {', '.join(capabilities.antennas)}")
+        settings = replace(settings, antenna=value)
     if "ppm" in changes:
         settings = replace(settings, ppm=checked_ppm(changes["ppm"]))
+    if "device_settings" in changes:
+        settings = replace(settings, device_settings=_changed_settings(settings.device_settings,
+                                                                       changes["device_settings"], capabilities))
+    if "bias_tee" in changes:
+        value = changes["bias_tee"]
+        if not isinstance(value, bool):
+            raise ValueError("the antenna power must be true or false")
+        settings = replace(settings, bias_tee=value)
     return settings
+
+
+def _merged(pairs: tuple[tuple[str, Any], ...], changes: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+    """``pairs`` with the values of ``changes``, the new keys last."""
+    merged = dict(pairs)
+    merged.update(changes)
+    return tuple(merged.items())
+
+
+def _changed_stages(stage_gains: tuple[tuple[str, float], ...], value: object,
+                    capabilities: Capabilities | None) -> tuple[tuple[str, float], ...]:
+    """``stage_gains`` with the gains of ``value``, stage name to gain, each
+    the nearest its stage offers. Until the device is known, any stage
+    passes, which its opening fits; then a stage that it does not have is
+    ignored, as a saved one that its module no longer declares."""
+    if not isinstance(value, Mapping) or len(value) > MAX_STAGES:
+        raise ValueError(f"the stages' gains must be an object of at most {MAX_STAGES} gains, by stage name")
+    changes: dict[str, float] = {}
+    for name, gain in value.items():
+        if not isinstance(name, str) or _identifier(name) is None:
+            raise ValueError("a gain stage is named by text")
+        gain = finite_number(gain, f"the gain of {name}")
+        if capabilities is None:
+            changes[name] = gain
+            continue
+        stage = next((stage for stage in capabilities.stages if stage.name == name), None)
+        if stage is not None:
+            changes[name] = _nearest(stage.gains_db(), gain)
+    return _merged(stage_gains, changes)
+
+
+def _changed_settings(device_settings: tuple[tuple[str, Value], ...], value: object,
+                      capabilities: Capabilities | None) -> tuple[tuple[str, Value], ...]:
+    """``device_settings`` with the values of ``value``, key to value, each
+    as its setting takes it (``DeviceSetting.checked``). Until the device
+    is known, any value of a JSON type passes, which its opening fits; then
+    a key that it does not declare is ignored, as for the stages."""
+    if not isinstance(value, Mapping) or len(value) > MAX_DEVICE_SETTINGS:
+        raise ValueError(f"the device's settings must be an object of at most {MAX_DEVICE_SETTINGS} values, by key")
+    changes: dict[str, Value] = {}
+    for key, setting_value in value.items():
+        if not isinstance(key, str) or _identifier(key) is None:
+            raise ValueError("a device's setting is named by its key, as text")
+        if capabilities is None:
+            if not isinstance(setting_value, (bool, int, float, str)) or (
+                    isinstance(setting_value, str) and _identifier(setting_value) is None):
+                raise ValueError(f"the setting {key} must be true, false, a number or a short text")
+            changes[key] = setting_value
+            continue
+        setting = capabilities.setting(key)
+        if setting is not None:
+            changes[key] = setting.checked(setting_value)
+    return _merged(device_settings, changes)
 
 
 def fitted(settings: Settings, capabilities: Capabilities) -> Settings:
@@ -644,22 +1116,66 @@ def fitted(settings: Settings, capabilities: Capabilities) -> Settings:
         log.warning("the converter is not used: through it, the %s device reaches nothing on the air",
                     capabilities.driver)
         settings = replace(settings, converter="none")
+    stage_gains = _fitted_stages(settings, capabilities)
     gain = settings.gain_db
-    gains = capabilities.gains_db()
+    gains = capabilities.offered_gains_db(stage_gains)
     if not gains:
         gain = None
     elif gain is None and not capabilities.gain_mode:
-        gain = _nearest(gains, capabilities.gain_db if capabilities.gain_db is not None else gains[0])
+        own = capabilities.gain_db if not capabilities.several_stages else sum(value for _, value in stage_gains)
+        gain = _nearest(gains, own if own is not None else gains[0])
     elif gain is not None:
         gain = _nearest(gains, gain)
-    return replace(_within_reach(settings, capabilities), gain_db=gain)
+    antenna = settings.antenna if settings.antenna in capabilities.antennas else (capabilities.antenna or None)
+    asked = dict(settings.device_settings)
+    device_settings = []
+    for key, own_value in capabilities.setting_values:
+        value = own_value
+        setting = capabilities.setting(key)
+        if key in asked and setting is not None:
+            try:
+                value = setting.checked(asked[key])
+            except ValueError as error:
+                log.warning("the saved setting %s of the %s device is not used: %s", key, capabilities.driver, error)
+        device_settings.append((key, value))
+    bias_tee = settings.bias_tee
+    if bias_tee and capabilities.driven_power is None:
+        log.warning("the antenna power asked is ignored: the %s device has no antenna power", capabilities.driver)
+        bias_tee = False
+    return replace(_within_reach(settings, capabilities), gain_db=gain, stage_gains=stage_gains, antenna=antenna,
+                   device_settings=tuple(device_settings), bias_tee=bias_tee)
+
+
+def _fitted_stages(settings: Settings, capabilities: Capabilities) -> tuple[tuple[str, float], ...]:
+    """The gain of each of the device's several stages: the one asked, the
+    nearest the stage offers, or else the device's own, a held stage's
+    lowest (HELD_STAGES) whatever the device's default."""
+    asked, own = dict(settings.stage_gains), dict(capabilities.stage_gains_db)
+    fitted_gains = []
+    for stage in capabilities.stages:
+        gains = stage.gains_db()
+        if stage.name in asked:
+            value = _nearest(gains, asked[stage.name])
+        elif stage.held:
+            value = gains[0]
+        else:
+            value = _nearest(gains, own.get(stage.name, gains[0]))
+        fitted_gains.append((stage.name, value))
+    return tuple(fitted_gains)
 
 
 def settable(capabilities: Capabilities | None) -> list[str]:
-    """The settings an interface may change: the gain until the device is
-    known, then only for a device with one gain stage."""
-    return [name for name in _SETTINGS
-            if name != "gain_db" or capabilities is None or capabilities.gain_settable]
+    """The settings an interface may change: until the device is known, all
+    of them, which its opening fits; then the gain for a device with a
+    gain stage or more, the stages' for several, the antenna for several
+    sockets, its settings if it declares any and the antenna power if it
+    has one."""
+    if capabilities is None:
+        return list(_SETTINGS)
+    offered = {"gain_db": capabilities.gain_settable, "stage_gains_db": capabilities.several_stages,
+               "antenna": bool(capabilities.antennas), "device_settings": bool(capabilities.settings),
+               "bias_tee": capabilities.driven_power is not None}
+    return [name for name in _SETTINGS if offered.get(name, True)]
 
 
 def tuning(settings: Settings, capabilities: Capabilities | None) -> Tuning:
@@ -677,6 +1193,26 @@ def tuning(settings: Settings, capabilities: Capabilities | None) -> Tuning:
             break
     scale = (1 + settings.ppm / 1e6) / (1 + whole / 1e6)
     return Tuning(request, whole, conversion.air(request * scale), scale)
+
+
+def _rebased(newer: Settings, asked: Settings, held: Settings) -> Settings:
+    """``newer``, the settings asked now, with what the device ``held``
+    once asked for ``asked`` wherever ``newer`` still asks what ``asked``
+    did: the gains, stage by stage, the antenna, the device's settings, key
+    by key, and the antenna power."""
+    def pairs(new: tuple[tuple[str, Any], ...], old: tuple[tuple[str, Any], ...],
+              got: tuple[tuple[str, Any], ...]) -> tuple[tuple[str, Any], ...]:
+        old_values, got_values = dict(old), dict(got)
+        return tuple((key, got_values[key] if key in got_values and old_values.get(key) == value else value)
+                     for key, value in new)
+
+    return replace(
+        newer,
+        gain_db=held.gain_db if newer.gain_db == asked.gain_db else newer.gain_db,
+        stage_gains=pairs(newer.stage_gains, asked.stage_gains, held.stage_gains),
+        antenna=held.antenna if newer.antenna == asked.antenna else newer.antenna,
+        device_settings=pairs(newer.device_settings, asked.device_settings, held.device_settings),
+        bias_tee=held.bias_tee if newer.bias_tee == asked.bias_tee else newer.bias_tee)
 
 
 def _nearest(values: Sequence[float], value: float) -> float:
@@ -791,6 +1327,7 @@ class SoapySource:
         self._settings = Settings(DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, None, 0.0)
         self._generation = 0
         self._capabilities: Capabilities | None = None
+        self._refusal = ""          # what the device refused last, until the next change
         self.centre_hz = self._settings.centre_hz
         self.sample_rate_hz = self._settings.sample_rate_hz
         self.exact_centre_hz = self.centre_hz
@@ -895,6 +1432,7 @@ class SoapySource:
         reach = _reach(settings, capabilities)
         rates = capabilities.menu_rates() if capabilities is not None else \
             [rate for rate in COMMON_RATES_HZ if rate <= MAX_RATE_HZ]
+        known = capabilities is not None
         return {
             "kind": self.kind,
             "status": self.status,
@@ -908,13 +1446,21 @@ class SoapySource:
             "sample_rates_hz": sorted({*rates, settings.sample_rate_hz}),
             "gain_db": settings.gain_db,
             "ppm": settings.ppm,
-            "gains_db": list(capabilities.gains_db()) if capabilities is not None else [],
+            "gains_db": list(capabilities.offered_gains_db(settings.stage_gains)) if known else [],
+            "gain_stages": [{"name": stage.name, "gains_db": list(stage.gains_db())}
+                            for stage in capabilities.stages] if known else [],
+            "stage_gains_db": dict(settings.stage_gains),
             "range_hz": [reach[0][0], reach[-1][1]] if reach else [settings.centre_hz, settings.centre_hz],
             "hf_input": None,
             "hf_inputs": [],
             "direct": False,
             "rtl_agc": None,
-            "bias_tee": None,
+            "bias_tee": settings.bias_tee if known and capabilities.driven_power is not None else None,
+            "antenna": settings.antenna,
+            "antennas": list(capabilities.antennas) if known else [],
+            "device_settings": dict(settings.device_settings),
+            "device_setting_info": [setting.describe() for setting in capabilities.settings] if known else [],
+            "device_refusal": self._refusal or None,
             "converter": settings.converter,
             "converter_lo_hz": settings.converter_lo_hz,
             "driver_pll": None,
@@ -925,16 +1471,21 @@ class SoapySource:
     def configure(self, changes: Mapping[str, object]) -> None:
         """Change ``centre_hz``, ``sample_rate_hz`` (one the device offers,
         up to MAX_RATE_HZ), ``gain_db`` (``None`` for automatic gain; with
-        one gain stage), ``ppm``, ``converter`` and ``converter_lo_hz``, then
-        call ``on_change``. Raises ValueError, changing nothing, when a
-        setting is unknown or invalid (``changed``). The reading thread
-        applies them between its reads; until the device is first found,
-        they wait for it."""
+        one gain stage or more), ``stage_gains_db`` (some of several stages'
+        gains, by name), ``antenna`` (one of several), ``ppm``,
+        ``device_settings`` (some of the device's settings, by key),
+        ``bias_tee``, ``converter`` and ``converter_lo_hz``, then call
+        ``on_change``. Raises ValueError, changing nothing, when a setting is
+        unknown or invalid (``changed``). The reading thread applies them
+        between its reads, and the state then shows what the device holds;
+        until the device is first found, they wait for it. A change clears
+        the device's latest refusal."""
         with self._lock:
             new = changed(self._settings, changes, self._capabilities)
             if new != self._settings:
                 self._settings = new
                 self._generation += 1
+                self._refusal = ""
         self._notify()
 
     async def read(self, count: int) -> np.ndarray | None:
@@ -1104,17 +1655,23 @@ class SoapySource:
             return f"the device cannot be opened: {_text(error)}", False
         stream = None
         streamed = False
+        power: tuple[PowerSetting, ...] = ()
         try:
             try:
                 capabilities = read_capabilities(soapy, device, listing)
             except Exception as error:
                 return f"the device cannot be read: {_text(error)}", False
+            # Off at once, whatever the device or a saved file says: on
+            # only once asked, which the first settings applied say.
+            power = capabilities.power
+            self._power_off(receive, device, power)
             with self._lock:
                 self._capabilities = capabilities
                 if capabilities.serial:
                     self._serial = capabilities.serial
                 self._settings = fitted(self._settings, capabilities)
                 self._generation += 1
+                self._refusal = ""
             self._post(self._notify)
             log.info("SoapySDR %s device opened: %s, in %s", capabilities.driver, capabilities.hardware or "no name",
                      capabilities.sample_format.name)
@@ -1141,7 +1698,7 @@ class SoapySource:
                         settings, generation = self._settings, self._generation
                     if self._apply(soapy, device, applied, settings, capabilities):
                         settle_until = time.monotonic() + self._settle_s
-                    applied = settings
+                    applied = self._controls(receive, device, applied, settings, capabilities, generation)
                 result = device.readStream(stream, [array], mtu, 0, TIMEOUT_US)
                 count = int(result.ret)
                 now = time.monotonic()
@@ -1169,6 +1726,7 @@ class SoapySource:
         finally:
             with self._buffer_lock:
                 self._buffer = self._label = None
+            self._power_off(receive, device, power)      # before the device is released, however the session ends
             if stream is not None:
                 for name in ("deactivateStream", "closeStream"):
                     try:
@@ -1235,6 +1793,134 @@ class SoapySource:
                 self._losses.add(dropped=previous.dropped - self._dropped)
             self._buffer, self._label, self._dropped = buffer, label, 0
         return retuned
+
+    def _controls(self, receive: int, device: Any, before: Settings | None, settings: Settings,
+                  capabilities: Capabilities, generation: int) -> Settings:
+        """Ask the device for the gains of several stages, the antenna, its
+        settings and the antenna power of ``settings``, given those it holds,
+        ``before`` (None: as it opened); return ``settings`` as the device
+        then holds them, which the state shows from now on, unless another
+        change came meanwhile. What the device refuses goes into the
+        refusal. Several stages: the stages asked, if any changed, or else
+        the overall gain if it changed; the other then read back."""
+        held = before if before is not None else capabilities.holdings(settings)
+        refused: list[str] = []
+
+        def attempt(what: str, call: Callable[[], None]) -> bool:
+            try:
+                call()
+            except Exception as error:
+                refused.append(f"the device refused {what}: {_text(error)}")
+                return False
+            return True
+
+        result = settings
+        if capabilities.several_stages:
+            gains_asked = False
+            automatic = settings.gain_db is None
+            if capabilities.gain_mode and (before is None or (before.gain_db is None) != automatic):
+                attempt("the automatic gain" if automatic else "the manual gain",
+                        lambda: device.setGainMode(receive, 0, automatic))
+                gains_asked = True
+            holding = dict(held.stage_gains)
+            stages = [(name, value) for name, value in settings.stage_gains if holding.get(name) != value]
+            for name, value in stages:
+                attempt(f"the gain of {name}", functools.partial(device.setGain, receive, 0, name, value))
+            if stages:
+                gains_asked = True
+            elif settings.gain_db is not None and before is not None and before.gain_db != settings.gain_db:
+                attempt("the gain", lambda: self._overall(receive, device, settings, capabilities))
+                gains_asked = True
+            if gains_asked or before is None:      # at opening, what it holds whatever was asked
+                result = self._read_gains(receive, device, result, capabilities)
+        if capabilities.antennas and settings.antenna is not None and settings.antenna != held.antenna:
+            antenna = settings.antenna
+            attempt(f"antenna {antenna}", lambda: device.setAntenna(receive, 0, antenna))
+            got = _identifier(_optional(lambda: device.getAntenna(receive, 0), None))
+            result = replace(result, antenna=got if got in capabilities.antennas else held.antenna)
+        holding_settings = dict(held.device_settings)
+        values = dict(result.device_settings)
+        for key, value in settings.device_settings:
+            setting = capabilities.setting(key)
+            if setting is None or holding_settings.get(key) == value:
+                continue
+            attempt(setting.name, functools.partial(_write, receive, device, setting.channel, key, setting.text(value)))
+            got = setting.parsed(_read(receive, device, setting.channel, key))
+            values[key] = got if got is not None else holding_settings.get(key, value)
+        result = replace(result, device_settings=tuple(values.items()))
+        driven = capabilities.driven_power
+        if driven is not None and settings.bias_tee != (held.bias_tee if before is not None else False):
+            text = driven.on if settings.bias_tee else driven.off
+            assert text is not None
+            if not attempt("the antenna power", functools.partial(_write, receive, device, driven.channel,
+                                                                  driven.key, text)):
+                result = replace(result, bias_tee=not settings.bias_tee)
+        if refused:
+            log.warning("%s", "; ".join(refused))
+        if result != settings or refused:
+            with self._lock:
+                # A change that came meanwhile keeps what it asks.
+                self._settings = _rebased(self._settings, settings, result)
+                if refused:
+                    self._refusal = "; ".join(refused)
+            self._post(self._notify)
+        return result
+
+    @staticmethod
+    def _overall(receive: int, device: Any, settings: Settings, capabilities: Capabilities) -> None:
+        """Ask for ``settings``' overall gain (module docstring): through
+        SoapySDR's overall gain, which the device's module spreads across
+        its stages; on a device with a held stage, whose module's spread may
+        switch it on, as SoapyHackRF's does above 51 dB, never through it:
+        the overall gain less the held stages' goes to the other stages as
+        SoapySDR's own spread does, each in the order the device lists them
+        taking what the next ones leave, the held stages untouched."""
+        assert settings.gain_db is not None
+        if not any(stage.held for stage in capabilities.stages):
+            device.setGain(receive, 0, settings.gain_db)
+            return
+        gains = dict(settings.stage_gains)
+        others = [stage for stage in capabilities.stages if not stage.held]
+        remaining = settings.gain_db - sum(gains.get(stage.name, stage.span[0])
+                                           for stage in capabilities.stages if stage.held)
+        for index, stage in enumerate(others):
+            low, high, _ = stage.span
+            later = sum(other.span[0] for other in others[index + 1:])
+            device.setGain(receive, 0, stage.name, min(max(remaining - later, low), high))
+            remaining -= float(device.getGain(receive, 0, stage.name))
+
+    @staticmethod
+    def _read_gains(receive: int, device: Any, settings: Settings, capabilities: Capabilities) -> Settings:
+        """``settings`` with the stages' gains and the overall gain that the
+        device holds, those it cannot give kept as asked."""
+        asked = dict(settings.stage_gains)
+        gains = []
+        for stage in capabilities.stages:
+            try:
+                gain = round(float(device.getGain(receive, 0, stage.name)), 2)
+            except Exception as error:
+                log.debug("the gain of %s cannot be read: %s", stage.name, error)
+                gain = asked.get(stage.name, math.nan)
+            gains.append((stage.name, gain if math.isfinite(gain) else asked.get(stage.name, stage.span[0])))
+        overall = settings.gain_db
+        if overall is not None:
+            try:
+                overall = round(float(device.getGain(receive, 0)), 2)
+            except Exception as error:
+                log.debug("the overall gain cannot be read: %s", error)
+            if not math.isfinite(overall):
+                overall = settings.gain_db
+        return replace(settings, stage_gains=tuple(gains), gain_db=overall)
+
+    @staticmethod
+    def _power_off(receive: int, device: Any, power: Sequence[PowerSetting]) -> None:
+        """Turn every antenna-power setting off, each tried whatever the
+        others do; one the device refuses is logged."""
+        for setting in power:
+            try:
+                _write(receive, device, setting.channel, setting.key, setting.off)
+            except Exception as error:
+                log.warning("the antenna power %s could not be turned off: %s", setting.key, _text(error))
 
     def _keep(self, data: memoryview) -> None:
         """Keep samples for the engine, and tell a read that waits once

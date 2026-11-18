@@ -99,9 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--bias-tee", action="store_true",
-        help="turn the antenna power (bias tee: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) "
-             "on at start, for the receiver given or reopened; off otherwise, and never saved; "
-             "refused with --soapy",
+        help="turn the antenna power (bias tee: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, "
+             "or a SoapySDR device's own) on at start, for the receiver given or reopened; off otherwise, "
+             "and never saved",
     )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
@@ -130,10 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.soapy is not None and args.bias_tee:
-        # Refused rather than ignored: a service started so would run
-        # without the antenna power it asks for.
-        parser.error("--bias-tee: the antenna power of a SoapySDR device is not available yet")
     report.keep_recent_messages()   # for the reports that the interface offers to share
     source: RtlTcpSource | SoapySource | None = None
     if args.rtl_sdr is not None:

@@ -16,13 +16,24 @@ which ``reset`` puts back.
 
 A device also has what a SoapySDR source reads and sets: its sample rates
 as a list or as ranges, its frequency range, its analogue bandwidths, its
-gain stages, a frequency correction of its own (a ``CORR`` frequency
-component, which SoapySDR's overall frequency spreads its remainder into
-unless the call gives its value, or a correction of the module's own, or
-none), a crystal that runs off, a carrier on the air, which its samples
-then hold where the device's tuning and sampling clock put it, and a
-device that is unplugged and plugged again, whose stream cannot be set up
-or whose stop waits for the test.
+gain stages, each with its range and step and its gain at opening, and the
+overall gain that SoapySDR spreads across them (by default in the order
+listed, or as the device's module does, such as SoapyHackRF's), a gain
+mode, its antenna sockets, its settings, the device's and its receive
+channel's, each of a type with its default, options or range, a frequency
+correction of its own (a ``CORR`` frequency component, which SoapySDR's
+overall frequency spreads its remainder into unless the call gives its
+value, or a correction of the module's own, or none), a crystal that runs
+off, a carrier on the air, which its samples then hold where the device's
+tuning and sampling clock put it, and a device that is unplugged and
+plugged again, whose stream cannot be set up or whose stop waits for the
+test. A device may refuse to write a gain stage, its antenna or a setting
+(``refuses``). ``hackrf_one``, ``rspdx_r2`` and ``rtl_sdr`` declare devices
+shaped as their modules (SoapyHackRF, SoapySDRPlay3 and SoapyRTLSDR)
+declare them: the RTL-SDR's as SoapyRTLSDR 0.3.3 declared one read on a
+receiver (its keys, names, types, values and options), the others as
+their modules' code was remembered, their real declarations to be read on
+the devices.
 
 Receive only: every call that takes a direction refuses any but
 ``SOAPY_SDR_RX``, and ``writeStream`` refuses whatever it is given. A
@@ -33,9 +44,10 @@ caught by the code under test still fails the test.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,6 +100,44 @@ class TransmitRequested(AssertionError):
     """Something asked the stand-in for a transmit direction."""
 
 
+class ArgInfo:
+    """SoapySDR's description of a setting."""
+
+    BOOL, INT, FLOAT, STRING = 0, 1, 2, 3
+
+    def __init__(self, key: str, value: str, name: str, description: str, kind: int,
+                 span: tuple[float, float, float] | None, options: Sequence[str], option_names: Sequence[str]) -> None:
+        self.key = key
+        self.value = value
+        self.name = name
+        self.description = description
+        self.units = ""
+        self.type = kind
+        self.range = Range(*span) if span is not None else Range(0.0, 0.0)
+        self.options = list(options)
+        self.optionNames = list(option_names)  # noqa: N815 - SoapySDR's name
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    """A setting that a device declares: the device's own, or its receive
+    channel's (``channel``), with its default value as SoapySDR writes it."""
+
+    key: str
+    value: str
+    name: str = ""
+    description: str = ""
+    type: int = ArgInfo.BOOL
+    options: tuple[str, ...] = ()
+    option_names: tuple[str, ...] = ()
+    range: tuple[float, float, float] | None = None
+    channel: bool = False
+
+    def info(self) -> ArgInfo:
+        return ArgInfo(self.key, self.value, self.name, self.description, self.type, self.range, self.options,
+                       self.option_names)
+
+
 @dataclass
 class DeviceSpec:
     """A device that a test declares: what it lists, what it can do, and
@@ -120,7 +170,14 @@ class DeviceSpec:
     bandwidths_hz: tuple[float, ...] = ()
     bandwidth_ranges: tuple[tuple[float, float, float], ...] = ()
     gains: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # each stage's range
+    gain_values: dict[str, float] = field(default_factory=dict)     # at opening; otherwise each stage's lowest
+    # How its module spreads an overall gain: each stage's gain; otherwise
+    # SoapySDR's default, in the order listed.
+    overall_gain: Callable[[float], dict[str, float]] | None = None
     gain_mode: bool = False                 # whether it offers automatic gain
+    antennas: tuple[str, ...] = ()          # its sockets, the first in use at opening
+    settings: tuple[SettingSpec, ...] = ()
+    refuses: tuple[str, ...] = ()           # stages, setting keys or "antenna" whose writes it refuses
     correction: str = "none"                # "corr" (a CORR component), "native" (the module's own) or "none"
     crystal_ppm: float = 0.0                # how fast its crystal runs: its tuning and sampling clock with it
     carrier_hz: float | None = None         # a carrier on the air at half full scale; otherwise the tone
@@ -271,8 +328,15 @@ class Device:
         self.frequency_hz = spec.frequency_range_hz[0]
         self.correction_ppm = 0.0               # its CORR component, or its own correction
         self.bandwidth_hz: float | None = None
-        self.gain_db = {name: span[0] for name, span in spec.gains.items()}
+        self.gain_db = {name: spec.gain_values.get(name, span[0]) for name, span in spec.gains.items()}
+        self.gain_writes: list[tuple[str, float]] = []      # every stage's gain set, in order, overall's included
         self.automatic_gain = False
+        self.antenna = spec.antennas[0] if spec.antennas else ""
+        self.setting_values = {setting.key: setting.value for setting in spec.settings}
+        self.setting_writes: list[tuple[str, str]] = []     # every setting written, in order
+        # Settings written and the stream's and device's ends, in order, as
+        # "key=value", "setupStream", "closeStream" and "close".
+        self.events: list[str] = []
         self.tunings: list[tuple[str, float]] = []      # every frequency component set, in order
         self.streams: list[_Stream] = []
         self.closed = False
@@ -280,6 +344,7 @@ class Device:
 
     def close(self) -> None:
         self.closed = True
+        self.events.append("close")
 
     def getDriverKey(self) -> str:  # noqa: N802
         return self.spec.driver_key or self.spec.driver
@@ -353,21 +418,108 @@ class Device:
             raise RuntimeError("setGainMode: no automatic gain")
         self.automatic_gain = bool(automatic)
 
-    def getGainRange(self, direction: int, channel: int, name: str) -> Range:  # noqa: N802
+    def getGainRange(self, direction: int, channel: int, name: str | None = None) -> Range:  # noqa: N802
+        """A stage's range, or the overall gain's: SoapySDR's sum of the stages'."""
         _receive_only("getGainRange", direction)
+        if name is None:
+            return Range(sum(span[0] for span in self.spec.gains.values()),
+                         sum(span[1] for span in self.spec.gains.values()))
         return Range(*self.spec.gains[name])
 
     def setGain(self, direction: int, channel: int, *args: Any) -> None:  # noqa: N802
+        """A stage's gain, ``(name, value)``, within its range and on its
+        steps, rounded down as libhackrf does; or the overall gain,
+        ``(value,)``, spread across the stages by the module's own rule or
+        SoapySDR's: each stage in turn takes what the next ones leave."""
         _receive_only("setGain", direction)
-        if len(args) != 2:
-            raise RuntimeError("the stand-in takes a gain by its stage's name")
-        name, value = args
-        low, high, _ = self.spec.gains[name]
-        self.gain_db[name] = min(max(float(value), low), high)
+        if len(args) == 2:
+            self._set_stage(str(args[0]), float(args[1]))
+            return
+        if len(args) != 1:
+            raise RuntimeError("setGain takes a value, or a stage's name and a value")
+        value = float(args[0])
+        if self.spec.overall_gain is not None:
+            for name, gain in self.spec.overall_gain(value).items():
+                self._set_stage(name, gain)
+            return
+        names = list(self.spec.gains)
+        remaining = value
+        for index, name in enumerate(names):
+            low, high, _ = self.spec.gains[name]
+            later = sum(self.spec.gains[other][0] for other in names[index + 1:])
+            self._set_stage(name, min(max(remaining - later, low), high))
+            remaining -= self.gain_db[name]
 
-    def getGain(self, direction: int, channel: int, name: str) -> float:  # noqa: N802
+    def _set_stage(self, name: str, value: float) -> None:
+        if name in self.spec.refuses:
+            raise RuntimeError(f"setGain({name}) refused")
+        low, high, step = self.spec.gains[name]
+        value = min(max(value, low), high)
+        if step > 0:
+            value = low + math.floor((value - low) / step + 1e-9) * step
+        self.gain_db[name] = value
+        self.gain_writes.append((name, value))
+
+    def getGain(self, direction: int, channel: int, name: str | None = None) -> float:  # noqa: N802
+        """A stage's gain, or the overall gain: the stages' sum."""
         _receive_only("getGain", direction)
+        if name is None:
+            return sum(self.gain_db.values())
         return self.gain_db[name]
+
+    def listAntennas(self, direction: int, channel: int) -> list[str]:  # noqa: N802
+        _receive_only("listAntennas", direction)
+        return list(self.spec.antennas)
+
+    def getAntenna(self, direction: int, channel: int) -> str:  # noqa: N802
+        _receive_only("getAntenna", direction)
+        return self.antenna
+
+    def setAntenna(self, direction: int, channel: int, name: str) -> None:  # noqa: N802
+        _receive_only("setAntenna", direction)
+        if "antenna" in self.spec.refuses or name not in self.spec.antennas:
+            raise RuntimeError(f"setAntenna({name}) refused")
+        self.antenna = name
+
+    def _settings(self, channel: bool) -> dict[str, SettingSpec]:
+        return {setting.key: setting for setting in self.spec.settings if setting.channel == channel}
+
+    def getSettingInfo(self, *args: Any) -> list[ArgInfo]:  # noqa: N802
+        """The device's settings, ``()``, or a channel's, ``(direction, channel)``."""
+        if args:
+            _receive_only("getSettingInfo", args[0])
+        return [setting.info() for setting in self._settings(bool(args)).values()]
+
+    def readSetting(self, *args: Any) -> str:  # noqa: N802
+        """``(key)`` for the device's, ``(direction, channel, key)`` for a channel's."""
+        if len(args) == 3:
+            _receive_only("readSetting", args[0])
+        key = str(args[-1])
+        if key not in self._settings(len(args) == 3):
+            return ""       # as SoapySDR's default
+        return self.setting_values[key]
+
+    def writeSetting(self, *args: Any) -> None:  # noqa: N802
+        """``(key, value)`` for the device's, ``(direction, channel, key,
+        value)`` for a channel's: a value of the setting's type, among its
+        options or within its range, as text."""
+        if len(args) == 4:
+            _receive_only("writeSetting", args[0])
+        key, value = str(args[-2]), args[-1]
+        setting = self._settings(len(args) == 4).get(key)
+        if not isinstance(value, str):
+            raise TypeError("writeSetting takes the value as text")
+        if setting is None or key in self.spec.refuses:
+            raise RuntimeError(f"writeSetting({key}) refused")
+        if setting.type == ArgInfo.BOOL and value not in ("true", "false"):
+            raise RuntimeError(f"writeSetting({key}, {value}): not a boolean")
+        if setting.options and value not in setting.options:
+            raise RuntimeError(f"writeSetting({key}, {value}): not an option")
+        if setting.range is not None and not setting.range[0] <= float(value) <= setting.range[1]:
+            raise RuntimeError(f"writeSetting({key}, {value}): out of range")
+        self.setting_values[key] = value
+        self.setting_writes.append((key, value))
+        self.events.append(f"{key}={value}")
 
     def listFrequencies(self, direction: int, channel: int) -> list[str]:  # noqa: N802
         _receive_only("listFrequencies", direction)
@@ -436,6 +588,7 @@ class Device:
             raise RuntimeError("setupStream: the device is busy")
         stream = _Stream(sample_format, channels)
         self.streams.append(stream)
+        self.events.append("setupStream")
         return stream
 
     def getStreamMTU(self, stream: _Stream) -> int:  # noqa: N802
@@ -456,6 +609,7 @@ class Device:
     def closeStream(self, stream: _Stream) -> None:  # noqa: N802
         stream.active = False
         stream.closed = True
+        self.events.append("closeStream")
 
     def readStream(self, stream: _Stream, buffs: Sequence[np.ndarray], numElems: int, flags: int = 0,  # noqa: N802,N803
                    timeoutUs: int = 100_000) -> StreamResult:  # noqa: N803
@@ -525,6 +679,77 @@ class Device:
                     timeoutUs: int = 100_000) -> StreamResult:  # noqa: N803
         transmit_requests.append("writeStream")
         raise TransmitRequested("writeStream: the stand-in receives only")
+
+
+def _hackrf_overall(value: float) -> dict[str, float]:
+    """SoapyHackRF's spread of an overall gain, as remembered: LNA and VGA
+    up to 51 dB, then the amplifier on, the rest shared."""
+    gain = int(value)
+    if gain <= 0:
+        return {"LNA": 0.0, "AMP": 0.0, "VGA": 0.0}
+    amp = 0 if gain <= 20 + 31 else 14
+    rest = gain - amp
+    vga = ((rest // 3) & ~1) if gain <= 20 + 31 + 14 else int(rest * 40 / 62)
+    return {"LNA": float(rest - vga), "AMP": float(amp), "VGA": float(vga)}
+
+
+def hackrf_one(**changes: Any) -> DeviceSpec:
+    """A HackRF One as SoapyHackRF declares one: its stages LNA, AMP and
+    VGA, its amplifier on at opening here (whatever the default, Radiolack
+    starts it off), its overall gain spread as SoapyHackRF does, one
+    antenna socket and its antenna power, ``bias_tx``."""
+    values = dict(serial="0000000000000000a06063c8234e925f", label="HackRF One #0 a06063c8", hardware="HackRF One",
+                  native=SOAPY_SDR_CS8, formats=(SOAPY_SDR_CS8, SOAPY_SDR_CS16, SOAPY_SDR_CF32),
+                  rates_hz=(), rate_ranges=((1e6, 20e6, 0.0),), frequency_range_hz=(1e6, 6e9),
+                  bandwidths_hz=(1.75e6, 2.5e6, 3.5e6, 5e6, 5.5e6, 6e6, 7e6, 8e6),
+                  gains={"LNA": (0.0, 40.0, 8.0), "AMP": (0.0, 14.0, 14.0), "VGA": (0.0, 62.0, 2.0)},
+                  gain_values={"LNA": 16.0, "AMP": 14.0, "VGA": 16.0}, overall_gain=_hackrf_overall,
+                  antennas=("TX/RX",),
+                  settings=(SettingSpec("bias_tx", "false", "Antenna Bias", "Antenna port power control."),))
+    return add("hackrf", **{**values, **changes})
+
+
+def rspdx_r2(**changes: Any) -> DeviceSpec:
+    """An RSPdx-R2 as SoapySDRPlay3 declares one: gain reductions IFGR and
+    RFGR, automatic gain, antennas A, B and C, its notch filters, its high
+    dynamic range mode, its IQ correction, its AGC set point and its antenna
+    power, ``biasT_ctrl``."""
+    values = dict(serial="2305012345", label="SDRplay Dev0 RSPdx-R2 2305012345", hardware="RSPdx-R2",
+                  native=SOAPY_SDR_CS16, formats=(SOAPY_SDR_CS16, SOAPY_SDR_CF32), full_scale=32767.0,
+                  rates_hz=(62.5e3, 125e3, 250e3, 500e3, 1e6, 2e6, 2.048e6, 3e6, 4e6, 5e6, 6e6, 7e6, 8e6, 9e6, 10e6),
+                  frequency_range_hz=(1e3, 2e9), bandwidths_hz=(200e3, 300e3, 600e3, 1.536e6, 5e6, 6e6, 7e6, 8e6),
+                  gains={"IFGR": (20.0, 59.0, 1.0), "RFGR": (0.0, 27.0, 1.0)},
+                  gain_values={"IFGR": 40.0, "RFGR": 4.0}, gain_mode=True,
+                  antennas=("Antenna A", "Antenna B", "Antenna C"),
+                  settings=(SettingSpec("rfnotch_ctrl", "false", "RF Notch Filter", "RF Notch Filter Control"),
+                            SettingSpec("dabnotch_ctrl", "false", "DAB Notch Filter", "DAB Notch Filter Control"),
+                            SettingSpec("hdr_ctrl", "false", "HDR Mode", "High Dynamic Range Mode Control"),
+                            SettingSpec("biasT_ctrl", "false", "Bias-T Enable", "BiasT Control"),
+                            SettingSpec("iqcorr_ctrl", "true", "IQ Correction", "IQ Correction Control"),
+                            SettingSpec("agc_setpoint", "-30", "AGC Setpoint", "AGC Setpoint (dBfs)",
+                                        type=ArgInfo.INT, range=(-60.0, 0.0, 1.0))))
+    return add("sdrplay", **{**values, **changes})
+
+
+def rtl_sdr(**changes: Any) -> DeviceSpec:
+    """An RTL-SDR as SoapyRTLSDR 0.3.3 declares one: driver key RTLSDR, one
+    gain stage, TUNER, with automatic gain, one antenna socket, RX, a CORR
+    frequency component, direct sampling as a text setting with options,
+    its other settings and its antenna power, ``biastee``. The options'
+    names and the descriptions are the module's code's, as remembered."""
+    values = dict(serial="00000001", label="Generic RTL2832U OEM :: 00000001", hardware="R820T", driver_key="RTLSDR",
+                  native=SOAPY_SDR_CS8, formats=(SOAPY_SDR_CS8, SOAPY_SDR_CS16, SOAPY_SDR_CF32),
+                  rates_hz=(250e3, 1.024e6, 1.536e6, 1.792e6, 1.92e6, 2.048e6, 2.16e6, 2.56e6, 2.88e6, 3.2e6),
+                  frequency_range_hz=(24e6, 1764e6), gains={"TUNER": (0.0, 49.6, 0.0)}, gain_mode=True,
+                  correction="corr", timestamp_factor=2.0, antennas=("RX",),
+                  settings=(SettingSpec("direct_samp", "0", "Direct Sampling", "RTL-SDR Direct Sampling Mode",
+                                        type=ArgInfo.STRING, options=("0", "1", "2"),
+                                        option_names=("Off", "I-ADC", "Q-ADC")),
+                            SettingSpec("offset_tune", "false", "Offset Tune", "RTL-SDR Offset Tuning Mode"),
+                            SettingSpec("iq_swap", "false", "I/Q Swap", "RTL-SDR I/Q Swap Mode"),
+                            SettingSpec("digital_agc", "false", "Digital AGC", "RTL-SDR digital AGC Mode"),
+                            SettingSpec("biastee", "false", "Bias Tee", "RTL-SDR Blog V.3 Bias-Tee Mode")))
+    return add("rtlsdr", **{**values, **changes})
 
 
 def samples(start: int, count: int) -> np.ndarray:

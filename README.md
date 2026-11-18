@@ -164,10 +164,10 @@ stops Radiolack.
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
-| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device reopened ignore it, which Radiolack says; refused with `--soapy`. |
+| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, or a SoapySDR device's own, once it opens) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device without antenna power ignore it, which Radiolack says. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
-| `--soapy ARGS` | Reads a receiver through SoapySDR instead of the source used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). Not with `--rtl-sdr`, `--rtl-tcp` or `--bias-tee`. |
+| `--soapy ARGS` | Reads a receiver through SoapySDR instead of the source used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). Not with `--rtl-sdr` or `--rtl-tcp`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -224,7 +224,8 @@ eight menus beside the one it shows:
   ([Recording](#recording)).
 - Receiver: the source and its settings
   ([RTL-SDR receivers](#rtl-sdr-receivers)), and the SoapySDR devices
-  found ([SoapySDR receivers](#soapysdr-receivers)).
+  found, with a device's antenna sockets and, under Advanced, its gain
+  stages and settings ([SoapySDR receivers](#soapysdr-receivers)).
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
   plan, the bookmarks and the channels and known frequencies on the
   spectrum.
@@ -385,6 +386,12 @@ Receiver menu's "Antenna power (bias tee)" shows whether it is on, on every
 interface. Turning it on takes two presses: the first one makes the button
 say "Confirm: 4.5 V on the antenna socket" for 5 s, and the second one turns
 the power on; turning it off takes one.
+
+A SoapySDR receiver whose module declares a setting that powers its antenna
+socket, such as a HackRF's, an SDRplay's or an RTL-SDR's, has the same
+control, under the same rules, whose first press says "Confirm: power on
+the antenna socket": the module does not say the voltage. See [SoapySDR
+receivers](#soapysdr-receivers).
 
 The antenna power is off at each start, unless Radiolack was started with
 `--bias-tee`, and it is never saved. Radiolack sends its state at each
@@ -766,11 +773,46 @@ radiolack --soapy driver=sdrplay
   driver once it opens. Its sample rates are those the receiver offers, up
   to 8 MS/s, which the engine holds; where the receiver has an analogue
   filter, Radiolack sets it to the nearest bandwidth at or below 0.8 times
-  the sample rate. A receiver with one gain stage takes the gain slider
-  and automatic gain where it has one; one with several, such as a
-  HackRF's, keeps its own gains for now. The frequency correction works as
-  for an RTL-SDR: a receiver that corrects itself takes the nearest whole
-  ppm, and Radiolack the rest.
+  the sample rate. The frequency correction works as for an RTL-SDR: a
+  receiver that corrects itself takes the nearest whole ppm, and Radiolack
+  the rest.
+- Gains: "Tuner gain" moves the receiver's one gain stage, or with several
+  its overall gain, which the receiver's SoapySDR module spreads across
+  them; "Tuner AGC" turns automatic gain on where the receiver has it.
+  With several stages, the Receiver menu's Advanced section, at its
+  bottom, has one slider per stage, under the receiver's names for them,
+  such as a HackRF's LNA, AMP and VGA, or an SDRplay's IFGR and RFGR,
+  which are gain reductions: more is less gain. A stage's change shows in
+  the overall gain, and the other way round, as the receiver holds them.
+  A HackRF's input amplifier, AMP, is off at each first opening, whatever
+  the receiver's default, and only its own slider turns it on: the overall
+  gain moves LNA and VGA alone, around the amplifier as it is. The gains
+  are saved with the receiver.
+- Antenna sockets: a receiver with several, such as an SDRplay RSPdx's,
+  shows "Antenna socket" with the receiver's names for them; the
+  receiver's own choice until changed, then saved with it.
+- The receiver's other settings, as its module describes them, show under
+  Advanced, each with the module's description: a box, a list or a number
+  within its range, such as an SDRplay's notch filters or an RTL-SDR's
+  direct sampling, offset tuning and digital AGC. Each starts at the
+  receiver's own value, is saved with the receiver once changed, and is
+  written between two reads of the receiver, then read back: one that the
+  receiver refuses keeps its value, and the note under the Receiver list
+  says why. Radiolack leaves out the settings that are free text, which
+  the module would read as it likes, those named for transmission, and
+  more than 32. For shortwave on an RTL-SDR, the "RTL-SDR · this computer"
+  and "RTL-SDR · rtl_tcp" entries' Shortwave list does more than the
+  module's direct sampling ([Shortwave](#shortwave)).
+- Antenna power: a setting whose key or name speaks of a bias tee or
+  antenna power, such as `biastee`, `bias_tx` or `biasT_ctrl`, is the
+  Receiver menu's "Antenna power (bias tee)", under the rules of an
+  RTL-SDR's ([Antenna power](#antenna-power)): off at each opening of the
+  receiver, whatever the receiver or a saved file says, unless Radiolack
+  was started with `--bias-tee` or an interface turned it on since; never
+  saved; off before Radiolack releases the receiver, however it stops
+  reading it. Never a plain box under Advanced. A receiver with several
+  such settings has them all off, and the control drives one: its receive
+  channel's before the receiver's own, then the first declared.
 - Without the Python module, `--soapy` says which package to install and
   exits; a SoapySDR receiver reopened at start waits, saying the same, and
   tries again by itself once it is installed. An unplugged or silent
@@ -780,10 +822,8 @@ radiolack --soapy driver=sdrplay
   overflows, the samples dropped when the computer falls behind and the
   blocks that took longer than their period go to the error output at most
   once a minute.
-- Not yet: gains per stage, antenna sockets,
-  antenna power (`--bias-tee` is refused with `--soapy`), the receiver's
-  other settings and I/Q recordings, which Radiolack refuses for a
-  SoapySDR receiver.
+- Not yet: I/Q recordings, which Radiolack refuses for a SoapySDR
+  receiver.
 
 ## Demodulation and audio
 
@@ -1975,7 +2015,8 @@ src/radiolack/
                 an R820T's or R828D's grid, and their raw samples for an I/Q
                 recording
   soapy.py      receivers through SoapySDR: device arguments, what the
-                device offers, the reading thread and its buffer
+                device offers, its gain stages, sockets, settings and
+                antenna power, the reading thread and its buffer
   soapysearch.py
                 the search for SoapySDR devices, one listed driver at a
                 time, for the Receiver menu

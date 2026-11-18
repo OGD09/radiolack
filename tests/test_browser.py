@@ -612,15 +612,66 @@ class BrowserTest(unittest.TestCase):
                 expect(rate.locator("option")).to_have_text(["1.024 MS/s", "2.400 MS/s", "6.000 MS/s"])
                 rate.select_option("1024000")
                 expect(status).to_contain_text(f"SoapySDR {DOT} 1.024 MS/s")
-                # Its gains stay its own until the gains per stage come.
-                expect(page.locator("#src-gain")).to_be_disabled()
-                expect(page.locator("#src-agc")).to_be_disabled()
+                # Several stages: the overall gain, and each stage's in the Advanced section.
+                expect(page.locator("#src-gain")).to_be_enabled()
+                expect(page.locator("#src-advanced")).to_be_visible()
+                expect(page.locator("#src-advanced-controls input[type=range]")).to_have_count(2)
+                expect(page.locator("#src-antenna-field")).to_be_hidden()     # no socket to choose
+                expect(page.locator("#src-power-row")).to_be_hidden()         # nor antenna power
                 expect(page.locator("#src-ppm")).to_be_enabled()
                 rate.select_option("2400000")
                 device.present = False      # unplugged: a wait, which says why
                 expect(page.locator("#src-note")).to_contain_text(
                     "Waiting: no test device found with its serial number. Radiolack tries again by itself.")
                 expect(status).to_contain_text("Waiting for SoapySDR: ")
+
+    def test_a_soapysdr_devices_own_controls_go_to_every_interface(self):
+        soapy = self.enterContext(stand_in_soapysdr())
+        soapy.rspdx_r2(refuses=("hdr_ctrl",))
+        url = self.serve(source=SoapySource("driver=sdrplay"))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("RSPdx-R2 through SoapySDR, driver sdrplay.")
+                # Its sockets, under its names.
+                antenna = first.locator("#src-antenna")
+                expect(antenna.locator("option")).to_have_text(["Antenna A", "Antenna B", "Antenna C"])
+                for name in ("Antenna C", "Antenna B"):
+                    antenna.select_option(name)
+                    expect(second.locator("#src-antenna")).to_have_value(name)
+                # Its stages, one slider each, and its settings with their descriptions.
+                expect(first.locator("#src-advanced")).to_be_visible()
+                for name in ("IFGR", "RFGR"):
+                    expect(first.get_by_label(name)).to_be_enabled()
+                for position, text in (("2", "2.0 dB"), ("6", "6.0 dB")):
+                    first.get_by_label("RFGR").fill(position)
+                    expect(second.get_by_label("RFGR")).to_have_value(position)
+                    expect(second.locator("#src-advanced-controls output").nth(1)).to_have_text(text)
+                notch = first.get_by_label("RF Notch Filter")
+                expect(first.locator("#src-advanced-controls")).to_contain_text("RF Notch Filter Control")
+                notch.uncheck()
+                expect(second.get_by_label("RF Notch Filter")).not_to_be_checked()
+                notch.check()
+                expect(second.get_by_label("RF Notch Filter")).to_be_checked()
+                setpoint = first.get_by_label("AGC Setpoint")
+                setpoint.fill("-41")
+                setpoint.press("Enter")
+                expect(second.get_by_label("AGC Setpoint")).to_have_value("-41")
+                # Refused: the box shows what the device holds, and the note why.
+                first.get_by_label("HDR Mode").check()
+                for page in (first, second):
+                    expect(page.locator("#src-note")).to_contain_text(
+                        "Change refused: the device refused HDR Mode: writeSetting(hdr_ctrl) refused.")
+                    expect(page.get_by_label("HDR Mode")).not_to_be_checked()
+                # Its antenna power, as an RTL-SDR's, without a voltage it does not know.
+                power = first.locator("#src-power")
+                expect(first.locator("#src-power-v")).to_have_text("off")
+                power.click()
+                expect(power).to_have_text("Confirm: power on the antenna socket")
+                power.click()
+                expect(second.locator("#src-power-v")).to_have_text("on")
+                second.locator("#src-power").click()
+                for page in (first, second):
+                    expect(page.locator("#src-power-v")).to_have_text("off")
 
     def logo_box(self, page: Page, em_px: float) -> dict:
         """Check the logo in the page's heading, which it names Radiolack:

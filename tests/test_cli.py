@@ -530,7 +530,7 @@ class SignalTest(unittest.TestCase):
 
 class SoapyOptionTest(unittest.TestCase):
     """--soapy: a receiver read through SoapySDR, by device arguments that
-    name a driver; never with another receiver or --bias-tee, and only
+    name a driver; never with another receiver, and only
     with SoapySDR's Python module, here the stand-in, whose devices no
     test declares: nothing reads them before an interface listens."""
 
@@ -549,13 +549,21 @@ class SoapyOptionTest(unittest.TestCase):
                     cli.build_parser().parse_args(argv)
                 self.assertEqual(raised.exception.code, 2)
 
-    def test_refuses_the_antenna_power(self):
-        with mock.patch.object(cli, "LocalServer") as server, contextlib.redirect_stderr(io.StringIO()) as err:
-            with self.assertRaises(SystemExit) as raised:
-                cli.main(["--ui", "none", "--soapy", "driver=rtlsdr", "--bias-tee"])
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--bias-tee: the antenna power of a SoapySDR device is not available yet", err.getvalue())
-        server.assert_not_called()
+    def test_takes_the_antenna_power_for_when_the_device_opens(self):
+        states, power_antenna = [], cli.LocalServer.power_antenna
+
+        def power(server):
+            power_antenna(server)
+            states.append(server._engine.state()["bias_tee"])
+
+        with stand_in_soapysdr() as soapy, own_settings(), \
+                mock.patch.object(cli.LocalServer, "power_antenna", autospec=True, side_effect=power):
+            code, out, err = run_main("--ui", "none", "--soapy", "driver=rtlsdr", "--bias-tee")
+            self.assertEqual((soapy.searches, soapy.opened), ([], []))
+        self.assertEqual((code, err), (0, ""))
+        self.assertRegex(out, URL_LINE)
+        # Taken, and shown once the device opens with antenna power (tests/test_soapy.py).
+        self.assertEqual(states, [None])
 
     def test_needs_the_module(self):
         # The tests' import guard (tests/__init__.py): SoapySDR is missing.

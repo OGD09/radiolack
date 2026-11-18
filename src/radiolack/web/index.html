@@ -241,6 +241,7 @@
             <input id="src-converter-lo" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" disabled>
             <p class="note" id="src-converter-lo-note"></p>
           </div>
+          <div class="field" id="src-antenna-field" hidden><label for="src-antenna">Antenna socket</label><select id="src-antenna" disabled></select></div>
           <div class="row" id="src-power-row" hidden><span id="src-power-name">Antenna power (bias tee): <output id="src-power-v"></output></span><button type="button" class="btn" id="src-power" disabled></button></div>
           <label class="check" id="src-rtl-agc-row" hidden><input id="src-rtl-agc" type="checkbox" disabled> RTL2832 AGC while sampling directly</label>
           <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1" disabled></div>
@@ -271,6 +272,11 @@
             <p class="note" id="src-driver-note"></p>
           </div>
           <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
+          <div id="src-advanced" hidden>
+            <h3>Advanced</h3>
+            <p class="note">The device's own gain stages and settings, as its driver names and describes them.</p>
+            <div id="src-advanced-controls"></div>
+          </div>
         </div>
       </section>
 
