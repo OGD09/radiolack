@@ -45,6 +45,8 @@ jobs:
 
       # No PYTHONPATH: the tests import the installed package, which also
       # checks that the interface files ship with it.
+      # The suite runs in about five minutes: the limit leaves it room, under
+      # the job's.
       - name: Run the tests
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: python -m unittest discover -s tests -t . -v
