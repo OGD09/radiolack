@@ -187,20 +187,50 @@ class SyncDetectorTest(unittest.TestCase):
                 self.assertLessEqual(sum(a != b for a, b in zip(locks, locks[1:])), 3)
 
     def test_it_locks_again_once_the_carrier_returns(self):
-        t = times(4.0)
-        present = ((t < 1.5) | (t >= 2.5)).astype(float)    # the station goes for a second
+        t = times(7.0)
+        present = ((t < 1.5) | (t >= 5.5)).astype(float)    # the station goes for four seconds
         channel, tones = station(present, 0.5 * present, 0.001)
         search = CarrierSearch(RATE_HZ)
         audio, locks = detect(channel, search)
         per_second = round(RATE_HZ / BLOCK)
         self.assertTrue(all(locks[per_second // 2:round(1.5 * per_second)]))
-        # Lost once the mean of the latest searches says so, half a second after it went.
-        self.assertFalse(any(locks[round(2.1 * per_second):round(2.5 * per_second)]))
-        self.assertTrue(all(locks[round(2.8 * per_second):]))
+        # Lost once the mean of the latest searches stayed under the lock's level long enough.
+        self.assertFalse(any(locks[round(4.0 * per_second):round(5.5 * per_second)]))
+        self.assertTrue(all(locks[round(5.9 * per_second):]))
         self.assertEqual(search.acquisitions, 2)
         self.assertAlmostEqual(search.carrier_hz, CARRIER_HZ, delta=1.0)
-        back = seconds(3.0, 4.0)
+        back = seconds(6.2, 7.0)
         self.assertGreater(correlation(audio[back], tones[back]), 0.99)
+
+    def test_a_carrier_gone_for_a_second_keeps_its_lock(self):
+        t = times(5.0)
+        present = ((t < 2.0) | (t >= 3.0)).astype(float)    # a deep fade of one second
+        channel, tones = station(present, 0.5 * present, 0.001)
+        search = CarrierSearch(RATE_HZ)
+        audio, locks = detect(channel, search)
+        per_second = round(RATE_HZ / BLOCK)
+        self.assertTrue(all(locks[per_second // 2:]))
+        self.assertEqual(search.acquisitions, 1)
+        self.assertAlmostEqual(search.carrier_hz, CARRIER_HZ, delta=1.0)
+        back = seconds(4.0, 5.0)
+        self.assertGreater(correlation(audio[back], tones[back]), 0.99)
+
+    def test_a_carrier_fading_around_the_lock_s_level_keeps_its_lock(self):
+        # As a station on shortwave does: its carrier comes and goes across
+        # the level every other second. The mean of the searches alone gained
+        # and lost the lock at each fade.
+        t = times(30.0)
+        level_db = SAM_LOCK_DB + 6 * np.sin(2 * np.pi * 0.5 * t)       # from 6 dB under the level to 6 dB over
+        carrier = 0.1 * 10 ** ((level_db - SAM_LOCK_DB) / 20) * np.exp(2j * np.pi * CARRIER_HZ * t + 0.3j)
+        channel = (carrier + noise(np.random.default_rng(8), len(t), margin_rms(SAM_LOCK_DB))).astype(np.complex64)
+        search = CarrierSearch(RATE_HZ)
+        locks = []
+        for block in blocks(channel):
+            search.add(block)
+            locks.append(search.locked)
+        self.assertLessEqual(sum(a != b for a, b in zip(locks, locks[1:])), 3)
+        self.assertGreater(sum(locks) / len(locks), 0.8)
+        self.assertAlmostEqual(search.frequency_hz, CARRIER_HZ, delta=3.0)
 
     def test_the_switch_between_the_detectors_makes_no_step(self):
         # In a selective fade, where the two detectors' outputs differ most,

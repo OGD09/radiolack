@@ -302,9 +302,20 @@ settles what it left open:
   lost the lock five times a second, and one at 12 dB once a second. The
   lock goes by the mean of the latest five searches' margins, gained from
   10 dB and lost under 7 dB, which leaves under one change a minute from
-  8.5 to 12 dB. A lock is then gained 0.2 s after a carrier comes and lost
-  0.5 s after it goes. The demodulation state follows, and goes to the
-  interfaces only when it changes.
+  8.5 to 12 dB. A lock is then gained 0.2 s after a carrier comes. The
+  demodulation state follows, and goes to the interfaces only when it
+  changes.
+- **A lock holds through a fade** (after 0.15.0, on real stations). On
+  shortwave broadcast stations, on 2026-11-18, a V3 in direct sampling on
+  a small loop: locked without a change on strong stations, but on one
+  whose carrier fades around the lock's level the mean alone gained and
+  lost the lock 52 times in 90 s. A lock is now lost only once that mean
+  stayed under 7 dB for 15 searches in a row, 1.5 s, about 2 s after a
+  carrier goes, and through a weak search the carrier stays where it was
+  found. In alternate runs of 25 s on four stations, the changes fell from
+  55 to 14, and to none on the station that had 10 and 6. A synthetic
+  carrier fading across the level every other second reproduces it in the
+  tests.
 - **The plan's AM.** The interface's `planMode` (bandplan.js) gives SAM
   where the plan names AM and the VFO is in SAM: a range tuned into, a
   known frequency or a channel pressed, and the mode of a bookmark added

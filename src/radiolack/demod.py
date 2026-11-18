@@ -90,6 +90,7 @@ SINC_CUBED_HALF = 0.36606           # where sinc(x) ** 3, the cascade's response
 SAM_LOCK_DB = 10.0                  # carrier over the noise within the band-pass, or no lock
 SAM_HOLD_DB = 3.0                   # a lock holds this far under SAM_LOCK_DB
 SAM_LOCK_SEARCHES = 5               # the lock goes by the mean of this many searches' margins, half a second
+SAM_LOSE_SEARCHES = 15              # a lock is lost once that mean stayed under its level for this many, 1.5 s
 SAM_MARGIN_DB = (-10.0, 60.0)       # a search's margin counts within these in that mean
 SAM_SEARCH_SIZE = 4096              # the search's FFT: 11.7 Hz per bin at 48 kHz
 SAM_SEARCH_S = 0.1                  # one search this often
@@ -954,9 +955,13 @@ class CarrierSearch:
     the noise's mean power per bin times ln 2, scaled to ``SAM_BAND_HZ``.
     One search's margin scatters by 1 to 2 dB around the carrier's, so the
     lock goes by the mean of the latest ``SAM_LOCK_SEARCHES``: under
-    ``SAM_LOCK_DB`` no lock is gained, and one held is lost ``SAM_HOLD_DB``
-    lower. Search by search, a carrier at 10 dB gained and lost the lock
-    five times a second. Without a lock the next search looks within
+    ``SAM_LOCK_DB`` no lock is gained, and one held is lost once that mean
+    stayed ``SAM_HOLD_DB`` lower for ``SAM_LOSE_SEARCHES`` searches in a row,
+    the carrier staying where it was found through a weak search. Search by
+    search, a carrier at 10 dB gained and lost the lock five times a
+    second; and a station on shortwave whose carrier fades around that
+    level gained and lost it every other second while the mean alone
+    decided. Without a lock the next search looks within
     ``SAM_SEARCH_HZ`` again. ``frequency_hz`` keeps the latest carrier found
     after a loss. Not thread-safe."""
 
@@ -966,6 +971,7 @@ class CarrierSearch:
         self.carrier_hz: float | None = None    # from the channel's 0 Hz, while locked
         self.margin_db: float | None = None     # the carrier over the noise within the band-pass, at the latest search
         self._margins: collections.deque[float] = collections.deque(maxlen=SAM_LOCK_SEARCHES)
+        self._under = 0                         # the latest searches in a row whose mean lay under a lock's level
         self.frequency_hz = 0.0                 # the latest carrier found, from the channel's 0 Hz
         self.acquisitions = 0                   # the locks gained so far
         self._window = hann(SAM_SEARCH_SIZE)
@@ -1007,7 +1013,14 @@ class CarrierSearch:
         self.margin_db = margin
         self._margins.append(min(max(margin, SAM_MARGIN_DB[0]), SAM_MARGIN_DB[1]))
         steady = sum(self._margins) / len(self._margins)
-        if steady < (SAM_LOCK_DB - SAM_HOLD_DB if self.locked else SAM_LOCK_DB):
+        if self.locked:
+            self._under = self._under + 1 if steady < SAM_LOCK_DB - SAM_HOLD_DB else 0
+            if self._under >= SAM_LOSE_SEARCHES:
+                self._lose()
+                return
+            if margin < SAM_LOCK_DB - SAM_HOLD_DB:
+                return      # a weak moment: the carrier stays where it was found
+        elif steady < SAM_LOCK_DB:
             self._lose()
             return
         left, centre, right = (10 * math.log10(max(float(value), 1e-30)) for value in power[peak - 1:peak + 2])
@@ -1022,6 +1035,7 @@ class CarrierSearch:
     def _lose(self) -> None:
         self.locked = False
         self.carrier_hz = None
+        self._under = 0
 
 
 class SyncDetector:
