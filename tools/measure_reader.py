@@ -25,13 +25,41 @@ measure_rates.py does), so that the reader competes for Python's lock with
 the engine's work, as it will in Radiolack.
 
 It reports the samples received against those the device's timestamps
-span, or, without timestamps, against the wall clock since the first
-samples came; the overflows the device reported; the gaps in its
-timestamps; the time-outs and stream errors; the samples the buffer dropped
-because the engine fell behind; and the processor time of the reading
-thread and of the engine's, per second of signal. The reader keeps up when
-no overflow, gap or stream error came and, without timestamps, the samples
-received fall short of the wall clock's by at most 1%.
+span and against those the wall clock expects since the first samples
+came; the overflows the device reported; the gaps in its timestamps; the
+time-outs and stream errors; the samples the buffer dropped because the
+engine fell behind; and the processor time of the reading thread and of
+the engine's, per second of signal.
+
+The verdict. Not every module's timestamps count samples: SoapySDR's
+rtlsdr module 0.3.3 advances them by exactly twice the samples read, at
+every read, as it counts the I and Q bytes. So the tool first looks at how
+the timestamps advance from one read to the next, leaving out the reads
+after an overflow or a stream error: when every read, at least
+``MIN_PAIRS`` of them, puts the next timestamp ahead by the same multiple
+of its samples, within one sample, and that multiple is not 1, the
+timestamps run at a constant multiple of the samples read. The report then
+says so ("the timestamps do not count samples: they advance N times as
+fast") and the verdict leaves them out. Timestamps that count samples keep
+their role: a gap in them is a loss. Timestamps that follow neither
+pattern are taken as counting samples, so that the verdict errs towards a
+loss, which the table's gaps and timestamps earlier than expected then
+explain.
+
+The reader kept up when samples came and none of these is seen: the
+measure stopped early; an overflow reported by the device; a stream error
+(a read that failed); timestamps that count samples with a gap; samples
+the buffer dropped for the engine; or fewer samples received than the
+wall clock expects, by more than ``CLOCK_SHORT`` of them plus
+``END_READS`` reads of the stream's MTU. That allowance covers a crystal
+tens of ppm off and the computer's clock, which NTP may slew by up to
+500 ppm, and the clock's first and last readings, which are not instants:
+each read hands over samples made up to one read earlier, and at the end
+a read's worth may still wait in the device. Time-outs are reported and do
+not decide: a stall whose samples never come shows on the clock, one whose
+samples come later lost nothing, and at a low rate a device that hands
+over its transfers less often than the read's wait times out without
+losing anything.
 
 It needs the SoapySDR Python module (Debian's python3-soapysdr) and the
 device's SoapySDR module, and runs from a checkout of the repository; the
@@ -65,7 +93,9 @@ SECONDS = 60.0
 TIMEOUT_US = 100_000            # a read's wait for samples
 WAIT_S = 0.5                    # the engine's wait for a block, as the rtl_tcp client's READ_WAIT_S
 FAILED_READS = 10               # stream errors in a row that end the measure
-SHORT = 0.01                    # without timestamps, the shortfall allowed against the wall clock
+CLOCK_SHORT = 1e-3              # the shortfall allowed against the wall clock, as a share of what it expects
+END_READS = 2                   # and in reads of the stream's MTU, for its first and last readings
+MIN_PAIRS = 10                  # reads that must show the same multiple for timestamps that do not count samples
 JOIN_S = 5.0
 
 EXIT_KEPT_UP = 0
@@ -92,15 +122,39 @@ class Reading:
     first_at: float | None = None           # monotonic time the first samples came
     last_at: float | None = None            # and the last
     first_count: int = 0                    # samples in the first read that gave any
+    # Each read followed by another without an overflow or a stream error
+    # between them: its samples, and how far the next timestamp lies ahead
+    # of its own, in ns.
+    advances: list[tuple[int, int]] = field(default_factory=list)
     cpu_ns: int = 0             # the thread's processor time
     problem: str = ""           # why it stopped early
+
+
+def timestamp_factor(advances: Sequence[tuple[int, int]], rate_hz: float) -> float | None:
+    """How many times as fast as the samples read the timestamps advance,
+    when they run at a constant multiple of them other than 1: every one of
+    at least ``MIN_PAIRS`` reads puts the next timestamp ahead by the same
+    multiple of its samples, within one sample. None otherwise: the
+    timestamps count samples, or follow no such pattern."""
+    if len(advances) < MIN_PAIRS:
+        return None
+    counts = [count for count, _ in advances]
+    ahead = [advance_ns * rate_hz / 1e9 for _, advance_ns in advances]      # in samples
+
+    def fits(factor: float) -> bool:
+        return all(abs(samples - factor * count) <= 1.0 for count, samples in zip(counts, ahead))
+
+    factor = sum(ahead) / sum(counts)
+    if fits(1.0) or not fits(factor):
+        return None
+    return factor
 
 
 class Reader(threading.Thread):
     """Reads the stream into ``buffer`` until stopped."""
 
     def __init__(self, soapy: ModuleType, device: Any, stream: Any, sample_format: str, rate_hz: float,
-                 mtu: int, buffer: NativeBuffer) -> None:
+                 mtu: int, buffer: NativeBuffer, clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__(name="soapy-reader", daemon=True)
         self.soapy = soapy
         self.device = device
@@ -108,46 +162,55 @@ class Reader(threading.Thread):
         self.rate_hz = rate_hz
         self.mtu = mtu
         self.buffer = buffer
+        self.clock = clock
         self.reading = Reading()
         self.stopping = threading.Event()
         self._array = np.empty(2 * mtu, FORMATS[sample_format].component)
+        self._failed = 0                # stream errors in a row
+        self._interrupted = False       # an overflow or a stream error since the last samples
+        self._previous: tuple[int, int] | None = None      # the last samples' timestamp and count
 
     def run(self) -> None:
         reading = self.reading
         started = time.thread_time_ns()
         try:
-            self._read()
+            while not self.stopping.is_set() and self.read_once():
+                pass
         except Exception as error:      # a module's failure ends the measure, with its message
             reading.problem = f"the read failed: {error}"
         finally:
             reading.cpu_ns = time.thread_time_ns() - started
 
-    def _read(self) -> None:
+    def read_once(self) -> bool:
+        """One read into the buffer, counted; False when the stream has
+        failed too often in a row to go on."""
         soapy, reading, array = self.soapy, self.reading, self._array
-        failed = 0
-        while not self.stopping.is_set():
-            result = self.device.readStream(self.stream, [array], self.mtu, 0, TIMEOUT_US)
-            reading.reads += 1
-            count = result.ret
-            if count > 0:
-                failed = 0
-                now = time.monotonic()
-                self._timestamp(result, count)
-                self.buffer.put(memoryview(array)[:2 * count].cast("B"))
-                if reading.first_at is None:
-                    reading.first_at, reading.first_count = now, count
-                reading.last_at = now
-                reading.received += count
-            elif count == soapy.SOAPY_SDR_TIMEOUT:
-                reading.timeouts += 1
-            elif count == soapy.SOAPY_SDR_OVERFLOW:
-                reading.overflows += 1
-            else:
-                reading.errors[soapy.errToStr(count)] += 1
-                failed += 1
-                if failed >= FAILED_READS:
-                    reading.problem = f"the stream failed {failed} times in a row: {soapy.errToStr(count)}"
-                    return
+        result = self.device.readStream(self.stream, [array], self.mtu, 0, TIMEOUT_US)
+        reading.reads += 1
+        count = result.ret
+        if count > 0:
+            self._failed = 0
+            now = self.clock()
+            self._timestamp(result, count)
+            self._interrupted = False
+            self.buffer.put(memoryview(array)[:2 * count].cast("B"))
+            if reading.first_at is None:
+                reading.first_at, reading.first_count = now, count
+            reading.last_at = now
+            reading.received += count
+        elif count == soapy.SOAPY_SDR_TIMEOUT:
+            reading.timeouts += 1
+        elif count == soapy.SOAPY_SDR_OVERFLOW:
+            reading.overflows += 1
+            self._interrupted = True
+        else:
+            reading.errors[soapy.errToStr(count)] += 1
+            self._interrupted = True
+            self._failed += 1
+            if self._failed >= FAILED_READS:
+                reading.problem = f"the stream failed {self._failed} times in a row: {soapy.errToStr(count)}"
+                return False
+        return True
 
     def _timestamp(self, result: Any, count: int) -> None:
         reading = self.reading
@@ -164,6 +227,10 @@ class Reader(threading.Thread):
                 reading.gap_samples += skipped
             elif skipped < 0:
                 reading.backwards += 1
+        if self._previous is not None and not self._interrupted:
+            previous_ns, previous_count = self._previous
+            reading.advances.append((previous_count, at_ns - previous_ns))
+        self._previous = at_ns, count
         reading.end_ns = at_ns + round(count * 1e9 / self.rate_hz)
 
 
@@ -190,11 +257,25 @@ class Result:
 
     @property
     def spanned(self) -> int | None:
-        """The samples the device's timestamps span, if it gave them."""
+        """The samples the device's timestamps span, if it gave them, read
+        as if they counted samples."""
         reading = self.reading
         if not reading.timestamps or reading.first_ns is None or reading.end_ns is None:
             return None
         return round((reading.end_ns - reading.first_ns) * self.rate_hz / 1e9)
+
+    @property
+    def factor(self) -> float | None:
+        """How many times as fast as the samples read the timestamps
+        advance, when they do not count samples (``timestamp_factor``)."""
+        if self.spanned is None:
+            return None
+        return timestamp_factor(self.reading.advances, self.rate_hz)
+
+    @property
+    def counts_samples(self) -> bool:
+        """Whether the timestamps are taken as counting samples."""
+        return self.spanned is not None and self.factor is None
 
     @property
     def by_clock(self) -> int | None:
@@ -206,14 +287,36 @@ class Result:
         return reading.first_count + round((reading.last_at - reading.first_at) * self.rate_hz)
 
     @property
-    def kept_up(self) -> bool:
+    def allowance(self) -> int:
+        """The shortfall against the wall clock that is not a loss."""
+        return round(CLOCK_SHORT * (self.by_clock or 0)) + END_READS * self.mtu
+
+    @property
+    def losses(self) -> list[str]:
+        """What lost samples, by the verdict's rule; empty when the reader
+        kept up."""
         reading = self.reading
-        if reading.received == 0 or reading.problem or reading.overflows or reading.gaps or reading.errors:
-            return False
-        if self.spanned is None:
-            expected = self.by_clock or 0
-            return reading.received >= (1 - SHORT) * expected
-        return True
+        if reading.received == 0:
+            return ["no sample came"]
+        found = []
+        if reading.problem:
+            found.append("the measure stopped early")
+        if reading.overflows:
+            found.append(f"{reading.overflows} overflows reported")
+        if reading.errors:
+            found.append(f"{sum(reading.errors.values())} reads failed")
+        if self.counts_samples and reading.gaps:
+            found.append(f"{reading.gaps} gaps in the timestamps")
+        if self.dropped:
+            found.append(f"{self.dropped} samples dropped by the buffer")
+        short = (self.by_clock or 0) - reading.received
+        if short > self.allowance:
+            found.append(f"{short} samples fewer than the wall clock expects, over the {self.allowance} allowed")
+        return found
+
+    @property
+    def kept_up(self) -> bool:
+        return not self.losses
 
 
 def native_format(soapy: ModuleType, device: Any) -> str:
@@ -310,7 +413,7 @@ def measure(soapy: ModuleType, args: str, rate_hz: float, seconds: float, freque
 def report(result: Result, started: datetime, loads: tuple[str, str]) -> list[str]:
     reading, engine = result.reading, result.engine
     seconds = max(result.seconds, 1e-9)
-    spanned, by_clock = result.spanned, result.by_clock
+    spanned, by_clock, factor = result.spanned, result.by_clock, result.factor
     lines = [
         "# Reading thread (spike 7)",
         "",
@@ -325,16 +428,21 @@ def report(result: Result, started: datetime, loads: tuple[str, str]) -> list[st
         "| --- | --- |",
         f"| Samples received | {reading.received} |",
     ]
-    if spanned is not None:
-        lines.append(f"| Samples the timestamps span | {spanned} ({spanned - reading.received} not received) |")
-    else:
+    if spanned is None:
         lines.append("| Samples the timestamps span | no timestamps |")
+    elif factor is not None:
+        lines.append(f"| Samples the timestamps span | {spanned}: they advance {factor:.4g} times as fast as the"
+                     " samples read, not used |")
+    else:
+        lines.append(f"| Samples the timestamps span | {spanned} ({spanned - reading.received} not received) |")
     if by_clock is not None:
         short = (by_clock - reading.received) / by_clock * 100 if by_clock else 0.0
-        lines.append(f"| Samples the wall clock expects since the first came | {by_clock} ({short:.2f}% short) |")
+        lines.append(f"| Samples the wall clock expects since the first came | {by_clock} ({short:.2f}% short,"
+                     f" {result.allowance} samples allowed) |")
     lines += [
         f"| Overflows the device reported | {reading.overflows} |",
-        f"| Gaps in the timestamps | {reading.gaps} ({reading.gap_samples} samples) |",
+        "| Gaps in the timestamps | " + ("not used" if factor is not None else
+                                         f"{reading.gaps} ({reading.gap_samples} samples)") + " |",
         f"| Timestamps earlier than expected | {reading.backwards} |",
         f"| Reads | {reading.reads}, {reading.timeouts} timed out |",
         "| Stream errors | " + (", ".join(f"{name} {count}" for name, count in sorted(reading.errors.items()))
@@ -347,8 +455,13 @@ def report(result: Result, started: datetime, loads: tuple[str, str]) -> list[st
     ]
     if reading.problem:
         lines.append(f"The measure stopped early: {reading.problem}.")
-    lines.append("The reader kept up: no sample lost." if result.kept_up else
-                 "Samples were lost, or none came: by the rule, the reader moves to a process of its own.")
+    if factor is not None:
+        lines.append(f"The timestamps do not count samples: they advance {factor:.4g} times as fast as the samples"
+                     " read, at every read. The verdict leaves them out.")
+    losses = result.losses
+    lines.append("The reader kept up: no sample lost." if not losses else
+                 f"Samples were lost, or none came ({'; '.join(losses)}): by the rule, the reader moves to a"
+                 " process of its own.")
     return lines
 
 

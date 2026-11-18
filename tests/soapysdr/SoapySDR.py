@@ -8,8 +8,10 @@ what Radiolack uses (SoapySDR 0.8's Python binding), and its devices are the
 ones a test declares with ``add``: each found by ``Device.enumerate`` when
 the search's arguments match, made by ``Device(args)`` or ``Device.make``,
 and giving samples in its native format at its sample rate, paced by the
-wall clock, as a receiver does, with the overflows, time-outs and stream
-errors the test scripts.
+wall clock, as a receiver does, with the overflows, silent losses,
+time-outs and stream errors the test scripts. A test that must not wait
+replaces ``clock`` and ``sleep``, the module's wall clock and its wait,
+which ``reset`` puts back.
 
 Receive only: every call that takes a direction refuses any but
 ``SOAPY_SDR_RX``, and ``writeStream`` refuses whatever it is given. A
@@ -55,12 +57,18 @@ _ERRORS = {SOAPY_SDR_TIMEOUT: "TIMEOUT", SOAPY_SDR_STREAM_ERROR: "STREAM_ERROR",
 # Each format's type of I and Q, and its full scale.
 _FORMATS = {SOAPY_SDR_CS8: (np.int8, 128.0), SOAPY_SDR_CS16: (np.int16, 32768.0), SOAPY_SDR_CF32: (np.float32, 1.0)}
 TONE_CYCLES = 1 / 64        # the samples: a tone at 1/64 of the sample rate, at half full scale
+_PERIOD = round(1 / TONE_CYCLES)
+_TONE = (0.5 * np.exp(2j * np.pi * TONE_CYCLES * np.arange(_PERIOD))).astype(np.complex64)     # one period
 
 # What the tests declare and read.
 devices: list[DeviceSpec] = []
 searches: list[dict[str, str]] = []        # every Device.enumerate's arguments
 opened: list[Device] = []                  # every device made, closed or not
 transmit_requests: list[str] = []
+
+# The wall clock that paces the devices, and their wait: a test may replace them.
+clock = time.monotonic
+sleep = time.sleep
 
 
 class TransmitRequested(AssertionError):
@@ -72,7 +80,11 @@ class DeviceSpec:
     """A device that a test declares: what it lists, what it can do, and
     the events of its stream, keyed by the number of the stream's read,
     counted from 0: ``"overflow"`` (it lost ``drop`` samples first, which
-    its timestamps then skip), ``"timeout"`` and ``"error"``."""
+    its timestamps then skip), ``"skip"`` (it loses the next ``drop``
+    samples it makes without saying so, as the wall clock and its
+    timestamps both see), ``"timeout"`` and ``"error"``. Its timestamps
+    advance by ``timestamp_factor`` times the samples read: 2 for SoapySDR's
+    rtlsdr module 0.3.3, which counts the I and Q bytes."""
 
     driver: str
     serial: str = "0001"
@@ -83,6 +95,7 @@ class DeviceSpec:
     frequency_range_hz: tuple[float, float] = (1e6, 6e9)
     mtu: int = 16_384                       # samples a read gives at most
     timestamps: bool = True
+    timestamp_factor: float = 1.0           # the timestamps' samples per sample read
     capacity_s: float = 10.0                # samples it keeps for a reader that falls behind
     events: dict[int, str] = field(default_factory=dict)
     drop: int = 1_000                       # samples an overflow loses
@@ -93,13 +106,16 @@ class DeviceSpec:
 
 
 def reset() -> None:
-    """Forget every device, search and request: before each test."""
+    """Forget every device, search and request, and put the wall clock
+    back: before each test."""
+    global clock, sleep
     for device in opened:
         device.close()
     devices.clear()
     searches.clear()
     opened.clear()
     transmit_requests.clear()
+    clock, sleep = time.monotonic, time.sleep
 
 
 def add(driver: str, **settings: Any) -> DeviceSpec:
@@ -261,7 +277,7 @@ class Device:
 
     def activateStream(self, stream: _Stream, flags: int = 0, timeNs: int = 0, numElems: int = 0) -> int:  # noqa: N802,N803
         stream.active = True
-        stream.started = time.monotonic()
+        stream.started = clock()
         stream.position = 0
         return 0
 
@@ -291,20 +307,22 @@ class Device:
             stream.position += self.spec.drop
             stream.started -= self.spec.drop / self.rate_hz     # the samples lost were made meanwhile
             return StreamResult(SOAPY_SDR_OVERFLOW, SOAPY_SDR_END_ABRUPT)
+        if event == "skip":
+            stream.position += self.spec.drop       # the next samples it makes, lost: the reads wait for them
         wanted = min(int(numElems), self.spec.mtu)
-        deadline = time.monotonic() + timeoutUs / 1e6
+        deadline = clock() + timeoutUs / 1e6
         while True:
-            made = int((time.monotonic() - stream.started) * self.rate_hz)
+            made = int((clock() - stream.started) * self.rate_hz)
             if made - stream.position > self.spec.capacity_s * self.rate_hz:
                 lost = made - stream.position - int(self.spec.capacity_s * self.rate_hz)
                 stream.position += lost
                 return StreamResult(SOAPY_SDR_OVERFLOW, SOAPY_SDR_END_ABRUPT)
             ready = made - stream.position
-            if ready >= min(wanted, self.spec.mtu // 4) or (ready > 0 and time.monotonic() >= deadline):
+            if ready >= min(wanted, self.spec.mtu // 4) or (ready > 0 and clock() >= deadline):
                 break
-            if time.monotonic() >= deadline:
+            if clock() >= deadline:
                 return StreamResult(SOAPY_SDR_TIMEOUT)
-            time.sleep(min(0.002, max(0.0, deadline - time.monotonic())))
+            sleep(min(0.002, max(0.0, deadline - clock())))
         count = min(wanted, ready)
         start = stream.position
         _fill(buffs[0], stream.format, start, count)
@@ -313,7 +331,7 @@ class Device:
         time_ns = 0
         if self.spec.timestamps:
             result_flags |= SOAPY_SDR_HAS_TIME
-            time_ns = round(start * 1e9 / self.rate_hz)
+            time_ns = round(start * self.spec.timestamp_factor * 1e9 / self.rate_hz)
         return StreamResult(count, result_flags, time_ns)
 
     def readStreamStatus(self, stream: _Stream, timeoutUs: int = 100_000) -> StreamResult:  # noqa: N802,N803
@@ -327,9 +345,9 @@ class Device:
 
 def samples(start: int, count: int) -> np.ndarray:
     """The samples a stand-in device gives from index ``start``, as
-    complex64 at full scale 1: a test compares what it read with these."""
-    index = np.arange(start, start + count, dtype=np.float64)
-    return (0.5 * np.exp(2j * np.pi * TONE_CYCLES * index)).astype(np.complex64)
+    complex64 at full scale 1: a test compares what it read with these.
+    The tone's period repeated, which costs little for long reads."""
+    return np.resize(np.roll(_TONE, -(start % _PERIOD)), count)
 
 
 def _fill(buffer: np.ndarray, sample_format: str, start: int, count: int) -> None:

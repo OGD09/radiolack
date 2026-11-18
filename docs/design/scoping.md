@@ -440,8 +440,8 @@ SoapySDR devices, for the owner's HackRF One, in reception only.
 
 1. Spikes: the sample rates the engine holds, a device search that stays
    off the network, a reading thread that keeps up; measured on
-   2026-11-18, rates up to 8 MS/s and the searches of four drivers, the
-   reading thread waiting for the owner's V3.
+   2026-11-18, rates up to 8 MS/s, the searches of four drivers, and a
+   reading thread that lost no sample of the owner's V3 at 2.4 MS/s.
 2. The SoapySDR source and `--soapy`.
 3. The Receiver menu's devices, and the arguments field.
 4. Gains, overall and per stage, antenna choice, antenna power.
@@ -537,7 +537,7 @@ band.
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
 | 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
-| 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | The first two answered on 2026-11-18 on the owner's laptop: the engine and the samples' intake hold 4 to 8 MS/s under 50% of one core, 33 to 38% at 8 MS/s in two measures, and 10 MS/s, 48 to 54%, on the limit, is not offered; the searches of `hackrf`, `airspy`, `lime` and `bladerf` make no socket, `airspyhf` stays by its code and `sdrplay` waits for its module ([Spike 7 result](#spike-7-result-2026-11-18)). The third waits for the owner's V3, at the owner's request, with `tools/measure_reader.py`. |
+| 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Answered on 2026-11-18 on the owner's laptop: the engine and the samples' intake hold 4 to 8 MS/s under 50% of one core back to back, 33 to 38% at 8 MS/s in two measures, and 10 MS/s, 48 to 54%, on the limit, is not offered; the searches of `hackrf`, `airspy`, `lime` and `bladerf` make no socket, `airspyhf` stays by its code and `sdrplay` waits for its module; and a thread read the owner's V3 at 2.4 MS/s for 60 s without losing a sample, so the reader stays a thread. Paced as a receiver delivers its blocks, the engine takes a third to 45% of one core at every rate on that laptop, whose processor slows down between blocks, and a few blocks take longer than their 33 ms, most at 8 and 10 MS/s: 8 MS/s is to confirm on the RSPdx-R2 ([Spike 7 result](#spike-7-result-2026-11-18)). |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Answered on 2026-11-17: 3.2 to 3.3% of one core together on the owner's laptop, against 12.5% for the engine itself, once synchronous AM and the blanker, over their 1.5% each, were reworked once; the blanker stays at its share, 1.40 and 1.54% in two measures, and is kept with that cost, by the owner's decision of 2026-11-16 ([Spike 8 result](#spike-8-result-2026-11-17)). |
 | 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
 | 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
@@ -786,6 +786,16 @@ computed again when a notch comes, goes or moves, take 1.6 to 1.9 ms each
 time, outside these figures. What the prototypes showed about the design,
 and the choices made, are in later-milestones.md, section 2.
 
+These shares of one core were measured back to back, the blocks processed
+one after the other: they are shares of the work, as spike 7 found
+(2026-11-18, Back to back and paced). At a receiver's pace, on a processor
+that slows down between blocks, each tool weighs as the engine's own
+processing does, in proportion (not measured paced): there the engine
+takes a third to 45% of one core at every rate on the owner's laptop,
+against 9 to 14% back to back at 2.4 MS/s, and a tool its share of that,
+about a twelfth more for SAM and an eighth for the blanker. The figures
+and the decision above are unchanged.
+
 Not measured: the engine in other modes than AM (the notch costs the same
 in SSB; the fine spectrum alone took 0.7% at WFM's 320 kHz channel against
 0.2% at 48 kHz), other sample rates, NumPy 2, another computer, and the
@@ -795,7 +805,9 @@ tools on a receiver's signals.
 
 The first pull request of Any receiver (later-milestones.md, section 1)
 asks three questions. The first two are answered on the owner's laptop;
-the third needs the owner's V3 and waits for the owner's word.
+the third, on the owner's word, with the owner's V3 on the same laptop
+(below), and on the way it showed that a share of one core measured back
+to back is not what a user sees (below, Back to back and paced).
 
 **Which sample rates the engine holds.** Measured with
 `tools/measure_rates.py` on the owner's laptop: Intel Core i7-7500U at
@@ -949,40 +961,161 @@ the modules do without a device plugged in, not what a module does once
 it finds one. The files and USB devices that a search reads are not
 traced; librtlsdr's replacement keeps an RTL-SDR out of any search.
 
-**Whether a Python thread reads 2.4 MS/s without losing samples.** Waiting
-for the owner's V3, at the owner's request. `tools/measure_reader.py`
-opens the receiver through SoapySDR, reads it from a thread into a
-`NativeBuffer` for a minute, while this thread takes the engine's blocks,
-converts and processes them as the engine does, and reports the samples
-received against those the device's timestamps span (or the wall clock,
-without timestamps), the overflows the device reported, the gaps, the
-time-outs and stream errors, the samples dropped for the engine, and both
-threads' processor time. Its tests run it against
+**Whether a Python thread reads 2.4 MS/s without losing samples.**
+Measured on the owner's word, on the owner's RTL-SDR Blog V3 through
+SoapySDR's rtlsdr module 0.3.3 (`driver=rtlsdr`), with `main` at 5544f03
+and nothing else using the receiver (Radiolack and rtl_tcp stopped).
+`tools/measure_reader.py` opens the receiver through SoapySDR, reads it
+from a thread into a `NativeBuffer` for a minute, while this thread takes
+the engine's blocks, converts and processes them as the engine does, and
+reports the samples received against those the device's timestamps span
+and those the wall clock expects, the overflows the device reported, the
+gaps, the time-outs and stream errors, the samples dropped for the engine,
+and both threads' processor time. Its tests run it against
 `tests/soapysdr/SoapySDR.py`, a stand-in for the module. The planning
-session runs, with nothing else using the V3 (Radiolack and rtl_tcp
-stopped):
+session ran:
 
 ```
 python3 tools/measure_reader.py driver=rtlsdr --rate 2.4 --frequency 145 --seconds 60 --output reader.md
 python3 tools/measure_reader.py driver=rtlsdr --rate 2.4 --frequency 145 --seconds 60 --without-engine
 ```
 
-By the rule fixed beforehand, if the first loses samples, the reader moves
-to a process of its own before pull request 2 builds the source. Read from
-the binding's code, two points bear on it: SoapySDR 0.8.1's Python module
-is built with SWIG's `-threads` (python/CMakeLists.txt), so `readStream`
-releases Python's lock while it waits for samples; and
-`getNativeStreamFormat` takes the full scale as a C++ reference that the
-binding gives Python no way to pass. The tool tries the call, then takes
-the first of the formats the device lists among CS8, CS16 and CF32, which
-its report names: the modules of the RTL-SDR, the HackRF and SDRplay list
-their native format first (CS8, CS8 and CS16, read in their code).
+| Measure | With the engine's processing | Blocks taken, not processed |
+| --- | --- | --- |
+| Reading | 60.1 s, 2.4 MS/s, native format CS8, reads of up to 131072 samples (the stream's MTU) | the same |
+| Samples received | 144179200 | 144179200 |
+| Samples the wall clock expects since the first came | 144180680 (0.00% short) | 144182455 (0.00% short) |
+| Overflows the device reported | 0 | 0 |
+| Reads | 1100, 0 timed out | 1100, 0 timed out |
+| Stream errors | none | none |
+| Samples the buffer dropped, the engine behind | 0 | 0 |
+| The engine's blocks | 1799, no wait of 0.5 s without one | 1799, no wait of 0.5 s without one |
+| Reading thread, % of one core | 1.24 | 2.50 |
+| Engine's thread, % of one core | 36.02 | 2.15 |
+| Load average at start, over a minute | 2.75 | 1.79 |
+
+- **No sample was lost.** Every read gave a whole MTU, 1100 reads in
+  60.1 s, as many samples as the wall clock expects within 1480 and 3255
+  samples, under a millisecond; the device reported no overflow, no read
+  timed out or failed, and the buffer dropped nothing for the engine.
+- **The tool's verdict said the opposite**, "Samples were lost", and was
+  wrong: the rtlsdr module's timestamps advance by exactly twice the
+  samples read, at every read, as they count the I and Q bytes. The tool
+  read them as samples and found 1099 "gaps" for 1100 reads, a span of
+  288227328 samples for 144179200 received (1099 reads of 262144 and the
+  last one's 131072). It now tells timestamps that run at a constant
+  multiple of the samples read from those that count them, says so and
+  leaves the former out; the verdict then rests on the overflows, the
+  reads that failed, the samples dropped and the wall clock, with an
+  allowance of 0.1% and two reads of the MTU for the clock's first and
+  last readings (the tool's docstring gives the rule). Its tests feed the
+  stand-in the same pattern, 1100 reads of 131072 samples, each timestamp
+  a read ahead, and it says that no sample was lost.
+- **By the rule fixed beforehand**, the reader stays a thread in the
+  engine's process, and pull request 2 builds the source that way.
+- The engine's thread took 36% of one core, where `tools/measure_rates.py`
+  gives 12% at 2.4 MS/s back to back: the pace, as the next part shows.
+  The reading thread took 1.24% with the engine's processing beside it and
+  2.50% without, for the same reads: likely the same cause, the processor
+  idling more, and slower, without the engine's work; not measured.
+
+Read from the binding's code, two points bear on the reading thread:
+SoapySDR 0.8.1's Python module is built with SWIG's `-threads`
+(python/CMakeLists.txt), so `readStream` releases Python's lock while it
+waits for samples; and `getNativeStreamFormat` takes the full scale as a
+C++ reference that the binding gives Python no way to pass. The tool tries
+the call, then takes the first of the formats the device lists among CS8,
+CS16 and CF32, which its report names: the modules of the RTL-SDR, the
+HackRF and SDRplay list their native format first (CS8, CS8 and CS16, read
+in their code).
+
+**Back to back and paced.** The engine's 36% of one core in the reading
+measure, against 12% from `tools/measure_rates.py`, led the planning
+session further, the same day on the same laptop:
+
+- Radiolack itself, on the V3 through rtl_tcp at 2.4 MS/s, one interface
+  listening with audio and detection, took 36.6% of one core, all its
+  threads, and rtl_tcp 0.9%: the reading measure's figure.
+- Not the samples: two seconds of the receiver's samples held in memory
+  and processed back to back took 9.0% of one core, synthetic noise of the
+  same level 9.2%.
+- The pace: the same 60 blocks took 14% of one core per second of signal
+  back to back, and 40% processed one every 33 ms, as a receiver delivers
+  them. The laptop's processor (intel_pstate, its governor powersave, 400
+  MHz to 3.5 GHz, on mains) slows down between blocks, and each block then
+  takes longer.
+
+Paced, every rate costs about the same share of one core, and what grows
+with the rate is the time a block takes (the planning session's measure,
+69 blocks at each rate):
+
+| MS/s | Back to back | Paced | Longest block | Blocks over 33 ms |
+| --- | --- | --- | --- | --- |
+| 2.4 | 9.0% | 40.1% | 22.6 ms | 0 of 69 |
+| 3.2 | 11.4% | 33.8% | 27.4 ms | 0 of 69 |
+| 5 | 17.7% | 42.3% | 20.3 ms | 0 of 69 |
+| 8 | 25.1% | 41.1% | 36.6 ms | 3 of 69 |
+| 10 | 31.6% | 40.3% | 37.3 ms | 3 of 69 |
+
+`tools/measure_rates.py` now measures both: back to back, as before, then
+paced, each rate's blocks processed one every period (the block over the
+rate, 1/30 s), reporting the processor time per second of signal, the
+mean and the longest time a block took against its period, and how many
+ran over it. Run on the same laptop with its defaults the same day, five
+runs of 5 s at each rate after 1 s not timed, load average 1.1 at the
+start, 0.9 to 2.3 at the measures' ends (the engine's share of one core:
+the median of the runs, the lowest and the highest; the mean and the
+longest block, and the blocks over the period, over every run):
+
+| MS/s | Back to back | Paced | Mean block | Longest block | Blocks over 33.3 ms |
+| --- | --- | --- | --- | --- | --- |
+| 2.4 | 11.3% (10.5 to 12.2) | 33.7% (21.3 to 36.2) | 10.3 ms | 28.1 ms | 0 of 750 |
+| 3.2 | 14.4% (13.2 to 15.1) | 32.4% (22.9 to 42.9) | 11.1 ms | 37.0 ms | 1 of 750 |
+| 4 | 18.0% (16.7 to 18.8) | 33.2% (30.7 to 40.8) | 11.5 ms | 37.7 ms | 3 of 750 |
+| 5 | 21.4% (20.3 to 22.8) | 39.5% (34.4 to 44.3) | 13.2 ms | 46.2 ms | 2 of 750 |
+| 6 | 21.6% (20.2 to 23.0) | 38.5% (36.7 to 42.1) | 13.0 ms | 41.7 ms | 3 of 750 |
+| 8 | 28.9% (27.0 to 30.5) | 40.0% (36.6 to 44.0) | 13.6 ms | 42.0 ms | 7 of 750 |
+| 10 | 42.8% (41.1 to 46.4) | 43.1% (40.1 to 45.4) | 14.6 ms | 54.4 ms | 10 of 750 |
+
+The same picture, with differences that come from run to run: paced, the
+share of one core stays between about a third and 45% at every rate,
+spread more widely at the low rates (21 to 36% at 2.4 MS/s from one run
+to the next), and a block runs over its period now and then at every rate
+from 3.2 MS/s, one in a hundred at 10 MS/s, 54 ms at most, while the mean
+block stays under half its period. Back to back, this measure gave the
+lowest figures of the three: 10 MS/s, with the intake, came to 45.6 to 49.3%
+by the format, under 50% in every format's median, which the tool's table
+marks offered; single runs went to 53.2%. As decided above, 10 MS/s is
+not offered: it does not stay under 50% from one measure, or one run, to
+the next.
+
+- **What each measure tells.** Back to back is the work to do, the
+  processor kept busy: it stays the rule's measure, and the decision above
+  stands, rates up to 8 MS/s offered and 10 MS/s not. Paced is what a
+  system monitor shows while Radiolack runs, on a processor that slows
+  down between blocks, and whether a block fits its period on this
+  computer. A share of one core read while Radiolack runs therefore says
+  little of the work on such a computer, and the shares measured back to
+  back here and in spike 8 are shares of the work.
+- **8 MS/s is to confirm on a receiver at that rate**, the RSPdx-R2: paced,
+  a few blocks took longer than the 33 ms they have, 3 of 69 at 8 and
+  10 MS/s in the planning session's measure, 7 and 10 of 750 in the
+  tool's, and now and then at the lower rates from 3.2 MS/s, which the
+  buffer, half a second, absorbs while the mean stays well under.
+- **What pull request 2 reports when its source runs**: the blocks that
+  took longer than their period and the samples the buffer dropped, an
+  engine or a reader behind, with the device's overflows (logged at most
+  once a minute, with their count), so that a rate that a computer does
+  not hold shows on that computer.
 
 Not measured: the listening tools above 2.4 MS/s (the blanker works on
 every sample, SAM, the notch and the fine spectrum at the channel's rate),
 the WFM channel above 2.4 MS/s, the drivers' own threads (libusb's
 transfers), NumPy 2, another computer, the searches with a device plugged
-in, `airspyhf` and `sdrplay` searched, and the reading thread.
+in, `airspyhf` and `sdrplay` searched; the reading thread with another
+device than the V3, another module's timestamps, a rate above 2.4 MS/s
+from a real device, or for longer than a minute; and a paced block's time
+on another governor or computer.
 
 ## Preparing a public release
 

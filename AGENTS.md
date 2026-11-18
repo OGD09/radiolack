@@ -273,20 +273,27 @@ the history under the tag `v0.1.0`.
   NFM channel with audio and detection, and a SoapySDR source's intake
   (CS8, CS16 or CF32 into the buffer that drops the oldest, `NativeBuffer`,
   and to complex64) at 2.4 to 10 MS/s on synthetic samples, needing no
-  receiver; `check_search.py` runs `SoapySDR.Device.enumerate` for each
+  receiver, back to back (the work, on which its rule decides) and then
+  paced, the engine's blocks one every 1/30 s (what a system monitor shows
+  on a processor that slows down between blocks, and the blocks that take
+  longer than their period); `check_search.py` runs `SoapySDR.Device.enumerate` for each
   driver named under `unshare -rn`, with a preloaded library, compiled at
   each run, whose seccomp filter refuses and reports every socket but
   netlink's and whose stand-ins for librtlsdr's listing find no receiver;
   it refuses `rtlsdr` and a search without a driver; `measure_reader.py`
   opens a SoapySDR receiver, reads it from a thread into a `NativeBuffer`
   while the engine's processing takes its blocks, and reports the samples
-  lost: only when the owner asks for it in the current conversation, on
-  the receiver the owner names. `tests/test_measure_rates.py`,
+  lost, leaving out timestamps that run at a constant multiple of the
+  samples read, as the rtlsdr module's do: only when the owner asks for it
+  in the current conversation, on the receiver the owner names.
+  `tests/test_measure_rates.py` (the paced measure on a clock of its
+  own, never waiting),
   `tests/test_check_search.py` (its trap, where `unshare -rn` and a C
   compiler work, never a search) and `tests/test_measure_reader.py` test
   them, the last against `tests/soapysdr/SoapySDR.py`, the stand-in for
   SoapySDR's Python module (`tests.fakes.stand_in_soapysdr`), which fails
-  a test that asks it for a transmit direction.
+  a test that asks it for a transmit direction, and whose wall clock a
+  test may replace.
 
 ## Commands
 
@@ -314,8 +321,9 @@ the history under the tag `v0.1.0`.
   `python3 tools/measure_pll.py PORT [--output FILE]` (its `--help` says
   what to set first). It tunes that receiver.
 - Sample rates' cost: `python3 tools/measure_rates.py [--runs N] [--seconds S]
-  [--rates 2.4,4,...] [--output FILE]`, synthetic samples only; about seven
-  minutes with its defaults.
+  [--rates 2.4,4,...] [--output FILE]`, synthetic samples only; about ten
+  minutes with its defaults, back to back then paced. Its paced figures
+  depend on the processor's governor and the computer's other work.
 - SoapySDR search: `python3 tools/check_search.py [DRIVER ...]`, the
   design's drivers by default. Run a SoapySDR search only through it,
   never without a driver nor for `rtlsdr`: a search without a driver runs

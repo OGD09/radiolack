@@ -616,14 +616,19 @@ Three more developer tools prepare SoapySDR receivers (the Any receiver
 milestone, [docs/design/later-milestones.md](docs/design/later-milestones.md),
 section 1). `tools/measure_rates.py` measures the processor time of the
 engine and of bringing a device's samples in at sample rates from 2.4 to
-10 MS/s, on synthetic samples, in about seven minutes. `tools/check_search.py`
+10 MS/s, on synthetic samples, in about ten minutes: back to back, the
+work to do, then paced as a receiver delivers its blocks, what a system
+monitor shows while Radiolack runs and whether each block fits its 1/30 s.
+`tools/check_search.py`
 runs SoapySDR's search for each driver named in a network namespace of its
 own, every socket refused and reported, and says which searches stay off
 the network; it needs `unshare`, a C compiler and the SoapySDR Python
 module, never searches for `rtlsdr` and opens no device.
 `tools/measure_reader.py` reads a SoapySDR receiver from a Python thread
-for a minute and reports the samples lost: it opens and reads the receiver
-named, so run it only on a receiver that nothing else uses. Their `--help`
+for a minute and reports the samples lost, taking the device's timestamps
+into account only where they count samples (some modules' do not): it
+opens and reads the receiver named, so run it only on a receiver that
+nothing else uses. Their `--help`
 says more; the Debian package installs none of them.
 
 ### Calibration
