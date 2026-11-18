@@ -4,10 +4,13 @@
  * drawn with WebGL2, the VFO's audio, the menu, and the interactions around
  * them.
  */
-import { EngineStream } from './stream.js';
+import { EngineStream, FINE_COVER } from './stream.js';
 import { AudioOutput } from './audio.js';
 import { SpectrumView, MAX_MARKERS } from './spectrum-gl.js';
 import { WaterfallView } from './waterfall-gl.js';
+import { HIST_DB_MIN, HIST_DB_STEP, SpectrumHistory } from './history.js';
+import { FINE_BINS, KEPT_SHARE, REMOTE_FINE_BINS, binPosition, coverBins, coveredShare, deepZoomed, fineCover, fineFrameFor,
+  fineNarrowest, fineReceived, fitDeepView, readoutDecimals, resolutionNote, wideNarrowest } from './deepzoom.js';
 import { loadBandPlan, planMode, rangeAt } from './bandplan.js';
 import { antennaLengths, formatLength } from './antenna.js';
 import { DIRECT_GAIN_NOTE, shortwaveView } from './shortwave.js';
@@ -22,7 +25,7 @@ import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tun
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
   tunerNoteShown } from './calibration.js';
-import { axisDecimals, bandsInView, beyondReachNote, fitWithin, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
+import { axisDecimals, bandsInView, beyondReachNote, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -41,9 +44,7 @@ function onMediaChange(query, listener) {
 }
 
 // ------------------------------------------------------------------ constants
-const HIST_DB_MIN = -160;           // waterfall history: levels from -160 dBFS in 0.625 dB steps, on 8 bits
-const HIST_DB_STEP = 0.625;
-const HIST_ROWS = 1400;             // waterfall lines kept for re-rendering
+const HIST_ROWS = 1400;             // waterfall lines kept for re-rendering, in each spectrum's history
 const S_ZERO = -104;                // S-meter bar range (mock calibration: S9 = -50 dB)
 const S_TOP = -10;
 const METER_FLOOR = -140;           // reading when the VFO's channel lies outside the received band
@@ -182,11 +183,15 @@ function passband(f = S.vfo) {
 }
 
 // ------------------------------------------------------------------ buffers
-let frameLin, avgLin, avgDb, peakDb, wfAcc, hist, histTime;
-let histCentre;                     // the centre of the capture each waterfall line comes from, Hz
-let wfCount = 0, histHead = -1, histFilled = 0, avgPrimed = false, levelsPrimed = false, frameCounter = 0;
-let lastFrameMs = -Infinity;        // performance.now() at the latest frame of this capture
-let floorDb = -97, autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
+// Each spectrum keeps its frames, its trace and its waterfall's lines at its
+// own resolution (history.js): the received span's, and the fine spectrum of
+// the VFO's channel while the deep zoom asks for it (deepzoom.js). The view
+// shows one, `shown`; the wide one goes on taking its frames meanwhile.
+const wide = new SpectrumHistory(HIST_ROWS);
+const fine = new SpectrumHistory(HIST_ROWS);
+const WIDE_LAYER = 0, FINE_LAYER = 1;   // their histories in the waterfall view
+let shown = wide;
+let autoTop = -30, meterDb = METER_FLOOR, sqlOpen = false;
 let meterSqlDb = null;              // the squelch threshold in use, from the frames; null while unknown
 const autoWf = { min: -101, max: -57 };
 const floorSample = new Float32Array(1024);
@@ -200,42 +205,96 @@ let lutDirty = true;
 
 // New capture (centre, width or FFT size): every buffer and the history start again.
 function resetBuffers() {
-  const nb = S.nb;
-  frameLin = new Float32Array(nb);
-  avgLin = new Float32Array(nb);
-  avgDb = new Float32Array(nb).fill(-140);
-  peakDb = new Float32Array(nb).fill(-300);
-  wfAcc = new Float32Array(nb);
-  hist = new Uint8Array(nb * HIST_ROWS);
-  histTime = new Float64Array(HIST_ROWS);
-  histCentre = new Float64Array(HIST_ROWS);
-  wfCount = 0; histHead = -1; histFilled = 0; avgPrimed = false; levelsPrimed = false;
-  lastFrameMs = -Infinity;
-  if (waterfallView) waterfallView.setBins(nb);
-  clearStamps();
+  wide.reset(S.fc, S.fs, S.nb);
+  if (waterfallView) waterfallView.setBins(S.nb, WIDE_LAYER);
+  if (shown === wide) clearStamps();
 }
 // The same receiver's span moved by less than its width: the waterfall's
 // lines and the peak hold keep their frequencies, what left the span goes and
 // the new part starts empty. The next frame starts the averages again.
-function slideBuffers(fromCentre) {
-  const nb = S.nb, moved = Math.round((fromCentre - S.fc) / binHz());    // bin i of the old span is bin i + moved
-  if (moved > 0) {
-    peakDb.copyWithin(moved, 0, nb - moved);
-    peakDb.fill(-300, 0, moved);
-  } else if (moved < 0) {
-    peakDb.copyWithin(0, -moved);
-    peakDb.fill(-300, nb + moved);
-  }
-  wfAcc.fill(0);
-  wfCount = 0; avgPrimed = false;
-  lastFrameMs = -Infinity;
-  if (waterfallView) waterfallView.setOffsets(lineOffsets());
+function slideBuffers() {
+  wide.slide(S.fc);
+  if (waterfallView) waterfallView.setOffsets(wide.lineOffsets(), WIDE_LAYER);
 }
-// Where each waterfall line's first bin lies, in bins from the span's first bin.
-function lineOffsets() {
-  const offsets = new Float32Array(HIST_ROWS), bin = binHz();
-  for (let row = 0; row < HIST_ROWS; row += 1) offsets[row] = (histCentre[row] - S.fc) / bin;
-  return offsets;
+
+// ------------------------------------------------------------------ deep zoom
+// Below the wide spectrum's limit, within the fine spectrum's cover, the view
+// asks the engine for the fine frames and shows them once they come, in the
+// same place (deepzoom.js). Until the first comes, about 0.17 s later, and
+// while those it holds cover less than half the view, the wide spectrum
+// shows: never a fine frame where it did not come from.
+let deepZoom = false;       // the view is deep enough for the fine spectrum, with its hysteresis
+let fineAsked = false;      // this interface asks the engine for the fine frames
+let fineFresh = false;      // a fine frame came since it asked
+let fineWindow = [0, 0];    // the fine frames' bins that show the air (deepzoom.js coverBins)
+const fineLo = () => fine.centreHz - FINE_COVER * fine.widthHz;
+const fineHi = () => fine.centreHz + FINE_COVER * fine.widthHz;
+// What the shown spectrum measures: the span, or the fine spectrum's cover.
+const shownLo = () => (shown === fine ? fineLo() : fStart());
+const shownHi = () => (shown === fine ? fineHi() : fEnd());
+// The fine spectrum's cover and narrowest view while the engine would send it for the VFO, else null.
+function deepLimits() {
+  const known = stream.spectra.includes('fine');
+  if (!fineReceived({ known, vfoHz: S.vfo, mode: S.mode, span: [fStart(), fEnd()] })) return null;
+  const { centreHz, widthHz } = fineFrameFor(S.vfo, S.mode);
+  return { cover: fineCover(centreHz, widthHz), narrowestHz: fineNarrowest(widthHz, stream.remote ? REMOTE_FINE_BINS : FINE_BINS) };
+}
+// Whether the view is deep, and whether to ask: not while the page is hidden, where nobody sees.
+function syncDeep() {
+  const limits = deepLimits();
+  deepZoom = limits !== null && deepZoomed(deepZoom, [view.f0, view.f1], limits.cover, binHz());
+  const ask = deepZoom && !document.hidden;
+  if (ask !== fineAsked) {
+    fineAsked = ask;
+    // Each asking starts an empty fine history: lines from an earlier one would
+    // stand right under the new ones, with the time between them unseen.
+    if (ask) fine.clear();
+    fineFresh = false;
+    stream.setFine(ask);
+  }
+  updateShown();
+}
+// Which spectrum shows: on a switch, the waterfall's timestamps, Display's
+// line and the automatic scales follow it.
+function updateShown() {
+  const next = fineAsked && fineFresh && fine.bins
+    && coveredShare([view.f0, view.f1], [fineLo(), fineHi()]) >= KEPT_SHARE ? fine : wide;
+  if (next !== shown) {
+    shown = next;
+    rebuildStamps();
+    if (shown.levelsPrimed) primeScales(shown);
+  }
+  syncResolution();
+}
+function onFine(frame) {
+  if (!fineAsked) return;
+  const n = frame.codes.length;
+  if (!fine.slides(frame.centreHz, frame.widthHz, n)) {
+    fine.reset(frame.centreHz, frame.widthHz, n);
+    fineWindow = coverBins(n);
+    if (waterfallView) waterfallView.setBins(n, FINE_LAYER);
+    if (shown === fine) clearStamps();
+  } else if (frame.centreHz !== fine.centreHz) {
+    fine.slide(frame.centreHz);   // the VFO moved by less than the channel: the lines keep their frequencies
+    if (waterfallView) waterfallView.setOffsets(fine.lineOffsets(), FINE_LAYER);
+  }
+  fine.add(frame.codes, frame.dbMin, frame.dbStep, S.avg, performance.now());
+  fineFresh = true;
+  estimateFloor(fine);
+  updateShown();
+}
+// Forget the fine frames, which the next ones replace: another receiver, or a stream that dropped.
+function clearFine() {
+  fine.clear();
+  fineFresh = false;
+  updateShown();
+}
+let resolutionShown = '';
+function syncResolution() {
+  const text = resolutionNote(shown === fine, shown.binHz || binHz());
+  if (text === resolutionShown) return;
+  resolutionShown = text;
+  $('#ds-resolution').textContent = text;
 }
 
 // ------------------------------------------------------------------ engine stream
@@ -267,23 +326,16 @@ let pendingTune = null;     // { centre, before, f, opts, inUse }: where the VFO
                             // the centre in use for centre, inUse once the engine reported it; before lists
                             // the centres the engine may report on the way
 let newSource = false;      // the next frames come from another receiver, or another converter: every buffer starts again
-let codeDbMin = NaN, codeDbStep = NaN;
-const codeToLin = new Float32Array(256);
 
+// The wide frames go on feeding the wide spectrum and its waterfall while the
+// fine spectrum shows, so that zooming out shows no hole; the S-meter and the
+// squelch come from them.
 function onFrame(frame) {
   const codes = frame.codes, nb = codes.length;
   if (newSource || frame.centreHz !== S.fc || frame.rateHz !== S.fs || nb !== S.nb) setCapture(frame.centreHz, frame.rateHz, nb);
-  if (frame.dbMin !== codeDbMin || frame.dbStep !== codeDbStep) {
-    codeDbMin = frame.dbMin;
-    codeDbStep = frame.dbStep;
-    for (let c = 0; c < 256; c += 1) codeToLin[c] = 10 ** ((codeDbMin + c * codeDbStep) / 10);
-  }
-  for (let i = 0; i < nb; i += 1) frameLin[i] = codeToLin[codes[i]];
-  integrateFrame();
-  lastFrameMs = performance.now();
+  wide.add(codes, frame.dbMin, frame.dbStep, S.avg, performance.now());
   updateMeter(frame);
-  frameCounter += 1;
-  if (frameCounter % 3 === 0) estimateFloor();
+  if (wide.frames % 3 === 0) estimateFloor(wide);
   autoAdjust();
   countFrame(performance.now());
 }
@@ -299,7 +351,7 @@ function setCapture(centre, rate, bins) {
   S.fc = centre;
   S.fs = rate;
   S.nb = bins;
-  if (slides) slideBuffers(from); else resetBuffers();
+  if (slides) slideBuffers(); else resetBuffers();
   if (framed) setView(fStart(), fEnd()); else setView(view.f0, view.f1);
   const pending = pendingTune;
   if (pending && pendingCentre() === centre) {
@@ -333,6 +385,7 @@ const audio = new AudioOutput((state) => {
 const stream = new EngineStream({
   onFrame,
   onAudio: (frame) => audio.play(frame),
+  onFine,
   onSource: (state) => {
     const limits = viewLimits(), before = source;
     if (source && (state.kind !== source.kind || state.address !== source.address)) newSource = true;
@@ -341,6 +394,7 @@ const stream = new EngineStream({
     // signals it shows.
     const converted = before !== null && !newSource && conversionMoved(before, state);
     if (converted) newSource = true;
+    if (newSource) clearFine();
     source = state;
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
@@ -523,11 +577,13 @@ const stream = new EngineStream({
     streamState = state;
     if (state !== 'open') {
       rateSince = 0; frameRate = 0; audio.reset();
+      clearFine();              // asked again once the stream opens, the fine history starting empty
       // The engine's state after the next connection tells what became of a retune on its way.
       if (pendingTune) pendingTune.before = [];
       namingBookmark = null;    // a bookmark added before comes back as any other
     }
     if (state === 'open') {
+      refitView();              // the engine's hello may list the fine spectrum, or no longer
       $('#st-remote-client').hidden = !stream.remote;
       $('#ab-remote-client').hidden = !stream.remote;
       $('#ab-report-section').hidden = stream.remote;     // the engine reports to this computer's interfaces only
@@ -594,21 +650,6 @@ soundEl.addEventListener('click', () => {
   }   // otherwise the browser held the audio, and the press asked it to start
 });
 
-function integrateFrame() {
-  const nb = S.nb, a = avgPrimed ? S.avg : 0;
-  for (let i = 0; i < nb; i += 1) {
-    const v = frameLin[i];
-    const m = a * avgLin[i] + (1 - a) * v;
-    avgLin[i] = m;
-    const db = 10 * Math.log10(m + 1e-30);
-    avgDb[i] = db;
-    if (db > peakDb[i]) peakDb[i] = db;
-    wfAcc[i] += v;
-  }
-  wfCount += 1;
-  avgPrimed = true;
-}
-
 // The engine measures the VFO's channel: the meter follows its level, fast
 // up and slower down, and shows its squelch.
 function updateMeter(frame) {
@@ -618,27 +659,33 @@ function updateMeter(frame) {
   sqlOpen = frame.squelchOpen;
 }
 
-// Noise floor: median level of the central bins. The first estimate also
-// places the automatic scales, so they need not slide there from afar.
-function estimateFloor() {
-  const nb = S.nb, from = Math.floor(nb * 0.15), to = Math.floor(nb * 0.85);
+// Noise floor of a spectrum: median level of its central bins, within the
+// fine spectrum's cover too. The first estimate of the spectrum shown also
+// places the automatic scales, so they need not slide there from afar, and
+// so does a switch to the other spectrum: a fine bin holds less noise.
+function estimateFloor(h) {
+  const nb = h.bins, from = Math.floor(nb * 0.15), to = Math.floor(nb * 0.85);
   const count = Math.min(floorSample.length, to - from), stride = (to - from) / count;
-  for (let k = 0; k < count; k += 1) floorSample[k] = avgDb[from + Math.floor(k * stride)];
+  for (let k = 0; k < count; k += 1) floorSample[k] = h.avgDb[from + Math.floor(k * stride)];
   const median = floorSample.subarray(0, count).sort()[count >> 1];
-  if (levelsPrimed) {
-    floorDb += (median - floorDb) * 0.2;
+  if (h.levelsPrimed) {
+    h.floorDb += (median - h.floorDb) * 0.2;
     return;
   }
-  levelsPrimed = true;
-  floorDb = median;
-  autoTop = floorDb - 12 + S.range;
-  autoWf.min = floorDb - 4;
-  autoWf.max = floorDb + 40;
+  h.levelsPrimed = true;
+  h.floorDb = median;
+  if (h === shown) primeScales(h);
+}
+function primeScales(h) {
+  autoTop = h.floorDb - 12 + S.range;
+  autoWf.min = h.floorDb - 4;
+  autoWf.max = h.floorDb + 40;
   lutDirty = true;
 }
 
-// Automatic scales follow the floor, once per frame.
+// Automatic scales follow the floor of the spectrum shown, once per frame.
 function autoAdjust() {
+  const floorDb = shown.floorDb;
   if (S.autoRange) autoTop += (floorDb - 12 + S.range - autoTop) * 0.1;
   if (S.wfAuto) {
     const lo = floorDb - 4, hi = floorDb + 40;
@@ -682,16 +729,16 @@ function rebuildLut() {
 }
 
 // Timestamps every 10 s: text elements over the waterfall, moved down one
-// CSS px per line (one line per CSS px row).
+// CSS px per line (one line per CSS px row), from the history shown.
 const STAMP_MS = 10000;
 const stamps = [];                  // { el, row }, oldest first
 let lastStampSlot = -1;
-const ageOf = (row) => (histHead - row + HIST_ROWS) % HIST_ROWS;
-const stampLimit = () => Math.min(wfH, histFilled, HIST_ROWS - 1);
+const ageOf = (row) => (shown.head - row + HIST_ROWS) % HIST_ROWS;
+const stampLimit = () => Math.min(wfH, shown.filled, HIST_ROWS - 1);
 function addStamp(row) {
   const el = document.createElement('div');
   el.className = 'wf-stamp';
-  el.textContent = new Date(histTime[row]).toTimeString().slice(0, 8);
+  el.textContent = new Date(shown.histTime[row]).toTimeString().slice(0, 8);
   el.style.transform = `translateY(${ageOf(row)}px)`;
   stampsEl.appendChild(el);
   stamps.push({ el, row });
@@ -712,42 +759,36 @@ function advanceStamps() {
 function rebuildStamps() {
   clearStamps();
   if (!S.timestamps) return;
+  const h = shown;
   for (let age = stampLimit() - 2; age >= 0; age -= 1) {
-    const row = (histHead - age + HIST_ROWS) % HIST_ROWS, older = (row - 1 + HIST_ROWS) % HIST_ROWS;
-    if (Math.floor(histTime[row] / STAMP_MS) !== Math.floor(histTime[older] / STAMP_MS)) addStamp(row);
+    const row = (h.head - age + HIST_ROWS) % HIST_ROWS, older = (row - 1 + HIST_ROWS) % HIST_ROWS;
+    if (Math.floor(h.histTime[row] / STAMP_MS) !== Math.floor(h.histTime[older] / STAMP_MS)) addStamp(row);
   }
-  if (histFilled) lastStampSlot = Math.floor(histTime[histHead] / STAMP_MS);
+  if (h.filled) lastStampSlot = Math.floor(h.histTime[h.head] / STAMP_MS);
 }
 
-// One waterfall line: the average power of the frames since the previous line.
-// Frames may come slower than lines, as to remote devices: a line then
-// repeats the latest frame, while frames still come, so that the waterfall
-// keeps its speed.
+// Waterfall lines: each spectrum makes its own, at the waterfall's speed, from
+// the frames since its previous line (history.js). Frames may come slower than
+// lines, as to remote devices and as the fine frames do: a line then repeats
+// the latest frame, while frames still come, so that the waterfall keeps its
+// speed. The fine frames come about ten times a second: a line repeats one
+// for a little more than their interval, and once they stop, as while the VFO
+// moves at every block, the fine history waits rather than stretch.
 const LINE_REPEAT_MS = 250;
-function commitWfLine(now) {
-  let levels = wfAcc, inv = 1 / wfCount;
-  if (!wfCount) {
-    if (performance.now() - lastFrameMs > LINE_REPEAT_MS) return;
-    levels = frameLin;
-    inv = 1;
-  }
-  const nb = S.nb;
-  histHead = (histHead + 1) % HIST_ROWS;
-  histFilled = Math.min(HIST_ROWS, histFilled + 1);
-  const base = histHead * nb;
-  for (let i = 0; i < nb; i += 1) {
-    const q = (10 * Math.log10(levels[i] * inv + 1e-30) - HIST_DB_MIN) / HIST_DB_STEP;
-    hist[base + i] = q <= 0 ? 0 : q >= 255 ? 255 : q + 0.5;
-    wfAcc[i] = 0;
-  }
-  wfCount = 0;
-  histTime[histHead] = now;
-  histCentre[histHead] = S.fc;
-  if (waterfallView) waterfallView.uploadRow(histHead, hist.subarray(base, base + nb));
+const FINE_LINE_REPEAT_MS = 150;
+function commitLines(now) {
+  const nowMs = performance.now();
+  commitLine(wide, WIDE_LAYER, now, nowMs, LINE_REPEAT_MS);
+  commitLine(fine, FINE_LAYER, now, nowMs, FINE_LINE_REPEAT_MS);
+}
+function commitLine(h, layer, now, nowMs, repeatMs) {
+  if (!h.commitLine(now, nowMs, repeatMs)) return;
+  if (waterfallView) waterfallView.uploadRow(h.head, h.line(h.head), layer);
+  if (h !== shown) return;
   const slot = Math.floor(now / STAMP_MS);
   if (S.timestamps) {
     advanceStamps();
-    if (slot !== lastStampSlot) addStamp(histHead);
+    if (slot !== lastStampSlot) addStamp(h.head);
   }
   lastStampSlot = slot;
 }
@@ -755,16 +796,17 @@ function commitWfLine(now) {
 let wfKey = '';                     // what the waterfall shows: drawn again only when it changes
 function renderWaterfall() {
   if (!waterfallView) return;
-  const W = waterfallView.width;
+  const h = shown, W = waterfallView.width, finer = h === fine;
   const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
-  const marker = spanMarker(toX(fStart()), toX(fEnd()), GLS);
-  const key = `${histHead} ${histFilled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${S.nb} ${S.fc} ${marker}`;
+  const marker = spanMarker(toX(shownLo()), toX(shownHi()), GLS);
+  const key = `${finer} ${h.head} ${h.filled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${h.bins} ${h.centreHz}`
+    + ` ${h.widthHz} ${marker}`;
   if (key === wfKey) return;
   wfKey = key;
-  const bin = binHz();
+  // Bin i spans [i, i + 1) for the view: its middle lies at its centre's frequency.
   waterfallView.draw({
-    head: Math.max(0, histHead), lines: histFilled,
-    firstBin: (view.f0 - fStart()) / bin, binsPerPixel: (view.f1 - view.f0) / bin / W, marker,
+    head: Math.max(0, h.head), lines: h.filled, layer: finer ? FINE_LAYER : WIDE_LAYER, window: finer ? fineWindow : null,
+    firstBin: binPosition(view.f0, h.centreHz, h.widthHz, h.bins) + 0.5, binsPerPixel: (view.f1 - view.f0) / h.binHz / W, marker,
   });
 }
 
@@ -775,11 +817,14 @@ function niceStep(x) {
   return 10 * p;
 }
 
-function sample(src, out) {
-  const W = out.length, nb = S.nb, bin = binHz(), f0 = fStart(), span = view.f1 - view.f0;
-  const binsPerPx = span / bin / W;
+// The levels of a spectrum's bins under each column of the view: the highest
+// of those a column covers, or between the two nearest bins' centres when a
+// bin spans several columns. Bin i spans [i, i + 1) here.
+function sample(h, src, out) {
+  const W = out.length, nb = h.bins, span = view.f1 - view.f0;
+  const binsPerPx = span / h.binHz / W, first = binPosition(view.f0, h.centreHz, h.widthHz, nb) + 0.5;
   for (let x = 0; x < W; x += 1) {
-    const ba = (view.f0 + (x / W) * span - f0) / bin;
+    const ba = first + x * binsPerPx;
     const bb = ba + binsPerPx;
     if (binsPerPx >= 1) {
       let m = -300;
@@ -828,23 +873,25 @@ function updateBandGlow(W) {
 let specKey = '';                   // what the spectrum shows: drawn again only when it changes
 function renderSpectrum() {
   if (!spectrumView || !specColumns) return;
-  const W = spectrumView.width, H = spectrumView.height, s = GLS, top = displayTop();
-  // Outside the span the view draws a decor, and hatches beyond the receiver's
-  // reach; a span too narrow to see shows as a marker.
+  const W = spectrumView.width, H = spectrumView.height, s = GLS, top = displayTop(), h = shown;
+  // Outside what the spectrum shown measures, the span or the fine spectrum's
+  // cover, the view draws a decor, and hatches beyond the receiver's reach; a
+  // span too narrow to see shows as a marker.
   const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
   const [reachLo, reachHi] = reach();
-  const spanX = [toX(fStart()), toX(fEnd())], reachX = [toX(reachLo), toX(reachHi)];
+  const lo = shownLo(), hi = shownHi();
+  const spanX = [toX(lo), toX(hi)], reachX = [toX(reachLo), toX(reachHi)];
   const marker = spanMarker(spanX[0], spanX[1], s);
   const fade = pendingTune ? PENDING_FADE : 0;
   updateBandGlow(W);
-  const key = `${frameCounter} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks} ${peaksVersion}`
-    + ` ${spanX} ${reachX} ${fade} ${bandGlowVersion} ${marker}`;
+  const key = `${h === fine} ${h.version} ${view.f0} ${view.f1} ${W} ${H} ${top} ${S.range} ${S.fill} ${S.peakHold} ${S.grid} ${S.peakMarks}`
+    + ` ${peaksVersion} ${spanX} ${reachX} ${fade} ${bandGlowVersion} ${marker}`;
   if (key === specKey) return;
   specKey = key;
   const plotH = Math.max(2, H - Math.round(AXIS_H * s));
   const yOf = (db) => ((top - db) / S.range) * plotH;
-  sample(avgDb, specVals);
-  if (S.peakHold) sample(peakDb, peakVals);
+  sample(h, h.avgDb, specVals);
+  if (S.peakHold) sample(h, h.peakDb, peakVals);
   for (let x = 0; x < W; x += 1) {
     specColumns[2 * x] = clamp(yOf(specVals[x]), 0, plotH);
     specColumns[2 * x + 1] = S.peakHold ? clamp(yOf(peakVals[x]), 0, plotH) : plotH;
@@ -861,10 +908,10 @@ function renderSpectrum() {
     for (const p of peaks) {
       if (markerCount >= MAX_MARKERS) break;
       const f = p.frequencyHz;
-      if (!p.active || f < view.f0 || f > view.f1) continue;
+      if (!p.active || f < view.f0 || f > view.f1 || f < lo || f > hi) continue;
       const x = ((f - view.f0) / span) * W;
-      const bi = clamp(Math.round((f - fStart()) / binHz()), 0, S.nb - 1);
-      const y = clamp(yOf(avgDb[bi]) - 6 * s, 12 * s, plotH);
+      const bi = clamp(Math.round(binPosition(f, h.centreHz, h.widthHz, h.bins)), 0, h.bins - 1);
+      const y = clamp(yOf(h.avgDb[bi]) - 6 * s, 12 * s, plotH);
       markerCorners.set([x - 4 * s, y - 7 * s, x + 4 * s, y - 7 * s, x, y], markerCount * 6);
       markerCount += 1;
     }
@@ -1232,24 +1279,25 @@ function showTunePreview(at, f) {
 let hoverAt = null;                 // last pointer position over a view, to refresh the readout when the view moves
 function showHover(e, area) {
   hoverAt = { clientX: e.clientX, clientY: e.clientY, area, pointerType: e.pointerType };
-  const x = e.clientX, f = xToF(x);
+  const x = e.clientX, f = xToF(x), h = shown;
   xline.hidden = false;
   xline.style.transform = `translateX(${Math.round(x)}px)`;
-  let txt = `${fmtMHz(f, 5)} MHz`;
-  const bi = Math.floor((f - fStart()) / binHz());
-  if (bi >= 0 && bi < S.nb) {
+  let txt = `${fmtMHz(f, readoutDecimals(view.f1 - view.f0, appW))} MHz`;
+  if (f >= shownLo() && f <= shownHi()) {
     if (area === 'spec') {
-      txt += ` · ${Math.round(avgDb[bi])} dB`;
+      const bi = clamp(Math.round(binPosition(f, h.centreHz, h.widthHz, h.bins)), 0, h.bins - 1);
+      txt += ` · ${Math.round(h.avgDb[bi])} dB`;
     } else if (area === 'wf') {
-      const age = Math.floor(e.clientY - wfWrap.getBoundingClientRect().top);
-      if (age >= 0 && age < histFilled) {
-        const row = (histHead - age + HIST_ROWS) % HIST_ROWS;
-        const lineBin = Math.floor((f - histCentre[row] + S.fs / 2) / binHz());    // the line keeps its own frequencies
-        if (lineBin >= 0 && lineBin < S.nb) {
-          txt += ` · ${Math.round(HIST_DB_MIN + hist[row * S.nb + lineBin] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - histTime[row]) / 1000)} ago`;
-        }
+      const row = h.rowAt(Math.floor(e.clientY - wfWrap.getBoundingClientRect().top));
+      // The line keeps its own frequencies, the span's or the fine spectrum's cover around its centre.
+      const half = h === fine ? FINE_COVER * h.widthHz : h.widthHz / 2;
+      const lineBin = row < 0 ? -1 : h.lineBinAt(row, f, -half, half);
+      if (lineBin >= 0) {
+        txt += ` · ${Math.round(HIST_DB_MIN + h.hist[row * h.bins + lineBin] * HIST_DB_STEP)} dB · ${fmtAgo((Date.now() - h.histTime[row]) / 1000)} ago`;
       }
     }
+  } else if (h === fine && f >= fStart() && f <= fEnd()) {
+    txt += ' · beyond the fine spectrum';
   } else {
     txt += reachable(f) ? ' · outside the span' : ' · out of reach';
   }
@@ -1354,16 +1402,23 @@ function layout() {
 }
 
 function viewChanged() {
+  syncDeep();
   updateOverlays();
   if (hoverAt) showHover(hoverAt, hoverAt.area);
 }
 
 // The view goes from 0 Hz to the end of the band plan, or of the receiver's
 // reach when that is higher, whatever the receiver; zooming out holds at the
-// span's width first (the detent).
-const minSpan = () => Math.max(4000, binHz() * 16);
+// span's width first (the detent). Zooming in stops at 16 of the wide
+// spectrum's bins, or, within the fine spectrum's cover, of the fine
+// spectrum's (deepzoom.js).
+const wideMin = () => wideNarrowest(binHz());
+function narrowest() {
+  const deep = deepLimits();
+  return deep ? Math.min(wideMin(), deep.narrowestHz) : wideMin();
+}
 const extent = () => viewExtent(planEnd(plan.bands), reach(), [fStart(), fEnd()]);
-const clampSpan = (span) => { const [lo, hi] = extent(); return clamp(span, minSpan(), hi - lo); };
+const clampSpan = (span) => { const [lo, hi] = extent(); return clamp(span, narrowest(), hi - lo); };
 const viewLimits = () => `${extent()}`;
 const viewInSpan = () => view.f0 >= fStart() - 1 && view.f1 <= fEnd() + 1;
 const viewFramesSpan = () => Math.abs(view.f0 - fStart()) <= 1 && Math.abs(view.f1 - fEnd()) <= 1;
@@ -1371,11 +1426,20 @@ const atSpanWidth = (span) => Math.abs(span - S.fs) <= S.fs * 1e-9;
 // Where a view of this centre and width goes. One kept in the span stays
 // inside it while it fits, as with a source that does not tune.
 function fitView(centre, span, keepInSpan = false) {
-  return fitWithin(centre, span, keepInSpan && clampSpan(span) <= S.fs ? [fStart(), fEnd()] : extent(), minSpan());
+  const limits = keepInSpan && clampSpan(span) <= S.fs ? [fStart(), fEnd()] : extent();
+  return fitDeepView(centre, span, limits, wideMin(), deepLimits(), view.f1 - view.f0);
 }
 function setView(f0, f1, keepInSpan = false) {
   [view.f0, view.f1] = fitView((f0 + f1) / 2, f1 - f0, keepInSpan);
   viewChanged();
+}
+// The view again within its limits, which the VFO, the mode and the engine's
+// fine spectrum move: a view narrower than the wide spectrum allows stays
+// within the fine spectrum's cover, and widens without it.
+function refitView() {
+  const [f0, f1] = fitView((view.f0 + view.f1) / 2, view.f1 - view.f0);
+  if (f0 !== view.f0 || f1 !== view.f1) setView(view.f0, view.f1);
+  else syncDeep();
 }
 // The width a step of zoom from span to s gives: zooming in stops once at the
 // span's width, zooming out holds there until pushed DETENT_HOLD times further.
@@ -1450,6 +1514,7 @@ function showVfo(keepView = false) {
     const span = view.f1 - view.f0;
     setView(S.vfo - span / 2, S.vfo + span / 2);
   }
+  refitView();
   updateOverlays();
   syncDemod();
 }
@@ -2376,7 +2441,7 @@ const avgLabel = (v) => (v === 0 ? 'none' : v < 0.4 ? `light (${v.toFixed(2)})` 
 function drawPalettePreview() { $('#wf-pal-preview').style.background = `linear-gradient(90deg, ${PALETTES[S.palette].join(', ')})`; }
 function syncDisplay() {
   for (const s of syncers) s();
-  $('#ds-resolution').textContent = `Resolution: ${Math.round(binHz())} Hz per bin.`;
+  syncResolution();
   $('#wf-pal').value = S.palette;
   drawPalettePreview();
   syncAutoDisplay();
@@ -2394,8 +2459,9 @@ function syncAutoDisplay() {
 }
 bindRange('ds-avg', 'avg', avgLabel);
 bindCheck('ds-fill', 'fill');
-bindCheck('ds-peak', 'peakHold', () => { if (S.peakHold) peakDb.fill(-300); });
-$('#ds-peak-clear').addEventListener('click', () => peakDb.fill(-300));
+function clearPeaks() { wide.clearPeaks(); fine.clearPeaks(); }
+bindCheck('ds-peak', 'peakHold', () => { if (S.peakHold) clearPeaks(); });
+$('#ds-peak-clear').addEventListener('click', clearPeaks);
 bindCheck('ds-grid', 'grid');
 bindCheck('ds-auto', 'autoRange', () => { if (!S.autoRange) S.top = Math.round(autoTop); syncDisplay(); });
 bindRange('ds-top', 'top', fmtDb);
@@ -3798,7 +3864,8 @@ let spectrumView = null, waterfallView = null, gpuError = '';
 try {
   spectrumView = new SpectrumView(specCanvas, () => { specKey = ''; });
   waterfallView = new WaterfallView(wfCanvas, HIST_ROWS, () => {
-    waterfallView.uploadAll(hist);
+    waterfallView.uploadAll(wide.hist, WIDE_LAYER);
+    if (fine.bins) waterfallView.uploadAll(fine.hist, FINE_LAYER);
     waterfallView.setColours(lutBytes);
     wfKey = '';
   });
@@ -3820,7 +3887,7 @@ function loop(ts) {
   if (lutDirty) { lutDirty = false; rebuildLut(); }
   lineAcc += dt * S.wfSpeed;
   let lines = 0;
-  while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitWfLine(Date.now()); }
+  while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitLines(Date.now()); }
   if (lineAcc > 6) lineAcc = 0;
   renderSpectrum();
   renderWaterfall();
@@ -3846,7 +3913,7 @@ showVfo();
 syncPointerMode();
 poke();
 setTimeout(() => hintEl.classList.add('gone'), 9000);
-document.addEventListener('visibilitychange', () => { savePreferences(); syncStream(); });
+document.addEventListener('visibilitychange', () => { savePreferences(); syncStream(); syncDeep(); });
 window.addEventListener('pagehide', savePreferences);
 setInterval(savePreferences, PREFERENCES_SAVE_MS);
 syncStream();
