@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import math
+import sys
 import tempfile
 import threading
 import time
@@ -20,16 +21,20 @@ from unittest import mock
 
 import numpy as np
 
+from radiolack import recordings
 from radiolack import soapy as soapy_source
 from radiolack.demod import FRAME_KIND_AUDIO
-from radiolack.engine import Engine
+from radiolack.engine import Engine, Subscription
+from radiolack.recordings import meta_name
 from radiolack.soapy import (FORMATS, MISSING, Capabilities, Losses, NativeBuffer, SoapySource, args_text,
                              is_antenna_power, load_module, module_problem, parse_args, read_capabilities,
                              transmit_named)
 from radiolack.sources import Sources
 from radiolack.store import SETTINGS_FILE, Store
+from radiolack.synthetic import SyntheticBand
+from tests.sigmf_check import check_sigmf
 from tests.fakes import STAND_IN_SOAPYSDR, stand_in_soapysdr
-from tests.test_engine import eventually, next_carrier, next_frame
+from tests.test_engine import eventually, next_carrier, next_frame, next_recording, next_reply, with_iq_file
 
 SOURCE_FILE = Path(soapy_source.__file__)
 RATE_HZ = 1_024_000.0
@@ -414,16 +419,19 @@ class SourceTest(SourceCase):
         self.assertEqual(source.settings_key, "soapy driver=test,index=0")
         before = source.describe()
         # Until it is known, every setting, which its opening fits, and no antenna power shown.
-        self.assertEqual((before["driver"], before["tuner"], before["settable"], before["bias_tee"]),
+        self.assertEqual((before["driver"], before["tuner"], before["settable"], before["bias_tee"],
+                          before["automatic_gain"]),
                          ("test", None, ["converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db",
-                                         "stage_gains_db", "antenna", "ppm", "device_settings", "bias_tee"], None))
+                                         "stage_gains_db", "antenna", "ppm", "device_settings", "bias_tee"], None,
+                          None))
         await self.samples(source)
         state = source.describe()
         self.assertEqual(state, {
             "kind": "soapy", "status": "streaming", "detail": "", "address": None, "tuner": "test-tuner",
             "driver": "test", "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6,
-            "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "ppm": 0.0, "gains_db": state["gains_db"],
-            "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
+            "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "automatic_gain": True, "ppm": 0.0,
+            "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [],
+            "direct": False, "rtl_agc": None,
             "bias_tee": None, "converter": "none", "converter_lo_hz": 125e6, "driver_pll": None, "tuner_grid": None,
             "gain_stages": [], "stage_gains_db": {}, "antenna": None, "antennas": [], "device_settings": {},
             "device_setting_info": [], "device_refusal": None,
@@ -478,11 +486,42 @@ class SourceTest(SourceCase):
         self.device(gains={"TUNER": (0.0, 40.0, 1.0)})
         source = self.source()
         await self.samples(source)
-        self.assertEqual(source.describe()["gain_db"], 0.0)
+        self.assertEqual((source.describe()["gain_db"], source.describe()["automatic_gain"]), (0.0, False))
         with self.assertRaisesRegex(ValueError, "no automatic gain"):
             source.configure({"gain_db": None})
         await self.closed(source)
         self.assertIsNotNone(device)
+
+    async def test_the_first_frequency_comes_before_the_sample_rate_as_well_as_after(self):
+        for correction in ("corr", "none"):
+            with self.subTest(correction=correction):
+                self.soapy.reset()
+                self.device(correction=correction)
+                source = self.source()
+                await self.samples(source)
+                opened = self.soapy.opened[0]
+                [before_rate] = opened.rate_tunings
+                self.assertEqual(opened.tunings[0], ("RF", 145e6))
+                self.assertGreaterEqual(before_rate, 1)
+                self.assertIn(("RF", 145e6), opened.tunings[before_rate:])
+                self.assertEqual(opened.frequency_hz, 145e6)
+                await self.closed(source)
+        # A device that takes no frequency before its sample rate opens as well.
+        self.soapy.reset()
+        self.device()
+        tune = self.soapy.Device.setFrequency
+
+        def refusing(device, direction, channel, *call):
+            if not device.rate_tunings:
+                raise RuntimeError("setFrequency before setSampleRate")
+            tune(device, direction, channel, *call)
+
+        with mock.patch.object(self.soapy.Device, "setFrequency", refusing):
+            source = self.source()
+            self.assertTrue(is_tone(await self.samples(source)))
+            opened = self.soapy.opened[0]
+            self.assertEqual((opened.rate_tunings, opened.tunings, source.status), ([0], [("RF", 145e6)], "streaming"))
+            await self.closed(source)
 
     async def test_the_correction_goes_to_the_device_only_where_it_takes_one(self):
         for correction, whole in (("corr", 37), ("native", 37), ("none", 0)):
@@ -587,12 +626,6 @@ class SourceTest(SourceCase):
         await self.state(source, "waiting", MISSING)
         self.assertEqual(self.soapy.searches, [])
 
-    async def test_iq_recordings_are_refused(self):
-        source = self.source()
-        with self.assertRaisesRegex(ValueError, "not available yet"):
-            source.tap(lambda *args: None)
-        source.tap(None)
-
     async def test_hangs_up_once_nobody_reads(self):
         self.device()
         source = self.source(idle_s=0.2)
@@ -650,10 +683,8 @@ class CloseTest(SourceCase):
                 self.assertTrue(device.streams[0].closed)
 
 
-class EngineTest(SourceCase):
-    """The engine on a SoapySDR source: spectrum, audio, the carrier where
-    it is on the air through a correction, the settings of each device and
-    I/Q recordings refused."""
+class EngineCase(SourceCase):
+    """An engine on a SoapySDR source, stopped after each test."""
 
     def engine(self, source: SoapySource, **options) -> Engine:
         engine = Engine(source, **options)
@@ -671,6 +702,12 @@ class EngineTest(SourceCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.stops = {}
+
+
+class EngineTest(EngineCase):
+    """The engine on a SoapySDR source: spectrum, audio, the carrier where
+    it is on the air through a correction and the settings of each
+    device."""
 
     async def test_spectrum_audio_and_a_carrier_through_a_correction(self):
         air_hz = 145_012_345.6
@@ -751,18 +788,6 @@ class EngineTest(SourceCase):
         engine.configure_scanner({"scan": None})
         await eventually(lambda: engine.state()["centre_hz"] == 433e6)
 
-    async def test_iq_recordings_are_refused_and_write_nothing(self):
-        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
-        self.device()
-        engine = self.engine(self.source(), recordings=folder)
-        subscription = engine.subscribe()
-        await eventually(lambda: engine.state()["status"] == "streaming")
-        with self.assertRaisesRegex(ValueError, "I/Q recordings of a SoapySDR device are not available yet"):
-            engine.configure_recording({"iq": True}, subscription)
-        self.assertIsNone(engine.recording_state()["iq"])
-        self.assertEqual(list(folder.glob("*")) if folder.exists() else [], [])
-
-
     async def test_a_devices_controls_are_saved_and_its_antenna_power_never(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
         self.soapy.rspdx_r2()
@@ -820,6 +845,315 @@ class EngineTest(SourceCase):
         self.assertEqual(device.setting_values["biastee"], "false")
         self.assertNotIn("biastee=true", device.events)
         self.assertFalse(engine.state()["bias_tee"])
+
+
+def encoded(soapy, sample_format: str, start: int, count: int, full_scale: float | None = None) -> bytes:
+    """The bytes that a stand-in device gives in ``sample_format`` for its
+    samples from index ``start``, an integer format at ``full_scale`` if
+    given."""
+    buffer = np.empty(2 * count, FORMATS[sample_format].component)
+    soapy._fill(buffer, sample_format, soapy.samples(start, count), full_scale)
+    return buffer.tobytes()
+
+
+def swapped(data: bytes, sample_format: str) -> bytes:
+    """``data`` with I and Q swapped in each pair."""
+    return np.frombuffer(data, FORMATS[sample_format].component).reshape(-1, 2)[:, ::-1].tobytes()
+
+
+def holds_the_devices_samples(soapy, segment: bytes, sample_format: str, full_scale: float | None = None,
+                              inverted: bool = False) -> bool:
+    """Whether ``segment`` holds a stand-in device's samples one after the
+    other, bit for bit, in ``sample_format``, I and Q swapped if
+    ``inverted``: its tone, from some point of its period."""
+    pair = FORMATS[sample_format].sample_bytes
+    count = len(segment) // pair
+    if not count or len(segment) % pair:
+        return False
+    for start in range(round(1 / soapy.TONE_CYCLES)):
+        expected = encoded(soapy, sample_format, start, 1, full_scale)
+        if (swapped(expected, sample_format) if inverted else expected) != segment[:pair]:
+            continue
+        expected = encoded(soapy, sample_format, start, count, full_scale)
+        if (swapped(expected, sample_format) if inverted else expected) == segment:
+            return True
+    return False
+
+
+def iq_bytes(state: dict) -> int:
+    """How much the I/Q recording that runs was given; -1 when none runs."""
+    return state["iq"]["bytes"] if state["iq"] is not None else -1
+
+
+class TapTest(SourceCase):
+    """What the source hands an I/Q recording's tap: the samples it keeps,
+    as the device gives them, with their label, the format and the gaps."""
+
+    async def test_the_tap_gets_every_sample_kept_with_its_gaps(self):
+        self.device("bladerf", native="CS16", formats=("CS16", "CF32"), full_scale=2048.0, events={30: "overflow"})
+        source = self.source("driver=bladerf")
+        handed = []
+        source.tap(lambda data, centre_hz, rate_hz, joined:
+                   handed.append((data, centre_hz, rate_hz, joined, source.raw_format)))
+        await self.samples(source)
+        while self.soapy.opened[0].streams[0].reads <= 32:
+            await self.samples(source)
+        source.tap(None)
+        count = len(handed)
+        await self.samples(source)
+        self.assertEqual(len(handed), count)        # none after the tap's end
+        order = "_le" if sys.byteorder == "little" else "_be"
+        self.assertEqual({(centre_hz, rate_hz, raw_format) for _, centre_hz, rate_hz, _, raw_format in handed},
+                         {(145e6, RATE_HZ, (f"ci16{order}", 2048.0))})
+        # The first after the tap's start, then after the overflow: two runs of samples one after the other.
+        self.assertEqual([index for index, entry in enumerate(handed) if not entry[3]][0], 0)
+        runs = []
+        for data, _, _, joined, _ in handed:
+            if joined:
+                runs[-1] += data
+            else:
+                runs.append(data)
+        self.assertEqual(len(runs), 2)
+        for run in runs:
+            self.assertTrue(holds_the_devices_samples(self.soapy, run, "CS16", 2048.0))
+
+    async def test_samples_that_wait_too_long_for_the_event_loop_are_not_recorded(self):
+        source = self.source(report_s=0.0)
+        source._loop = asyncio.get_running_loop()
+        handed = []
+        source.tap(lambda data, centre_hz, rate_hz, joined: handed.append((data, joined, source.raw_format)))
+        source._label = soapy_source._Label(145e6, 1000.0, 145e6, 1.0, False, FORMATS["CS8"], 128.0)
+        # As the reading thread does while the event loop is busy: 100 samples at a time, a tenth of a second.
+        with mock.patch.object(soapy_source, "TAP_S", 0.25):        # 250 samples wait at most
+            for index in range(4):
+                source._hand(memoryview(bytes([index]) * 200))
+        self.assertEqual(source._losses.unrecorded, 200)
+        await eventually(lambda: len(handed) == 2)
+        self.assertEqual([(data[0], joined, raw_format) for data, joined, raw_format in handed],
+                         [(0, False, ("ci8", None)), (1, True, ("ci8", None))])
+        # The next follows a gap; a mirrored band comes with I and Q swapped, the format's own size.
+        source._label = soapy_source._Label(145e6, 1000.0, 145e6, 1.0, True, FORMATS["CS16"], 32768.0)
+        source._hand(memoryview(np.array([1, 2, 3, 4], np.int16).tobytes()))
+        await eventually(lambda: len(handed) == 3)
+        order = "_le" if sys.byteorder == "little" else "_be"
+        self.assertEqual(handed[2], (np.array([2, 1, 4, 3], np.int16).tobytes(), False, (f"ci16{order}", None)))
+        with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
+            source._losses.check(flush=True)
+        self.assertIn("200 samples not recorded, the event loop behind", logs.output[0])
+
+    async def test_a_tap_that_fails_is_left(self):
+        self.device()
+        source = self.source()
+
+        def fail(*_args):
+            raise RuntimeError("broken")
+
+        source.tap(fail)
+        with self.assertLogs("radiolack.soapy", logging.ERROR):
+            await self.samples(source)
+            await eventually(lambda: source._tap is None)
+        self.assertTrue(is_tone(await self.samples(source)))       # the source goes on
+
+
+class IQRecordingTest(EngineCase):
+    """I/Q recordings of a SoapySDR device (later-milestones.md, section 1,
+    pull request 5), from the stand-in into temporary folders: each format
+    as the device gives it, bit for bit, with metadata that SigMF reads; a
+    capture for each retune and each gap; ended by a new rate, another
+    receiver, the disk or the engine's close; listed, downloaded and
+    deleted."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "recordings"
+
+    async def streaming(self, engine: Engine) -> Subscription:
+        """A client of ``engine``, once the device streams: a recording
+        started earlier would take the rate asked before the device opens,
+        which its opening may change."""
+        subscription = engine.subscribe()
+        await eventually(lambda: engine.state()["status"] == "streaming")
+        return subscription
+
+    async def record(self, engine: Engine, subscription: Subscription, at_least: int = 50_000) -> dict:
+        """The I/Q recording started, once it has ``at_least`` bytes."""
+        engine.configure_recording({"iq": True})
+        state = await next_recording(subscription,
+                                     lambda state: with_iq_file(state) and state["iq"]["bytes"] >= at_least)
+        return state["iq"]
+
+    def recorded(self, name: str, pair_bytes: int) -> tuple[dict, list[bytes]]:
+        """The metadata of the recording whose data file is ``name``, checked
+        against SigMF, and the samples of each of its captures."""
+        data = (self.folder / name).read_bytes()
+        metadata = check_sigmf(self, self.folder / name, self.folder / meta_name(name))
+        starts = [capture["core:sample_start"] for capture in metadata["captures"]] + [len(data) // pair_bytes]
+        return metadata, [data[pair_bytes * start:pair_bytes * end] for start, end in zip(starts, starts[1:])]
+
+    async def test_records_each_format_as_the_device_gives_it(self):
+        order = "_le" if sys.byteorder == "little" else "_be"
+        cases = (("rtlsdr", "CS8", ("CS8", "CS16", "CF32"), None, "CS8", "ci8", None),
+                 ("sdrplay", "CS16", ("CS16", "CF32"), 32767.0, "CS16", f"ci16{order}", 32767),
+                 ("bladerf", "CS16", ("CS16", "CF32"), 2048.0, "CS16", f"ci16{order}", 2048),
+                 ("test", "CS16", ("CS16", "CF32"), 2048.0, "CF32", f"cf32{order}", None))
+        for driver, native, formats, full_scale, read, datatype, noted in cases:
+            with self.subTest(driver=driver):
+                self.soapy.reset()
+                self.device(driver, native=native, formats=formats, full_scale=full_scale, hardware="test-tuner")
+                engine = self.engine(self.source(f"driver={driver}"), recordings=self.folder)
+                subscription = await self.streaming(engine)
+                iq = await self.record(engine, subscription)
+                self.assertRegex(iq["file"], r"Z_145\.000000MHz_1\.024000MSps(-\d)?\.sigmf-data$")
+                pair_bytes = FORMATS[read].sample_bytes
+                self.assertAlmostEqual(iq["seconds"], iq["bytes"] / pair_bytes / RATE_HZ, delta=0.05)
+                await self.stops[engine]()
+                metadata, segments = self.recorded(iq["file"], pair_bytes)
+                described = metadata["global"]
+                self.assertEqual((described["core:datatype"], described["core:sample_rate"], described["core:hw"]),
+                                 (datatype, 1_024_000, f"SoapySDR {driver}, test-tuner"))
+                # The full scale where it is not the format's, never applied to the samples.
+                self.assertEqual(described.get("radiolack:full_scale"), noted)
+                self.assertEqual(described.get("core:extensions"),
+                                 None if noted is None else [{"name": "radiolack", "version": "1.0.0",
+                                                              "optional": True}])
+                self.assertEqual({capture["core:frequency"] for capture in metadata["captures"]}, {145_000_000})
+                for segment in segments:
+                    self.assertTrue(holds_the_devices_samples(self.soapy, segment, read, full_scale))
+
+    async def test_a_retune_adds_a_capture_and_a_new_rate_or_another_receiver_ends_it(self):
+        self.device(rates_hz=(RATE_HZ, 2_048_000.0))
+        engine = self.engine(self.source(), recordings=self.folder, sources=Sources())
+        subscription = await self.streaming(engine)
+        iq = await self.record(engine, subscription)
+        self.assertEqual(iq["rate_hz"], 2_048_000)      # the offered rate nearest the default 2.4 MS/s
+        engine.configure({"centre_hz": 433_000_000})
+        await eventually(lambda: engine.source.centre_hz == 433e6)
+        given = iq_bytes(engine.recording_state())
+        await eventually(lambda: iq_bytes(engine.recording_state()) > given + 100_000)
+        with self.assertLogs("radiolack.engine", logging.WARNING):
+            engine.configure({"sample_rate_hz": RATE_HZ})
+        self.assertEqual(engine.recording_state()["stopped"], {"kind": "iq", "reason": "sample_rate", "detail": ""})
+        await eventually(lambda: engine.source.sample_rate_hz == RATE_HZ)
+        again = await self.record(engine, subscription)
+        self.assertEqual(again["rate_hz"], 1_024_000)
+        with self.assertLogs("radiolack.engine", logging.WARNING):
+            engine.configure_devices({"args": "driver=other"})
+        state = engine.recording_state()
+        self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "receiver", "detail": ""}))
+        await self.stops[engine]()
+        metadata, segments = self.recorded(iq["file"], 8)
+        self.assertEqual([capture["core:frequency"] for capture in metadata["captures"]], [145_000_000, 433_000_000])
+        for segment in segments:
+            self.assertTrue(holds_the_devices_samples(self.soapy, segment, "CF32"))
+        metadata, _ = self.recorded(again["file"], 8)
+        self.assertEqual(metadata["global"]["core:sample_rate"], 1_024_000)
+
+    async def test_through_a_converter_the_frequencies_on_the_air_and_a_mirrored_band_swapped(self):
+        cases = (({"converter": "up", "converter_lo_hz": 125_000_000, "centre_hz": 7_100_000}, 7_100_000,
+                  "an upconverter with its oscillator at 125 MHz", False),
+                 ({"converter": "down_inverted", "converter_lo_hz": 5_150_000_000, "centre_hz": 3_800_000_000},
+                  3_800_000_000, "a downconverter that inverts the spectrum with its oscillator at 5150 MHz", True))
+        for changes, frequency, converter, inverted in cases:
+            with self.subTest(converter=changes["converter"]):
+                self.soapy.reset()
+                self.device()
+                engine = self.engine(self.source(), recordings=self.folder)
+                engine.configure(changes)
+                subscription = await self.streaming(engine)
+                await eventually(lambda: engine.source.centre_hz == changes["centre_hz"])
+                iq = await self.record(engine, subscription)
+                self.assertRegex(iq["file"], rf"Z_{frequency / 1e6:.6f}MHz_")
+                await self.stops[engine]()
+                metadata, segments = self.recorded(iq["file"], 8)
+                self.assertEqual(metadata["global"]["core:hw"], f"SoapySDR test, test-stand-in, behind {converter}")
+                self.assertEqual({capture["core:frequency"] for capture in metadata["captures"]}, {frequency})
+                for segment in segments:
+                    self.assertTrue(holds_the_devices_samples(self.soapy, segment, "CF32", inverted=inverted))
+                    self.assertFalse(holds_the_devices_samples(self.soapy, segment, "CF32", inverted=not inverted))
+
+    async def test_a_disk_behind_or_short_of_space_ends_it_its_files_whole(self):
+        self.device()
+        engine = self.engine(self.source(), recordings=self.folder)
+        subscription = await self.streaming(engine)
+        with mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 1), \
+                mock.patch.object(recordings, "IQ_PENDING_S", 0.0), \
+                self.assertLogs("radiolack.engine", logging.WARNING):
+            engine.configure_recording({"iq": True})
+            state = await next_recording(subscription, lambda state: state["stopped"] is not None)
+        self.assertEqual((state["iq"], state["stopped"]),
+                         (None, {"kind": "iq", "reason": "disk", "detail": "the disk did not keep up"}))
+        iq = await self.record(engine, subscription)
+        with mock.patch.object(recordings, "MIN_FREE_BYTES", 2 ** 62), \
+                self.assertLogs("radiolack.engine", logging.WARNING) as logs:
+            state = await next_recording(subscription, lambda state: state["iq"] is None)
+        self.assertEqual(state["stopped"], {"kind": "iq", "reason": "space", "detail": ""})
+        self.assertIn("less than 2 GiB is free on its disk", logs.output[0])
+        await self.stops[engine]()
+        _, segments = self.recorded(iq["file"], 8)
+        self.assertGreaterEqual(sum(map(len, segments)), iq["bytes"] // 2)
+        for segment in segments:
+            self.assertTrue(holds_the_devices_samples(self.soapy, segment, "CF32"))
+
+    async def test_a_device_unplugged_meanwhile_leaves_a_gap_and_the_recording_goes_on(self):
+        device = self.device()
+        source = self.source()
+        engine = self.engine(source, recordings=self.folder)
+        subscription = await self.streaming(engine)
+        iq = await self.record(engine, subscription)
+        device.present = False
+        await eventually(lambda: source.status == "waiting")
+        given = iq_bytes(engine.recording_state())
+        self.assertGreaterEqual(given, iq["bytes"])         # it goes on, waiting
+        device.present = True
+        await eventually(lambda: iq_bytes(engine.recording_state()) > given + 100_000)
+        engine.configure_recording({"iq": False})
+        await self.stops[engine]()
+        metadata, segments = self.recorded(iq["file"], 8)
+        self.assertGreaterEqual(len(metadata["captures"]), 2)
+        self.assertEqual({capture["core:frequency"] for capture in metadata["captures"]}, {145_000_000})
+        for segment in segments:
+            self.assertTrue(holds_the_devices_samples(self.soapy, segment, "CF32"))
+
+    async def test_a_close_while_it_records_leaves_its_files_whole(self):
+        self.device()
+        engine = self.engine(self.source(), recordings=self.folder)
+        subscription = await self.streaming(engine)
+        iq = await self.record(engine, subscription, at_least=100_000)
+        await self.stops[engine]()
+        self.assertGreaterEqual((self.folder / iq["file"]).stat().st_size, iq["bytes"])
+        metadata, segments = self.recorded(iq["file"], 8)
+        self.assertEqual(len(metadata["captures"]), 1)
+        self.assertTrue(holds_the_devices_samples(self.soapy, segments[0], "CF32"))
+
+    async def test_lists_downloads_and_deletes_it(self):
+        self.device("sdrplay", native="CS16", formats=("CS16", "CF32"), full_scale=32767.0)
+        engine = self.engine(self.source("driver=sdrplay"), recordings=self.folder)
+        subscription = await self.streaming(engine)
+        name = (await self.record(engine, subscription))["file"]
+        meta = meta_name(name)
+        engine.configure_recording({"iq": False})
+        await eventually(lambda: not engine._unfinished)        # its thread done
+        engine.configure_recordings({}, subscription)
+        [entry] = (await next_reply(subscription, "recordings"))["files"]
+        size = (self.folder / name).stat().st_size
+        self.assertEqual((entry["name"], entry["kind"], entry["meta"], entry["rate_hz"], entry["running"]),
+                         (name, "iq", meta, 1_024_000, False))
+        self.assertEqual((entry["bytes"], entry["seconds"]),
+                         (size + (self.folder / meta).stat().st_size, round(size // 4 / RATE_HZ, 1)))
+        for file in (name, meta):
+            self.assertEqual(engine.download_folder(file), self.folder)
+        engine.configure_recordings({"delete": name}, subscription)
+        self.assertEqual((await next_reply(subscription, "recordings"))["files"], [])
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+    async def test_never_on_the_simulated_band_nor_at_start(self):
+        engine = self.engine(SyntheticBand(), recordings=self.folder, sources=Sources())
+        with self.assertRaisesRegex(ValueError, "^the simulated band is not recorded$"):
+            engine.configure_recording({"iq": True})
+        self.device()
+        engine.configure_devices({"args": "driver=test"})
+        await self.streaming(engine)
+        self.assertEqual((engine.recording_state()["iq"], self.folder.exists()), (None, False))
 
 
 def opened_capabilities(soapy, driver: str) -> Capabilities:

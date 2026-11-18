@@ -303,7 +303,7 @@ additions); pull requests 3 to 6 rely on these:
   not used (module docstring).
 - **I/Q recordings** are refused by the source's `tap`, which the engine
   calls before any file is written: the interface shows the refusal, and
-  no file says the wrong format. Pull request 5 brings them.
+  no file says the wrong format. Pull request 5 brings them (below).
 - **The Receiver menu** before pull request 3: the entry "SoapySDR device"
   in the list, selected while a SoapySDR source is in use; its note, such
   as "R820T through SoapySDR, driver rtlsdr.", with "Waiting: ..." and the
@@ -510,10 +510,16 @@ rely on these:
   their descriptions and `direct_samp`'s option names as the module's code
   was remembered; the HackRF's and the RSPdx-R2's are remembered, to be
   read on the devices.
-- **Unchanged**: the order of the first settings at an opening, sample
-  rate, correction, then frequency, for which librtlsdr prints "[R82XX]
-  PLL not locked!" twice, harmlessly, as the tuner is set before its
-  first frequency.
+- **The order of the first settings** at an opening, sample rate,
+  correction, then frequency, for which librtlsdr printed "[R82XX] PLL
+  not locked!" twice, harmlessly, as its sample rate sets the tuner's
+  filters and tunes it to the frequency it holds, none at first: since
+  pull request 5 the frequency is asked first as well, then the same
+  sequence as before. The first request is best effort, its refusal
+  logged at debug level and ignored: a module that takes no frequency
+  before its sample rate gets it after, as before, and every device ends
+  in the same state. Whether the messages are gone is for the V3's check
+  through `driver=rtlsdr`.
 - **Not checked on a receiver**: the stand-in only. The owner's V3
   through `driver=rtlsdr` checks the TUNER slider and automatic gain, the
   settings that show (direct sampling, offset tuning, I/Q swap, digital
@@ -522,10 +528,92 @@ rely on these:
   they come.
 - **Left for later**: I/Q recordings in the device's format (pull request
   5); the package, the service notes and CI (pull request 6); `sdrplay`
-  among the searched drivers. The "Tuner AGC" box is enabled for a
-  SoapySDR device without a gain mode, whose engine then refuses
-  automatic gain, saying so, as since pull request 2: the state does not
-  say whether a device has one.
+  among the searched drivers. The "Tuner AGC" box was enabled for a
+  SoapySDR device without a gain mode, whose engine then refused
+  automatic gain, saying so: fixed with pull request 5, the source state's
+  optional `automatic_gain` (a `soapy` source's alone, null until the
+  device opens; absent reads as offered, so that the rtl_tcp sources and
+  older engines keep the box as it was) greys the box for such a device,
+  unless automatic gain is on, so that it can be turned off.
+
+As built, pull request 5 (I/Q recordings in the device's format:
+`soapy.py`'s tap, `recordings.py`'s formats, the engine's `raw_format`);
+pull request 6 relies on these:
+
+- **The tap.** The reading thread hands the tap the samples it keeps, as
+  the device gives them, in the format the source reads it in, before the
+  DC removal and the conversion to complex64: at the same moments as
+  rtl_tcp's tap, nothing while the device settles after a change (0.4 s),
+  then the new label's centre in use, on the air, and sample rate. It
+  copies each kept read into a queue and posts one drain at a time to the
+  event loop, which hands the samples to the engine: the engine's
+  recording code runs in the event loop, as for rtl_tcp, and its contract
+  (`data, centre_hz, rate_hz, joined`) is unchanged. The thread never
+  waits for the disk nor for the event loop: once more than a second of
+  samples (`soapy.TAP_S`) waits for the event loop, a read's samples are
+  not queued, counted in the losses' line ("samples not recorded, the
+  event loop behind"), and the next start a new capture. A gap, and so a
+  new capture, also follows a new session (an unplugged device back), a
+  failed read or an overflow, a new label (retune, correction) and a new
+  tap. A tap that raises is left, logged, and the source goes on.
+- **Disk falling behind.** The recording's thread writes as soon as
+  4 MiB wait (`WRITE_BATCH_BYTES`), so that at 32 or 64 MB/s it does not
+  wait for its 1 s tick; the engine stops the recording, `disk`, "the
+  disk did not keep up", once more than 2 s of samples at the recording's
+  rate and format (`IQ_PENDING_S`), and at least 64 MiB, wait: 128 MiB at
+  64 MB/s. Memory stays bounded by that, and the reading thread is never
+  slowed: the device's samples, the spectrum and the audio go on.
+- **Free space** is checked before each write, against the batch about to
+  be written: a write that would leave less than 2 GiB free is not made,
+  and the recording stops, `space`. The former check, every second
+  whatever was written, could overshoot by a second of samples, 64 MB at
+  the highest rate, and more if the thread fell behind; it stays for a
+  recording that writes nothing meanwhile.
+- **The format** is SigMF's: `ci8` for CS8, `ci16_le` for CS16, `cf32_le`
+  for CF32 (`_be` on a big-endian computer, as the samples are the
+  machine's), set by the first samples handed (`raw_format`, which the
+  source sets before each call) and fixed for the recording: samples in
+  another format end it, `receiver`, as another receiver does. rtl_tcp's
+  stays `cu8`, its tests as they were.
+- **The full scale**, the decision left here: SigMF's core has no field
+  for it, and a description in free text is read by no program. A device
+  whose integers stop short of their type's full scale (`FULL_SCALES`:
+  SDRplay and Airspy at 32767, bladeRF at 2048) gets
+  `radiolack:full_scale` in the global object, declared in
+  `core:extensions` as `{"name": "radiolack", "version": "1.0.0",
+  "optional": true}`, as SigMF asks of any namespace other than `core`:
+  readers that do not know it may ignore it, and the samples themselves
+  are never rescaled, which would lose the device's bits. A format at its
+  type's full scale (CS8 at 128, CF32 at 1.0) writes neither field.
+- **Behind an inverted converter** the tap swaps I and Q, as rtl_tcp's
+  does, so that the data holds the band as it is on the air, as the
+  captures' frequencies are; a swap loses nothing in any format.
+- **Names**: unchanged, start, centre frequency and sample rate. The
+  format stays out of the name: the metadata gives it, and a name that
+  changed with the format would break the list's and the downloads'
+  rules for no reader that needs it. The list reads `core:datatype` from
+  the metadata's first 64 KiB to compute an I/Q recording's length; a
+  recording without readable metadata, or whose datatype the engine does
+  not know, lists its size without a length (formerly the length took
+  `cu8`).
+- **`core:hw`** is the source's `hardware`: "SoapySDR DRIVER", the
+  device's hardware key, and the converter, never a serial number nor an
+  address. The captures' `core:datetime` is taken when the event loop
+  hands the samples, within milliseconds of their arrival.
+- **Refusals**: the source's `tap` no longer refuses. The simulated band,
+  and a recording at start, stay refused as before. A recording started
+  before the device opens takes the sample rate asked, which the opening
+  may fit to another: its first samples then end it, `sample_rate`.
+- **Protocol**: version 6 stays. No message changes: an I/Q recording's
+  format is in its metadata, and the list's `seconds` comes from it.
+- **Tests**: `tests/sigmf_check.py` checks every recording the tests
+  write against SigMF 1.0.0's rules for the fields Radiolack writes,
+  without a dependency; the soapy tests compare each format's data, bit
+  for bit, with the samples the stand-in gave.
+- **Not checked on a receiver**: the stand-in only. The owner's V3
+  through `driver=rtlsdr` checks a `ci8` recording at 2.4 MS/s, the
+  RSPdx-R2 a `ci16_le` one with its full scale, the HackRF its `ci8` at
+  8 MS/s and what the disk does at 16 MB/s.
 
 ### Done when
 

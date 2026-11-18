@@ -15,23 +15,38 @@ the VFO's frequency and its mode, such as
 ``2026-11-14_15-30-45Z_145.500000MHz_NFM.wav``. The WAV header follows each
 write, so that a crash leaves a file that plays.
 
-An I/Q recording keeps the receiver's samples as rtl_tcp sends them, before
+An I/Q recording keeps the receiver's samples as they come, before
 anything else, in a SigMF recording (https://sigmf.org): a ``.sigmf-data``
-file of unsigned 8-bit I/Q pairs, I first (SigMF's "cu8"), and a
-``.sigmf-meta`` file, which gives the sample rate, the receiver, and a
-capture for each stretch of samples: its first sample, its centre frequency
-and the UTC time it started. A retune, and a gap in the samples, start a new
-capture. Both files are named after the receiver's centre frequency and its
-sample rate, such as
-``2026-11-14_15-30-45Z_145.000000MHz_2.400000MSps.sigmf-data``. The
-metadata is written whole, under a temporary name then renamed, with the
-first samples, then after the captures change, at most every
-META_INTERVAL_S, and at the end: a crash leaves a recording that reads.
+file of I/Q pairs, I first, in the receiver's own format, as SigMF names it
+(``IQ_DATATYPES``): unsigned 8-bit samples as rtl_tcp sends them ("cu8"),
+or a SoapySDR device's signed 8-bit or 16-bit integers or 32-bit floats
+("ci8", "ci16_le", "cf32_le"); and a ``.sigmf-meta`` file, which gives the
+format, the sample rate, the receiver, and a capture for each stretch of
+samples: its first sample, its centre frequency and the UTC time it
+started. A retune, and a gap in the samples, start a new capture. Integers
+whose full scale is not their type's, such as a bladeRF's 12 bits in 16-bit
+integers, are written as they come, and the metadata gives that full scale
+in a field of Radiolack's own, ``radiolack:full_scale``, which
+``core:extensions`` declares optional, as SigMF asks of a namespace other
+than its core, which has no field for it. Both files are named after the
+receiver's centre frequency and its sample rate, such as
+``2026-11-14_15-30-45Z_145.000000MHz_2.400000MSps.sigmf-data``: the
+format is the metadata's alone. The metadata is written whole, under a
+temporary name then renamed, with the first samples, then after the
+captures change, at most every META_INTERVAL_S, and at the end: a crash
+leaves a recording that reads.
 
 A recording does not start, or stops by itself, when less than 2 GiB stays
-free on its disk (``space``); an audio recording also stops when its file
-reaches the WAV format's limit of 4 GiB (``full``), and both stop on a disk
-error or a disk too slow for them (``disk``, with what went wrong).
+free on its disk (``space``): its thread checks the free space before each
+write, against what it is about to write, so that the disk never goes
+under 2 GiB through it, whatever the rate. An audio recording also stops
+when its file reaches the WAV format's limit of 4 GiB (``full``), and both
+stop on a disk error or a disk too slow for them (``disk``, with what went
+wrong): more audio waiting for the disk than PENDING_LIMIT_BYTES, or I/Q
+than IQ_PENDING_S of it (IQ_PENDING_LIMIT_BYTES at least). The thread
+writes what came about twice a second, and as soon as WRITE_BATCH_BYTES
+wait, so that it keeps up with 64 MB a second, a SoapySDR device's 8 MS/s
+in 32-bit floats, on a disk that does.
 
 The recordings go to ``$XDG_DATA_HOME/radiolack/recordings``, or
 ``~/.local/share/radiolack/recordings`` when that variable is unset or not
@@ -39,7 +54,8 @@ an absolute path, made when needed and readable by the user only, unless
 the user chose another folder, which must exist. The list shows the latest
 LIST_LIMIT recordings of the folder, the newest first: the regular files
 named as Radiolack names them, which alone are downloaded or deleted. An
-I/Q recording is listed and deleted as its data file, with its metadata.
+I/Q recording is listed and deleted as its data file, with its metadata,
+whose format gives its length.
 """
 
 from __future__ import annotations
@@ -48,6 +64,7 @@ import contextlib
 import errno
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -70,23 +87,33 @@ MIN_FREE_BYTES = 2 * 1024 ** 3      # a recording does not start, or stops, with
 WAV_HEADER = struct.Struct("<4sI4s4sIHHIIHH4sI")
 WAV_DATA_LIMIT = (0xFFFFFFFF - (WAV_HEADER.size - 8)) & ~1     # RIFF sizes are 32-bit: 4 GiB
 LIST_LIMIT = 500                    # the recordings listed, the latest
-WRITE_INTERVAL_S = 0.5              # the thread writes what came this often
-SPACE_CHECK_S = 1.0                 # and checks the free space this often
+WRITE_INTERVAL_S = 0.5              # the thread writes what came this often,
+WRITE_BATCH_BYTES = 4 * 1024 * 1024 # or as soon as this much waits
+SPACE_CHECK_S = 1.0                 # it checks the free space before each write, and this often meanwhile
 PENDING_LIMIT_BYTES = 16 * 1024 * 1024      # audio waiting for the disk: more stops the recording
-IQ_PENDING_LIMIT_BYTES = 64 * 1024 * 1024   # I/Q waiting for the disk: 14 s at 2.4 MS/s
+IQ_PENDING_S = 2.0                  # I/Q waiting for the disk: more than this many seconds of it stops the
+IQ_PENDING_LIMIT_BYTES = 64 * 1024 * 1024   # recording, or than this when more: 14 s at 2.4 MS/s in 8 bits
 META_INTERVAL_S = 5.0               # an I/Q recording's metadata follows its captures this often
 SIGMF_VERSION = "1.0.0"             # the SigMF version the metadata follows, its readers' oldest
+# The I/Q formats recorded, as SigMF names them, with the bytes of an I/Q
+# pair in each: rtl_tcp's unsigned bytes, and a SoapySDR device's CS8, CS16
+# and CF32, in the computer's byte order.
+IQ_DATATYPES = {"cu8": 2, "ci8": 2, "ci16_le": 4, "ci16_be": 4, "cf32_le": 8, "cf32_be": 8}
+EXTENSION = {"name": "radiolack", "version": "1.0.0", "optional": True}   # Radiolack's namespace, for SigMF
+FULL_SCALE_FIELD = "radiolack:full_scale"   # an integer format's full scale, where it is not its type's
+META_HEAD_BYTES = 65536             # of an I/Q recording's metadata, read for its format in the list
 IQ_MODE = "I/Q"                     # an I/Q recording's mode in the list
 DATA_SUFFIX = ".sigmf-data"
 META_SUFFIX = ".sigmf-meta"
 MAX_COUNT = 999                     # recordings of the same name, -2 to -999 after the first
 FOLDER_PATH_LIMIT = 4096            # characters in a folder that a user gives
 _SAMPLE_BYTES = 2                   # 16-bit mono
-_IQ_SAMPLE_BYTES = 2                # an unsigned byte of I, then one of Q
 _START = r"(?P<start>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})Z_(?P<mhz>\d{1,5}\.\d{6})MHz_"
 _COUNT = r"(?:-(?P<count>[1-9]\d{0,2}))?"
 _AUDIO_NAME = re.compile(_START + "(?P<mode>" + "|".join(MODES) + ")" + _COUNT + r"\.wav")
 _IQ_NAME = re.compile(_START + r"(?P<msps>\d{1,3}\.\d{6})MSps" + _COUNT + r"\.(?P<part>sigmf-data|sigmf-meta)")
+# SigMF's datatype: in the global object alone, which comes first in the metadata Radiolack writes.
+_DATATYPE = re.compile(rb'"core:datatype"\s*:\s*"([a-z0-9_]{1,16})"')
 
 log = logging.getLogger(__name__)
 
@@ -369,6 +396,8 @@ class Recording:
                 return False
             self._items.append(item)
             self._pending += size
+            if self._pending >= WRITE_BATCH_BYTES:
+                self._wake.notify()
         return True
 
     def _consume(self, items: list[Any]) -> str | None:
@@ -382,15 +411,18 @@ class Recording:
             reason = self._prepare()
             checked_s = time.monotonic()
             while reason is None:
-                items, stopping = self._take()
+                items, size, stopping = self._take()
+                # Before each write, against what it writes: whatever the
+                # rate, the disk keeps MIN_FREE_BYTES; and meanwhile, as
+                # other programs may fill it.
+                if items or time.monotonic() - checked_s >= SPACE_CHECK_S:
+                    checked_s = time.monotonic()
+                    if self._free_bytes() - size < MIN_FREE_BYTES:
+                        reason = "space"
+                        break
                 if items:
                     reason = self._consume(items)
                     if reason is not None:
-                        break
-                if time.monotonic() - checked_s >= SPACE_CHECK_S:
-                    checked_s = time.monotonic()
-                    if self._free_bytes() < MIN_FREE_BYTES:
-                        reason = "space"
                         break
                 if stopping:
                     break
@@ -410,14 +442,15 @@ class Recording:
             _make_folders(self.folder)
         return "space" if self._free_bytes() < MIN_FREE_BYTES else None
 
-    def _take(self) -> tuple[list[Any], bool]:
-        """What came, once WRITE_INTERVAL_S passed or a stop was asked, and
-        whether to stop."""
+    def _take(self) -> tuple[list[Any], int, bool]:
+        """What came, its bytes, and whether to stop: once WRITE_INTERVAL_S
+        passed, WRITE_BATCH_BYTES came or a stop was asked."""
         with self._lock:
-            if not self._stopping:
+            if not self._stopping and self._pending < WRITE_BATCH_BYTES:
                 self._wake.wait(WRITE_INTERVAL_S)
-            items, self._items, self._pending = self._items, [], 0
-            return items, self._stopping
+            items, size = self._items, self._pending
+            self._items, self._pending = [], 0
+            return items, size, self._stopping
 
     def _free_bytes(self) -> int:
         info = os.fstatvfs(self._descriptor) if self._descriptor is not None else os.statvfs(self.folder)
@@ -496,15 +529,24 @@ class IQRecording(Recording):
     after ``started``, ``frequency_hz``, the receiver's centre frequency, and
     ``rate_hz``, its sample rate, which stays the same throughout.
     ``hardware`` names the receiver in the metadata: the engine may change
-    it, before handing the samples that follow a gap."""
+    it, before handing the samples that follow a gap. ``datatype``, one of
+    IQ_DATATYPES, is the samples' format, and ``full_scale`` an integer
+    format's full scale where it is not its type's, or None; with
+    ``datatype`` None, the format is the first that ``take_format`` gives,
+    before the first samples."""
 
     kind = "iq"
 
     def __init__(self, folder: Path, started: float, frequency_hz: float, rate_hz: float, *, hardware: str,
-                 make_folder: bool, report: Report) -> None:
+                 make_folder: bool, report: Report, datatype: str | None = "cu8",
+                 full_scale: float | None = None) -> None:
         super().__init__(folder, started, frequency_hz, make_folder=make_folder, report=report)
         self.rate_hz = rate_hz
         self.hardware = hardware
+        self.datatype: str | None = None
+        self.full_scale: float | None = None
+        if datatype is not None:
+            self.take_format(datatype, full_scale)
         # The thread's own.
         self._meta: str | None = None           # the metadata's name, once the data file is made
         self._samples = 0                       # I/Q pairs written
@@ -513,26 +555,54 @@ class IQRecording(Recording):
         self._meta_due = False                  # the captures changed since the metadata was written
         self._meta_next_s = 0.0                 # when it may be written again
 
+    @property
+    def pair_bytes(self) -> int | None:
+        """The bytes of an I/Q pair, once the format is known."""
+        return None if self.datatype is None else IQ_DATATYPES[self.datatype]
+
+    def take_format(self, datatype: str, full_scale: float | None) -> bool:
+        """Whether samples in ``datatype`` at ``full_scale`` (None: their
+        type's) may be handed over: the first format given becomes the
+        recording's, and only that one may. Raises ValueError for a format
+        that SigMF does not name or a full scale that is not a positive
+        number."""
+        if datatype not in IQ_DATATYPES:
+            raise ValueError(f"no I/Q recording in {datatype}")
+        if full_scale is not None and not (math.isfinite(full_scale) and full_scale > 0):
+            raise ValueError(f"no full scale of {full_scale}")
+        with self._lock:
+            if self.datatype is None:
+                self.datatype, self.full_scale = datatype, full_scale
+                return True
+            return (self.datatype, self.full_scale) == (datatype, full_scale)
+
     def write(self, data: bytes, centre_hz: float, when_s: float, joined: bool) -> bool:
-        """Hand over raw samples: whole I/Q pairs of unsigned bytes, I first,
-        taken on ``centre_hz``, which came at ``when_s`` (Unix time), and
-        whether they follow those handed before without a gap. Returns
-        False, taking nothing, when too much already waits for the disk."""
-        return self._queue((data, centre_hz, when_s, joined), len(data), IQ_PENDING_LIMIT_BYTES)
+        """Hand over raw samples: whole I/Q pairs in the recording's format,
+        I first, taken on ``centre_hz``, which came at ``when_s`` (Unix
+        time), and whether they follow those handed before without a gap.
+        Returns False, taking nothing, when too much already waits for the
+        disk. Raises ValueError before the format is known."""
+        pair_bytes = self.pair_bytes
+        if pair_bytes is None:
+            raise ValueError("an I/Q recording's format comes before its samples")
+        limit = max(IQ_PENDING_LIMIT_BYTES, round(IQ_PENDING_S * self.rate_hz * pair_bytes))
+        return self._queue((data, centre_hz, when_s, joined), len(data), limit)
 
     def _consume(self, items: list[tuple[bytes, float, float, bool]]) -> str | None:
+        pair_bytes = self.pair_bytes
+        assert pair_bytes is not None       # set before the first samples
         for data, centre_hz, when_s, joined in items:
             if self._descriptor is None:
                 self._create()
             if not joined or centre_hz != self._centre_hz:
                 # The first sample came the chunk's length before the chunk ended.
-                first_s = when_s - len(data) / _IQ_SAMPLE_BYTES / self.rate_hz
+                first_s = when_s - len(data) / pair_bytes / self.rate_hz
                 self._captures.append({"core:sample_start": self._samples, "core:frequency": _number(centre_hz),
                                        "core:datetime": _utc(first_s)})
                 self._centre_hz = centre_hz
                 self._meta_due = True
             _write_all(self._descriptor, data)
-            self._samples += len(data) // _IQ_SAMPLE_BYTES
+            self._samples += len(data) // pair_bytes
         if self._meta_due and time.monotonic() >= self._meta_next_s:
             self._write_meta()
         return None
@@ -554,17 +624,17 @@ class IQRecording(Recording):
     def _write_meta(self) -> None:
         """Write the metadata whole, under a temporary name that is then
         renamed, so that a crash leaves the previous one."""
-        metadata = {
-            "global": {
-                "core:datatype": "cu8",
-                "core:sample_rate": _number(self.rate_hz),
-                "core:version": SIGMF_VERSION,
-                "core:hw": self.hardware,
-                "core:recorder": f"Radiolack {__version__}",
-            },
-            "captures": self._captures,
-            "annotations": [],
+        description: dict[str, Any] = {
+            "core:datatype": self.datatype,
+            "core:sample_rate": _number(self.rate_hz),
+            "core:version": SIGMF_VERSION,
+            "core:hw": self.hardware,
+            "core:recorder": f"Radiolack {__version__}",
         }
+        if self.full_scale is not None:
+            description["core:extensions"] = [EXTENSION]
+            description[FULL_SCALE_FIELD] = _number(self.full_scale)
+        metadata = {"global": description, "captures": self._captures, "annotations": []}
         text = json.dumps(metadata, indent=2) + "\n"
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self._meta}.", suffix=".tmp", dir=self.folder)
         try:
@@ -653,22 +723,47 @@ def _describe(folder: Path, name: str, named: _Named, running: bool) -> dict[str
         if not stat.S_ISREG(info.st_mode):
             return None
         entry["bytes"] = info.st_size
-        if iq:
-            entry["seconds"] = round(info.st_size // _IQ_SAMPLE_BYTES / named.rate_hz, 1)
-        else:
+        if not iq:
             entry["seconds"] = wav_seconds(os.pread(descriptor, WAV_HEADER.size, 0), info.st_size)
     except OSError:
         pass
     finally:
         os.close(descriptor)
     if iq:
-        with contextlib.suppress(OSError):
-            meta = os.lstat(folder / meta_name(name))
-            if stat.S_ISREG(meta.st_mode):
-                entry["meta"] = meta_name(name)
-                if entry["bytes"] is not None:
-                    entry["bytes"] += meta.st_size
+        data_bytes = entry["bytes"]
+        meta = _iq_meta(folder / meta_name(name))
+        if meta is not None:
+            entry["meta"] = meta_name(name)
+            meta_bytes, pair_bytes = meta
+            if data_bytes is not None:
+                entry["bytes"] = data_bytes + meta_bytes
+                # Its length from its format, which only its metadata gives.
+                if pair_bytes:
+                    entry["seconds"] = round(data_bytes // pair_bytes / named.rate_hz, 1)
     return entry
+
+
+def _iq_meta(meta: Path) -> tuple[int, int] | None:
+    """The size of the I/Q recording's metadata ``meta`` and the bytes of
+    an I/Q pair in the format it gives, 0 when it gives none that
+    IQ_DATATYPES knows; None without a regular file there. Only its first
+    META_HEAD_BYTES are read: the format comes first."""
+    try:
+        descriptor = os.open(meta, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        try:
+            found = _DATATYPE.search(os.pread(descriptor, META_HEAD_BYTES, 0))
+        except OSError:
+            found = None
+        pair_bytes = IQ_DATATYPES.get(found[1].decode("ascii"), 0) if found is not None else 0
+        return info.st_size, pair_bytes
+    finally:
+        os.close(descriptor)
 
 
 def _reason(error: OSError) -> str:

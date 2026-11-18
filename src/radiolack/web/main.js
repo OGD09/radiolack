@@ -2128,7 +2128,8 @@ function syncSource() {
   $('#src-gain-v').textContent = !source || !source.settable.includes('gain_db') ? '' : auto ? 'automatic' : `${source.gainDb.toFixed(1)} dB`;
   const agcEl = $('#src-agc');
   agcEl.checked = Boolean(source && source.settable.includes('gain_db') && auto);
-  agcEl.disabled = !gainSettable;
+  // Greyed for a receiver without automatic gain, unless on, so that it can be turned off.
+  agcEl.disabled = !gainSettable || (!source.automaticGain && !auto);
   const ppmEl = $('#src-ppm');
   if (!typingIn.has(ppmEl)) ppmEl.value = ppmText(source?.ppm ?? 0);
   ppmEl.disabled = !settable.has('ppm');

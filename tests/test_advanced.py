@@ -68,6 +68,10 @@ const out = {
   nearest: [a.nearestIndex([0, 8, 16], 11), a.nearestIndex([0, 8, 16], 13), a.nearestIndex([0, 8, 16], -5)],
   armed: p.powerView(decoded, true).button,
   armedRtl: p.powerView({ ...decoded, kind: 'rtl_sdr' }, true).button,
+  automaticGain: [false, true, null, undefined, 'x'].map((value) => {
+    const decodedGain = s.decodeSource({ ...message, automatic_gain: value });
+    return decodedGain && decodedGain.automaticGain;
+  }),
 };
 console.log(JSON.stringify(out));
 """
@@ -96,6 +100,10 @@ class AdvancedModuleTest(unittest.TestCase):
         self.assertEqual(self.found["malformed"], {
             "gainStages": [], "stageGainsDb": {}, "antenna": None, "antennas": [], "deviceSettings": {"b": "x"},
             "deviceSettingInfo": [], "deviceRefusal": None})
+
+    def test_automatic_gain_reads_as_offered_unless_the_engine_says_otherwise(self):
+        # False, true, unknown, not sent (an older engine or another source), malformed.
+        self.assertEqual(self.found["automaticGain"], [False, True, True, True, None])
 
     def test_an_engine_without_these_fields_shows_no_device_controls(self):
         older = self.found["older"]

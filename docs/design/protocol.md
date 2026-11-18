@@ -86,6 +86,7 @@ preferences apart from this computer's.
    | `centre_in_use_hz` | Where the receiver sits on the air for `centre_hz`, which labels the samples: the frames' centre, the carrier's measure, the I/Q recordings' captures. An RTL-SDR whose tuner is an R820T or R828D, on that tuner, is placed on its grid: the frequency asked of it moves, by 56.25 kHz at most (up to 112.5 kHz at the very edges of its range), to one whose oscillator, the frequency plus the IF of the sample rate, is a multiple of 112.5 kHz, where the driver's error is the same at every one. It is then labelled where `driver_pll` puts the tuner, and the correction moves it too. Within half a hertz of `centre_hz` for every other source and setting: direct sampling, another tuner, an RTL-SDR Blog V4 below 28.8 MHz, an oscillator below 27.66 MHz. A float, as the frames' centre: the two are equal. |
    | `sample_rates_hz` | The sample rates the Receiver menu offers, lowest first, `sample_rate_hz` among them for a `soapy` source: an RTL-SDR's usual ones, or those a SoapySDR device lists, or the common ones within the ranges it gives, up to 8 MS/s, which the engine holds; empty for a source whose rate does not change. An RTL-SDR source takes other rates within librtlsdr's ranges; a `soapy` source only those its device offers. |
    | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). A `soapy` source has one for a device with a gain stage or more, and lists `gain_db` among `settable` then: the one stage's gain, or with several the overall gain, which SoapySDR's module spreads across the stages, read back from the device after each change, its stages' too. On a device with a held stage (`gain_stages`), the overall gain never moves it: the engine spreads what is left over the other stages itself. |
+   | `automatic_gain` | A `soapy` source alone: whether the device has automatic gain, which a null `gain_db` asks for; null until the device first opens. Other sources leave it out, an interface reading its absence as automatic gain offered. The Receiver menu greys its Tuner AGC box for a device without it, unless automatic gain is on. |
    | `ppm` | Frequency correction of the receiver's clock, in parts per million to the hundredth, such as 37.42; null for a source without one. An RTL-SDR takes its nearest whole number itself, and the engine the rest, by scaling the frequency it asks for: `centre_hz` stays the frequency asked. An R820T or R828D takes none, since a corrected crystal would move its grid: the engine takes the whole of it, by the frequency it asks for, the samples' label and the VFO's distance from the centre, scaled by as much, as the receiver samples that much faster. A `soapy` source corrects the same way: a device that declares a correction of its own takes the nearest whole number, any other none, and the engine the rest. An interface older than the hundredths takes whole numbers only, and drops a source state that holds another until it is reloaded. |
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. For a `soapy` device with several stages, the overall gains it offers, in steps of 1 dB unless it declares others, with each held stage at its gain: they move when a held stage does. |
    | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input, converter and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. Through a converter, it is the receiver's range converted to frequencies on the air, from half the sample rate at the lowest, so that the span never goes below 0 Hz, to 100 GHz less half the sample rate at the highest. |
@@ -348,29 +349,42 @@ preferences apart from this computer's.
    audio leaves no file. It goes on without any client, like a scan, and
    never starts at start: whether one runs is not saved.
 
-   An I/Q recording keeps the receiver's samples as rtl_tcp sends them,
-   before the DC removal, from the samples that arrive after it started,
-   whether the engine reads them or not, in a SigMF recording: a
-   `.sigmf-data` file of unsigned 8-bit I/Q pairs, I first (`cu8`), and a
-   `.sigmf-meta` file, both readable by their owner only and named after the
+   An I/Q recording keeps the receiver's samples as the receiver gives
+   them, before the DC removal and any conversion, from the samples that
+   arrive after it started, whether the engine reads them or not, in a
+   SigMF recording: a `.sigmf-data` file of I/Q pairs, I first, in the
+   receiver's format, and a `.sigmf-meta` file, both readable by their owner only and named after the
    start in UTC, the receiver's centre frequency and its sample rate, such
    as `2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-data`, with
    `-2` to `-999` before the extension when either name is taken. Its
-   metadata, SigMF 1.0.0, gives `core:datatype` (`cu8`),
-   `core:sample_rate`, `core:hw` (the receiver, such as `RTL-SDR, Rafael
-   Micro R820T`, and the converter in front of it, such as `RTL-SDR, Rafael
-   Micro R820T, behind a downconverter with its oscillator at 9750 MHz`) and
-   `core:recorder` (`Radiolack` and its version), and a
+   metadata, SigMF 1.0.0, gives `core:datatype`, the format: `cu8` for
+   rtl_tcp's unsigned 8-bit pairs, and for a SoapySDR receiver the format
+   the engine reads it in, `ci8`, `ci16_le` or `cf32_le` (`_be` on a
+   big-endian computer); `core:sample_rate`; `core:hw` (the receiver, such
+   as `RTL-SDR, Rafael Micro R820T` or `SoapySDR sdrplay, RSPdx-R2`, and
+   the converter in front of it, such as `RTL-SDR, Rafael Micro R820T,
+   behind a downconverter with its oscillator at 9750 MHz`);
+   `core:recorder` (`Radiolack` and its version); and, for a receiver
+   whose integers stop short of their type's full scale, such as an
+   SDRplay's at 32767 or a bladeRF's at 2048, `radiolack:full_scale`, that
+   full scale, with `core:extensions` declaring the optional extension
+   `radiolack` 1.0.0: the samples are never scaled. Then a
    capture for each stretch of samples: `core:sample_start`,
    `core:frequency`, the receiver's centre frequency on the air, and `core:datetime`,
    the time of its first sample, in UTC to the millisecond; no annotation.
    A retune, by an interface or a scan, starts a capture, as do a change of
    frequency correction and the samples that come after a gap, such as
-   when rtl_tcp's connection drops and comes back. The engine writes the
+   when rtl_tcp's connection drops and comes back, a SoapySDR receiver is
+   unplugged and back or reports an overflow, or the engine's event loop
+   falls more than a second behind a SoapySDR receiver's reading thread. The engine writes the
    metadata whole, renaming a new file over the old one, with the first
    samples, then at most every 5 s while the captures change, and at the
    end: a crash leaves a recording that reads. It takes about 17 GB an hour
-   at 2.4 MS/s. Like the audio's, it goes on without any client, never
+   at 2.4 MS/s in 8 bits, twice that in 16 bits and four times in 32-bit
+   floats: up to 230 GB an hour at 8 MS/s. The engine writes in batches of
+   4 MiB at most, checking before each write that it leaves 2 GiB free,
+   and stops the recording (`disk`) once more than 2 s of samples, and at
+   least 64 MiB, wait for the disk. Like the audio's, it goes on without any client, never
    starts at start and never runs on the simulated band; both may run at
    once.
 
@@ -658,7 +672,7 @@ preferences apart from this computer's.
 
     | Field | Meaning |
     | --- | --- |
-    | `files` | The regular files of the folder named as the engine names its recordings, links excluded: WAV files, and I/Q recordings' data files. Each gives its `name`, its `kind` (`audio` or `iq`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them (`I/Q` for an I/Q recording), its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header or its data's size; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV. `running` is true for a recording that runs. An I/Q recording also gives `rate_hz`, its sample rate as its name tells it, and `meta`, its metadata file, which `bytes` includes, or null when it is missing. |
+    | `files` | The regular files of the folder named as the engine names its recordings, links excluded: WAV files, and I/Q recordings' data files. Each gives its `name`, its `kind` (`audio` or `iq`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them (`I/Q` for an I/Q recording), its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header, or its data's size and the format that its metadata's `core:datatype` names, within the metadata's first 64 KiB; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV and for an I/Q recording whose metadata is missing or names no format that the engine knows. `running` is true for a recording that runs. An I/Q recording also gives `rate_hz`, its sample rate as its name tells it, and `meta`, its metadata file, which `bytes` includes, or null when it is missing. |
     | `more` | How many older recordings the folder holds besides. |
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
@@ -1415,6 +1429,12 @@ and later.
   interface or the saved file set them. A reload brings a newer interface.
   A newer interface reads a state without these fields, an older
   engine's, as a device without them, and shows no Advanced section.
+  The same day, a `soapy` source's `automatic_gain` (later-milestones.md,
+  section 1, after pull request 4), without a new version: an older
+  interface ignores it and leaves its Tuner AGC box enabled, the engine
+  refusing automatic gain for a device without it, as before; a newer
+  interface reads its absence, an older engine's or another source's, as
+  automatic gain offered.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

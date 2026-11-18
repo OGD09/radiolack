@@ -308,6 +308,8 @@ class RtlTcpSource:
     """
 
     kind = "rtl_tcp"
+    # What the tap hands: rtl_tcp's unsigned bytes, as SigMF names them.
+    raw_format: tuple[str, float | None] | None = ("cu8", None)
 
     def __init__(self, host: str | None = None, port: int | None = None, *,
                  centre_hz: float = DEFAULT_CENTRE_HZ, sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
