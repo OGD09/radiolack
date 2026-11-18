@@ -23,7 +23,8 @@ them out of the audio filter's response, the audio fading from the old
 taps to the new. The noise blanker, when on, in every mode, zeroes the
 short impulses of the receiver's samples before the front filter
 (``NoiseBlanker``): only the VFO's channel takes them blanked, and a
-carrier's measure, which taps the channel, takes it unblanked.
+carrier's measure, which taps the channel, takes it unblanked, as the fine
+spectrum (fine.py) takes the front filter's output, which it taps.
 """
 
 from __future__ import annotations
@@ -449,6 +450,9 @@ class NoiseBlanker:
     of one, loses those and ``BLANKER_SIDES`` more there, 18 samples at
     most at such an edge, 7.5 µs at 2.4 MS/s.
 
+    ``zeroed`` holds the indices of the samples zeroed in the latest block,
+    in order, so that the samples as received can be filtered from the
+    blanked ones and the few zeroed (``FftFilter.process_sparse``).
     ``impulses`` is the number zeroed in the latest block, and
     ``per_second`` that of the latest second of samples, counted over the
     whole blocks that make it up and scaled to a second: 0 before the
@@ -458,6 +462,8 @@ class NoiseBlanker:
         self.rate_hz = float(rate_hz)
         self.impulses = 0
         self.per_second = 0
+        self._none = np.zeros(0, np.intp)
+        self.zeroed = self._none    # the samples zeroed in the latest block, in order
         self._pending = 0           # samples to zero at the start of the next block
         self._counted = 0           # impulses in the second being counted
         self._samples = 0           # samples of that second so far
@@ -476,13 +482,14 @@ class NoiseBlanker:
         self.impulses = len(low)
         self._count(count)
         if not len(low) and not pending:
+            self.zeroed = self._none
             return samples
         blanked = samples.copy()
-        blanked[:pending] = 0
+        # Zeroed spans are apart from each other, each at most this long.
+        spans = low[:, np.newaxis] + np.arange(BLANKER_LONGEST + 2 * BLANKER_SIDES)
+        self.zeroed = np.union1d(np.arange(pending), spans[spans <= high[:, np.newaxis]])
+        blanked[self.zeroed] = 0
         if len(low):
-            # Zeroed spans are apart from each other, each at most this long.
-            spans = low[:, np.newaxis] + np.arange(BLANKER_LONGEST + 2 * BLANKER_SIDES)
-            blanked[spans[spans <= high[:, np.newaxis]]] = 0
             self._pending = max(self._pending, int(last[-1]) + BLANKER_SIDES + 1 - count)
         return blanked
 
@@ -538,9 +545,11 @@ class Demodulator:
         self._audio: _AudioPath | None = None
         self._search: CarrierSearch | None = None   # in SAM, with or without audio
         self._blanker: NoiseBlanker | None = None   # while the noise blanker is on
-        # While the blanker is on and the channel is tapped: the front and
-        # channel filters of the unblanked samples, which the tap takes.
-        self._unblanked: tuple[FftFilter, FftFilter] | None = None
+        # While the blanker is on and the channel or the front filter's output
+        # is tapped: the front filter of the samples zeroed alone, whose
+        # output added to the front's gives the unblanked samples' that the
+        # taps take, and the channel filter after it while the channel is.
+        self._unblanked: tuple[FftFilter, FftFilter | None] | None = None
         self.position = 0                   # audio samples sent, modulo 2^32
 
     @property
@@ -549,12 +558,16 @@ class Demodulator:
 
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool,
-                tap: Callable[[np.ndarray], None] | None = None) -> tuple[Meter, np.ndarray | None]:
+                tap: Callable[[np.ndarray], None] | None = None,
+                front_tap: Callable[[np.ndarray], None] | None = None) -> tuple[Meter, np.ndarray | None]:
         """The meter for ``samples``, received at ``centre_hz`` and ``rate_hz``,
         and with ``audio`` the 16-bit audio they make. ``noise_density`` is
         the noise power per hertz around the VFO, for the automatic squelch.
         ``tap`` receives the channel, at ``channel_rate_hz``, before any
         detector: its 0 Hz is the VFO's frequency less ``vfo_position_hz``.
+        ``front_tap`` receives the front filter's output, the same 0 Hz and
+        rate before the channel filter, for the fine spectrum (fine.py),
+        and nothing while the VFO lies outside the received band.
         A VFO outside the received band reads nothing and stays silent; a
         receiver slower than the channel rate gives no meter, no audio and
         no channel. In SAM the carrier is sought with or without audio, so
@@ -562,9 +575,12 @@ class Demodulator:
         audio path's detector: without audio it removes nothing. The noise
         blanker, in every mode, acts on the samples before the channel is
         made of them, with or without audio, so the meter, the squelch and
-        SAM's search take the blanked channel; ``tap`` takes the channel of
-        the samples as received, through filters of its own while the
-        blanker is on and has blanked since the tap began."""
+        SAM's search take the blanked channel; ``tap`` and ``front_tap``
+        take the samples as received while the blanker is on and has
+        blanked since a tap began: the front filter's output plus what a
+        silent copy of it gives for the samples zeroed alone, a few, which
+        costs far less than filtering every sample again, and for ``tap`` a
+        copy of the channel filter."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
@@ -587,25 +603,45 @@ class Demodulator:
             self._channel.set_taps(taps)
             self._channel_key = key
             self._noise_bandwidth_hz = float(np.sum(np.abs(taps) ** 2)) * self.channel_rate_hz
-        if tap is None or not settings.blanker:
+        if (tap is None and front_tap is None) or not settings.blanker:
             self._unblanked = None
         elif self._unblanked is not None:
-            self._unblanked[0].set_shift(front_shift_hz)
-            if taps is not None:
-                self._unblanked[1].set_taps(taps)
+            difference, channel_copy = self._unblanked
+            difference.set_shift(front_shift_hz)
+            if tap is None:
+                channel_copy = None
+            elif channel_copy is None:
+                # The tap begins while the front's difference runs: from
+                # here on, a copy of the channel filter follows it.
+                channel_copy = copy.deepcopy(self._channel)
+            elif taps is not None:
+                channel_copy.set_taps(taps)
+            self._unblanked = (difference, channel_copy)
         elif blanked is not samples:
             # Until now the channel's filters took the samples as received:
-            # from here on, copies of them go on doing so for the tap.
-            self._unblanked = (copy.deepcopy(self._front), copy.deepcopy(self._channel))
+            # from here on, the front filter's output plus what it gives for
+            # the samples zeroed, and a copy of the channel filter, do so.
+            self._unblanked = (self._front.silent_copy(), None if tap is None else copy.deepcopy(self._channel))
         received = abs(shift_hz) <= rate_hz / 2         # false: the VFO lies outside the received band
-        channel = self._channel.process(self._front.process(blanked))
+        front_output = self._front.process(blanked)
+        channel = self._channel.process(front_output)
         if not received:
             channel = np.zeros_like(channel)
+        if self._unblanked is not None:
+            # The filters are linear: the samples as received filter to the
+            # blanked ones' output plus that of the few samples zeroed.
+            assert self._blanker is not None    # the blanker is on
+            zeroed = self._blanker.zeroed
+            front_output = front_output + self._unblanked[0].process_sparse(len(samples), zeroed, samples[zeroed])
+        if front_tap is not None and received:
+            front_tap(front_output)
         if tap is not None:
             if self._unblanked is None:
                 tap(channel)
             else:
-                unblanked = self._unblanked[1].process(self._unblanked[0].process(samples))
+                channel_copy = self._unblanked[1]
+                assert channel_copy is not None     # made with the tap
+                unblanked = channel_copy.process(front_output)
                 tap(unblanked if received else np.zeros_like(unblanked))
 
         power = channel.real.astype(np.float64) ** 2 + channel.imag.astype(np.float64) ** 2

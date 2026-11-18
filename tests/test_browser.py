@@ -226,6 +226,99 @@ FREQUENCY_PROBE = """async () => {
       '.5', '99999', '100000', '0', '0.4 Hz', '100.1 GHz', '', 'abc', '145.5 x', '1e6', '-1', '10.489,5 M'].map(parseFrequency),
   };
 }"""
+# A stream of stream.js's own beside the interface's, which asks for the
+# fine spectrum before it opens, then again after it reconnects: the fine
+# frames it decodes, the VFO, and what the hello listed.
+FINE_STREAM_PROBE = """async () => {
+  const { EngineStream, FINE_COVER } = await import(new URL('stream.js', document.baseURI).href);
+  const frames = [];
+  let vfo = null, opened = 0;
+  const noop = () => {};
+  const handlers = { onFrame: noop, onAudio: noop, onSource: noop, onDemod: (demod) => { vfo = demod.frequencyHz; },
+    onBookmarks: noop, onScanner: noop, onPeaks: noop, onObservations: noop, onPreferences: noop, onRecording: noop,
+    onRecordings: noop, onStorage: noop, onUpdate: noop, onRemote: noop, onReport: noop, onCarrier: noop,
+    onDriverCheck: noop, onError: noop, onState: (state) => { if (state === 'open') opened += 1; },
+    onFine: (frame) => frames.push(frame) };
+  const until = (done) => new Promise((resolve, reject) => {
+    const started = performance.now();
+    const poll = () => {
+      if (done()) resolve();
+      else if (performance.now() - started > 8000) reject(new Error(`waited for fine frames: ${frames.length}`));
+      else setTimeout(poll, 20);
+    };
+    poll();
+  });
+  const stream = new EngineStream(handlers);
+  stream.setFine(true);
+  stream.start();
+  await until(() => frames.length >= 2 && vfo !== null);
+  stream.stop();
+  const before = frames.length;
+  stream.start();
+  await until(() => opened === 2 && frames.length >= before + 2);
+  const spectra = stream.spectra;
+  stream.stop();
+  return { spectra, cover: FINE_COVER, vfo, frames: frames.map((frame) => ({ centre: frame.centreHz,
+    width: frame.widthHz, bins: frame.codes.length, step: frame.dbStep, top: Math.max(...frame.codes) })) };
+}"""
+# stream.js against stand-in sockets: an older engine's hello, without
+# `spectra`, then a newer one's; fine frames and frames of a kind that no
+# engine sends yet; and the decoding of malformed fine frames.
+FINE_STAND_IN_PROBE = """async () => {
+  const module = new URL('stream.js', document.baseURI).href;
+  const { EngineStream, decodeFine, decodeFrame, decodeAudio } = await import(module);
+  const frame = (kind, width = 48000, bins = 16) => {
+    const buffer = new ArrayBuffer(40 + bins), view = new DataView(buffer);
+    view.setUint8(0, kind);
+    view.setUint8(1, 1);
+    view.setUint32(4, 9, true);
+    view.setFloat64(8, 7100000.5, true);
+    view.setFloat64(16, width, true);
+    view.setFloat32(24, -160, true);
+    view.setFloat32(28, 0.625, true);
+    return buffer;
+  };
+  const sockets = [];
+  class StandIn extends EventTarget {
+    static OPEN = 1;
+    constructor() { super(); this.readyState = 1; this.sent = []; sockets.push(this); }
+    send(text) { this.sent.push(JSON.parse(text)); }
+    close() { this.readyState = 3; }
+    receive(data) { this.dispatchEvent(new MessageEvent('message', { data })); }
+  }
+  const fine = [];
+  const noop = () => {};
+  const handlers = { onFrame: noop, onAudio: noop, onSource: noop, onDemod: noop, onBookmarks: noop, onScanner: noop,
+    onPeaks: noop, onObservations: noop, onPreferences: noop, onRecording: noop, onRecordings: noop, onStorage: noop,
+    onUpdate: noop, onRemote: noop, onReport: noop, onCarrier: noop, onDriverCheck: noop, onError: noop,
+    onState: noop, onFine: (decoded) => fine.push(decoded.centreHz) };
+  const real = window.WebSocket;
+  window.WebSocket = StandIn;
+  const engines = {};
+  try {
+    for (const [name, spectra] of [['older', undefined], ['newer', ['fine']]]) {
+      fine.length = 0;
+      const stream = new EngineStream(handlers, 'ws://stand-in');
+      stream.start();
+      const socket = sockets.at(-1);
+      socket.receive(JSON.stringify({ type: 'hello', protocol: 6, ...(spectra ? { spectra } : {}) }));
+      stream.setFine(true);
+      for (const kind of [3, 9, 255]) socket.receive(frame(kind));
+      const received = fine.length;
+      stream.setFine(false);
+      socket.receive(frame(3));
+      engines[name] = { sent: socket.sent, received, after: fine.length - received, spectra: stream.spectra };
+      stream.stop();
+    }
+  } finally {
+    window.WebSocket = real;
+  }
+  const decoded = decodeFine(frame(3));
+  return { engines, decoded: [decoded.sequence, decoded.centreHz, decoded.widthHz, decoded.dbMin, decoded.dbStep,
+                              decoded.codes.length],
+    refused: [decodeFine(frame(9)), decodeFine(frame(3, 0)), decodeFine(frame(3, NaN)), decodeFine(frame(3, 48000, 0)),
+              decodeFrame(frame(3)), decodeAudio(frame(3))] };
+}"""
 # The mode that the band plan's mode gives (bandplan.js), from the VFO's:
 # SAM counts as AM.
 PLAN_MODE_PROBE = """async () => {
@@ -952,6 +1045,33 @@ class BrowserTest(unittest.TestCase):
                 expect(dialog).to_be_visible()
                 first.keyboard.press("Escape")
                 expect(dialog).to_be_hidden()
+
+    def test_the_stream_decodes_the_fine_spectrum_it_asks_of_an_engine_that_knows_it(self):
+        # The interface draws nothing of it yet: a stream of stream.js's own
+        # asks, beside the interface's, which keeps working.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                found = page.evaluate(FINE_STREAM_PROBE)
+                self.assertEqual((found["spectra"], found["cover"]), (["fine"], 0.4))
+                self.assertGreaterEqual(len(found["frames"]), 4)
+                for frame in found["frames"]:
+                    # The simulated band's VFO, in NFM: the channel's 0 Hz, 48 kHz wide.
+                    self.assertEqual((frame["centre"], frame["width"], frame["bins"], frame["step"]),
+                                     (found["vfo"], 48_000, 8192, 0.625))
+                    self.assertGreater(frame["top"], 0)
+                stand_in = page.evaluate(FINE_STAND_IN_PROBE)
+                # An older engine is never asked; a newer one is, and a frame
+                # of a kind no engine sends yet is ignored.
+                self.assertEqual(stand_in["engines"], {
+                    "older": {"sent": [], "received": 0, "after": 0, "spectra": []},
+                    "newer": {"sent": [{"type": "fine", "on": True}, {"type": "fine", "on": False}], "received": 1,
+                              "after": 0, "spectra": ["fine"]},
+                })
+                self.assertEqual(stand_in["decoded"], [9, 7_100_000.5, 48_000, -160, 0.625, 16])
+                self.assertEqual(stand_in["refused"], [None] * 6)
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
 
     def test_antenna_lengths_take_the_unit_that_fits_them(self):
         url = self.serve()

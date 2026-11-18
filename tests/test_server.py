@@ -24,6 +24,7 @@ from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
 from radiolack.sources import Sources
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO
+from radiolack.fine import FINE_SIZE, FINE_VERSION, FRAME_KIND_FINE
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
@@ -253,7 +254,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
                               "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
-                              "measures": ["carrier", "driver_pll"]})
+                              "measures": ["carrier", "driver_pll"], "spectra": ["fine"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -421,6 +422,37 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                     break
                 self.assertNotEqual(message.data[0], FRAME_KIND_AUDIO)
 
+    async def test_fine_frames_flow_to_a_client_that_asks_until_it_stops(self):
+        async with self.connect(self.origin) as ws, self.connect(self.origin) as other:
+            await self.start(ws)
+            await self.start(other)
+            # Off without having asked, then twice on: no error, one stream of frames.
+            for on in (False, True, True):
+                await ws.send_json({"type": "fine", "on": on})
+            sequences = []
+            while len(sequences) < 3:
+                message = await ws.receive(timeout=5)
+                self.assertEqual(message.type, aiohttp.WSMsgType.BINARY)
+                if message.data[0] == FRAME_KIND_FINE:
+                    kind, version, flags, sequence, centre, width, *_ = FRAME_HEADER.unpack_from(message.data)
+                    self.assertEqual((kind, version, flags, width), (FRAME_KIND_FINE, FINE_VERSION, 0, 48_000.0))
+                    self.assertEqual(len(message.data) - FRAME_HEADER.size, FINE_SIZE)
+                    sequences.append(sequence)
+            self.assertEqual(sequences, list(range(sequences[0], sequences[0] + 3)))
+            await ws.send_json({"type": "fine", "on": False})
+            await ws.send_str("[1]")    # its error marks the point after which the fine frames stopped
+            self.assertEqual((await next_text(ws))["message"], "unknown command")
+            # Neither it since, nor the client that never asked, at any time.
+            for client in (ws, other):
+                deadline = time.monotonic() + 0.3
+                while (remaining := deadline - time.monotonic()) > 0:
+                    try:
+                        message = await client.receive(timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+                    if message.type == aiohttp.WSMsgType.BINARY:
+                        self.assertNotEqual(message.data[0], FRAME_KIND_FINE)
+
     async def test_malformed_commands_get_an_error(self):
         commands = {
             "not json": (None, "a command must be a JSON object"),
@@ -438,6 +470,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "audio"}': ("audio", "audio must be turned on or off: true or false"),
             '{"type": "audio", "on": 1}': ("audio", "audio must be turned on or off: true or false"),
             '{"type": "audio", "on": true, "volume": 3}': ("audio", "unknown audio setting: volume"),
+            '{"type": "fine"}': ("fine", "the fine spectrum must be turned on or off: true or false"),
+            '{"type": "fine", "on": "yes"}': ("fine", "the fine spectrum must be turned on or off: true or false"),
+            '{"type": "fine", "on": true, "bins": 4}': ("fine", "unknown fine setting: bins"),
             '{"type": "bookmark", "action": "rename"}': (
                 "bookmark", 'a bookmark action is "add", "change" or "remove"'),
             '{"type": "bookmark", "action": "add", "name": "A", "mode": "NFM"}': (

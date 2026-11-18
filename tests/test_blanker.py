@@ -88,6 +88,7 @@ class ImpulseTest(unittest.TestCase):
         np.testing.assert_array_equal(blanked, expected)
         self.assertEqual(blanker.impulses, 3)
         self.assertEqual(hit[100], 0.5)         # the samples given stay as they were
+        np.testing.assert_array_equal(blanker.zeroed, np.flatnonzero(expected != signal))
 
     def test_a_block_without_impulses_is_given_back_as_it_is(self):
         t = np.arange(20_000) / RATE
@@ -99,6 +100,7 @@ class ImpulseTest(unittest.TestCase):
                 blanker = NoiseBlanker(RATE)
                 self.assertIs(blanker.process(signal), signal)
                 self.assertEqual(blanker.impulses, 0)
+                self.assertEqual(len(blanker.zeroed), 0)
 
     def test_an_impulse_at_a_blocks_end_reaches_into_the_next_but_not_back_from_a_blocks_start(self):
         first, second, third = weak_noise(1_000, seed=1), weak_noise(1_000, seed=2), weak_noise(1_000, seed=4)
@@ -108,10 +110,12 @@ class ImpulseTest(unittest.TestCase):
         out = blanker.process(first)
         self.assertFalse(np.any(out[-3:]))
         np.testing.assert_array_equal(out[:-3], first[:-3])
+        np.testing.assert_array_equal(blanker.zeroed, [997, 998, 999])
         after = blanker.process(second)
         self.assertFalse(np.any(after[:2]))
         np.testing.assert_array_equal(after[2:], second[2:])
         self.assertEqual(blanker.impulses, 0)   # the sides of the previous block's impulse
+        np.testing.assert_array_equal(blanker.zeroed, [0, 1])
         # At a block's start: its two samples after it go, the previous block's last two stay.
         self.assertIs(blanker.process(second), second)
         after = blanker.process(third)
@@ -336,8 +340,14 @@ class PathTest(unittest.TestCase):
             for block in blocks(source):
                 demodulator.process(block, CENTRE, RATE, settings, None, False, kept.append)
             channels[on] = np.concatenate(kept)
-        np.testing.assert_array_equal(taps[True], taps[False])
-        self.assertEqual(results[True], results[False])
+        # The same within rounding: the samples as received filter to the
+        # blanked ones' output plus that of the samples zeroed.
+        np.testing.assert_allclose(taps[True], taps[False], rtol=0, atol=1e-6 * float(np.abs(taps[False]).max()))
+        self.assertEqual(len(results[True]), len(results[False]))
+        for with_it, without in zip(results[True], results[False]):
+            self.assertAlmostEqual(with_it.frequency_hz, without.frequency_hz, delta=1e-6)
+            self.assertEqual(with_it.margin_db, without.margin_db)
+            self.assertEqual(with_it.reason, without.reason)
         self.assertEqual(len(results[True]), 1)
         self.assertIsNotNone(results[True][0].frequency_hz)
         # The blanked channel would have measured another margin.
@@ -355,7 +365,8 @@ class PathTest(unittest.TestCase):
         for index, block in enumerate(blocks(signal)):
             plain.process(block, CENTRE, RATE, open_in("AM"), None, False, expected.append)
             blanked.process(block, CENTRE, RATE, settings, None, False, got.append if index >= 3 else None)
-        np.testing.assert_array_equal(np.concatenate(got[1:]), np.concatenate(expected[4:]))
+        received = np.concatenate(expected[4:])     # within rounding, as above
+        np.testing.assert_allclose(np.concatenate(got[1:]), received, rtol=0, atol=1e-6 * float(np.abs(received).max()))
         # Its first block differs only by the filters' memory of the blanked block before it.
         np.testing.assert_allclose(got[0][len(got[0]) // 2:], expected[3][len(got[0]) // 2:], atol=1e-6)
 
@@ -369,7 +380,7 @@ class PathTest(unittest.TestCase):
             bands = np.array([[centre + OFFSET - 4_000.0, centre + OFFSET + 4_000.0, 0.0]])
             got = []
             for block in blocks(signal):
-                power, codes, meter, _, detections, levels, _ = _process_block(
+                power, codes, meter, _, detections, levels, _, _ = _process_block(
                     analyzer, demodulator, detector, watch, block, centre, rate, True, settings, True, 12.0,
                     DETECTION_BLOCKS, bands)
                 got.append((power, codes, detections, levels, meter.blanker_impulses))

@@ -123,6 +123,7 @@ from .carrier import SILENT, UNSTABLE, Carrier, CarrierMeasure
 from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
                     has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
+from .fine import REMOTE_FINE_BINS, FineSpectrum, encode_fine
 from .observations import Observations
 from .pllcheck import LOST, MAX_MOVE_HZ, Point, choose_points, identify
 from .preferences import check_preferences, saved_preferences
@@ -146,6 +147,7 @@ REMOTE_BINS = 2048      # at most this many bins in a remote client's display fr
 CLIENT_QUEUE = 4        # frames kept for a client that falls behind
 CLIENT_REPLIES = 8      # replies kept for a client that falls behind
 CLIENT_AUDIO = 15       # audio frames (half a second) kept for a client that falls behind
+CLIENT_FINE = 2         # fine frames (a fifth of a second) kept for a client that falls behind
 SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
 OBSERVATIONS_SAVE_S = 600.0     # the observations are written at most this often, and when the engine stops
 UNRECORDED_KINDS = ("synthetic",)   # sources neither observed nor recorded: the simulated band
@@ -346,20 +348,24 @@ class Subscription:
     """What the engine has for one client, in the order it goes out: the
     states that changed (all of them at the start, in the order of
     ``states``), replies to the client's commands, audio frames if the client
-    asked for audio, then the latest display frames. A remote client is a
-    paired ``device`` that remote access serves, named by its id."""
+    asked for audio, the latest fine frames if it asked for the fine
+    spectrum, then the latest display frames. A remote client is a paired
+    ``device`` that remote access serves, named by its id."""
 
     def __init__(self, states: Mapping[str, Callable[[Subscription], dict[str, Any]]], frames: int,
-                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO, device: str | None = None) -> None:
+                 replies: int = CLIENT_REPLIES, audio: int = CLIENT_AUDIO, device: str | None = None,
+                 fine: int = CLIENT_FINE) -> None:
         self._states = dict(states)     # each gives its message for this client
         self._due = set(self._states)
         self._replies: deque[dict[str, Any]] = deque(maxlen=replies)
         self._audio: deque[bytes] = deque(maxlen=audio)
+        self._fine: deque[bytes] = deque(maxlen=fine)
         self._frames: deque[bytes] = deque(maxlen=frames)
         self._ended = False
         self._ready = asyncio.Event()
         self.device = device
         self.audio = False          # the client asked for audio
+        self.fine = False           # the client asked for the fine spectrum
         self.acknowledged = 0       # id of the client's last demodulation change handled
 
     @property
@@ -381,6 +387,8 @@ class Subscription:
             return self._replies.popleft()
         if self._audio:
             return self._audio.popleft()
+        if self._fine:
+            return self._fine.popleft()
         if self._frames:
             return self._frames.popleft()
         raise asyncio.QueueEmpty
@@ -411,6 +419,18 @@ class Subscription:
         if not on:
             self._audio.clear()
 
+    def put_fine(self, frame: bytes) -> None:
+        """Add a fine frame if the client wants the fine spectrum; when it
+        fell behind, its oldest fine frame goes."""
+        if self.fine:
+            self._fine.append(frame)
+            self._ready.set()
+
+    def set_fine(self, on: bool) -> None:
+        self.fine = on
+        if not on:
+            self._fine.clear()
+
     def changed(self, kind: str) -> None:
         """State ``kind`` changed: the client receives it again, unless it
         never receives that state."""
@@ -427,6 +447,7 @@ class Subscription:
         self._ended = True
         self._replies.clear()
         self._audio.clear()
+        self._fine.clear()
         self._frames.clear()
         self._ready.set()
 
@@ -465,6 +486,9 @@ class Engine:
         self._sam_locked = False            # whether SAM held its carrier after the last block
         self._notch_lines = 0               # the lines that the notch removed after the last block
         self._blanker_impulses = 0          # the impulses that the blanker zeroed in the latest second
+        # The fine spectrum, while an interface asks for it, and its frames' sequence.
+        self._fine: FineSpectrum | None = None
+        self._fine_sequence = 0
         # The centre asked and the rate of the last block, and its centre in use and rate.
         self._capture: tuple[tuple[float, float], tuple[float, float]] | None = None
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
@@ -614,6 +638,7 @@ class Engine:
 
     def unsubscribe(self, subscription: Subscription) -> None:
         self._clients.discard(subscription)
+        self._follow_fine()
         self._carrier_waiting.pop(subscription, None)
         if not self._carrier_waiting:
             self._carrier = None        # nobody waits: nothing more to measure
@@ -718,6 +743,12 @@ class Engine:
     def set_audio(self, subscription: Subscription, on: bool) -> None:
         """Start or stop sending audio to one client."""
         subscription.set_audio(on)
+
+    def set_fine(self, subscription: Subscription, on: bool) -> None:
+        """Start or stop sending the fine spectrum's frames to one client:
+        the engine computes it only while at least one client asks."""
+        subscription.set_fine(on)
+        self._follow_fine()
 
     def bookmarks_state(self) -> dict[str, Any]:
         """The bookmarks message (docs/design/protocol.md)."""
@@ -1137,6 +1168,7 @@ class Engine:
             self._observations_timer = None
         self._carrier = None
         self._carrier_waiting.clear()
+        self._fine = None
 
     async def wait_closed(self) -> None:
         """Return once the source, after ``close``, has released its receiver,
@@ -1201,12 +1233,15 @@ class Engine:
                 channels = self._watched if self._memory is not None and capture == self._span() else None
                 sweep = self._sweep
                 measure = self._carrier_measure(capture, label)
-                power, codes, meter, pcm, detections, levels, carrier = await asyncio.to_thread(
+                fine = self._fine_measure(label, source.rate_scale)
+                power, codes, meter, pcm, detections, levels, carrier, fine_codes = await asyncio.to_thread(
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
                     *label, self._dc_removal, self._demod, audio, threshold_db,
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
-                    None if channels is None else self._bands, measure, source.rate_scale)
+                    None if channels is None else self._bands, measure, source.rate_scale, fine)
                 self._publish(label, power, codes, meter, pcm)
+                if fine is not None and fine_codes:
+                    self._publish_fine(fine, fine_codes)
                 self._follow_sam_lock(bool(meter.sam_locked))
                 self._follow_notch(meter.notch_lines or 0)
                 self._follow_blanker(meter.blanker_impulses or 0)
@@ -1275,6 +1310,59 @@ class Engine:
     def _update_changed(self) -> None:
         for subscription in self._clients:
             subscription.changed("update")
+
+    def _follow_fine(self) -> None:
+        """The fine spectrum runs while a client asks for it: the first
+        starts it, and once none asks, its partial mean goes."""
+        if not any(subscription.fine for subscription in self._clients):
+            self._fine = None
+        elif self._fine is None:
+            self._fine = FineSpectrum()
+
+    def _fine_setting(self) -> tuple[Any, ...]:
+        """What a fine frame must not mix: the source's state, through the
+        count of its changes, which a switch of source counts too, the
+        VFO, the mode and DC removal."""
+        demod = self._demod
+        return self._source_changes, demod.frequency_hz, demod.mode, self._dc_removal
+
+    def _fine_measure(self, label: tuple[float, float], rate_scale: float
+                      ) -> tuple[FineSpectrum, tuple[Any, ...], float] | None:
+        """What a block gives the fine spectrum while a client asks for it:
+        the spectrum, the setting of the block's samples, which starts it
+        again when it changes, and ``rate_scale``, by which the receiver
+        samples faster than their rate. The setting holds their centre in
+        use and rate, ``label``, and ``rate_scale`` too. None while no
+        client asks."""
+        if self._fine is None:
+            return None
+        return self._fine, (self._fine_setting(), label, rate_scale), rate_scale
+
+    def _publish_fine(self, fine: tuple[FineSpectrum, tuple[Any, ...], float], frames: Sequence[np.ndarray]) -> None:
+        """Send the fine frames, as codes, that a block completed to the
+        clients that ask, unless the setting changed while the block was
+        processed, or none asks any more: each frame's centre is the
+        frequency on the air of the channel's 0 Hz, the VFO less the CW
+        pitch in CW, and its width the channel's rate, both scaled by the
+        block's ``rate_scale``, as the receiver samples that much faster.
+        Remote clients get frames of at most REMOTE_FINE_BINS bins, each
+        the highest of those it groups; every client's frames take the same
+        sequence."""
+        spectrum, key, rate_scale = fine
+        if spectrum is not self._fine or key[0] != self._fine_setting():
+            return
+        _, frequency_hz, mode, _ = key[0]
+        centre_hz = frequency_hz - vfo_position_hz(mode) * rate_scale
+        width_hz = spectrum.rate_hz * rate_scale
+        db_min, db_step = self.analyzer.db_min, self.analyzer.db_step
+        remote = any(subscription.fine and subscription.remote for subscription in self._clients)
+        for codes in frames:
+            sequence, self._fine_sequence = self._fine_sequence, (self._fine_sequence + 1) & 0xFFFFFFFF
+            frame = encode_fine(sequence, centre_hz, width_hz, db_min, db_step, codes)
+            remote_frame = (encode_fine(sequence, centre_hz, width_hz, db_min, db_step,
+                                        fewer_bins(codes, REMOTE_FINE_BINS)) if remote else frame)
+            for subscription in self._clients:
+                subscription.put_fine(remote_frame if subscription.remote else frame)
 
     def _remote_changed(self) -> None:
         """Remote access changed: this computer's interfaces learn it, and what
@@ -2313,21 +2401,25 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
                    dc_removal: bool, settings: DemodSettings, audio: bool, threshold_db: float | None,
                    search_blocks: int, bands: np.ndarray | None,
                    measure: tuple[CarrierMeasure, tuple[Any, ...], float] | None = None, rate_scale: float = 1.0,
+                   fine: tuple[FineSpectrum, tuple[Any, ...], float] | None = None,
                    ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
-                              tuple[np.ndarray, np.ndarray] | None, Carrier | None]:
+                              tuple[np.ndarray, np.ndarray] | None, Carrier | None, list[np.ndarray]]:
     """The bin powers, the display codes, the channel meter, with ``audio``
     the audio, once ``detector`` has averaged ``search_blocks`` blocks the
     signals found, once ``watch`` knows the noise the power and the noise of
-    the memory scan's channels, and once ``measure``, a carrier's measure and
-    the setting of these samples, has one its result, of a block of samples,
-    worked out in a worker thread. Detection is off without ``threshold_db``,
-    and the memory scan's channels are not watched without ``bands``, their
+    the memory scan's channels, once ``measure``, a carrier's measure and
+    the setting of these samples, has one its result, and with ``fine``,
+    the fine spectrum and the setting of these samples, the codes of the
+    fine frames they complete, of a block of samples, worked out in a
+    worker thread. Detection is off without ``threshold_db``, and the
+    memory scan's channels are not watched without ``bands``, their
     passbands and noise clearances. The VFO's distance from ``centre_hz``
     shrinks by ``rate_scale``, the factor by which the receiver samples
     faster than ``rate_hz``: the samples show it that much nearer. The
     noise blanker acts within the demodulator, on the VFO's channel alone:
-    the bin powers, detection, the memory scan's channels and the measure
-    take the samples as received."""
+    the bin powers, detection, the memory scan's channels, the measure and
+    the fine spectrum take the samples as received. Without ``fine`` the
+    demodulator's front filter is not tapped."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
@@ -2345,7 +2437,16 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
         def tap(channel: np.ndarray) -> None:
             carrier[0] = gatherer.add(channel, demodulator.channel_rate_hz, position + low_hz, position + high_hz,
                                       key)
-    meter, pcm = demodulator.process(samples, settings.frequency_hz - shift_hz, rate_hz, settings, noise, audio, tap)
+    fine_codes: list[np.ndarray] = []
+    front_tap: Callable[[np.ndarray], None] | None = None
+    if fine is not None:
+        spectrum, fine_key, _ = fine
+
+        def front_tap(front: np.ndarray) -> None:
+            fine_codes.extend(analyzer.codes(power) for power in
+                              spectrum.add(front, demodulator.channel_rate_hz, fine_key))
+    meter, pcm = demodulator.process(samples, settings.frequency_hz - shift_hz, rate_hz, settings, noise, audio, tap,
+                                     front_tap)
     if threshold_db is None:
         detector.reset()
         detections = None
@@ -2356,7 +2457,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
         levels = None
     else:
         levels = watch.levels(power, centre_hz, rate_hz, bands, analyzer.enbw)
-    return power, analyzer.codes(power), meter, pcm, detections, levels, carrier[0]
+    return power, analyzer.codes(power), meter, pcm, detections, levels, carrier[0], fine_codes
 
 
 def _conversion(described: Mapping[str, Any]) -> Conversion:

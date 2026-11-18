@@ -7,8 +7,8 @@ streams its frames, its audio, its source state, its demodulation settings,
 its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
-audio, for an update check, for the observations, for the list of the
-recordings and for the measure of a carrier. It serves the recordings that
+audio, for the fine spectrum, for an update check, for the observations,
+for the list of the recordings and for the measure of a carrier. It serves the recordings that
 the engine lists, and the I/Q recordings' metadata, to download
 (``/recordings/NAME``).
 
@@ -67,13 +67,14 @@ _REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authori
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "bookmark", "scanner", "observations", "preferences", "recording",
+_COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "scanner", "observations", "preferences", "recording",
              "recordings", "update", "remote", "report", "carrier")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
 MEASURES = ("carrier", "driver_pll")   # what the engine measures when an interface asks, as the hello tells
+SPECTRA = ("fine",)     # the spectra the engine sends besides the spectrum frames when asked, as the hello tells
 _DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
 _UNSENT_LIMIT = 16 * 1024       # bytes a device's stream keeps unsent, in its socket and in its transport
@@ -240,7 +241,8 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
     try:
         await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "version": __version__,
                             "remote": device is not None, "scanners": list(SCANNERS),
-                            "recording": list(RECORDING_KINDS), "measures": list(MEASURES)})
+                            "recording": list(RECORDING_KINDS), "measures": list(MEASURES),
+                            "spectra": list(SPECTRA)})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -332,11 +334,15 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.measure_carrier(changes, subscription)
         else:
             on = changes.pop("on", None)
+            what = "audio" if kind == "audio" else "the fine spectrum"
             if changes:
-                return kind, f"unknown audio setting: {next(iter(changes))}"
+                return kind, f"unknown {kind} setting: {next(iter(changes))}"
             if not isinstance(on, bool):
-                return kind, "audio must be turned on or off: true or false"
-            engine.set_audio(subscription, on)
+                return kind, f"{what} must be turned on or off: true or false"
+            if kind == "audio":
+                engine.set_audio(subscription, on)
+            else:
+                engine.set_fine(subscription, on)
     except ValueError as error:
         return kind, str(error)
     return kind, None

@@ -427,7 +427,9 @@ prototype or settles what it left open:
   blanked block before the measure, a few hundred microseconds), and
   through the engine a measure's margin and every point of a check
   within 1 dB and 1.5 dB of the measure without the blanker, while the
-  blanked channel's would be 8.7 and 9 dB higher.
+  blanked channel's would be 8.7 and 9 dB higher. (Since pull request 5
+  the front filter's copy is a filter of the samples zeroed alone, and the
+  measure's channel the same within rounding: below.)
 - **What takes the blanked channel**: the channel level, the S-meter and
   the squelch, which crackle no longer opens; SAM's search, the notch's
   analysis, the audio and its recordings. The memory scan holds on a
@@ -457,6 +459,93 @@ prototype or settles what it left open:
   average 1.5 to 1.6), a twelfth: the median and the search for impulses
   remain, the copy of the block goes. The tables are in the pull
   request.
+
+As built in pull request 5, the fine spectrum in the engine and the
+protocol, where it departs from the prototype or settles what it left
+open, and what pull request 6 needs to draw it:
+
+- **The fine spectrum lives in `fine.py`**: `FineSpectrum` is the
+  prototype's, which starts again at another key, and `encode_fine`
+  makes the frame. `tools/listening.py`, which held no other prototype
+  any more, is gone (the history keeps it), and
+  `tools/measure_listening.py` measures the package's fine spectrum as
+  the engine gives it a block, coded and encoded as the frames are.
+- **Computed only while asked**: the engine makes the spectrum when the
+  first interface asks (`{"type": "fine", "on": true}`), drops it with its
+  partial mean when none does, and the demodulator's `front_tap` exists
+  only then; without it a block's processing is unchanged, filter for
+  filter, as a test counts. One spectrum serves every interface, with one
+  sequence; a remote client's frames take 2048 bins, each the highest of
+  the four it groups, and it gets every frame, about 0.17 Mbit/s. A slow
+  client keeps the latest two.
+- **A frame never mixes two settings.** Each block gives the spectrum a
+  key: the count of the source's changes (a switch of source included),
+  the VFO's frequency and mode, DC removal, the samples' centre in use
+  and rate, and `rate_scale`. Another key drops the samples and the
+  partial mean and starts again; and as the block is processed in a
+  worker thread, its frames are dropped if the engine's setting changed
+  meanwhile, or the spectrum was dropped and made again. The filter width
+  is not in the key: the front filter does not depend on it.
+- **The samples as received, cheaply.** With the blanker on, the
+  prototype read the blanked front. A copy of the front filter fed the
+  samples as received, as pull request 4 did for the measure, took 5.2%
+  of one core over the blanker alone, as much as the front filter itself,
+  which is half the engine's processing: over the fine spectrum's 1.5%.
+  Reworked once: the filters are linear, so the samples as received
+  filter to the blanked samples' output plus that of the samples zeroed
+  alone, a few in a block. `FftFilter.process_sparse` filters those: only
+  the segments that read one, and of each only the bins that the output
+  takes, by a direct transform while the samples are few (an FFT beyond
+  that), the same within rounding as `process` on the samples with their
+  zeros, and the blanker gives the indices it zeroed. Calibrate's measure
+  and the driver's check take it too, for their channel: the same within
+  rounding as the blanker off, no longer bit for bit, which the tests now
+  check to a millionth of the largest sample and a carrier to a
+  microhertz; a fine frame's codes may differ by one in a few bins in ten
+  thousand, a level on a code's edge.
+- **Its cost.** Measured on the owner's laptop, seven runs each, under a
+  light load (load average 0.6 to 1.1); spike 8's figures above stay as
+  they were. Before the move, the prototype added 0.29% of one core over
+  a baseline of 10.46%, reading the blanked front, and the four tools
+  2.79%. After it, with the copy of the front filter, the fine spectrum
+  added 0.40% over 10.45%, and 5.20% over the blanker alone with the
+  blanker on, the four 7.70%; after the rework, 0.52% over 10.30%, a
+  twentieth, 1.19% over the blanker alone with the blanker on, and the
+  four 3.76%, about a third, with the scene's impulses in every block,
+  the worst case. Without them, the usual case, 0.42% over 11.35%, 0.47%
+  over the blanker, and the four 2.52%, a fifth. The fine spectrum alone
+  costs more than the prototype as the measure now codes and encodes each
+  frame, as the engine does; with the blanker it adds what filtering the
+  samples zeroed costs, about 0.2 ms a block, most of it NumPy's calls
+  rather than arithmetic. The tables are in the pull request.
+- **What pull request 6 needs.** The frame: the spectrum frames' header,
+  kind 3, version 1, flags 0, no level and no squelch (NaN), the levels
+  coded as the spectrum frames' (the same `level0` and step), 8192 bins,
+  or 2048 for a remote client; the hello's `spectra` lists `fine`, and
+  `EngineStream.setFine(true)` asks for the frames, again after a
+  reconnection, `onFine` receives them decoded (`decodeFine`).
+  The centre is the frequency on the air of the channel's 0 Hz, bin
+  `n / 2`: the VFO, and in CW the VFO less the CW pitch, 700 Hz, so the
+  VFO lies 700 Hz above the frame's centre; both that distance and the
+  width are scaled by the receiver's `rate_scale`, and the width is the
+  channel's rate on the air, 48 kHz or WFM's 320 kHz, within 0.5% at an
+  unusual sample rate. The cover is `FINE_COVER`, 0.4 of the width on
+  each side of the centre, not of the VFO: in CW it reaches 700 Hz
+  further below the VFO than above. Within it the front filter is flat to
+  16 kHz, 0.8 dB down at 18 kHz and 3.1 dB at the edge, 19.2 kHz; in WFM
+  within 0.1 dB to 128 kHz; beyond it the bins show the filter's
+  stopband, which the interface must not draw as the air. About ten
+  frames a second, one every tenth of a second of the channel's samples
+  (one FFT of 8192 each at 48 kHz, overlapping; three or four averaged in
+  WFM). After any retune,
+  a step, a mode or a change of the receiver's settings, the first frame
+  comes 0.17 s later at 48 kHz (0.1 s in WFM), and while the VFO moves
+  block after block, as in a drag, none comes: the waterfall's fine
+  history should wait rather than stretch. Nothing comes either while
+  the VFO's channel receives nothing (outside the span, WFM below
+  320 kHz, a receiver slower than the channel). The level of a carrier
+  on a bin reads within 1 dB of the wide spectrum's in the tests; two
+  carriers 20 Hz apart show apart in every mode.
 
 ### Pull requests
 

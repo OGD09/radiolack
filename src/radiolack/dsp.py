@@ -10,6 +10,7 @@ costs about the same.
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Callable
 
@@ -96,6 +97,7 @@ class FftFilter:
         self._start = 0         # input index of the buffer's first sample
         self._buffer = np.zeros(0, np.complex64)
         self._overlap = 0
+        self._turn: np.ndarray | None = None    # a direct transform's exponentials, when it first runs
         self.set_taps(taps)
 
     @property
@@ -144,11 +146,25 @@ class FftFilter:
         # Scaled so that the smaller inverse FFT gives the input's units.
         self._weights = self._response[signed % n] * (m / n)
 
+    def silent_copy(self) -> FftFilter:
+        """A copy of this filter, at the same point of the stream and with
+        the same taps and shift, that remembers silence: what it filters
+        from now on adds to this filter's output as its input adds to this
+        filter's input, the filters being linear."""
+        twin = copy.deepcopy(self)
+        twin._buffer[:] = 0
+        return twin
+
+    def _usable(self, held: int) -> int:
+        """The samples processed now, of ``held`` waiting: whole output
+        samples' worth, beyond the filter's memory."""
+        return (held - self._overlap) // self.down * self.down
+
     def process(self, samples: np.ndarray) -> np.ndarray:
         """Filter ``samples`` (complex), continuing the previous ones."""
         buffer = np.concatenate((self._buffer, np.asarray(samples, np.complex64)))
-        q, n, overlap = self.down, self._size, self._overlap
-        usable = (len(buffer) - overlap) // q * q       # new samples processed now
+        n, overlap = self._size, self._overlap
+        usable = self._usable(len(buffer))              # new samples processed now
         if usable <= 0:
             self._buffer = buffer
             return np.zeros(0, np.complex64)
@@ -165,20 +181,100 @@ class FftFilter:
             last[:overlap + rest] = buffer[full * hop:full * hop + overlap + rest]
             spectra.append(np.fft.fft(last)[np.newaxis])
         both = spectra[0] if len(spectra) == 1 else np.concatenate(spectra)
-        filtered = np.fft.ifft(both[:, self._bins] * self._weights, axis=1)
+        output = self._output(both[:, self._bins], None, usable)
+        self._buffer = buffer[usable:]
+        return output
+
+    def process_sparse(self, count: int, indices: np.ndarray, values: np.ndarray) -> np.ndarray:
+        """Filter ``count`` samples that are zero but at ``indices``, in
+        increasing order, where they are ``values``, continuing the previous
+        ones: what ``process`` gives for them, within rounding, computing
+        only the segments that read a sample other than zero, and of each
+        only the bins that the output takes, by a direct transform where the
+        samples are few. For a few samples, such as the impulses that the
+        noise blanker zeroes, it costs far less than ``process``."""
+        held = len(self._buffer)
+        n, overlap = self._size, self._overlap
+        indices = np.asarray(indices, np.intp)
+        values = np.asarray(values, np.complex64)
+        usable = self._usable(held + count)
+        remembered = np.flatnonzero(self._buffer)
+        positions = np.concatenate((remembered, indices + held))
+        numbers = np.concatenate((self._buffer[remembered], values))
+        if usable <= 0:
+            buffer = np.zeros(held + count, np.complex64)
+            buffer[positions] = numbers
+            self._buffer = buffer
+            return np.zeros(0, np.complex64)
+        hop = n - overlap
+        full = usable // hop
+        rows = full + (1 if usable > full * hop else 0)
+        # Segment r reads samples r * hop to r * hop + n, the last no further
+        # than usable + overlap; segments overlap by less than half (n is at
+        # least three times overlap), so a sample lies in two at most. The
+        # positions are in order: those remembered come first.
+        read = positions[:np.searchsorted(positions, usable + overlap)]
+        later = read // hop
+        touched = np.unique(np.concatenate((later - 1, later)))
+        touched = touched[(touched >= 0) & (touched < rows)]
+        starts = touched * hop
+        bounds = np.searchsorted(read, np.concatenate((starts, starts + n)))
+        low, counts = bounds[:len(touched)], bounds[len(touched):] - bounds[:len(touched)]
+        some = counts > 0
+        touched, starts, low, counts = touched[some], starts[some], low[some], counts[some]
+        firsts = np.cumsum(counts) - counts         # where each segment's samples start, gathered
+        gathered = np.arange(int(counts.sum())) + np.repeat(low - firsts, counts)
+        offsets = read[gathered] - np.repeat(starts, counts)
+        picked = numbers[gathered].astype(np.complex128)
+        if not len(touched):
+            chosen = np.zeros((0, len(self._bins)), np.complex128)
+        # A direct transform takes a product per sample and bin, an FFT a
+        # few operations per bin of the segment: the cheaper one.
+        elif 4 * len(gathered) * len(self._bins) <= len(touched) * n * n.bit_length():
+            if self._turn is None or len(self._turn) != n:
+                self._turn = np.exp(-2j * np.pi * np.arange(n) / n)    # once per segment size
+            terms = picked[:, np.newaxis] * self._turn[np.outer(offsets, self._bins) % n]
+            chosen = np.add.reduceat(terms, firsts, axis=0)
+        else:
+            dense = np.zeros((len(touched), n), np.complex64)
+            dense[np.repeat(np.arange(len(touched)), counts), offsets] = picked
+            chosen = np.fft.fft(dense, axis=1)[:, self._bins]
+        output = self._output(chosen, touched, usable)
+        rest = held + count - usable
+        buffer = np.zeros(rest, np.complex64)
+        kept = positions >= usable
+        buffer[positions[kept] - usable] = numbers[kept]
+        self._buffer = buffer
+        return output
+
+    def _output(self, chosen: np.ndarray, rows: np.ndarray | None, usable: int) -> np.ndarray:
+        """The output of ``usable`` new samples from the bins ``chosen`` of
+        their segments' spectra: of every segment, or of the segments
+        ``rows`` only, the others' output being zero."""
+        q, n, overlap = self.down, self._size, self._overlap
+        hop = n - overlap
+        full = usable // hop
+        rest = usable - full * hop
+        filtered = np.fft.ifft(chosen * self._weights, axis=1)
         # The whole-bin shift counts from each segment's first sample: carry its phase on.
-        turns = [(self._bin_shift * (self._start + row * hop)) % n for row in range(len(filtered))]
+        numbers = range(len(filtered)) if rows is None else rows.tolist()
+        turns = [(self._bin_shift * (self._start + row * hop)) % n for row in numbers]
         filtered *= np.exp(-2j * np.pi * np.array(turns) / n)[:, np.newaxis]
         first = overlap * self.up // q                  # outputs before it are wrapped around
         per_hop = hop * self.up // q
-        output = filtered[:full, first:first + per_hop].reshape(-1)
-        if rest:
-            output = np.concatenate((output, filtered[-1, first:first + rest * self.up // q]))
+        if rows is None:
+            output = filtered[:full, first:first + per_hop].reshape(-1)
+            if rest:
+                output = np.concatenate((output, filtered[-1, first:first + rest * self.up // q]))
+        else:
+            output = np.zeros(full * per_hop + rest * self.up // q, np.complex128)
+            for row, values in zip(numbers, filtered):
+                length = per_hop if row < full else rest * self.up // q
+                output[row * per_hop:row * per_hop + length] = values[first:first + length]
         if self._fine_hz:
             cycles = self._fine_phase + np.arange(len(output)) * (self._fine_hz / self.output_rate_hz)
             output *= np.exp(-2j * np.pi * cycles)
             self._fine_phase = (self._fine_phase + len(output) * self._fine_hz / self.output_rate_hz) % 1.0
-        self._buffer = buffer[usable:]
         self._start += usable
         return output.astype(np.complex64)
 

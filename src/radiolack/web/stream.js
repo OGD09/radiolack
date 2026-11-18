@@ -1,14 +1,17 @@
 /*
- * Engine stream: the WebSocket that brings spectrum frames, audio, the source
- * state, the demodulation settings, the bookmarks, the scanner state, the
+ * Engine stream: the WebSocket that brings spectrum frames, audio, the fine
+ * spectrum's frames when this interface asks, the source state, the
+ * demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the recording state, the
  * storage state, the update state and remote access's state from the
  * engine, and the observations, the recordings, a problem report, the
  * measure of a carrier and the check of the rtl-sdr driver when this
  * interface asks, and takes this interface's changes, its preferences, its
  * request for audio, its recordings, its update requests, its remote access
- * settings, its report requests and its carrier measure and driver check
- * requests to it (docs/design/protocol.md).
+ * settings, its report requests, its carrier measure and driver check
+ * requests and its request for the fine spectrum to it
+ * (docs/design/protocol.md). It ignores binary frames of a kind it does not
+ * know.
  * It reconnects by itself after a disconnection. On a device that remote
  * access serves, the engine sends neither the storage, update nor remote
  * access state, nor the recordings folder, nor a problem report, and takes
@@ -24,6 +27,10 @@ const FLAG_SQUELCH_OPEN = 0x1;
 const FRAME_KIND_AUDIO = 2;
 const AUDIO_VERSION = 1;
 const AUDIO_HEADER_BYTES = 16;
+const FRAME_KIND_FINE = 3;
+const FINE_VERSION = 1;
+/** The fine spectrum's cover, on each side of a fine frame's centre, in frame widths. */
+export const FINE_COVER = 0.4;
 const RETRY_FIRST_MS = 250;
 const RETRY_MAX_MS = 4000;
 const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no longer
@@ -34,8 +41,8 @@ const SETTINGS = ['address', 'hf_input', 'converter_lo_hz', 'converter', 'centre
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
-const COMMANDS = ['source', 'demod', 'audio', 'bookmark', 'scanner', 'observations', 'preferences', 'recording',
-  'recordings', 'update', 'remote', 'report', 'carrier'];
+const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'preferences',
+  'recording', 'recordings', 'update', 'remote', 'report', 'carrier'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -48,6 +55,23 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number | null} levelDb    power in the VFO's channel, dBFS; null: nothing received there
  * @property {number | null} squelchDb  squelch threshold in use, dBFS; null: not known yet
  * @property {boolean} squelchOpen
+ * @property {Uint8Array} codes         one code per bin, lowest frequency first
+ */
+
+/**
+ * The fine spectrum of the VFO's channel (docs/design/protocol.md): bin `i`
+ * of `n` is centred on `centreHz - widthHz / 2 + i * widthHz / n`, on the
+ * air. Its cover, where the engine's front filter passes the signal, is
+ * `FINE_COVER * widthHz` on each side of `centreHz`, its last 3 kHz falling
+ * by up to 3.1 dB at 48 kHz; the bins beyond it show the filter's stopband,
+ * not the air. `centreHz` is the VFO, or in CW the VFO less the CW pitch,
+ * 700 Hz.
+ * @typedef {object} FineFrame
+ * @property {number} sequence          wraps at 2^32, shared by every interface's fine frames
+ * @property {number} centreHz          the frequency on the air of bin `n / 2`
+ * @property {number} widthHz           the width of the frame on the air: the channel's rate
+ * @property {number} dbMin             level of code 0, dBFS
+ * @property {number} dbStep            level step per code, dB
  * @property {Uint8Array} codes         one code per bin, lowest frequency first
  */
 
@@ -341,8 +365,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * @typedef {'source' | 'demod' | 'audio' | 'bookmark' | 'scanner' | 'observations' | 'preferences' | 'recording'
- *   | 'recordings' | 'update' | 'remote' | 'report' | 'carrier'} Command
+ * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'preferences'
+ *   | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier'} Command
  */
 
 /**
@@ -422,6 +446,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @typedef {object} StreamHandlers
  * @property {(frame: SpectrumFrame) => void} onFrame
  * @property {(frame: AudioFrame) => void} onAudio     while this interface asks for audio
+ * @property {(frame: FineFrame) => void} [onFine]
+ *   about ten a second while this interface asks for the fine spectrum
  * @property {(source: SourceState) => void} onSource  sent first, then at every change
  * @property {(demod: DemodState) => void} onDemod     sent next, then at every change this interface has not overtaken
  * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
@@ -472,6 +498,29 @@ export function decodeFrame(buffer) {
     codes: new Uint8Array(buffer, HEADER_BYTES),
   };
   const valid = Number.isFinite(frame.centreHz) && Number.isFinite(frame.rateHz) && frame.rateHz > 0
+    && Number.isFinite(frame.dbMin) && Number.isFinite(frame.dbStep) && frame.dbStep > 0;
+  return valid ? frame : null;
+}
+
+/**
+ * Decode a binary message. Returns null for anything but a well-formed fine
+ * frame of a version this interface reads.
+ * @param {ArrayBuffer} buffer
+ * @returns {FineFrame | null}
+ */
+export function decodeFine(buffer) {
+  if (buffer.byteLength <= HEADER_BYTES) return null;
+  const header = new DataView(buffer, 0, HEADER_BYTES);
+  if (header.getUint8(0) !== FRAME_KIND_FINE || header.getUint8(1) !== FINE_VERSION) return null;
+  const frame = {
+    sequence: header.getUint32(4, true),
+    centreHz: header.getFloat64(8, true),
+    widthHz: header.getFloat64(16, true),
+    dbMin: header.getFloat32(24, true),
+    dbStep: header.getFloat32(28, true),
+    codes: new Uint8Array(buffer, HEADER_BYTES),
+  };
+  const valid = Number.isFinite(frame.centreHz) && Number.isFinite(frame.widthHz) && frame.widthHz > 0
     && Number.isFinite(frame.dbMin) && Number.isFinite(frame.dbStep) && frame.dbStep > 0;
   return valid ? frame : null;
 }
@@ -964,10 +1013,13 @@ export class EngineStream {
   #recordings = [];       // what the engine records, as its last hello listed it
   /** @type {string[]} */
   #measures = [];         // what the engine measures, as its last hello listed it
+  /** @type {string[]} */
+  #spectra = [];          // the spectra the engine sends when asked, as its last hello listed them
   #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
   #audio = false;         // this interface wants audio
+  #fine = false;          // this interface wants the fine spectrum
   #lastChangeId = 0;      // ids of demodulation changes, counted for the whole page
   #awaitedId = 0;         // the last one sent on this connection: older echoes are stale
 
@@ -1022,6 +1074,16 @@ export class EngineStream {
    */
   get measures() {
     return this.#measures.slice();
+  }
+
+  /**
+   * The spectra the engine sends besides the spectrum frames when an
+   * interface asks, as its last hello listed them, such as "fine": an
+   * older engine sends none.
+   * @returns {string[]}
+   */
+  get spectra() {
+    return this.#spectra.slice();
   }
 
   /** Connect, unless already connected or connecting. */
@@ -1370,6 +1432,25 @@ export class EngineStream {
     this.#send({ type: 'audio', on });     // when not open, #hello sends it once greeted
   }
 
+  /**
+   * Whether this interface wants the fine spectrum of the VFO's channel: the
+   * engine sends fine frames only then, on this connection and the next
+   * ones, and only an engine whose hello lists "fine" among its `spectra` is
+   * asked; an older one never is.
+   * @param {boolean} on
+   */
+  setFine(on) {
+    if (on === this.#fine) return;
+    this.#fine = on;
+    // When not open, #hello asks once greeted, if the engine knows the fine spectrum.
+    if (this.#spectra.includes('fine')) this.#send({ type: 'fine', on });
+  }
+
+  /** Whether this interface asks the engine for the fine spectrum: it wants it, and the engine knows it. */
+  get #asksFine() {
+    return this.#fine && this.#spectra.includes('fine');
+  }
+
   /** Disconnect and stop retrying; the engine idles once no client listens. */
   stop() {
     this.#running = false;
@@ -1426,7 +1507,10 @@ export class EngineStream {
       } else if (kind === FRAME_KIND_AUDIO && this.#audio) {
         const frame = decodeAudio(event.data);
         if (frame) this.#handlers.onAudio(frame);
-      }
+      } else if (kind === FRAME_KIND_FINE && this.#asksFine) {
+        const frame = decodeFine(event.data);
+        if (frame && this.#handlers.onFine) this.#handlers.onFine(frame);
+      }       // a frame of another kind, such as a newer engine's, is ignored
     }
   }
 
@@ -1515,9 +1599,11 @@ export class EngineStream {
     this.#scanners = names(message.scanners);
     this.#recordings = names(message.recording);
     this.#measures = names(message.measures);
+    this.#spectra = names(message.spectra);
     this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));
+    if (this.#asksFine) socket.send(JSON.stringify({ type: 'fine', on: true }));
     this.#handlers.onState('open');
   }
 
