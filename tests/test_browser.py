@@ -656,8 +656,9 @@ class BrowserTest(unittest.TestCase):
                 setpoint.fill("-41")
                 setpoint.press("Enter")
                 expect(second.get_by_label("AGC Setpoint")).to_have_value("-41")
-                # Refused: the box shows what the device holds, and the note why.
-                first.get_by_label("HDR Mode").check()
+                # Refused: the box shows what the device holds, and the note why. A click, not
+                # check(), which would find the box already back as the device holds it.
+                first.get_by_label("HDR Mode").click()
                 for page in (first, second):
                     expect(page.locator("#src-note")).to_contain_text(
                         "Change refused: the device refused HDR Mode: writeSetting(hdr_ctrl) refused.")
