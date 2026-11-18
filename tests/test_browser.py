@@ -846,12 +846,10 @@ class BrowserTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "no new list of signals came")
             page.wait_for_timeout(100)      # lets Playwright deliver the page's events
 
-    def press(self, page: Page, target: Locator) -> list[float]:
-        """Press the mouse's main button at the centre of ``target`` and keep
-        it pressed: the point pressed, [x, y]. A list rebuilt while the point
-        is sought takes the element found out of the page: it is then found
-        again, and a list rebuilt after that leaves the press to the element
-        in its place."""
+    def centre(self, target: Locator) -> list[float]:
+        """The centre of ``target``, scrolled into view: [x, y]. A list, or
+        the frequency readout, rebuilt while the centre is sought takes the
+        element found out of the page: it is then found again."""
         deadline = time.monotonic() + TIMEOUT_MS / 1000
         while True:
             try:
@@ -862,9 +860,14 @@ class BrowserTest(unittest.TestCase):
                     raise
                 box = None
             if box is not None:
-                break
-            self.assertLess(time.monotonic(), deadline, "the element to press kept leaving the page")
-        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                return [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2]
+            self.assertLess(time.monotonic(), deadline, "the element sought kept leaving the page")
+
+    def press(self, page: Page, target: Locator) -> list[float]:
+        """Press the mouse's main button at the centre of ``target`` and keep
+        it pressed: the point pressed, [x, y]. A list rebuilt after the centre
+        is found leaves the press to the element in its place."""
+        x, y = self.centre(target)
         page.mouse.move(x, y)
         page.mouse.down()
         return [x, y]
@@ -1262,8 +1265,7 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
                 page.keyboard.press("Escape")       # the Receiver menu lies over the readout
                 freq = page.locator("#freq")
-                box = page.locator('#freq .d[data-m="1000"]').bounding_box()
-                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                x, y = self.centre(page.locator('#freq .d[data-m="1000"]'))
                 page.mouse.move(x, y)
                 page.mouse.down()
                 page.mouse.move(x, y + 56, steps=8)        # three steps down
@@ -1277,8 +1279,7 @@ class BrowserTest(unittest.TestCase):
                 page.mouse.up()
                 expect(freq).to_have_attribute("aria-valuenow", "145601000")
                 expect(page.locator("#freq input")).to_have_count(0)
-                box = page.locator('#freq .d[data-m="10"]').bounding_box()
-                page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                page.mouse.move(*self.centre(page.locator('#freq .d[data-m="10"]')))
                 page.mouse.wheel(0, -100)                  # a notch up: 10 Hz more
                 expect(freq).to_have_attribute("aria-valuenow", "145601010")
 
@@ -1412,8 +1413,9 @@ class BrowserTest(unittest.TestCase):
                 page.keyboard.press("Escape")       # the Receiver menu lies over the readout
                 freq = page.locator("#freq")
                 for expected in ("146600000", "147600000"):
-                    box = page.locator('#freq .d[data-m="1000000"]').bounding_box()
-                    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    # The readout shows the frequency asked at once, and writes its
+                    # digits again as the span settles: centre() finds them again.
+                    page.mouse.move(*self.centre(page.locator('#freq .d[data-m="1000000"]')))
                     page.mouse.wheel(0, -100)
                     expect(freq).to_have_attribute("aria-valuenow", expected)
                 self.open_menu(page, "receiver")    # the span moved once, for 146.6 MHz, and holds 147.6 MHz
