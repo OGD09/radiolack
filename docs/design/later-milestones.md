@@ -23,8 +23,11 @@ Rules they share:
 
 ## 1. Any receiver
 
-Goal: the owner's HackRF One, 1 MHz to 6 GHz, and other receivers,
-through SoapySDR. An RTL-SDR keeps rtl_tcp.
+Goal: the owner's SDRplay RSPdx-R2, 1 kHz to 2 GHz, and HackRF One, 1 MHz
+to 6 GHz, and other receivers, through SoapySDR. An RTL-SDR keeps rtl_tcp.
+The RSPdx-R2 joined on 2026-11-18, the day before the owner received it:
+it is the first device checked after the V3, the HackRF One following
+when it is back.
 
 ### Decisions
 
@@ -39,7 +42,14 @@ through SoapySDR. An RTL-SDR keeps rtl_tcp.
   computer's interfaces only, as the rtl_tcp server's address.
 - An RTL-SDR is not listed there: it has its own entries. The arguments
   field takes `driver=rtlsdr`, which is how the milestone is first checked,
-  on the owner's V3, before the HackRF is back.
+  on the owner's V3, before the RSPdx-R2's driver is installed.
+- **What a device declares beyond gains, antennas and antenna power** (an
+  RSPdx-R2 has notch filters for the broadcast bands and a high dynamic
+  range mode below 2 MHz): shown in the Advanced section as the device
+  describes each, a box or a choice under the device's own name for it,
+  saved with the device, at the device's default until changed. A setting
+  that puts power on an antenna socket, whatever the device calls it,
+  follows the antenna power's rules instead.
 
 ### Design
 
@@ -94,17 +104,25 @@ through SoapySDR. An RTL-SDR keeps rtl_tcp.
 ### Done when
 
 On the owner's laptop, the V3 opened through SoapySDR tunes, plays and
-scans as it does through rtl_tcp. With the HackRF One: Radiolack lists it,
+scans as it does through rtl_tcp. With the RSPdx-R2: Radiolack lists it,
+tunes from shortwave to 2 GHz, chooses among its antenna sockets, plays a
+shortwave broadcast station on the owner's loop with less hiss than the
+V3's direct sampling gives, shows its other settings in the Advanced
+section, and never powers an antenna socket unasked. With the HackRF One:
+Radiolack lists it,
 tunes from 1 MHz to 6 GHz, plays a broadcast station, shows a signal above
 2 GHz, sweeps a band, records I/Q that opens in another program at the
 right frequency, runs as the service with `--soapy`, and never transmits.
 
 ### Limits
 
-- Only the HackRF One and the V3 are checked on hardware; other devices
-  work as far as SoapySDR and their modules do.
-- SDRplay's module needs SDRplay's own closed library, which Radiolack
-  neither ships nor installs.
+- Only the RSPdx-R2, the HackRF One and the V3 are checked on hardware;
+  other devices work as far as SoapySDR and their modules do.
+- SDRplay's module, SoapySDRPlay3 (MIT), needs SDRplay's own closed
+  library, its API, version 3.15 or later for an RSPdx-R2 (read on the
+  module's page on 2026-11-18), which Radiolack neither ships nor installs:
+  the user installs SDRplay's API from SDRplay and builds the module.
+  SDRplay tests its Linux installer on Ubuntu's long-term releases only.
 - The HackRF's crystal is ordinary: the correction and its calibration
   matter more than with a V3.
 - Network devices (SoapyRemote, USRP, PlutoSDR over IP) open through the
