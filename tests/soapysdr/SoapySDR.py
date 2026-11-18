@@ -338,6 +338,7 @@ class Device:
         # "key=value", "setupStream", "closeStream" and "close".
         self.events: list[str] = []
         self.tunings: list[tuple[str, float]] = []      # every frequency component set, in order
+        self.rate_tunings: list[int] = []   # how many components were set when each sample rate was
         self.streams: list[_Stream] = []
         self.closed = False
         self._lock = threading.Lock()
@@ -380,6 +381,7 @@ class Device:
         if rate not in self.spec.rates_hz and not any(_within(rate, span) for span in self.spec.rate_ranges):
             raise RuntimeError(f"setSampleRate({rate}) not supported")
         self.rate_hz = float(rate)
+        self.rate_tunings.append(len(self.tunings))
 
     def getSampleRate(self, direction: int, channel: int) -> float:  # noqa: N802
         _receive_only("getSampleRate", direction)

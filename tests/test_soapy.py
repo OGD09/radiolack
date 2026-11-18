@@ -491,6 +491,37 @@ class SourceTest(SourceCase):
         await self.closed(source)
         self.assertIsNotNone(device)
 
+    async def test_the_first_frequency_comes_before_the_sample_rate_as_well_as_after(self):
+        for correction in ("corr", "none"):
+            with self.subTest(correction=correction):
+                self.soapy.reset()
+                self.device(correction=correction)
+                source = self.source()
+                await self.samples(source)
+                opened = self.soapy.opened[0]
+                [before_rate] = opened.rate_tunings
+                self.assertEqual(opened.tunings[0], ("RF", 145e6))
+                self.assertGreaterEqual(before_rate, 1)
+                self.assertIn(("RF", 145e6), opened.tunings[before_rate:])
+                self.assertEqual(opened.frequency_hz, 145e6)
+                await self.closed(source)
+        # A device that takes no frequency before its sample rate opens as well.
+        self.soapy.reset()
+        self.device()
+        tune = self.soapy.Device.setFrequency
+
+        def refusing(device, direction, channel, *call):
+            if not device.rate_tunings:
+                raise RuntimeError("setFrequency before setSampleRate")
+            tune(device, direction, channel, *call)
+
+        with mock.patch.object(self.soapy.Device, "setFrequency", refusing):
+            source = self.source()
+            self.assertTrue(is_tone(await self.samples(source)))
+            opened = self.soapy.opened[0]
+            self.assertEqual((opened.rate_tunings, opened.tunings, source.status), ([0], [("RF", 145e6)], "streaming"))
+            await self.closed(source)
+
     async def test_the_correction_goes_to_the_device_only_where_it_takes_one(self):
         for correction, whole in (("corr", 37), ("native", 37), ("none", 0)):
             with self.subTest(correction=correction):

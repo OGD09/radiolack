@@ -510,10 +510,16 @@ rely on these:
   their descriptions and `direct_samp`'s option names as the module's code
   was remembered; the HackRF's and the RSPdx-R2's are remembered, to be
   read on the devices.
-- **Unchanged**: the order of the first settings at an opening, sample
-  rate, correction, then frequency, for which librtlsdr prints "[R82XX]
-  PLL not locked!" twice, harmlessly, as the tuner is set before its
-  first frequency.
+- **The order of the first settings** at an opening, sample rate,
+  correction, then frequency, for which librtlsdr printed "[R82XX] PLL
+  not locked!" twice, harmlessly, as its sample rate sets the tuner's
+  filters and tunes it to the frequency it holds, none at first: since
+  pull request 5 the frequency is asked first as well, then the same
+  sequence as before. The first request is best effort, its refusal
+  logged at debug level and ignored: a module that takes no frequency
+  before its sample rate gets it after, as before, and every device ends
+  in the same state. Whether the messages are gone is for the V3's check
+  through `driver=rtlsdr`.
 - **Not checked on a receiver**: the stand-in only. The owner's V3
   through `driver=rtlsdr` checks the TUNER slider and automatic gain, the
   settings that show (direct sampling, offset tuning, I/Q swap, digital

@@ -1812,6 +1812,17 @@ class SoapySource:
         new = tuning(settings, capabilities)
         rate = settings.sample_rate_hz
         rate_changed = before is None or before.sample_rate_hz != rate
+        if before is None:
+            # The frequency first, as well as after: librtlsdr's sample
+            # rate sets the tuner's filters, which tune it to the frequency
+            # it holds, none at first, printing "PLL not locked!". A module
+            # may refuse a frequency before its rate: it is asked again
+            # below, whatever happens here.
+            try:
+                self._tune(device, receive, capabilities, new)
+            except Exception as error:
+                log.debug("the %s device's frequency, before its sample rate: %s", self._args["driver"],
+                          _text(error))
         if rate_changed:
             device.setSampleRate(receive, 0, rate)
             bandwidth = capabilities.bandwidth_for(rate)
@@ -1824,13 +1835,7 @@ class SoapySource:
                 device.setFrequency(receive, 0, "CORR", float(new.whole_ppm))
         retuned = rate_changed or old is None or (old.request_hz, old.whole_ppm) != (new.request_hz, new.whole_ppm)
         if retuned:
-            # A CORR component given its value, so that the overall
-            # frequency, which SoapySDR spreads across the components,
-            # leaves the correction as it is.
-            if capabilities.corr_component:
-                device.setFrequency(receive, 0, new.request_hz, {"CORR": repr(float(new.whole_ppm))})
-            else:
-                device.setFrequency(receive, 0, new.request_hz)
+            self._tune(device, receive, capabilities, new)
         stage = capabilities.gain_stage
         if stage is not None and capabilities.gain_settable and (before is None or before.gain_db != settings.gain_db):
             if settings.gain_db is None:
@@ -1854,6 +1859,16 @@ class SoapySource:
             self._buffer, self._label, self._dropped = buffer, label, 0
         self._tap_gap = True        # a new label: a new capture
         return retuned
+
+    @staticmethod
+    def _tune(device: Any, receive: int, capabilities: Capabilities, new: Tuning) -> None:
+        """Ask the device for the frequency of ``new``: a CORR component
+        given its value, so that the overall frequency, which SoapySDR
+        spreads across the components, leaves the correction as it is."""
+        if capabilities.corr_component:
+            device.setFrequency(receive, 0, new.request_hz, {"CORR": repr(float(new.whole_ppm))})
+        else:
+            device.setFrequency(receive, 0, new.request_hz)
 
     def _controls(self, receive: int, device: Any, before: Settings | None, settings: Settings,
                   capabilities: Capabilities, generation: int) -> Settings:
