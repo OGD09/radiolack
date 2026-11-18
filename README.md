@@ -716,9 +716,10 @@ on each side, so that a sideband growing over a fading carrier does not
 take its place. The line under the frequency says "locked" while it holds
 the carrier, the same on every interface, and "no lock" otherwise: it
 takes a carrier from 10 dB over the noise (within 80 Hz around it, over
-half a second) and keeps it down to 7 dB; without one it plays the
-envelope, as AM does, and takes the carrier again once it comes back, the
-switch fading over 5 ms. Its limits: one carrier, the strongest within
+half a second) and keeps it until it has stayed under 7 dB for a second
+and a half, so that a carrier that fades for a moment does not lose it;
+without one it plays the envelope, as AM does, and takes the carrier again
+once it comes back, the switch fading over 5 ms. Its limits: one carrier, the strongest within
 1 kHz, so a stronger station or heterodyne nearer the VFO takes the lock;
 both sidebands, never one alone; and no lock on a weak carrier, where it
 sounds as AM. SAM adds about a twelfth to the engine's processing of a
