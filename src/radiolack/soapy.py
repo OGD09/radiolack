@@ -97,12 +97,16 @@ The frequency correction is the scaling of Coverage and precision
 (correction.py): a device that declares a correction of its own
 (``hasFrequencyCorrection``, or a ``CORR`` frequency component, as
 SoapySDR's own default declares it) takes the nearest whole ppm, as
-librtlsdr does, and Radiolack the rest, by the frequency it asks for, by
-the samples' label, and by ``rate_scale``, taking the device's correction
-to correct its sampling clock too, as librtlsdr's does; a device without
-one takes none, and Radiolack the whole of it. No tuner grid and no
-driver's computation here: those belong to the rtl_tcp sources' R820T and
-R828D.
+librtlsdr does, and Radiolack the rest, by the samples' label and by
+``rate_scale``, taking the device's correction to correct its sampling
+clock too, as librtlsdr's does; a device without one takes none, and
+Radiolack the whole of it, the same way. The frequency asked of the device
+is the one it tunes, to the hertz, whatever the correction: a tuner moves
+in steps of its own, an R820T's about 110 Hz near 111 MHz with rtl-sdr's
+driver, which a frequency asked a few hertz off would not follow, and
+Calibrate could then never bring a carrier onto its frequency. No tuner
+grid and no driver's computation here: those belong to the rtl_tcp
+sources' R820T and R828D.
 
 A converter in front of the receiver (converter.py) moves the
 frequencies as with the rtl_tcp sources. The rtlsdr module's direct
@@ -145,7 +149,7 @@ from typing import Any
 import numpy as np
 
 from .converter import DEFAULT_LO_HZ, HIGHEST_HZ, Conversion, checked_converter, checked_lo, mhz
-from .correction import checked_ppm, corrected_hz, whole_ppm
+from .correction import checked_ppm, whole_ppm
 from .rtltcp import (BUFFER_S, DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, IDLE_S, READ_WAIT_S, RETRY_S, SETTLE_S,
                      TIMEOUT_S, finite_number)
 
@@ -1204,13 +1208,14 @@ def settable(capabilities: Capabilities | None) -> list[str]:
 
 def tuning(settings: Settings, capabilities: Capabilities | None) -> Tuning:
     """How the device tunes for ``settings`` (module docstring): the
-    frequency it tunes, through the converter, scaled for the part of the
-    correction it does not take itself, within the device's range that
-    holds it; the label, where that puts it on the air."""
+    frequency it tunes, through the converter, to the hertz within the
+    device's range that holds it, whatever the correction; the whole ppm it
+    takes itself; the label, where the rest of the correction puts it on
+    the air."""
     conversion = _conversion(settings)
     tuned = conversion.tuned(settings.centre_hz)
     whole = whole_ppm(settings.ppm, capabilities is not None and capabilities.correction)
-    request = float(corrected_hz(tuned, settings.ppm, whole))
+    request = float(round(tuned))
     for low, high in _device_ranges(capabilities):
         if low <= tuned <= high:
             request = min(max(request, low), high)
@@ -1805,8 +1810,9 @@ class SoapySource:
     def _apply(self, soapy: ModuleType, device: Any, before: Settings | None, settings: Settings,
                capabilities: Capabilities) -> bool:
         """Ask the device for ``settings``, given those it has, ``before``
-        (None: none yet); True when the samples change setting, which then
-        start a new buffer, labelled with it."""
+        (None: none yet); True when it retunes, its samples then settling.
+        Samples that change setting, a correction's hundredths alone
+        included, start a new buffer, labelled with it."""
         receive = soapy.SOAPY_SDR_RX
         old = None if before is None else tuning(before, capabilities)
         new = tuning(settings, capabilities)

@@ -824,9 +824,15 @@ radiolack --soapy driver=sdrplay
   driver once it opens. Its sample rates are those the receiver offers, up
   to 8 MS/s, which the engine holds; where the receiver has an analogue
   filter, Radiolack sets it to the nearest bandwidth at or below 0.8 times
-  the sample rate. The frequency correction works as for an RTL-SDR: a
-  receiver that corrects itself takes the nearest whole ppm, and Radiolack
-  the rest.
+  the sample rate. The frequency correction: a receiver that corrects
+  itself takes the nearest whole ppm, as an RTL-SDR does, and Radiolack the
+  rest by where it says the samples were taken, never by asking for a
+  slightly different frequency as it does through rtl_tcp: a tuner moves in
+  steps of its own, an R820T's about 110 Hz near 111 MHz, which a frequency
+  asked a few hertz off would not follow. A correction measured on a
+  carrier through SoapySDR also takes in the tuner's step at that
+  frequency: elsewhere an R820T may sit up to one step off, which rtl_tcp
+  avoids by placing it on its grid ([The tuner's grid](#the-tuners-grid)).
 - Gains: "Tuner gain" moves the receiver's one gain stage, or with several
   its overall gain, which the receiver's SoapySDR module spreads across
   them; "Tuner AGC" turns automatic gain on where the receiver has it,

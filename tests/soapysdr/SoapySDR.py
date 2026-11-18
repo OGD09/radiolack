@@ -24,8 +24,9 @@ channel's, each of a type with its default, options or range, a frequency
 correction of its own (a ``CORR`` frequency component, which SoapySDR's
 overall frequency spreads its remainder into unless the call gives its
 value, or a correction of the module's own, or none), a crystal that runs
-off, a carrier on the air, which its samples then hold where the device's
-tuning and sampling clock put it, and a device that is unplugged and
+off, a tuner that moves in steps, a carrier on the air, which its samples
+then hold where the device's tuning and sampling clock put it, and a
+device that is unplugged and
 plugged again, whose stream cannot be set up or whose stop waits for the
 test. A device may refuse to write a gain stage, its antenna or a setting
 (``refuses``). ``hackrf_one``, ``rspdx_r2`` and ``rtl_sdr`` declare devices
@@ -180,6 +181,7 @@ class DeviceSpec:
     refuses: tuple[str, ...] = ()           # stages, setting keys or "antenna" whose writes it refuses
     correction: str = "none"                # "corr" (a CORR component), "native" (the module's own) or "none"
     crystal_ppm: float = 0.0                # how fast its crystal runs: its tuning and sampling clock with it
+    tuning_step_hz: float = 0.0             # its tuner's step, truncating, as an R820T's with rtl-sdr's driver
     carrier_hz: float | None = None         # a carrier on the air at half full scale; otherwise the tone
     present: bool = True                    # False: unplugged
     unplugged_reads: str = "error"          # what reads give once unplugged: "error" or "timeout"
@@ -665,12 +667,15 @@ class Device:
 
     def _samples(self, start: int, count: int) -> np.ndarray:
         """What the device gives from index ``start``: the tone, or the
-        carrier where its tuning and its sampling clock, both off by its
-        crystal and corrected by its own correction, put it."""
+        carrier where its tuning, in steps of its tuner's, and its sampling
+        clock, both off by its crystal and corrected by its own correction,
+        put it."""
         if self.spec.carrier_hz is None:
             return samples(start, count)
+        step = self.spec.tuning_step_hz
+        tuned = math.floor(self.frequency_hz / step) * step if step else self.frequency_hz
         scale = (1 + self.spec.crystal_ppm / 1e6) / (1 + self.correction_ppm / 1e6)
-        cycles = (self.spec.carrier_hz - self.frequency_hz * scale) / (self.rate_hz * scale)
+        cycles = (self.spec.carrier_hz - tuned * scale) / (self.rate_hz * scale)
         phase = 2 * np.pi * ((cycles * (start + np.arange(count, dtype=np.float64))) % 1.0)
         return (0.5 * np.exp(1j * phase)).astype(np.complex64)
 

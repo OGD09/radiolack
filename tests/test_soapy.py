@@ -34,7 +34,8 @@ from radiolack.store import SETTINGS_FILE, Store
 from radiolack.synthetic import SyntheticBand
 from tests.sigmf_check import check_sigmf
 from tests.fakes import STAND_IN_SOAPYSDR, stand_in_soapysdr
-from tests.test_engine import eventually, next_carrier, next_frame, next_recording, next_reply, with_iq_file
+from tests.test_engine import (calibrated_ppm, eventually, next_carrier, next_frame, next_recording, next_reply,
+                               with_iq_file)
 
 SOURCE_FILE = Path(soapy_source.__file__)
 RATE_HZ = 1_024_000.0
@@ -277,8 +278,9 @@ class CapabilitiesTest(unittest.TestCase):
                 scale = (1 + 37.42e-6) / (1 + whole / 1e6)
                 self.assertEqual(tuning.whole_ppm, whole)
                 self.assertAlmostEqual(tuning.scale, scale, places=12)
-                self.assertAlmostEqual(tuning.request_hz * scale, 145e6, delta=0.5)
-                self.assertAlmostEqual(tuning.centre_hz, 145e6, delta=0.5)
+                # The frequency asked is the one tuned: the rest of the correction labels the samples.
+                self.assertEqual(tuning.request_hz, 145e6)
+                self.assertAlmostEqual(tuning.centre_hz, 145e6 * scale, delta=0.01)
 
     def test_changes_are_checked_against_the_device(self):
         settings = soapy_source.Settings(145e6, RATE_HZ, None, 0.0)
@@ -535,8 +537,8 @@ class SourceTest(SourceCase):
                 self.assertEqual(device.correction_ppm, whole)
                 scale = (1 + 37.42e-6) / (1 + whole / 1e6)
                 self.assertAlmostEqual(source.rate_scale, scale, places=12)
-                self.assertAlmostEqual(device.frequency_hz * scale, 145e6, delta=0.5)
-                self.assertAlmostEqual(source.exact_centre_hz, 145e6, delta=0.5)
+                self.assertEqual(device.frequency_hz, 145e6)
+                self.assertAlmostEqual(source.exact_centre_hz, 145e6 * scale, delta=0.01)
                 # A retune keeps the device's correction: SoapySDR's overall frequency is given its CORR.
                 source.configure({"centre_hz": 433e6})
                 while source.centre_hz != 433e6:
@@ -734,6 +736,30 @@ class EngineTest(EngineCase):
                     if isinstance(message, bytes) and message[0] == FRAME_KIND_AUDIO:
                         audio.append(message)
                 await self.stops[engine]()      # the next device alone streams
+
+    async def test_one_calibration_brings_a_carrier_home_on_a_tuner_that_moves_in_steps(self):
+        # An R820T with rtl-sdr's driver moves by about 110 Hz near 111 MHz: a frequency asked
+        # a few hertz off would not move it, so the frequency asked stays put and the rest of the
+        # correction labels the samples; the correction that Calibrate derives then holds.
+        true_hz = 111_400_000
+        self.device(correction="corr", crystal_ppm=-3.3, carrier_hz=true_hz, tuning_step_hz=110.0)
+        engine = self.engine(self.source())
+        subscription = engine.subscribe()
+        engine.configure({"ppm": -3.01, "centre_hz": 111.2e6})
+        engine.configure_demod({"frequency_hz": true_hz, "mode": "AM"})
+        await eventually(lambda: engine.state()["status"] == "streaming")
+        engine.measure_carrier({"action": "measure", "id": 1}, subscription)
+        before = await next_carrier(subscription)
+        self.assertGreater(abs(before["frequency_hz"] - true_hz), 10.0)
+        device = self.soapy.opened[0]
+        asked_hz = device.frequency_hz
+        # Applied as the dialog does.
+        engine.configure({"ppm": calibrated_ppm(-3.01, before["frequency_hz"], true_hz)})
+        engine.measure_carrier({"action": "measure", "id": 2}, subscription)
+        after = await next_carrier(subscription)
+        self.assertAlmostEqual(after["frequency_hz"], true_hz, delta=1.0)
+        self.assertEqual(device.frequency_hz, asked_hz)
+        await self.stops[engine]()
 
     async def test_each_device_keeps_its_settings(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"

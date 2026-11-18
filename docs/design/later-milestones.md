@@ -293,9 +293,13 @@ additions); pull requests 3 to 6 rely on these:
   and would otherwise set the correction to the remainder. The label takes
   the device's correction to correct its sampling clock too, as librtlsdr's
   does; a device without one takes none, and Radiolack the whole ppm, by
-  the frequency asked, the label and `rate_scale`. `grid_hz` is 0, and
-  `driver_pll` and `tuner_grid` are null. Whether the rtlsdr module, the
-  first checked, behaves so is for the owner's check on the V3.
+  the label and `rate_scale`. The frequency asked stays the one tuned,
+  whatever the correction: a tuner moves in steps of its own, an R820T's
+  about 110 Hz near 111 MHz with rtl-sdr's driver, and while Radiolack's
+  part went to the frequency asked, as it first did, the owner's Calibrate
+  on the V3 through the rtlsdr module could not bring a carrier home
+  (2026-11-18; changed in 0.16.1). `grid_hz` is 0, and `driver_pll` and
+  `tuner_grid` are null.
 - **Gain.** One gain stage: `gain_db` is that stage's, by name, with
   automatic gain where the device has a gain mode (its default then), or
   else the device's own gain at its opening. Several stages, as a HackRF's

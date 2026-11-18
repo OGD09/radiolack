@@ -161,7 +161,9 @@ the history under the tag `v0.1.0`.
   opens its device or `--soapy` is given, a waiting state naming
   `python3-soapysdr` without it; device arguments that must name a
   driver; the device's range, rates up to 8 MS/s, analogue bandwidth, one
-  gain stage, correction and native format with the drivers' full scales;
+  gain stage, correction (the whole ppm to a device that takes one, the
+  rest by the label alone, the frequency asked staying the one tuned) and
+  native format with the drivers' full scales;
   pull request 4: several gain stages, the overall gain through the
   module's spread, or the source's own around a held stage (the HackRF's
   AMP, at its lowest at each opening without saved gains, never moved by
