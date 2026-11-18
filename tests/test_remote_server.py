@@ -358,7 +358,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message["id"], 3)
         for command in ({"type": "remote", "on": False}, {"type": "remote", "new_code": True},
                         {"type": "update", "check": True}, {"type": "source", "address": "192.168.1.2:1234"},
-                        {"type": "report"}):
+                        {"type": "report"}, {"type": "devices", "search": True},
+                        {"type": "devices", "args": "driver=rtlsdr"}):
             with self.subTest(command=command):
                 await ws.send_json(command)
                 self.assertEqual(await self.next_error(ws),

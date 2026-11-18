@@ -24,9 +24,10 @@ _MAX_DEVICE = 64        # characters in a receiver's index or serial number
 class Sources:
     """Opens the simulated band, an RTL-SDR on this computer (through an
     rtl_tcp it runs: ``rtl_tcp_program``, a fake one in tests), an rtl_tcp
-    server or a SoapySDR device, which only its saved device arguments
-    open: ``--soapy`` gives them first. The first of ``kinds`` is the
-    default."""
+    server or a SoapySDR device, which only its device arguments open:
+    ``--soapy``, the Receiver menu's list of the devices found or its
+    arguments field gives them first, and they are saved. The first of
+    ``kinds`` is the default."""
 
     kinds = ("synthetic", "rtl_sdr", "rtl_tcp", "soapy")
 
@@ -50,8 +51,8 @@ class Sources:
         if kind == "soapy":
             args = reopen.get("args")
             if args is None:
-                raise ValueError("no SoapySDR device chosen yet: start Radiolack with --soapy and the device's "
-                                 "arguments, such as --soapy driver=rtlsdr")
+                raise ValueError("no SoapySDR device chosen yet: choose one in the Receiver menu, or start "
+                                 "Radiolack with --soapy and its device arguments, such as --soapy driver=rtlsdr")
             if not isinstance(args, str):
                 raise ValueError("a SoapySDR device's arguments must be text")
             return SoapySource(args)

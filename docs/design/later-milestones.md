@@ -308,13 +308,77 @@ additions); pull requests 3 to 6 rely on these:
   as for any receiver; the gain slider for a device with one gain stage
   only. Choosing the entry from another source works once `--soapy` has
   named a device; before that the engine refuses, saying to start with
-  `--soapy`. An interface older than this pull request shows no entry
+  `--soapy` (pull request 3 adds the list and the field). An interface older than this pull request shows no entry
   selected, an empty note and its own rate list, and otherwise works
   (protocol.md, Versions).
 - **Not checked on a receiver**: everything above runs against the
   stand-in only. The owner's V3 through `driver=rtlsdr` checks the rest:
   the rtlsdr module's correction and its CORR component, its gain stage
   (`TUNER`) and gain mode, and 2.4 MS/s held without loss.
+
+As built, pull request 3 (`soapysearch.py`, the devices state and the
+`devices` message, `devices.js`); pull requests 4 to 6 rely on these:
+
+- **The drivers searched**: `hackrf`, `airspy`, `airspyhf`, `lime` and
+  `bladerf` (`soapysearch.LISTED_DRIVERS`), in that order, each alone with
+  `driver=NAME`. `sdrplay` is not listed yet: it joins as the tuple's last
+  entry, a one-line change with its test's expectations, once
+  `tools/check_search.py sdrplay` has run on the owner's laptop; until then
+  an SDRplay opens through the arguments field, `driver=sdrplay`. A search
+  that names no driver or `rtlsdr` raises before reaching the module.
+- **When a search runs.** Only when one of this computer's interfaces
+  asks: the first time when the Receiver menu shows the SoapySDR part
+  while no search has run since the engine started, then on "Search
+  again". Never at start, nor at a connection, nor for a remote client:
+  the searches talk to the devices plugged in (some modules open a device
+  to read its serial number), so they run when someone looks at the list,
+  not on their own. One search at a time, in a daemon thread
+  (`radiolack-soapy-search`), its result handed to the event loop; a
+  request while one runs is ignored, and the interface disables Search
+  again meanwhile. A search waits for a source being released to finish
+  closing; the engine's close stops waiting for it, up to 5 s, then warns.
+- **While a SoapySDR device streams**, its driver is not searched again,
+  and that driver's devices stay as the previous search found them: a
+  module whose search opens its devices could disturb the one in use. The
+  other drivers are searched. Opening a device, by the list, the arguments
+  or the `soapy` entry, is refused while a search runs.
+- **What is kept**: a device's driver, serial number and label, the label
+  on one line and cut at 100 characters, a serial number of 64 characters
+  at most and without `,` or `=`, or none; at most 64 devices, duplicates
+  merged; nothing else of a module's listing, such as a bus position. The
+  list lives in memory only. A driver's search that raises leaves the
+  others' findings, and the state says `failed` with the driver and its
+  module's message; without the module nothing is searched, `unavailable`
+  with the text that names `python3-soapysdr`.
+- **The device in use** heads the list, `in_use` true, whether a search
+  found it or not (an RTL-SDR through `driver=rtlsdr`, for instance), with
+  the label its listing gave when it opened, or its hardware key.
+- **Choosing.** A device found opens by `driver=DRIVER,serial=SERIAL`,
+  which `soapy.parse_args` checks and the engine saves as the `soapy`
+  record, as `--soapy` would; the device then keeps its settings under
+  `soapy DRIVER SERIAL`. The arguments field takes what `--soapy` takes,
+  with its refusal texts, shown under the Receiver list as the source's
+  refusals are. The same arguments, or the device in use, change nothing.
+- **The Receiver menu.** A second list, "SoapySDR device", under the
+  Receiver list, then "Search again" and the "SoapySDR device arguments"
+  field, shown while a SoapySDR device is in use, or once "SoapySDR device"
+  is picked in the Receiver list while none was ever chosen: the part then
+  shows without switching anything until a device is chosen. Once one was
+  chosen (the devices state's `chosen`), the entry opens it again at once,
+  as before. The list, Search again and the field are disabled while a
+  search runs.
+- **Remote clients** receive the devices state, without the arguments in
+  use, and may choose among the devices found, as they may switch the
+  kind of source; neither search nor arguments: the server refuses
+  `search` and `args` from them (`engine.LOCAL_DEVICE_FIELDS`), and their
+  interface shows neither Search again nor the field.
+- **Protocol**: version 6 stays (protocol.md, Versions). The devices state
+  goes only to engines whose sources include `soapy`, after the recording
+  state.
+- **Not checked on a receiver**: the stand-in only. The owner's V3 through
+  the arguments field's `driver=rtlsdr` checks that the field opens it and
+  that the list shows it in use; the listed drivers' searches with real
+  modules await their receivers.
 
 ### Done when
 

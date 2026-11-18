@@ -22,6 +22,7 @@ import { PLAN_LIST_MAX, planRows } from './planlist.js';
 import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
+import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
   tunerNoteShown } from './calibration.js';
@@ -305,6 +306,9 @@ let streamOpened = false;   // the stream opened at least once on this page
 let source = null;          // the engine's source state (stream.js SourceState), once received
 let sourceError = '';       // why the engine refused this interface's last change
 const typingIn = new Set(); // text fields the user is typing in, which the engine's state leaves as they are
+let devices = null;         // the SoapySDR devices (stream.js DevicesState), once received: sources that open them
+let soapyPicked = false;    // "SoapySDR device" picked in the Receiver list, no device in use: its part shows
+let firstSearchAsked = false;   // this connection asked for the first search of SoapySDR devices
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
@@ -395,6 +399,7 @@ const stream = new EngineStream({
     const converted = before !== null && !newSource && conversionMoved(before, state);
     if (converted) newSource = true;
     if (newSource) clearFine();
+    if (!before || state.kind !== before.kind) soapyPicked = false;     // another kind in use, from any interface
     source = state;
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
@@ -474,6 +479,10 @@ const stream = new EngineStream({
     remoteNote = '';
     syncRemote();
     updateStatus();
+  },
+  onDevices: (state) => {
+    devices = state;
+    syncSource();
   },
   onReport: (report) => {
     $('#ab-report-msg').textContent = '';
@@ -560,6 +569,11 @@ const stream = new EngineStream({
       renderCalibration();
       return;
     }
+    if (command === 'devices') {
+      sourceError = message;    // shown under the Receiver list, as the source's refusals
+      syncSource();
+      return;
+    }
     // A correction applied from the calibration may be refused too.
     if (command === 'source' && calibrateDialog.open) {
       carrierError = `Refused: ${message}.`;
@@ -574,6 +588,7 @@ const stream = new EngineStream({
     // A refusal before the stream ever opened would come back at each reload.
     if (state === 'unpaired' && streamOpened) { location.reload(); return; }
     if (state === 'open') streamOpened = true;
+    if (state === 'open') firstSearchAsked = false;     // asked again if the engine has still not searched
     streamState = state;
     if (state !== 'open') {
       rateSince = 0; frameRate = 0; audio.reset();
@@ -1951,6 +1966,7 @@ function showMenu(name) {
   if (name === 'bookmarks') { renderBookmarks(); renderPlanList(); }
   if (name === 'scan') syncScanTabs();
   if (name === 'record') { renderRecordings(); askRecordings(); }
+  if (name === 'receiver') syncDevices();
   liveUi();
 }
 // One column: the list of menus, the last one shown marked as current.
@@ -2027,6 +2043,9 @@ function sourceNote() {
   } else if (source.kind === 'soapy') {
     text = `${source.tuner || 'SoapySDR device'} through SoapySDR${source.driver ? `, driver ${source.driver}` : ''}.`;
   }
+  if (soapyPicked) {
+    text = stream.remote ? 'Choose a SoapySDR device below.' : 'Choose a SoapySDR device below, or give its arguments.';
+  }
   if (['rtl_sdr', 'rtl_tcp', 'soapy'].includes(source.kind)) {
     if (source.status === 'waiting') text += ` Waiting: ${source.detail}. Radiolack tries again by itself.`;
     else if (source.status !== 'streaming') text += ' Connecting…';
@@ -2052,8 +2071,10 @@ function syncSource() {
   const kinds = streamState === 'open' && source ? source.kinds : [];
   for (const option of deviceEl.options) option.disabled = !kinds.includes(option.value);
   deviceEl.disabled = kinds.length < 2;
-  deviceEl.value = source ? source.kind : '';   // no entry is selected before the engine answers
+  // No entry is selected before the engine answers; "SoapySDR device" while one is to be chosen.
+  deviceEl.value = soapyPicked ? SOAPY_KIND : source ? source.kind : '';
   $('#src-note').textContent = sourceNote();
+  syncDevices();
   const addressEl = $('#src-address');
   $('#src-address-field').hidden = !source || !source.settable.includes('address');
   if (!typingIn.has(addressEl)) addressEl.value = source?.address ?? '';
@@ -2123,6 +2144,36 @@ function syncSource() {
   dcEl.checked = Boolean(source?.dcRemoval);
   dcEl.disabled = !settable.has('dc_removal');
 }
+// SoapySDR devices: the devices the engine's search found, with the one in
+// use, Search again and the device arguments, the last two on this
+// computer's interfaces only. The engine searches when this computer's
+// interface asks, first when the part shows in the open Receiver menu.
+function syncDevices() {
+  const view = devicesView(source, devices, soapyPicked, stream.remote, streamState === 'open');
+  for (const id of ['#src-soapy-field', '#src-soapy-search-row', '#src-soapy-args-field']) {
+    const hidden = id === '#src-soapy-field' ? !view.shown : id === '#src-soapy-search-row' ? !(view.shown && view.searchShown)
+      : !(view.shown && view.argsShown);
+    if ($(id).hidden !== hidden) $(id).hidden = hidden;
+  }
+  const listEl = $('#src-soapy');
+  const values = view.options.map((o) => `${o.value}\n${o.label}`).join('\n');
+  if (listEl.dataset.options !== values) {
+    listEl.replaceChildren(...view.options.map((o) => new Option(o.label, o.value)));
+    listEl.dataset.options = values;
+  }
+  if (listEl.value !== view.value) listEl.value = view.value;
+  listEl.disabled = !view.listEnabled;
+  const noteEl = $('#src-soapy-note');
+  if (noteEl.textContent !== view.note) noteEl.textContent = view.note;
+  $('#src-soapy-search').disabled = !view.searchEnabled;
+  const argsEl = $('#src-soapy-args');
+  if (!typingIn.has(argsEl) && argsEl.value !== view.args) argsEl.value = view.args;
+  argsEl.disabled = !view.argsEnabled;
+  if (view.firstSearch && openName === 'receiver' && !firstSearchAsked) {
+    firstSearchAsked = true;
+    stream.searchDevices();
+  }
+}
 // Antenna power: a first press arms the button, which then says what
 // turning it on does; a second one, within POWER_CONFIRM_MS, turns it on.
 // Turning it off takes one press.
@@ -2160,16 +2211,39 @@ const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] 
 // then shows as the engine took it, or the one in use if refused, focus or
 // not; leaving without a change shows the engine's value again. These run
 // before each field's own change handler, which may sync.
-for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-converter-lo')]) {
+for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-converter-lo'), $('#src-soapy-args')]) {
   el.addEventListener('input', () => typingIn.add(el));
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
 }
 // Another receiver: the engine closes the one in use and opens the new one
 // with its saved settings, for every interface.
+// "SoapySDR device" before any was chosen shows the devices to choose from,
+// and switches nothing until one is.
 $('#src-device').addEventListener('change', (e) => {
   const kind = e.target.value;
-  if (!source || kind === source.kind || !stream.sendSource({ kind })) syncSource();
+  const wasPicked = soapyPicked;
+  soapyPicked = false;
+  if (source && kind === SOAPY_KIND && kind !== source.kind && !switchesAtOnce(devices)) {
+    soapyPicked = true;
+    sourceError = '';
+    syncSource();
+    return;
+  }
+  if (!source || kind === source.kind || !stream.sendSource({ kind }) || wasPicked) syncSource();
+});
+// A device found: the engine opens it, by its driver and serial.
+$('#src-soapy').addEventListener('change', (e) => {
+  const device = deviceAt(devices, e.target.value);
+  if (!device || device.inUse || !stream.chooseDevice(device.driver, device.serial)) syncSource();
+});
+$('#src-soapy-search').addEventListener('click', () => { stream.searchDevices(); });
+// The engine reads the arguments and says why it refuses them; an emptied
+// field or the arguments in use change nothing.
+$('#src-soapy-args').addEventListener('change', (e) => {
+  const el = e.target;
+  const args = el.value.trim();
+  if (!args || args === devices?.args || !stream.openDevice(args)) el.value = devices?.args ?? '';
 });
 // The engine reads the address and says why it refuses one; an emptied field
 // or the address in use changes nothing.

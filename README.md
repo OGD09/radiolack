@@ -223,7 +223,8 @@ eight menus beside the one it shows:
 - Record: the recordings and, on this computer, their folder
   ([Recording](#recording)).
 - Receiver: the source and its settings
-  ([RTL-SDR receivers](#rtl-sdr-receivers)).
+  ([RTL-SDR receivers](#rtl-sdr-receivers)), and the SoapySDR devices
+  found ([SoapySDR receivers](#soapysdr-receivers)).
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
   plan, the bookmarks and the channels and known frequencies on the
   spectrum.
@@ -733,6 +734,29 @@ radiolack --soapy driver=sdrplay
   driver. A driver is required so that no search reaches the network:
   without one, SoapySDR asks every module to search, its remote module
   included.
+- Or choose the receiver in the Receiver menu: "SoapySDR device" in the
+  Receiver list shows the SoapySDR devices found, a "Search again" button
+  and the "SoapySDR device arguments" field. The first time the menu shows
+  them, Radiolack searches for HackRF, Airspy, Airspy HF+, LimeSDR and
+  bladeRF devices, one driver at a time, never without a driver and never
+  for RTL-SDR receivers, which have the list's entries of their own;
+  "Search again" searches once more, after plugging a receiver in for
+  instance. Choosing a device found opens it, by its driver and serial
+  number; any other device, an SDRplay or an RTL-SDR for instance, opens
+  by its arguments, typed in the field as `--soapy` takes them, such as
+  `driver=rtlsdr`, which Radiolack checks as `--soapy` does, saying why it
+  refuses them. The list shows the device in use first, whether a search
+  found it or not; a search leaves the driver of the device in use alone,
+  so as not to disturb it, and no receiver opens while a search runs.
+  Radiolack never searches at start, nor while no interface of this
+  computer asks; a search opens no receiver's stream, but each driver's
+  search talks to the devices plugged in. Without the Python module, the
+  list says which package brings it, and nothing is searched. Once a device
+  was chosen, "SoapySDR device" in the Receiver list opens it again at
+  once.
+- A device that remote access serves sees the list and may choose among
+  the devices found, but neither searches nor sees or gives arguments:
+  this computer's interface does.
 - Radiolack opens the receiver when an interface opens or a scan starts,
   and releases it once none is open and no scan runs, as for an RTL-SDR
   on this computer. Once found, the receiver is known by its driver and
@@ -756,9 +780,7 @@ radiolack --soapy driver=sdrplay
   overflows, the samples dropped when the computer falls behind and the
   blocks that took longer than their period go to the error output at most
   once a minute.
-- Not yet: the list of the receivers found and the arguments field in the
-  Receiver menu (until then, choosing "SoapySDR device" there works only
-  once `--soapy` has named a receiver), gains per stage, antenna sockets,
+- Not yet: gains per stage, antenna sockets,
   antenna power (`--bias-tee` is refused with `--soapy`), the receiver's
   other settings and I/Q recordings, which Radiolack refuses for a
   SoapySDR receiver.
@@ -1954,6 +1976,9 @@ src/radiolack/
                 recording
   soapy.py      receivers through SoapySDR: device arguments, what the
                 device offers, the reading thread and its buffer
+  soapysearch.py
+                the search for SoapySDR devices, one listed driver at a
+                time, for the Receiver menu
   r82xx.py      rtl-sdr's two computations of an R820T's PLL, ported from
                 rtl-sdr (GPL-2.0-or-later), and the tuner's grid
   converter.py  a converter in front of a receiver: frequencies on the air

@@ -24,7 +24,11 @@ With the sources it may open (sources.py), the engine switches to another
 kind of source when a client asks: the source in use closes, keeping its
 settings, and the new one starts from those saved for its receiver. Without
 a source to start with, it opens the one used last, the first kind the first
-time.
+time. With sources that open SoapySDR devices, it searches for them
+(soapysearch.py) when this computer's interface asks, never by itself, and
+tells every client what the search found and the device in use; a client
+may then open one of those devices, and this computer's interfaces any
+other, by its device arguments, as another source.
 
 The engine finds the signals in its spectra (scanners.py) while it reads,
 unless detection is turned off: every client receives the list of the
@@ -55,7 +59,8 @@ With remote access (remote.py), the engine tells this computer's interfaces
 its state, and saves what it keeps, each paired device's preferences
 included. Remote clients, the devices that remote access serves, receive
 neither that state nor the storage and update states, and may not change
-the rtl_tcp server's address. Their links may be slower than this computer's
+the rtl_tcp server's address, search for SoapySDR devices or give device
+arguments (server.py refuses them). Their links may be slower than this computer's
 own: they get one display frame for every two blocks, the mean power of
 both, in fewer bins.
 
@@ -131,6 +136,8 @@ from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, che
                          delete_recording, is_recording_file, is_recording_name, list_recordings, meta_name)
 from .remote import REMOTE_FILE, RemoteAccess
 from .report import Report, check_page, receiver_line
+from .soapy import SoapySource
+from .soapysearch import Device, DeviceSearch, device as soapy_device
 from .scanners import (DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB, DEFAULT_WINDOW_S, DETECTION_BLOCKS,
                        MAX_IGNORED, SCANS, Channel, ChannelWatch, Detection, Detector, MemoryScan, MemoryTour,
                        Placement, Signal,
@@ -164,6 +171,7 @@ RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the client
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_SETTINGS = ("address",)   # source settings only this computer's interfaces may change
+LOCAL_DEVICE_FIELDS = ("search", "args")    # SoapySDR device requests only this computer's interfaces may make
 # Source settings that start at their default at each start, never saved:
 # the antenna power, off, and the tuner's grid, on.
 UNSAVED_SETTINGS = ("bias_tee", "tuner_grid")
@@ -507,9 +515,17 @@ class Engine:
             "peaks": lambda _: self.peaks_state(),
             "preferences": lambda subscription: self.preferences_state(subscription.device),
             "recording": lambda subscription: self.recording_state(subscription.remote),
-            "storage": lambda _: self.storage_state(),
-            "update": lambda _: self.update_state(),
         }
+        # The SoapySDR devices found, with sources that open them.
+        self._device_search: DeviceSearch | None = None
+        self._search_task: asyncio.Future | None = None
+        self._devices_sent: dict[str, Any] | None = None    # the devices state as the clients last learnt it
+        if sources is not None and "soapy" in sources.kinds:
+            self._device_search = DeviceSearch()
+            self._device_search.on_change = self._follow_devices
+            self._states["devices"] = lambda subscription: self.devices_state(subscription.remote)
+        self._states["storage"] = lambda _: self.storage_state()
+        self._states["update"] = lambda _: self.update_state()
         self._remote = remote
         if remote is not None:
             if store is not None:
@@ -628,7 +644,8 @@ class Engine:
     def subscribe(self, device: str | None = None) -> Subscription:
         """The messages for a new client, starting with the source state, the
         demodulation settings, the bookmarks, the scanner state, the signals
-        found, the preferences and the recording state, then, unless
+        found, the preferences, the recording state and, with sources that
+        open SoapySDR devices, the devices state, then, unless
         it is a paired ``device`` that remote access serves, named by its id,
         the storage state, the update state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
@@ -973,6 +990,54 @@ class Engine:
             raise RuntimeError("this engine has no remote access")
         return {"type": "remote", **self._remote.describe()}
 
+    def devices_state(self, remote: bool = False) -> dict[str, Any]:
+        """The SoapySDR devices message (docs/design/protocol.md): the
+        search's state, the devices it found and the device in use; for a
+        ``remote`` client, without the device arguments in use."""
+        search = self._device_search
+        if search is None:
+            raise RuntimeError("this engine opens no SoapySDR device")
+        chosen = self._reopen.get("soapy", {}).get("args")
+        return {"type": "devices", "search": search.status, "detail": search.detail, "drivers": list(search.drivers),
+                "devices": search.describe(self._soapy_in_use()), "chosen": isinstance(chosen, str),
+                "args": None if remote or not isinstance(self.source, SoapySource) else self.source.args}
+
+    def configure_devices(self, changes: Mapping[str, object]) -> None:
+        """Search for SoapySDR devices (``search``: true), unless a search
+        runs, or open one: among those found, by its driver and serial
+        number (``choose``), or by its device arguments (``args``), one at a
+        time. Opening one switches to it as to another kind of source, and is
+        refused while a search runs, which could disturb it. Raises
+        ValueError, changing nothing, when refused. Only this computer's
+        interfaces may search or give arguments (server.py)."""
+        search = self._device_search
+        if search is None:
+            raise ValueError("this Radiolack does not open SoapySDR devices")
+        if len(changes) != 1:
+            raise ValueError("a devices message asks for one thing: search, choose or args")
+        name, value = next(iter(changes.items()))
+        if name == "search":
+            if value is not True:
+                raise ValueError("search must be true")
+            self._start_search()
+        elif name == "choose":
+            if not (isinstance(value, dict) and set(value) == {"driver", "serial"}
+                    and all(isinstance(text, str) for text in value.values())):
+                raise ValueError("choose names a device found, by its driver and serial")
+            in_use = self._soapy_in_use()
+            if in_use is not None and (in_use.driver, in_use.serial) == (value["driver"], value["serial"]):
+                return      # in use already
+            found = search.find(value["driver"], value["serial"])
+            if found is None:
+                raise ValueError("this device is not among those found: search again")
+            self._open_soapy(found.args)
+        elif name == "args":
+            if not isinstance(value, str):
+                raise ValueError("the device arguments must be text")
+            self._open_soapy(value)
+        else:
+            raise ValueError(f"unknown devices field: {str(name)[:40]}")
+
     def recording_state(self, remote: bool = False) -> dict[str, Any]:
         """The recording state message (docs/design/protocol.md): the audio
         and I/Q recordings that run, if any, and why the latest stopped by
@@ -1165,6 +1230,10 @@ class Engine:
             request.cancel()
         if self._checking is not None:
             self._checking.cancel()
+        if self._device_search is not None:
+            self._device_search.close()
+        if self._search_task is not None:
+            self._search_task.cancel()
         if self._peaks_timer is not None:
             self._peaks_timer.cancel()
             self._peaks_timer = None
@@ -1182,6 +1251,8 @@ class Engine:
         has passed for each, and the latest changes are saved."""
         if self._checking is not None:
             await asyncio.gather(self._checking, return_exceptions=True)
+        if self._device_search is not None:
+            await self._device_search.wait_closed()     # its thread no longer calls the modules
         await self.source.wait_closed()
         if self._closing:
             await asyncio.wait(set(self._closing))
@@ -1277,6 +1348,7 @@ class Engine:
             subscription.changed("source")
         self._settings_changed()
         self._watch_bookmarks()
+        self._follow_devices()          # the device in use, or the device chosen, may change
 
     def _demod_changed(self) -> None:
         for subscription in self._clients:
@@ -2057,29 +2129,101 @@ class Engine:
         if not isinstance(kind, str) or kind not in sources.kinds:
             raise ValueError(f"unknown kind of source: {str(kind)[:40]!r}")
         if kind != self.source.kind:
+            if kind == "soapy":
+                self._check_no_search()
             try:
                 new = sources.open(self._reopen.get(kind, {"kind": kind}))
             except ValueError as error:
                 log.warning("the saved %s receiver is not used: %s", kind, error)
                 new = sources.open({"kind": kind})
-            old = self.source
-            # Saved before the scan stops: those of the scan's start.
-            self._receivers[old.settings_key] = self._receiver_settings()
-            self._stop_scan("source")
-            self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
-            if kind in UNRECORDED_KINDS:
-                self._stop_recording("audio", "source")
-            old.on_change = None
-            old.close()
-            self._closing.add(asyncio.ensure_future(self._release(old)))
-            self.source = new
-            self._reopen[kind] = new.reopen
-            self._adopt()
-            self._demod_changed()
-            self._signals.clear()       # found by another receiver
-            if self._signals.changed(time.monotonic()):
-                self._peaks_changed(at_once=True)
+            self._replace(new)
         self._source_changed()
+
+    def _replace(self, new: Source) -> None:
+        """Read ``new`` in place of the source in use, which closes, its
+        settings kept for when it comes back; ``new`` starts from those
+        saved for its receiver."""
+        old = self.source
+        # Saved before the scan stops: those of the scan's start.
+        self._receivers[old.settings_key] = self._receiver_settings()
+        self._stop_scan("source")
+        self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
+        if new.kind in UNRECORDED_KINDS:
+            self._stop_recording("audio", "source")
+        old.on_change = None
+        old.close()
+        self._closing.add(asyncio.ensure_future(self._release(old)))
+        self.source = new
+        self._reopen[new.kind] = new.reopen
+        self._adopt()
+        self._demod_changed()
+        self._signals.clear()       # found by another receiver
+        if self._signals.changed(time.monotonic()):
+            self._peaks_changed(at_once=True)
+
+    def _open_soapy(self, args: str) -> None:
+        """Read the SoapySDR device that ``args`` name in place of the
+        source in use, unless it is that device already. Raises ValueError,
+        changing nothing, for arguments that ``soapy.parse_args`` refuses,
+        and while a search runs. A check of the driver's computation that
+        runs stops first, bringing the receiver back."""
+        sources = self._sources
+        if sources is None or "soapy" not in sources.kinds:
+            raise ValueError("this Radiolack does not open SoapySDR devices")
+        self._check_no_search()
+        new = sources.open({"kind": "soapy", "args": args})
+        if self.source.kind == "soapy" and new.reopen == self.source.reopen:
+            new.close()         # it never read: nothing to release
+            return
+        self._end_driver_check(STOPPED)
+        self._replace(new)
+        self._source_changed()
+
+    def _check_no_search(self) -> None:
+        """Raise ValueError while a search for SoapySDR devices runs: it
+        could disturb a device that opens meanwhile (soapysearch.py)."""
+        if self._device_search is not None and self._device_search.running:
+            raise ValueError("a search for SoapySDR devices is running: choose once it ends")
+
+    def _soapy_in_use(self) -> Device | None:
+        """The SoapySDR device that the source in use reads, if it is one."""
+        if not isinstance(self.source, SoapySource):
+            return None
+        driver, serial, label = self.source.identity
+        return soapy_device(driver, serial, label or self.source.hardware)
+
+    def _start_search(self) -> None:
+        """Start a search for SoapySDR devices, unless one runs: it waits
+        for the receivers switched away from to be released, then searches
+        every listed driver but that of the SoapySDR device in use."""
+        search = self._device_search
+        if search is None or self._closed or not search.begin():
+            return
+        self._search_task = asyncio.ensure_future(self._search_devices(search))
+
+    async def _search_devices(self, search: DeviceSearch) -> None:
+        try:
+            if self._closing:
+                await asyncio.wait(set(self._closing))      # a device still closing is not searched
+            in_use = self._soapy_in_use()
+            await search.run(in_use.driver if in_use is not None else None)
+        except asyncio.CancelledError:
+            pass        # the engine stops
+        except Exception:
+            log.exception("the SoapySDR device search stopped")
+            search.abandon()        # Search again works again
+
+    def _follow_devices(self) -> None:
+        """Every client receives the devices state again, if it changed:
+        the search's, the device in use or the device chosen."""
+        if self._device_search is None:
+            return
+        state = self.devices_state()
+        if state == self._devices_sent:
+            return
+        self._devices_sent = state
+        for subscription in self._clients:
+            subscription.changed("devices")
 
     @staticmethod
     async def _release(source: Source) -> None:

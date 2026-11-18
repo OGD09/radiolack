@@ -9,7 +9,8 @@ ones a test declares with ``add``: each found by ``Device.enumerate`` when
 the search's arguments match, made by ``Device(args)`` or ``Device.make``,
 and giving samples in its native format at its sample rate, paced by the
 wall clock, as a receiver does, with the overflows, silent losses,
-time-outs and stream errors the test scripts. A test that must not wait
+time-outs and stream errors the test scripts. A test may make a driver's
+search fail (``search_failures``) or wait (``search_gate``). A test that must not wait
 replaces ``clock`` and ``sleep``, the module's wall clock and its wait,
 which ``reset`` puts back.
 
@@ -75,6 +76,8 @@ devices: list[DeviceSpec] = []
 searches: list[dict[str, str]] = []        # every Device.enumerate's arguments
 opened: list[Device] = []                  # every device made, closed or not
 transmit_requests: list[str] = []
+search_failures: dict[str, str] = {}       # a driver's search raises a RuntimeError with this message
+search_gate: threading.Event | None = None  # each search waits for it, up to 10 s, as a slow search
 
 # The wall clock that paces the devices, and their wait: a test may replace them.
 clock = time.monotonic
@@ -132,13 +135,17 @@ class DeviceSpec:
 def reset() -> None:
     """Forget every device, search and request, and put the wall clock
     back: before each test."""
-    global clock, sleep
+    global clock, sleep, search_gate
     for device in opened:
         device.close()
     devices.clear()
     searches.clear()
     opened.clear()
     transmit_requests.clear()
+    search_failures.clear()
+    if search_gate is not None:
+        search_gate.set()       # a search still waiting ends
+    search_gate = None
     clock, sleep = time.monotonic, time.sleep
 
 
@@ -232,6 +239,12 @@ class Device:
     def enumerate(args: Mapping[str, str] | str | None = None) -> list[dict[str, str]]:
         wanted = _kwargs(args)
         searches.append(wanted)
+        gate = search_gate
+        if gate is not None:
+            gate.wait(10.0)
+        failure = search_failures.get(wanted.get("driver", ""))
+        if failure is not None:
+            raise RuntimeError(failure)
         return [spec.listing() for spec in devices if _matches(spec, wanted)]
 
     @staticmethod

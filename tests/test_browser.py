@@ -36,6 +36,7 @@ from radiolack.report import ISSUES_URL
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.soapy import SoapySource
+from radiolack.soapysearch import LISTED_DRIVERS
 from radiolack.sources import Sources
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
 from radiolack.synthetic import Emitter, Schedule, SyntheticBand
@@ -2514,11 +2515,63 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("synthetic")
                     expect(page.locator("#src-address")).to_be_hidden()
-                # No SoapySDR device named yet: refused, saying how to name one.
+                # No SoapySDR device chosen yet: the entry shows the devices
+                # to choose from, and switches nothing. Without the module
+                # (tests/__init__.py hides it), the search says what brings it.
                 first.locator("#src-device").select_option("soapy")
-                expect(first.locator("#src-note")).to_contain_text(
-                    "Change refused: no SoapySDR device chosen yet: start Radiolack with --soapy")
-                expect(first.locator("#src-device")).to_have_value("synthetic")
+                expect(first.locator("#src-note")).to_have_text("Choose a SoapySDR device below, or give its arguments.")
+                expect(first.locator("#src-device")).to_have_value("soapy")
+                expect(first.locator("#src-soapy-note")).to_have_text(
+                    "The SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr).")
+                expect(first.locator("#src-soapy")).to_be_disabled()
+                expect(first.locator("#src-soapy-args")).to_be_enabled()
+                expect(second.locator("#src-device")).to_have_value("synthetic")
+                expect(second.locator("#src-soapy-field")).to_be_hidden()
+                first.locator("#src-device").select_option("synthetic")
+                expect(first.locator("#src-soapy-field")).to_be_hidden()
+
+    def test_the_receiver_menu_searches_and_opens_soapysdr_devices(self):
+        # Stand-in devices only: the search and the devices are the stand-in's.
+        soapy = self.enterContext(stand_in_soapysdr())
+        soapy.add("hackrf", serial="0001", label="HackRF One 0001", hardware="test-tuner")
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        url = self.serve(sources=Sources(), store=Store(directory))
+        searched = "hackrf, airspy, airspyhf, lime and bladerf"
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-device")).to_be_enabled()
+                if browser == BROWSERS[0]:
+                    self.assertEqual(soapy.searches, [])        # nothing searched before the part shows
+                    first.locator("#src-device").select_option("soapy")
+                    expect(first.locator("#src-soapy-note")).to_have_text(f"Searched: {searched}.")
+                    self.assertEqual(soapy.searches, [{"driver": driver} for driver in LISTED_DRIVERS])
+                    devices = first.locator("#src-soapy")
+                    expect(devices.locator("option")).to_have_text(["Choose a device", "HackRF One 0001"])
+                    # Arguments the engine refuses say why, as the source's refusals.
+                    arguments = first.locator("#src-soapy-args")
+                    arguments.fill("serial=0001")
+                    arguments.press("Enter")
+                    expect(first.locator("#src-note")).to_contain_text("Change refused: ")
+                    expect(arguments).to_have_value("")
+                    devices.select_option(label="HackRF One 0001")
+                else:
+                    first.locator("#src-device").select_option("synthetic")
+                    expect(first.locator("#src-device")).to_have_value("synthetic")
+                    first.locator("#src-device").select_option("soapy")      # the device chosen last, at once
+                for page in (first, second):
+                    expect(page.locator("#src-device")).to_have_value("soapy")
+                    expect(page.locator("#src-note")).to_contain_text("test-tuner through SoapySDR, driver hackrf.")
+                    expect(page.locator("#src-soapy")).to_have_value("0")
+                    expect(page.locator("#src-soapy-args")).to_have_value("driver=hackrf,serial=0001")
+                # Search again finds a device plugged in since, and leaves
+                # the driver in use alone.
+                soapy.add("airspy", serial=f"a{browser}", label=f"Airspy {browser}")
+                count = len(soapy.searches)
+                first.locator("#src-soapy-search").click()
+                expect(first.locator("#src-soapy option").last).to_have_text(f"Airspy {browser}")
+                expect(first.locator("#src-soapy-note")).to_have_text(f"Searched: {searched}.")
+                expect(first.locator("#src-soapy-search")).to_be_enabled()
+                self.assertEqual(soapy.searches[count:], [{"driver": driver} for driver in LISTED_DRIVERS if driver != "hackrf"])
 
     def test_the_rtl_tcp_server_address_changes_in_the_receiver_menu(self):
         # Nothing listens on these ports: the source waits, refused.

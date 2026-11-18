@@ -76,7 +76,7 @@ preferences apart from this computer's.
 
    | Field | Meaning |
    | --- | --- |
-   | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs, `soapy` for a receiver that SoapySDR reads on the engine's computer, such as an SDRplay, a HackRF or an RTL-SDR. The engine switches to `soapy` only once a device was chosen, by `--soapy` for now; before that it refuses the switch, saying so. |
+   | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs, `soapy` for a receiver that SoapySDR reads on the engine's computer, such as an SDRplay, a HackRF or an RTL-SDR. The engine switches to `soapy` only once a device was chosen, in the Receiver menu (the `devices` message) or by `--soapy`; before that it refuses the switch, saying so. |
    | `status` | `streaming` while samples arrive. Otherwise `connecting`, `waiting` (to try again; see `detail`) or `idle` (no interface listened and no scan ran, so the source hung up). |
    | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`, and for a `soapy` source the SoapySDR module or device's reason, such as `the SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr)`, `no sdrplay device found with the arguments given` or `no samples: the device stopped answering`; empty otherwise. |
    | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets), which an interface may change; null for the other sources. |
@@ -367,20 +367,50 @@ preferences apart from this computer's.
    starts at start and never runs on the simulated band; both may run at
    once.
 
-9. Then, to this computer's interfaces only, the storage state, a JSON text
-   message, sent again whenever it changes:
+9. Then, when the engine opens SoapySDR devices (`soapy` among the source
+   state's `kinds`), the SoapySDR devices, a JSON text message, sent again
+   whenever it changes:
 
    ```json
-   {"type": "storage", "directory": "~/.config/radiolack", "saving": true, "problem": ""}
+   {"type": "devices", "search": "done", "detail": "",
+    "drivers": ["hackrf", "airspy", "airspyhf", "lime", "bladerf"],
+    "devices": [{"driver": "hackrf", "serial": "0001", "label": "HackRF One #0 0001", "in_use": true},
+                {"driver": "airspy", "serial": "0002", "label": "airspy 0002", "in_use": false}],
+    "chosen": true, "args": "driver=hackrf,serial=0001"}
    ```
 
    | Field | Meaning |
    | --- | --- |
-   | `directory` | The settings folder, `~` standing for the home folder; null when the engine saves nothing (a server started without a settings folder, as in tests). |
-   | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
-   | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
+   | `search` | The search's state: `never` (none since the engine started), `searching`, `done`, `failed` (a driver's search failed; the others' findings are listed) or `unavailable` (the SoapySDR Python module is missing, and nothing was searched). |
+   | `detail` | Why, with `failed` and `unavailable`, a sentence for the user, such as `the SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr)` or `the airspy search failed: …`; otherwise empty. |
+   | `drivers` | The drivers that a search asks, in its order, each alone: never `rtlsdr`, whose receivers have the Receiver list's entries of their own. |
+   | `devices` | The SoapySDR device in use first, with `in_use` true, whether a search found it or not (an RTL-SDR opened by `driver=rtlsdr`, for instance), then those that the latest search found, at most 64. `driver` and `serial` name a device; `label` is its module's label, or its driver and serial. Nothing else of a module's listing is kept, such as a position on the bus. |
+   | `chosen` | Whether a SoapySDR device was ever chosen, so that the source message's `kind` `soapy` opens it again rather than being refused. |
+   | `args` | To this computer's interfaces only: the device arguments of the SoapySDR device in use, or null while another source is in use; always null for a remote client. |
 
-10. Then, to this computer's interfaces only, the update state, a JSON text
+   The engine searches only when one of this computer's interfaces asks
+   (the `devices` message, below): never at start, never for a remote
+   client, never without a driver, one driver at a time and one search at a
+   time, in a thread of its own. The driver of the SoapySDR device in use is
+   not searched again, so that no search disturbs the device that streams:
+   that driver's devices stay as the previous search found them. A search
+   opens no stream, but each module's search talks to the devices plugged
+   in. The list lives in memory only.
+
+10. Then, to this computer's interfaces only, the storage state, a JSON text
+    message, sent again whenever it changes:
+
+    ```json
+    {"type": "storage", "directory": "~/.config/radiolack", "saving": true, "problem": ""}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `directory` | The settings folder, `~` standing for the home folder; null when the engine saves nothing (a server started without a settings folder, as in tests). |
+    | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
+    | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
+
+11. Then, to this computer's interfaces only, the update state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -395,7 +425,7 @@ preferences apart from this computer's.
     | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
     | `check_at_start` | Whether the engine checks when it starts. |
 
-11. Then, to this computer's interfaces only, remote access's state, a JSON
+12. Then, to this computer's interfaces only, remote access's state, a JSON
     text message, sent again whenever it changes:
 
     ```json
@@ -420,7 +450,7 @@ preferences apart from this computer's.
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
     | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
-12. Binary spectrum frames, about 30 per second while the source streams.
+13. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
     bin:
 
@@ -463,7 +493,7 @@ preferences apart from this computer's.
     the automatic one, which is NaN while the engine has no noise estimate
     (the VFO outside the span); the squelch then stays closed.
 
-13. Binary audio frames, about 30 per second, only to an interface that asked
+14. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -511,7 +541,7 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
     and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-14. Binary fine frames, about 10 per second, only to an interface that asked
+15. Binary fine frames, about 10 per second, only to an interface that asked
     for the fine spectrum (`fine` message): the spectrum of the VFO's
     channel before the demodulator, at a few hertz per bin. Each frame has
     the spectrum frames' 40-byte little-endian header, of another kind,
@@ -575,7 +605,7 @@ preferences apart from this computer's.
     2048 bins, each the highest of the four it groups, so that narrow lines
     stay visible.
 
-15. The observations, a JSON text message, to one interface only, when it
+16. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -605,7 +635,7 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-16. The recordings, a JSON text message, to one interface only, when it
+17. The recordings, a JSON text message, to one interface only, when it
     asks for them or deleted one (`recordings` message): the latest 500
     recordings of the recordings folder, the newest first.
 
@@ -626,7 +656,7 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-17. A problem report, a JSON text message, to one interface of this
+18. A problem report, a JSON text message, to one interface of this
     computer only, when it asks for one (`report` message): what its user
     may share, or not, when Radiolack misbehaves (README.md, Problem
     reports).
@@ -641,7 +671,7 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-18. A carrier's measure, a JSON text message, to one interface only, when
+19. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
     channel, before the demodulator, and unblanked whether the noise
@@ -671,7 +701,7 @@ preferences apart from this computer's.
     and each receives it alone, with its own latest `id`; one that goes
     away stops waiting, and once none waits nothing more is measured.
 
-19. A driver's check, a JSON text message, to the interfaces that asked
+20. A driver's check, a JSON text message, to the interfaces that asked
     for it (`carrier` message with the action `identify`) only: which of
     the rtl-sdr driver's two computations an R820T's or R828D's PLL
     follows, or why none was named.
@@ -706,7 +736,7 @@ preferences apart from this computer's.
     receiver as it is back. An interface that goes away stops waiting;
     once none waits, the check stops.
 
-20. An error, to one interface only, when the engine refuses a message from
+21. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -741,7 +771,7 @@ are:
 
 | Field | Value |
 | --- | --- |
-| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. `soapy` is refused, with an error that says so, until a SoapySDR device was chosen once, by `--soapy`. |
+| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. `soapy` is refused, with an error that says so, until a SoapySDR device was chosen once, by the `devices` message or `--soapy` (the devices message's `chosen`), and while a search for SoapySDR devices runs. |
 | `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz; a `soapy` source the rates its device offers up to 8 MS/s, and before the device is first found any rate up to 8 MS/s, which the device then brings to the nearest it offers. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
@@ -995,14 +1025,39 @@ unknown or invalid setting, or a device it does not know, and answers the
 sender with an error. This computer's interfaces receive remote access's
 state as it changes.
 
+A `devices` message, to an engine that sends the SoapySDR devices, searches
+for them or opens one, one field at a time:
+
+```json
+{"type": "devices", "search": true}
+{"type": "devices", "choose": {"driver": "hackrf", "serial": "0001"}}
+{"type": "devices", "args": "driver=rtlsdr"}
+```
+
+| Field | Value |
+| --- | --- |
+| `search` | `true`: a search, unless one runs, which it leaves to end. The devices state says `searching`, then what it found. |
+| `choose` | A device that the latest search found, by its `driver` and `serial`, both text: the engine opens it by those two, as `driver=hackrf,serial=0001`, and saves that as the SoapySDR device to open again. The device in use changes nothing. |
+| `args` | SoapySDR device arguments, `KEY=VALUE` separated by commas, naming a driver, as `--soapy` takes them, `driver=rtlsdr` included: the engine opens the device they name and saves them. The arguments in use change nothing. |
+
+Opening a device switches to it as the source message's `kind` does,
+the SoapySDR device in use closing first; its settings are those saved
+for its driver and serial number. The engine refuses a message without a
+field or with more than one, an unknown or invalid field, a device the
+latest search did not find (search again), arguments that `--soapy` would
+refuse, which it says why, and opening a device while a search runs.
+
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
 `observations`, `preferences`, `recording`, `recordings`, `carrier`,
-`audio` and `fine` messages, but neither `update` nor `remote` messages,
+`audio`, `fine` and `devices` messages, but neither `update` nor `remote` messages,
 nor a `source` message that names `address`, nor a `recording` message that names
-`folder`: the engine refuses them with the error "only Radiolack's
-interface on the computer may change this". Its `preferences` are its
+`folder`, nor a `devices` message that names `search` or `args`: the
+engine refuses them with the error "only Radiolack's
+interface on the computer may change this". It may choose among the
+SoapySDR devices found, as it may switch to another kind of source. Its `preferences` are its
 device's own: they change neither this computer's nor another device's.
-Its recording state comes without `folder` and `default_folder`.
+Its recording state comes without `folder` and `default_folder`, and its
+devices state with `args` null.
 
 An `audio` message starts or stops the audio frames for this interface; they
 are off when the stream opens:
@@ -1323,6 +1378,17 @@ and later.
   does not offer, saying which it offers. A newer interface reads a state
   without either field, an older engine's, as one without a driver whose
   rates are the interface's own.
+  Later that day, the Receiver menu's SoapySDR devices (later-milestones.md,
+  section 1, pull request 3), without a new version: the devices state and
+  the `devices` message. An older interface ignores the devices state, as
+  it ignores every message of a type it does not know, and never sends
+  `devices`: its Receiver list's entries work as before, and choosing
+  `soapy` there opens the device chosen last, or is refused, as before,
+  until one was chosen by a newer interface or `--soapy`. A reload brings
+  a newer interface. A newer interface shows no devices part for an older
+  engine, which sends no devices state, and never sends it `devices`: its
+  `soapy` entry then sends `kind` at once, which such an engine opens or
+  refuses as before.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
