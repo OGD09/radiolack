@@ -108,8 +108,21 @@ A converter in front of the receiver (converter.py) moves the
 frequencies as with the rtl_tcp sources. The rtlsdr module's direct
 sampling (``direct_samp``) is one of the device's settings, a choice: no
 shortwave input here, as the rtl_tcp sources have, since the module
-declares the tuner's range alone. Not here yet: I/Q recordings, which
-``tap`` refuses until they take the device's own format (pull request 5).
+declares the tuner's range alone.
+
+For a recording of the raw I/Q (``tap``), the reading thread also hands
+on every sample it keeps for the engine, as the device gives it, in its
+own format (``raw_format``), before the engine's DC removal and
+conversion, and whether the engine takes it or not: from the end of the
+settling after a change on, with the centre frequency in use on the air and
+the sample rate, I and Q swapped behind a converter that mirrors the
+spectrum, as the rtl_tcp sources do. A new label, a new session (a device
+unplugged and back), an overflow that the device reports and a read that
+fails leave a gap. The thread copies them into a queue and the event loop
+hands them to the tap: neither the thread nor the device ever waits for
+the recording, whose own thread writes. More than TAP_S of samples waiting
+for the event loop are not handed on, leaving a gap, and are counted with
+the other losses.
 """
 
 from __future__ import annotations
@@ -121,6 +134,7 @@ import importlib
 import logging
 import math
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -143,6 +157,7 @@ BANDWIDTH_SHARE = 0.8           # the analogue bandwidth: at most this share of 
 TIMEOUT_US = 100_000            # a read's wait for samples, which bounds how soon the thread sees a change
 FAILED_READS = 10               # stream errors in a row that end a session
 REPORT_S = 60.0                 # the losses are logged at most this often
+TAP_S = 1.0                     # samples waiting for the event loop on their way to an I/Q recording, at most
 STOP_S = 5.0                    # the reading thread stops within a read and a stop; a warning after this
 MAX_ARGS = 256                  # characters in the device arguments
 MAX_GAINS = 128                 # gains offered at most, the steps widened beyond
@@ -198,6 +213,15 @@ class Format:
     @property
     def sample_bytes(self) -> int:
         return 2 * np.dtype(self.component).itemsize
+
+    @property
+    def datatype(self) -> str:
+        """SigMF's name for it, for an I/Q recording: "ci8", or "ci16_le"
+        and "cf32_le" in this computer's byte order, the samples' own."""
+        bits = 8 * np.dtype(self.component).itemsize
+        kind = "f" if self.component is np.float32 else "i"
+        order = "" if bits == 8 else "_le" if sys.byteorder == "little" else "_be"
+        return f"c{kind}{bits}{order}"
 
 
 FORMATS = {kind.name: kind for kind in (
@@ -1230,8 +1254,9 @@ def _text(error: BaseException) -> str:
 
 class Losses:
     """What the source reports as it runs: the device's overflows, the
-    samples the buffer dropped for an engine behind, and the blocks that
-    took the engine longer than their period; logged at most every
+    samples the buffer dropped for an engine behind, the blocks that took
+    the engine longer than their period, and the samples that an I/Q
+    recording did not get, the event loop behind; logged at most every
     ``interval_s``, with their counts since the previous line."""
 
     def __init__(self, name: str, interval_s: float = REPORT_S, clock: Callable[[], float] = time.monotonic) -> None:
@@ -1242,21 +1267,23 @@ class Losses:
         self.overflows = 0          # since the previous line, as the counts below
         self.dropped = 0
         self.late_blocks = 0
+        self.unrecorded = 0
         self._since = clock()
         self._logged = -math.inf
 
-    def add(self, *, overflows: int = 0, dropped: int = 0, late_blocks: int = 0) -> None:
+    def add(self, *, overflows: int = 0, dropped: int = 0, late_blocks: int = 0, unrecorded: int = 0) -> None:
         with self._lock:
             self.overflows += overflows
             self.dropped += dropped
             self.late_blocks += late_blocks
+            self.unrecorded += unrecorded
 
     def check(self, flush: bool = False) -> None:
         """Log the counts, if any, unless a line went out less than the
         interval ago; with ``flush``, whatever the interval."""
         with self._lock:
             now = self._clock()
-            if not (self.overflows or self.dropped or self.late_blocks):
+            if not (self.overflows or self.dropped or self.late_blocks or self.unrecorded):
                 return
             if not flush and now - self._logged < self._interval_s:
                 return
@@ -1267,8 +1294,10 @@ class Losses:
                 parts.append(f"{self.dropped} samples dropped, the engine behind")
             if self.late_blocks:
                 parts.append(f"{self.late_blocks} blocks took the engine longer than their period")
+            if self.unrecorded:
+                parts.append(f"{self.unrecorded} samples not recorded, the event loop behind")
             log.warning("%s: %s, in the last %.0f s", self.name, ", ".join(parts), now - self._since)
-            self.overflows = self.dropped = self.late_blocks = 0
+            self.overflows = self.dropped = self.late_blocks = self.unrecorded = 0
             self._since = self._logged = now
 
 
@@ -1356,6 +1385,20 @@ class SoapySource:
         # The latest read that gave samples: when it returned, and the
         # period of its block, for the blocks that take longer.
         self._returned: tuple[float, float] | None = None
+        # An I/Q recording's tap (module docstring), set in the event loop,
+        # and the format of the samples it was handed last.
+        self._tap: Callable[[bytes, float, float, bool], None] | None = None
+        self.raw_format: tuple[str, float | None] | None = None
+        self._tap_fresh = True      # the event loop's: the next samples handed follow a new tap
+        # The samples on their way to it, from the reading thread to the
+        # event loop, under ``_tap_lock``: each with its label and whether it
+        # follows the previous without a gap; their bytes; and whether the
+        # event loop is due to hand them on.
+        self._tap_lock = threading.Lock()
+        self._tap_chunks: list[tuple[bytes, _Label, bool]] = []
+        self._tap_bytes = 0
+        self._tap_posted = False
+        self._tap_gap = True        # the reading thread's: the next samples kept follow a gap
 
     # ------------------------------------------------------------ identity
 
@@ -1421,10 +1464,17 @@ class SoapySource:
         return tuning(settings, self._capabilities).centre_hz
 
     def tap(self, receiver: Callable[[bytes, float, float, bool], None] | None) -> None:
-        """I/Q recordings take the device's own format in a later version:
-        refused, so that no file says the wrong one."""
-        if receiver is not None:
-            raise ValueError("I/Q recordings of a SoapySDR device are not available yet")
+        """Hand ``receiver``, in the event loop, every sample that the
+        reading thread keeps from now on (module docstring): whole I/Q pairs
+        in the device's format, which ``raw_format`` gives while the
+        receiver is called, as SigMF names it, with the full scale where it
+        is not the format's; the centre frequency in use on the air and the
+        sample rate of their label; and whether they follow those handed
+        before without a gap. None stops."""
+        with self._tap_lock:
+            self._tap_chunks, self._tap_bytes = [], 0
+        self._tap = receiver
+        self._tap_fresh = True
 
     def describe(self) -> dict[str, Any]:
         """The device's settings and the source's state, as JSON values."""
@@ -1692,6 +1742,7 @@ class SoapySource:
                 return f"the stream cannot start: {soapy.errToStr(status)}", False
             failed = 0
             last_samples = time.monotonic()
+            self._tap_gap = True        # a new session: the tap's samples start again
             while not stop.is_set():
                 if generation != self._generation:
                     with self._lock:
@@ -1709,8 +1760,16 @@ class SoapySource:
                         streamed = True
                         self._post(self._set_status, "streaming", "")
                     if now >= settle_until:
-                        self._keep(memoryview(array)[:2 * count].cast("B"))
+                        kept = memoryview(array)[:2 * count].cast("B")
+                        self._keep(kept)
+                        if self._tap is not None:
+                            self._hand(kept)
+                    else:
+                        self._tap_gap = True
                     continue
+                # Samples lost, or perhaps lost: a gap for the tap.
+                if count != soapy.SOAPY_SDR_TIMEOUT:
+                    self._tap_gap = True
                 if count == soapy.SOAPY_SDR_OVERFLOW:
                     self._losses.add(overflows=1)
                 elif count != soapy.SOAPY_SDR_TIMEOUT:
@@ -1792,6 +1851,7 @@ class SoapySource:
             if previous is not None:
                 self._losses.add(dropped=previous.dropped - self._dropped)
             self._buffer, self._label, self._dropped = buffer, label, 0
+        self._tap_gap = True        # a new label: a new capture
         return retuned
 
     def _controls(self, receive: int, device: Any, before: Settings | None, settings: Settings,
@@ -1932,6 +1992,55 @@ class SoapySource:
         waiting = self._waiting
         if waiting and len(buffer) >= waiting:
             self._post(self._arrived.set)
+
+    def _hand(self, data: memoryview) -> None:
+        """In the reading thread: queue samples kept, of the label in use,
+        for the tap, which the event loop hands them to, I and Q swapped
+        behind a converter that mirrors the spectrum. More than TAP_S
+        waiting for the event loop are not queued, and leave a gap."""
+        label = self._label
+        if label is None:
+            return
+        sample_format = label.sample_format
+        if label.inverted:      # Q, I: the band as it is on the air
+            copy = np.frombuffer(data, sample_format.component).reshape(-1, 2)[:, ::-1].tobytes()
+        else:
+            copy = bytes(data)
+        limit = max(len(copy), round(TAP_S * label.sample_rate_hz) * sample_format.sample_bytes)
+        joined = not self._tap_gap
+        post = False
+        with self._tap_lock:
+            queued = self._tap_bytes + len(copy) <= limit
+            if queued:
+                self._tap_chunks.append((copy, label, joined))
+                self._tap_bytes += len(copy)
+                post, self._tap_posted = not self._tap_posted, True
+        self._tap_gap = not queued
+        if not queued:
+            self._losses.add(unrecorded=len(copy) // sample_format.sample_bytes)
+        elif post:
+            self._post(self._drain_tap)
+
+    def _drain_tap(self) -> None:
+        """In the event loop: hand the tap the samples queued for it, the
+        first after a new tap following a gap. A tap that fails is left, so
+        that the source goes on."""
+        receiver = self._tap
+        with self._tap_lock:
+            chunks = self._tap_chunks
+            self._tap_chunks, self._tap_bytes, self._tap_posted = [], 0, False
+        for data, label, joined in chunks:
+            if receiver is None or self._tap is not receiver:
+                return          # stopped, or another tap meanwhile, which these samples do not follow
+            sample_format = label.sample_format
+            self.raw_format = (sample_format.datatype,
+                               None if label.full_scale == sample_format.full_scale else label.full_scale)
+            joined, self._tap_fresh = joined and not self._tap_fresh, False
+            try:
+                receiver(data, label.exact_centre_hz, label.sample_rate_hz, joined)
+            except Exception:
+                log.exception("the samples' tap failed: it is left")
+                self._tap = None
 
     def _take(self, count: int) -> tuple[bytes, _Label] | None:
         with self._buffer_lock:

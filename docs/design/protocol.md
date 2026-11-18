@@ -348,29 +348,42 @@ preferences apart from this computer's.
    audio leaves no file. It goes on without any client, like a scan, and
    never starts at start: whether one runs is not saved.
 
-   An I/Q recording keeps the receiver's samples as rtl_tcp sends them,
-   before the DC removal, from the samples that arrive after it started,
-   whether the engine reads them or not, in a SigMF recording: a
-   `.sigmf-data` file of unsigned 8-bit I/Q pairs, I first (`cu8`), and a
-   `.sigmf-meta` file, both readable by their owner only and named after the
+   An I/Q recording keeps the receiver's samples as the receiver gives
+   them, before the DC removal and any conversion, from the samples that
+   arrive after it started, whether the engine reads them or not, in a
+   SigMF recording: a `.sigmf-data` file of I/Q pairs, I first, in the
+   receiver's format, and a `.sigmf-meta` file, both readable by their owner only and named after the
    start in UTC, the receiver's centre frequency and its sample rate, such
    as `2026-11-14_15-31-02Z_145.000000MHz_2.400000MSps.sigmf-data`, with
    `-2` to `-999` before the extension when either name is taken. Its
-   metadata, SigMF 1.0.0, gives `core:datatype` (`cu8`),
-   `core:sample_rate`, `core:hw` (the receiver, such as `RTL-SDR, Rafael
-   Micro R820T`, and the converter in front of it, such as `RTL-SDR, Rafael
-   Micro R820T, behind a downconverter with its oscillator at 9750 MHz`) and
-   `core:recorder` (`Radiolack` and its version), and a
+   metadata, SigMF 1.0.0, gives `core:datatype`, the format: `cu8` for
+   rtl_tcp's unsigned 8-bit pairs, and for a SoapySDR receiver the format
+   the engine reads it in, `ci8`, `ci16_le` or `cf32_le` (`_be` on a
+   big-endian computer); `core:sample_rate`; `core:hw` (the receiver, such
+   as `RTL-SDR, Rafael Micro R820T` or `SoapySDR sdrplay, RSPdx-R2`, and
+   the converter in front of it, such as `RTL-SDR, Rafael Micro R820T,
+   behind a downconverter with its oscillator at 9750 MHz`);
+   `core:recorder` (`Radiolack` and its version); and, for a receiver
+   whose integers stop short of their type's full scale, such as an
+   SDRplay's at 32767 or a bladeRF's at 2048, `radiolack:full_scale`, that
+   full scale, with `core:extensions` declaring the optional extension
+   `radiolack` 1.0.0: the samples are never scaled. Then a
    capture for each stretch of samples: `core:sample_start`,
    `core:frequency`, the receiver's centre frequency on the air, and `core:datetime`,
    the time of its first sample, in UTC to the millisecond; no annotation.
    A retune, by an interface or a scan, starts a capture, as do a change of
    frequency correction and the samples that come after a gap, such as
-   when rtl_tcp's connection drops and comes back. The engine writes the
+   when rtl_tcp's connection drops and comes back, a SoapySDR receiver is
+   unplugged and back or reports an overflow, or the engine's event loop
+   falls more than a second behind a SoapySDR receiver's reading thread. The engine writes the
    metadata whole, renaming a new file over the old one, with the first
    samples, then at most every 5 s while the captures change, and at the
    end: a crash leaves a recording that reads. It takes about 17 GB an hour
-   at 2.4 MS/s. Like the audio's, it goes on without any client, never
+   at 2.4 MS/s in 8 bits, twice that in 16 bits and four times in 32-bit
+   floats: up to 230 GB an hour at 8 MS/s. The engine writes in batches of
+   4 MiB at most, checking before each write that it leaves 2 GiB free,
+   and stops the recording (`disk`) once more than 2 s of samples, and at
+   least 64 MiB, wait for the disk. Like the audio's, it goes on without any client, never
    starts at start and never runs on the simulated band; both may run at
    once.
 
@@ -658,7 +671,7 @@ preferences apart from this computer's.
 
     | Field | Meaning |
     | --- | --- |
-    | `files` | The regular files of the folder named as the engine names its recordings, links excluded: WAV files, and I/Q recordings' data files. Each gives its `name`, its `kind` (`audio` or `iq`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them (`I/Q` for an I/Q recording), its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header or its data's size; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV. `running` is true for a recording that runs. An I/Q recording also gives `rate_hz`, its sample rate as its name tells it, and `meta`, its metadata file, which `bytes` includes, or null when it is missing. |
+    | `files` | The regular files of the folder named as the engine names its recordings, links excluded: WAV files, and I/Q recordings' data files. Each gives its `name`, its `kind` (`audio` or `iq`), its start (`started`, in Unix time), `frequency_hz` and `mode` as its name tells them (`I/Q` for an I/Q recording), its size in `bytes` and its length in `seconds`, to the tenth, from its WAV header, or its data's size and the format that its metadata's `core:datatype` names, within the metadata's first 64 KiB; both are null when the file cannot be read, and `seconds` for a file that is not Radiolack's WAV and for an I/Q recording whose metadata is missing or names no format that the engine knows. `running` is true for a recording that runs. An I/Q recording also gives `rate_hz`, its sample rate as its name tells it, and `meta`, its metadata file, which `bytes` includes, or null when it is missing. |
     | `more` | How many older recordings the folder holds besides. |
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |

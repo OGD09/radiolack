@@ -819,11 +819,12 @@ radiolack --soapy driver=sdrplay
   receiver is a wait too, with its reason in the Receiver menu and the
   status line, tried again by itself.
 - Radiolack opens the receiver's receive stream and nothing else. Its
-  overflows, the samples dropped when the computer falls behind and the
-  blocks that took longer than their period go to the error output at most
-  once a minute.
-- Not yet: I/Q recordings, which Radiolack refuses for a SoapySDR
-  receiver.
+  overflows, the samples dropped when the computer falls behind, the
+  blocks that took longer than their period and the samples that an I/Q
+  recording did not get go to the error output at most once a minute.
+- Record I/Q keeps the receiver's samples in the format Radiolack reads
+  them in, 8 or 16-bit integers or 32-bit floats, as the receiver gives
+  them ([Recording](#recording)).
 
 ## Demodulation and audio
 
@@ -1224,22 +1225,38 @@ its mode, such as `2026-11-14_15-30-45Z_145.500000MHz_NFM.wav`, with `-2`,
 a crash leaves a file that plays. A recording stopped before any audio came
 leaves no file.
 
-An I/Q recording keeps the samples of an RTL-SDR, the only receiver that
-gives them, as rtl_tcp sends them, before Radiolack removes their DC offset,
-in [SigMF](https://sigmf.org) files: Inspectrum and SDRangel open them, and
-GNU Radio's File Source reads their data as bytes. The `.sigmf-data` file
-holds the 8-bit unsigned I/Q pairs (`cu8`, I first), about 17 GB an hour at
-2.4 MS/s, and the `.sigmf-meta` file beside it gives the sample rate, the
-receiver and the captures: where each starts in the data, its centre
-frequency and its start in UTC. Behind a [converter](#converter), the
-receiver's description names it, with its oscillator's frequency, and the
-centre frequencies are those on the air; behind an inverted one, I and Q
-are swapped, so that the data too holds the band as it is on the air. A
-retune or a new frequency correction
-starts a new capture, as does a lost rtl_tcp that comes back; the samples
-that come while the receiver settles, for 0.4 s after a change, are left
-out, as from the spectrum. A new sample rate, another receiver, another
-rtl_tcp address or another converter ends the recording. Its files are named after its start in
+An I/Q recording keeps the receiver's samples as the receiver gives them,
+before Radiolack removes their DC offset or converts them, in
+[SigMF](https://sigmf.org) files: Inspectrum and SDRangel open them, and
+GNU Radio's File Source reads their data. The `.sigmf-data` file holds
+the I/Q pairs, I first, in the receiver's format, which the metadata's
+`core:datatype` names:
+
+| Receiver | Format | 2.4 MS/s | 8 MS/s |
+|---|---|---|---|
+| RTL-SDR through rtl_tcp | `cu8`, 8-bit unsigned | 4.8 MB/s, 17 GB an hour | |
+| SoapySDR: RTL-SDR, HackRF | `ci8`, 8-bit signed | 4.8 MB/s, 17 GB an hour | 16 MB/s, 58 GB an hour |
+| SoapySDR: SDRplay, Airspy, bladeRF | `ci16_le`, 16-bit signed | 9.6 MB/s, 35 GB an hour | 32 MB/s, 115 GB an hour |
+| SoapySDR: any other | `cf32_le`, 32-bit floats | 19.2 MB/s, 69 GB an hour | 64 MB/s, 230 GB an hour |
+
+(`_be` instead of `_le` on a big-endian computer.) A receiver whose
+integers stop short of their type's full scale, such as an SDRplay's or
+an Airspy's at 32767 or a bladeRF's 12 bits at 2048, has that full scale
+in the metadata's `radiolack:full_scale` field, which the metadata declares
+as an optional extension: divide the samples by it for levels in full-scale
+units. The samples themselves are never scaled. The `.sigmf-meta` file
+beside the data gives the sample rate, the receiver and the captures: where
+each starts in the data, its centre frequency and its start in UTC. Behind
+a [converter](#converter), the receiver's description names it, with its
+oscillator's frequency, and the centre frequencies are those on the air;
+behind an inverted one, I and Q are swapped, so that the data too holds
+the band as it is on the air. A retune or a new frequency correction
+starts a new capture, as does a lost rtl_tcp or an unplugged SoapySDR
+receiver that comes back, or samples that the receiver or the computer
+lost; the samples that come while the receiver settles, for 0.4 s after a
+change, are left out, as from the spectrum. A new sample rate, another
+receiver, another rtl_tcp address or another converter ends the
+recording. Its files are named after its start in
 UTC, the receiver's centre frequency and the sample rate, such as
 `2026-11-14_15-30-45Z_145.000000MHz_2.400000MSps.sigmf-data`, with `-2`,
 `-3` and so on when a name is taken. The metadata follows the captures
@@ -1269,11 +1286,14 @@ interface, once pressed again within 5 s. Download, Data, Metadata and
 Delete take only the files that the list shows, and none of a recording
 that runs.
 
-A recording stops by itself when less than 2 GiB stays free on its disk,
-an audio recording when its file reaches the WAV format's limit of 4 GiB
-(about 49 hours, or 18 in WFM), and either on a disk error, such as a disk
-too slow for it: an I/Q recording writes about 4.8 MB/s at 2.4 MS/s. The
-menu and the status line then say why, as does Radiolack's output.
+A recording stops by itself when its next write would leave less than
+2 GiB free on its disk, which it checks before each write, an audio
+recording when its file reaches the WAV format's limit of 4 GiB (about 49
+hours, or 18 in WFM), and either on a disk error, such as a disk too slow
+for it: an I/Q recording writes from 4.8 MB/s (8 bits at 2.4 MS/s) to
+64 MB/s (32-bit floats at 8 MS/s), in writes of 4 MiB, and stops once
+more than 2 s of samples, and at least 64 MiB, wait for the disk. The menu
+and the status line then say why, as does Radiolack's output.
 
 **Law.** Local law may forbid recording what some radio services carry,
 such as air traffic, emergency services or private networks, or disclosing
@@ -2016,7 +2036,8 @@ src/radiolack/
                 recording
   soapy.py      receivers through SoapySDR: device arguments, what the
                 device offers, its gain stages, sockets, settings and
-                antenna power, the reading thread and its buffer
+                antenna power, the reading thread and its buffer, and the
+                raw samples for an I/Q recording
   soapysearch.py
                 the search for SoapySDR devices, one listed driver at a
                 time, for the Receiver menu

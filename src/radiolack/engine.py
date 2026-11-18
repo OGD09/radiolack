@@ -211,7 +211,11 @@ class Source(Protocol):
     chosen when the source was made, which saved ones do not replace.
     ``reopen`` is what opens the same receiver again (sources.py).
     ``tap`` hands the receiver's raw samples to an I/Q recording, which
-    ``hardware`` names the receiver for.
+    ``hardware`` names the receiver for, and ``raw_format`` gives the
+    format of the samples the tap was handed last, while it is called: as
+    SigMF names it (recordings.IQ_DATATYPES), with the full scale of an
+    integer format that is not its type's, or None; None for a source
+    without raw samples.
     """
 
     kind: str
@@ -221,6 +225,7 @@ class Source(Protocol):
     sample_rate_hz: float
     given: frozenset[str]
     on_change: Callable[[], None] | None
+    raw_format: tuple[str, float | None] | None
 
     @property
     def grid_hz(self) -> float:
@@ -251,11 +256,12 @@ class Source(Protocol):
         """The receiver, such as "RTL-SDR, Rafael Micro R820T"."""
 
     def tap(self, receiver: Callable[[bytes, float, float, bool], None] | None) -> None:
-        """Hand ``receiver`` the raw samples as they arrive, whether read or
-        not: whole I/Q pairs of unsigned bytes, I first, with the centre
-        frequency and the sample rate they were taken with, and whether they
-        follow those handed before without a gap (rtltcp.RtlTcpSource.tap).
-        None stops. Raises ValueError for a source without raw samples."""
+        """Hand ``receiver``, in the event loop, the raw samples as they
+        arrive, whether read or not: whole I/Q pairs in ``raw_format``, I
+        first, with the centre frequency and the sample rate they were
+        taken with, and whether they follow those handed before without a
+        gap (rtltcp.RtlTcpSource.tap, soapy.SoapySource.tap). None stops.
+        Raises ValueError for a source without raw samples."""
 
     async def read(self, count: int) -> np.ndarray | None:
         """The next ``count`` samples once they have arrived, or ``None`` when
@@ -284,6 +290,7 @@ class FixedSource:
     sample_rate_hz: float
     given: frozenset[str] = frozenset()
     on_change: Callable[[], None] | None = None
+    raw_format: tuple[str, float | None] | None = None
     rate_scale = 1.0
     grid_hz = 0.0
 
@@ -1053,8 +1060,10 @@ class Engine:
                      "seconds": round(samples / rate, 1) if rate else 0.0,
                      "bytes": WAV_HEADER.size + 2 * samples if recording.file is not None else 0}
         if (raw := self._iq) is not None:
+            pair_bytes = raw.pair_bytes
             iq = {"file": raw.file, "started": round(raw.started), "frequency_hz": raw.frequency_hz,
-                  "rate_hz": round(raw.rate_hz), "seconds": round(self._iq_bytes / 2 / raw.rate_hz, 1),
+                  "rate_hz": round(raw.rate_hz),
+                  "seconds": round(self._iq_bytes / pair_bytes / raw.rate_hz, 1) if pair_bytes else 0.0,
                   "bytes": self._iq_bytes if raw.file is not None else 0}
         state: dict[str, Any] = {"type": "recording", "audio": audio, "iq": iq,
                                  "stopped": None if self._recording_stopped is None else dict(self._recording_stopped)}
@@ -1687,10 +1696,12 @@ class Engine:
         folder = self._recording_folder()
         self._end_driver_check(STOPPED)     # the recording starts where the receiver comes back
         source = self.source
-        # Named after the centre asked; its metadata gives the centre in use, as the samples are labelled.
+        # Named after the centre asked; its metadata gives the centre in use, as the samples are labelled,
+        # and their format, which the first samples give.
         centre_hz, rate_hz = self._span()
         recording = IQRecording(folder, time.time(), centre_hz, rate_hz, hardware=source.hardware,
-                                make_folder=folder == self._default_recordings, report=self._reporter())
+                                make_folder=folder == self._default_recordings, report=self._reporter(),
+                                datatype=None)
         source.tap(functools.partial(self._record_iq, recording))
         self._iq, self._iq_bytes = recording, 0
         self._started(recording)
@@ -1813,14 +1824,19 @@ class Engine:
     def _record_iq(self, recording: IQRecording, data: bytes, centre_hz: float, rate_hz: float,
                    joined: bool) -> None:
         """Hand raw samples, as they arrive, to ``recording`` while it runs:
-        another sample rate stops it, as does a disk that does not keep up.
-        Samples that follow a gap may come from a receiver that connected
-        again: the metadata names it as it is then."""
+        the first set its format; another sample rate stops it, as do
+        another format, which another receiver gives, and a disk that does
+        not keep up. Samples that follow a gap may come from a receiver that
+        connected again: the metadata names it as it is then."""
         if recording is not self._iq:
             return
         try:
             if rate_hz != recording.rate_hz:
                 self._stop_recording("iq", "sample_rate")
+                return
+            raw_format = self.source.raw_format
+            if raw_format is None or not recording.take_format(*raw_format):
+                self._stop_recording("iq", "receiver")
                 return
             if not joined:
                 recording.hardware = self.source.hardware

@@ -20,6 +20,7 @@ from radiolack import __version__, recordings
 from radiolack.recordings import (AudioRecording, IQRecording, check_folder, chosen_folder, default_folder,
                                   delete_recording, iq_name, is_recording_file, is_recording_name, list_recordings,
                                   meta_name, open_recording, recording_name, wav_header, wav_seconds)
+from tests.sigmf_check import check_sigmf
 
 STARTED = 1_794_000_000.0       # 2026-11-06 21:20:00 UTC
 NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
@@ -316,6 +317,7 @@ class IQRecordingTest(TemporaryFolder):
             ],
             "annotations": [],
         })
+        check_sigmf(self, folder / IQ_NAME, folder / IQ_META)
         for path in (folder / IQ_NAME, folder / IQ_META):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(sorted(path.name for path in folder.iterdir()), [IQ_NAME, IQ_META])   # nothing else
@@ -389,9 +391,100 @@ class IQRecordingTest(TemporaryFolder):
 
     def test_too_much_waiting_for_the_disk_is_refused(self):
         self.record()
-        with mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 30_000):
+        with mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 30_000), \
+                mock.patch.object(recordings, "IQ_PENDING_S", 0.001):     # 9600 bytes at 2.4 MS/s
             self.assertTrue(self.recording.write(iq(15_000), 145e6, STARTED, False))
             self.assertFalse(self.recording.write(iq(1), 145e6, STARTED, True))
+
+    def test_what_may_wait_for_the_disk_follows_the_rate_and_the_format(self):
+        # A millisecond's worth, at least 40 kB: as 2 s, at least 64 MiB, but smaller.
+        cases = ((IQ_RATE, "cu8", 40_000),      # 4800 bytes: the floor
+                 (8e6, "ci16_le", 40_000),      # 32 kB: the floor again
+                 (8e6, "cf32_le", 64_000))      # 64 MB a second
+        for rate_hz, datatype, limit in cases:
+            with self.subTest(datatype=datatype), mock.patch.object(recordings, "IQ_PENDING_S", 0.001), \
+                    mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 40_000):
+                recording = IQRecording(self.folder, STARTED, 145e6, rate_hz, hardware="test", make_folder=False,
+                                        report=Reports(), datatype=datatype)
+                pair_bytes = recordings.IQ_DATATYPES[datatype]
+                # Not started: what it takes only waits.
+                self.assertTrue(recording.write(bytes(limit - pair_bytes), 145e6, STARTED, False))
+                self.assertTrue(recording.write(bytes(pair_bytes), 145e6, STARTED, True))
+                self.assertFalse(recording.write(bytes(pair_bytes), 145e6, STARTED, True))
+
+    def test_writes_each_format_with_its_full_scale_where_it_is_not_its_types(self):
+        cases = (("ci8", None, np.int8), ("ci16_le", 2048.0, np.dtype("<i2")), ("ci16_le", None, np.dtype("<i2")),
+                 ("cf32_le", None, np.dtype("<f4")))
+        for datatype, full_scale, component in cases:
+            with self.subTest(datatype=datatype, full_scale=full_scale):
+                folder = self.folder / f"{datatype}-{full_scale}"
+                reports = Reports()
+                recording = IQRecording(folder, STARTED, 145e6, 2_000_000.0, hardware="SoapySDR test, test-tuner",
+                                        make_folder=True, report=reports, datatype=datatype, full_scale=full_scale)
+                recording.start()
+                self.addCleanup(recording.join, 10)
+                samples = (np.arange(-1000, 1000, dtype=np.float64) / 1000 * 100).astype(component)
+                self.assertTrue(recording.write(samples.tobytes(), 145e6, STARTED + 1, False))
+                self.assertTrue(recording.write(samples[:400].tobytes(), 433e6, STARTED + 2, False))
+                recording.stop()
+                self.assertEqual(reports.wait(self), (None, ""))
+                name = iq_name(STARTED, 145e6, 2_000_000.0)
+                self.assertEqual((folder / name).read_bytes(), samples.tobytes() + samples[:400].tobytes())
+                metadata = check_sigmf(self, folder / name, folder / meta_name(name))
+                described = metadata["global"]
+                self.assertEqual((described["core:datatype"], described.get("radiolack:full_scale")),
+                                 (datatype, full_scale))
+                self.assertEqual("core:extensions" in described, full_scale is not None)
+                # 1000 pairs, then 200, whatever their size: each capture's first sample, and the time it
+                # came, its chunk's length (0.5 ms, then 0.1 ms) before the chunk did.
+                self.assertEqual([(capture["core:sample_start"], capture["core:frequency"], capture["core:datetime"])
+                                  for capture in metadata["captures"]],
+                                 [(0, 145_000_000, "2026-11-06T21:20:00.999Z"),
+                                  (1000, 433_000_000, "2026-11-06T21:20:01.999Z")])
+
+    def test_the_format_is_the_first_given(self):
+        recording = IQRecording(self.folder, STARTED, 145e6, IQ_RATE, hardware="test", make_folder=False,
+                                report=Reports(), datatype=None)
+        self.assertIsNone(recording.pair_bytes)
+        with self.assertRaisesRegex(ValueError, "format comes before its samples"):
+            recording.write(iq(1), 145e6, STARTED, False)
+        for datatype, full_scale in (("cu16", None), ("ci16_le", 0.0), ("ci16_le", float("nan"))):
+            with self.subTest(datatype=datatype, full_scale=full_scale), self.assertRaises(ValueError):
+                recording.take_format(datatype, full_scale)
+        self.assertTrue(recording.take_format("ci16_le", 2048.0))
+        self.assertTrue(recording.take_format("ci16_le", 2048.0))
+        self.assertFalse(recording.take_format("ci16_le", None))
+        self.assertFalse(recording.take_format("ci8", None))
+        self.assertEqual((recording.datatype, recording.full_scale, recording.pair_bytes), ("ci16_le", 2048.0, 4))
+
+    def test_writes_as_soon_as_a_batch_waits(self):
+        with mock.patch.object(recordings, "WRITE_INTERVAL_S", 3600.0), \
+                mock.patch.object(recordings, "WRITE_BATCH_BYTES", 1000):
+            reports = self.record()
+            self.recording.write(iq(100), 145e6, STARTED, False)       # less: it waits
+            self.recording.write(iq(500), 145e6, STARTED, True)        # 1200 bytes: written at once
+            self.wait_for(lambda: (self.folder / IQ_NAME).exists()
+                          and (self.folder / IQ_NAME).stat().st_size == 1200)
+            self.recording.stop()
+            reports.wait(self)
+
+    def test_never_takes_the_disk_under_its_limit(self):
+        written = []
+
+        def free(_recording):
+            # What stays free: 3000 bytes above the limit, less what it wrote.
+            done = (self.folder / IQ_NAME).stat().st_size if (self.folder / IQ_NAME).exists() else 0
+            written.append(done)
+            return recordings.MIN_FREE_BYTES + 3000 - done
+
+        with mock.patch.object(IQRecording, "_free_bytes", free):
+            reports = self.record()
+            self.recording.write(iq(1000), 145e6, STARTED, False)      # 2000 bytes: 1000 above the limit
+            self.wait_for(lambda: reports.files)
+            self.recording.write(iq(1000), 145e6, STARTED, True)       # 2000 more would go under it
+            self.assertEqual(reports.wait(self), ("space", ""))
+        self.assertEqual((self.folder / IQ_NAME).read_bytes(), iq(1000))
+        self.assertEqual(len(self.captures()), 1)
 
 
 class ListTest(TemporaryFolder):
@@ -417,20 +510,39 @@ class ListTest(TemporaryFolder):
 
     def test_lists_an_iq_recording_as_its_data_with_its_metadata(self):
         write_wav(self.folder / NAME, 1.0)
+        meta_text = '{"global": {"core:datatype": "cu8"}}'
         (self.folder / IQ_NAME).write_bytes(iq(240_000))       # 0.1 s
-        (self.folder / IQ_META).write_text("{}")
+        (self.folder / IQ_META).write_text(meta_text)
         other = iq_name(STARTED + 60, 433_920_000.0, 1_024_000.0)
-        (self.folder / other).write_bytes(iq(1_024_000))       # 1 s, without its metadata
+        (self.folder / other).write_bytes(iq(1_024_000))       # without its metadata: of a length unknown
         (self.folder / meta_name(iq_name(STARTED + 120, 145e6, IQ_RATE))).write_text("{}")     # without its data
         listed = list_recordings(self.folder, running={other, meta_name(other)})
         self.assertEqual(listed["files"], [
             {"name": other, "kind": "iq", "started": STARTED + 60, "frequency_hz": 433_920_000, "mode": "I/Q",
-             "bytes": 2_048_000, "seconds": 1.0, "running": True, "rate_hz": 1_024_000, "meta": None},
+             "bytes": 2_048_000, "seconds": None, "running": True, "rate_hz": 1_024_000, "meta": None},
             {"name": NAME, "kind": "audio", "started": STARTED, "frequency_hz": 145_500_000, "mode": "NFM",
              "bytes": 44 + 24_000, "seconds": 1.0, "running": False},
             {"name": IQ_NAME, "kind": "iq", "started": STARTED, "frequency_hz": 145_000_000, "mode": "I/Q",
-             "bytes": 480_000 + 2, "seconds": 0.1, "running": False, "rate_hz": 2_400_000, "meta": IQ_META},
+             "bytes": 480_000 + len(meta_text), "seconds": 0.1, "running": False, "rate_hz": 2_400_000,
+             "meta": IQ_META},
         ])
+
+    def test_an_iq_recordings_length_follows_the_format_its_metadata_gives(self):
+        cases = (("ci8", 2.0), ("ci16_le", 1.0), ("cf32_le", 0.5), ("cf32_be", 0.5), ("cu16_le", None))
+        for datatype, seconds in cases:
+            with self.subTest(datatype=datatype):
+                # A description that quotes another format first is not taken for the format.
+                metadata = {"global": {"core:description": '"core:datatype": "ci8"', "core:datatype": datatype,
+                                       "core:sample_rate": 2_400_000, "core:version": "1.0.0"},
+                            "captures": [], "annotations": []}
+                (self.folder / IQ_META).write_text(json.dumps(metadata, indent=2))
+                (self.folder / IQ_NAME).write_bytes(bytes(9_600_000))
+                [entry] = list_recordings(self.folder)["files"]
+                self.assertEqual((entry["seconds"], entry["meta"]), (seconds, IQ_META))
+        # A format beyond the part read is not known.
+        (self.folder / IQ_META).write_text(" " * recordings.META_HEAD_BYTES + '{"global": {"core:datatype": "ci8"}}')
+        [entry] = list_recordings(self.folder)["files"]
+        self.assertEqual((entry["seconds"], entry["meta"]), (None, IQ_META))
 
     def test_lists_the_latest_only(self):
         for minute in range(5):

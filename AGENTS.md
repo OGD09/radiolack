@@ -69,13 +69,18 @@ the history under the tag `v0.1.0`.
   which they may not give, may not search for SoapySDR devices, and get
   lighter spectrum frames),
   `recordings` (the audio's WAV files and the raw I/Q's SigMF files, data
-  and metadata, each recording written by a thread of its own that checks
-  the free space, and the WAV limit for the audio, named after their
-  start, frequency and mode, or sample rate for the I/Q; the recordings
-  folder, `$XDG_DATA_HOME/radiolack/recordings`
+  and metadata, the I/Q in the receiver's format, `cu8`, `ci8`,
+  `ci16_le` or `cf32_le`, with `radiolack:full_scale`, a declared optional
+  extension, where an integer format's full scale is not its type's;
+  each recording written by a thread of its own, in batches of 4 MiB at
+  most, that checks the free space before each write, and the WAV limit
+  for the audio, the I/Q waiting for the disk bounded by its rate and
+  format; named after their start, frequency and mode, or sample rate for
+  the I/Q; the recordings folder, `$XDG_DATA_HOME/radiolack/recordings`
   unless the user chose another, its checks and its list; opening a
   recording's file to download it, and deleting a recording, with an I/Q
-  recording's metadata, only for the files named as recordings),
+  recording's metadata, only for the files named as recordings; an I/Q
+  recording's length from the format its metadata names),
   `report` (problem reports: the latest warnings and errors of the
   `radiolack` logger, kept in memory from `cli`'s start, which still writes
   them on the error output; the report's facts, without the receiver's
@@ -170,8 +175,12 @@ the history under the tag `v0.1.0`.
   `NativeBuffer` that drops the oldest, and closes the stream and the
   device whatever ends it; settings under driver and serial number, the
   engine restoring them once the device is found; overflows, drops and
-  late blocks logged at most once a minute; I/Q recordings refused;
-  receive stream only), `soapysearch` (the search for SoapySDR devices,
+  late blocks logged at most once a minute; pull request 5: the samples
+  kept, in the device's format, handed to an I/Q recording's tap through
+  the event loop, a second at most waiting for it, those beyond left out
+  and counted, I and Q swapped behind an inverted converter, and
+  `raw_format`, SigMF's datatype and the full scale where it is not the
+  format's; receive stream only), `soapysearch` (the search for SoapySDR devices,
   pull request 3: the listed local USB drivers, `LISTED_DRIVERS`, `sdrplay`
   to join them, one at a time with `driver=NAME` alone, never without a
   driver nor `rtlsdr`, in a thread of its own, one search at a time; each
@@ -522,8 +531,8 @@ the history under the tag `v0.1.0`.
 - Recording (scoping.md, 2026-11-14, for v3): the audio and the raw I/Q
   only when a user starts it, never at start and never on the simulated
   band; never transcriptions. Tests and checks record only synthetic
-  signals or the fake rtl_tcp, into temporary folders, never a real
-  receiver.
+  signals, the fake rtl_tcp or the stand-in SoapySDR module's devices,
+  into temporary folders, never a real receiver.
 - Only stop processes that Radiolack started itself.
 - Versioned files stay generic: no personal frequencies, places, call signs
   or data.
