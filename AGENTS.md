@@ -252,7 +252,12 @@ the history under the tag `v0.1.0`.
   README.md repeats the notice word for word, which
   `tests/test_legal_notice.py` checks (scoping.md, 2026-11-16).
 - `packaging/`: `build_deb.py` (Debian package, built with dpkg-deb from the
-  Python package as it is; reproducible: every file carries the last
+  Python package as it is; it recommends rtl-sdr alone and suggests
+  SoapySDR's Python module and the drivers' modules under the names the
+  four supported systems all give them, `SUGGESTS`, which the tests pin:
+  read the four systems' indexes again before changing them, and never
+  recommend them, as libsoapysdr recommends every SoapySDR module
+  (scoping.md, 2026-11-18); reproducible: every file carries the last
   commit's date, or SOURCE_DATE_EPOCH, and dpkg-deb's own settings in the
   environment change nothing), `radiolack.1` (manual page, whose
   version and date the build fills in; the tests check that it documents

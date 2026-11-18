@@ -6,6 +6,8 @@ The package installs Radiolack for the system's Python 3 and its packaged
 libraries (aiohttp, cryptography, NumPy, PyGObject, GTK 3 and WebKitGTK),
 with the ``radiolack`` command, its manual page, a menu entry, an icon, and
 the changelog and licence notice that Debian keeps in /usr/share/doc/radiolack.
+It recommends rtl-sdr and only suggests SoapySDR's packages, which apt
+installs only when asked.
 It also adds Radiolack's APT repository, its source and its key, so that apt
 keeps Radiolack up to date, and a systemd service, radiolack.service, which
 it never enables or starts: the administrator does.
@@ -82,13 +84,30 @@ DEPENDS = (
     "ca-certificates",      # for the APT repository that the package adds, served over HTTPS
 )
 RECOMMENDS = ("rtl-sdr",)      # rtl_tcp, for an RTL-SDR receiver plugged into this computer
+# For a receiver read through SoapySDR (--soapy), optional: SoapySDR's Python
+# module and the drivers' modules, under the names that Debian 12 and 13 and
+# Ubuntu 24.04 and 26.04 all give them, as read in their package indexes on
+# 2026-11-18 (soapysdr-module-airspyhf exists on Ubuntu 26.04 only).
+# Suggested, never recommended: libsoapysdr0.8 recommends every SoapySDR
+# module, which apt's default would then install with Radiolack, about 33
+# packages and 50 MB on Debian 12 (later-milestones.md, section 1).
+SUGGESTS = (
+    "python3-soapysdr",
+    "soapysdr-module-hackrf",
+    "soapysdr-module-airspy",
+    "soapysdr-module-lms7",
+    "soapysdr-module-bladerf",
+    "soapysdr-module-rtlsdr",
+)
 DESCRIPTION = """\
 Receive-only SDR receiver with band plans
  Radiolack shows the spectrum and the waterfall of an SDR receiver in a
- desktop window and plays NFM, AM, USB, LSB, CW and WFM. It reads an RTL-SDR
- receiver plugged into this computer, or one that rtl_tcp serves from
- another computer, and labels every frequency with a simplified European
- band plan, with the IARU Region 1 plans inside the amateur bands.
+ desktop window and plays NFM, AM, synchronous AM, USB, LSB, CW and WFM. It
+ reads an RTL-SDR receiver plugged into this computer, or one that rtl_tcp
+ serves from another computer, and labels every frequency with a European
+ band plan, a guide rather than a legal reference, with the IARU Region 1
+ plans inside the amateur bands. Other receivers, such as a HackRF, an
+ Airspy or a LimeSDR, are read through SoapySDR, which is optional.
  .
  Phones, tablets and other computers on the local network use it through
  remote access. A systemd service, which the package never enables, runs it
@@ -307,6 +326,7 @@ def stage(tree: Path, version: str, maintainer: str, epoch: int) -> None:
         f"Installed-Size: {installed_kib}",
         f"Depends: {', '.join(DEPENDS)}",
         f"Recommends: {', '.join(RECOMMENDS)}",
+        f"Suggests: {', '.join(SUGGESTS)}",
         "Section: hamradio",
         "Priority: optional",
         f"Description: {DESCRIPTION}",

@@ -99,7 +99,8 @@ radio program, only on receiver drivers.
 | 2026-11-16 | DRM may bring a compiled component, as the owner chose, since its decoding is too heavy for Python alone. It ships as a second, architecture-specific package, `radiolack-drm`, so that the main package stays independent of the architecture, built as it is and reproducible. The milestone starts with a spike on the audio codings' libraries and licences and on real-time decoding, and closes on its report if either fails. |
 | 2026-11-16 | The tuner's PLL, after its measure (spike 6), as the owner chose: the grid and the compensation. The measure found the error, 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz. Radiolack places the tuner's oscillator on multiples of 112.5 kHz, where that error is the same at every centre frequency, and takes it off once it knows which of the driver's two computations runs: a setting of each receiver, which Calibrate identifies by a short measure and checks again at each calibration. Pull request 14 of Coverage and precision becomes two, 14a and 14b ([`coverage-and-precision.md`](coverage-and-precision.md)). |
 | 2026-11-16 | The listening tools' spike (spike 8), as the owner chose: each of the four tools may add 1.5% of one core, as the planning session set the shares of the 6% they may add together; a tool over its share is reworked once, and a tool still over it is kept, its measured cost documented, rather than set aside or brought back to the owner. |
-| 2026-11-18 | Any receiver starts now, before the milestones that need no hardware, and the owner's SDRplay RSPdx-R2, received the next day, is the first device checked after the V3; the HackRF One follows in January. | On shortwave the V3's direct sampling on the owner's small loop left every station in hiss (the listening tools' check that day): a receiver made for shortwave is what improves it, and Radiolack reads none but RTL-SDRs until this milestone. SDRplay's closed library stays the user's to install ([`later-milestones.md`](later-milestones.md), section 1). |
+| 2026-11-18 | Any receiver starts now, before the milestones that need no hardware, and the owner's SDRplay RSPdx-R2, received the next day, is the first device checked after the V3; the HackRF One follows in January. On shortwave the V3's direct sampling on the owner's small loop left every station in hiss (the listening tools' check that day): a receiver made for shortwave is what improves it, and Radiolack reads none but RTL-SDRs until this milestone. SDRplay's closed library stays the user's to install ([`later-milestones.md`](later-milestones.md), section 1). |
+| 2026-11-18 | SoapySDR's packages are suggested, never recommended, as the owner chose: the Debian package's `Suggests` names `python3-soapysdr` and the drivers' modules that Debian 12 and 13 and Ubuntu 24.04 and 26.04 all have under the same name, read in their package indexes that day, and its `Recommends` stays `rtl-sdr` alone. Measured on Debian 12: `libsoapysdr0.8` recommends `soapysdr0.8-module-all`, so that with apt's default a recommended `python3-soapysdr` would install every SoapySDR module at each install and upgrade of Radiolack, about 33 packages and 50 MB beyond Radiolack's own dependencies, SoapyRemote's module and UHD among them, against 2 packages and 2 MB for `python3-soapysdr` without that chain. The Receiver menu and `--soapy` already name the package when it is missing. A suggested name that a system lacks is harmless, apt ignoring it, so CI does not check the names on each system, which a test pins instead. This replaces `Recommends: python3-soapysdr` and the names' check in `package.yml` in [`later-milestones.md`](later-milestones.md), section 1. |
 
 ## Scope
 
@@ -447,7 +448,15 @@ SoapySDR devices, for the owner's HackRF One, in reception only.
 3. The Receiver menu's devices, and the arguments field.
 4. Gains, overall and per stage, antenna choice, antenna power.
 5. I/Q recordings in the device's format.
-6. Package, service notes and CI.
+6. Package, service notes and README.md, SoapySDR's packages suggested
+   and CI unchanged (Decisions, 2026-11-18).
+
+All six built on 2026-11-18 (later-milestones.md, section 1, Where the
+milestone stands). Checked on a receiver the same day: the owner's V3
+through `driver=rtlsdr` opens, takes its gain and sample rates, plays WFM,
+is released when idle and stops. Not yet: the correction, the gains and
+settings of pull request 4, an I/Q recording, the service with `--soapy`,
+the RSPdx-R2 and the HackRF One.
 
 Done when the V3 opened through SoapySDR works as through rtl_tcp, and the
 HackRF One, back with the owner, is listed, tunes from 1 MHz to 6 GHz,

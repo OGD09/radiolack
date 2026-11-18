@@ -22,7 +22,8 @@ StateDirectoryMode=0700
 Environment=XDG_CONFIG_HOME=%S XDG_DATA_HOME=%S PYTHONUNBUFFERED=1
 UMask=0077
 # A user of its own, made at each start, in the group that may open the
-# receivers (their device rules give it to plugdev).
+# receivers whose device rules give them to plugdev, as Debian 12's do for an
+# RTL-SDR and a HackRF; README.md, As a service, for the others.
 DynamicUser=yes
 SupplementaryGroups=plugdev
 # The sandbox, so that a flaw in remote access reaches neither a user's

@@ -22,8 +22,8 @@ spectrum and the waterfall with WebGL2 and keeps every setting in one menu
 ([The menu](#the-menu)). The Receiver menu switches between the
 simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
-address of an rtl_tcp server, and turns the removal of the DC spike on or
-off; antenna power comes next. The engine
+address of an rtl_tcp server, and turns the removal of the DC spike and
+the antenna power on or off. The engine
 demodulates NFM, AM, synchronous AM (SAM), USB, LSB, CW and WFM,
 broadcast FM in mono, with an automatic notch for whistles in AM, SAM and
 SSB and a noise blanker for crackle in every mode, and the interface plays
@@ -63,9 +63,10 @@ English, with no translations.
 - For an RTL-SDR receiver: rtl_tcp, which comes with librtlsdr. Debian and
   Ubuntu: `sudo apt install rtl-sdr`.
 - For a receiver through SoapySDR (`--soapy`), optional: SoapySDR's Python
-  module and the driver's module. Debian and Ubuntu:
-  `sudo apt install python3-soapysdr` and, for instance,
-  `soapysdr-module-hackrf`.
+  module and the driver's module. Debian and Ubuntu: `python3-soapysdr` and,
+  for instance, `soapysdr-module-hackrf`, which the Debian package suggests
+  and never installs ([SoapySDR, for other
+  receivers](#soapysdr-for-other-receivers)).
 - Windows and macOS, each with its own installer, are planned for the public
   release.
 
@@ -78,7 +79,9 @@ Debian package for the system's Python, with the `radiolack` command, its
 manual page (`man radiolack`), a menu entry and an icon. apt also installs
 what Radiolack needs (aiohttp, cryptography, NumPy, PyGObject, GTK 3,
 WebKitGTK, and the certificates that apt needs to read its APT repository
-over HTTPS) and the rtl-sdr package it recommends.
+over HTTPS) and the rtl-sdr package it recommends. SoapySDR's packages, for
+other receivers, are only suggested: apt installs none of them unless asked
+([SoapySDR, for other receivers](#soapysdr-for-other-receivers)).
 
 Each release on the repository's Releases page carries its package,
 `radiolack_VERSION_all.deb`, and the package's checksum, `SHA256SUMS`, which
@@ -144,6 +147,54 @@ downloading anything. To run without installing, use
 `PYTHONPATH=src python3 -m radiolack` from the repository. Radiolack reads
 its interface's files when it starts: restart it to see a change to
 `src/radiolack/web/`.
+
+### SoapySDR, for other receivers
+
+Radiolack reads receivers other than RTL-SDRs through SoapySDR
+([SoapySDR receivers](#soapysdr-receivers)), which is optional: the
+Debian package suggests its packages and installs none of them. Install
+SoapySDR's Python module and the module of the receiver's driver, for a
+HackRF for instance:
+
+```bash
+sudo apt install --no-install-recommends python3-soapysdr soapysdr-module-hackrf
+```
+
+`--no-install-recommends` keeps apt to the packages named and what they
+need. Without it, apt also installs what SoapySDR's library recommends,
+every SoapySDR module: about 33 packages and 50 MB on Debian 12 for
+`python3-soapysdr` alone, among them the remote module and UHD's.
+Radiolack needs none of them beyond the receiver's, and never
+lets SoapySDR search without a driver, so that the remote module's search
+does not run.
+
+The Debian package suggests the drivers' modules that Debian 12 and 13 and
+Ubuntu 24.04 and 26.04 all have under the same name, as read in their
+package indexes on 2026-11-18:
+
+| Receiver | Module's package |
+|---|---|
+| HackRF | `soapysdr-module-hackrf` |
+| Airspy R2, Airspy Mini | `soapysdr-module-airspy` |
+| LimeSDR | `soapysdr-module-lms7` |
+| bladeRF | `soapysdr-module-bladerf` |
+| RTL-SDR, through SoapySDR rather than rtl_tcp | `soapysdr-module-rtlsdr` |
+
+`soapysdr-module-airspyhf`, for an Airspy HF+, exists on Ubuntu 26.04
+only, so the package does not suggest it; install it there by name. On
+Debian 12, each module's package brings its driver's library, and with it
+the device rules that let users open the receiver, except a LimeSDR's,
+which are in `limesuite-udev`, a package that the library only
+recommends: name it too with `--no-install-recommends`. Unplug the
+receiver and plug it in again once the rules are installed. Not every
+driver's rules let the service's user in: see [As a
+service](#as-a-service).
+
+An SDRplay needs SDRplay's own API, a closed library with a service of its
+own, from SDRplay, and the SoapySDRPlay3 module, built by the user from its
+source: Radiolack ships and installs neither, and an SDRplay opens through its
+device arguments, `driver=sdrplay`, rather than from the list of devices
+found ([SoapySDR receivers](#soapysdr-receivers)).
 
 ## Usage
 
@@ -252,8 +303,7 @@ list switches between the simulated band ("Synthetic band (2 m)"),
 a receiver plugged into this computer ("RTL-SDR · this computer") and a
 receiver behind an rtl_tcp server ("RTL-SDR · rtl_tcp"), for every open
 interface, and a receiver read through SoapySDR ("SoapySDR device",
-[SoapySDR receivers](#soapysdr-receivers)); its other entries are not
-available yet. Each keeps its own
+[SoapySDR receivers](#soapysdr-receivers)). Each keeps its own
 settings, demodulation included, and Radiolack opens the one used last at
 the next start. "RTL-SDR · this computer" opens the receiver used last, the
 first one plugged in the first time, and "RTL-SDR · rtl_tcp" connects to
@@ -730,8 +780,9 @@ Limits:
 
 Radiolack reads other receivers through SoapySDR, such as an SDRplay, a
 HackRF or an Airspy, and an RTL-SDR too, with SoapySDR's Python module
-(`python3-soapysdr`) and the driver's own module installed. Name the
-receiver by its SoapySDR device arguments, which must name a driver:
+(`python3-soapysdr`) and the driver's own module installed ([SoapySDR, for
+other receivers](#soapysdr-for-other-receivers)). Name the receiver by its
+SoapySDR device arguments, which must name a driver:
 
 ```bash
 radiolack --soapy driver=sdrplay
@@ -826,6 +877,16 @@ radiolack --soapy driver=sdrplay
 - Record I/Q keeps the receiver's samples in the format Radiolack reads
   them in, 8 or 16-bit integers or 32-bit floats, as the receiver gives
   them ([Recording](#recording)).
+- The service runs a SoapySDR receiver too, with `--soapy` in its command
+  ([As a service](#as-a-service)).
+- Checked on a receiver so far: an RTL-SDR through `driver=rtlsdr`, which
+  opens, takes its gain and sample rates, plays WFM, is released when no
+  interface is open, and stops. Its frequency correction, the Advanced
+  section's stages and settings, its antenna power and an I/Q recording
+  are not yet checked on a receiver, nor is any other driver: an SDRplay
+  and a HackRF come next. Other receivers work as far as SoapySDR and
+  their modules do. The tests run against a stand-in for SoapySDR's
+  Python module ([Tests](#tests)).
 
 ## Demodulation and audio
 
@@ -1554,13 +1615,54 @@ ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080 --scan mem
 ```
 
 The service's command leaves out `--bias-tee`: for an active antenna that
-needs the receiver's power, add it there. For a receiver read through
-SoapySDR, put `--soapy ARGS` in place of `--rtl-sdr`: the sandbox opens USB
-devices only, so a driver that talks to a service of its own, such as
-SDRplay's API, may not work there.
+needs the receiver's power, add it there.
+
+For a receiver read through SoapySDR, install SoapySDR's packages first
+([SoapySDR, for other receivers](#soapysdr-for-other-receivers)), then put
+`--soapy ARGS` in place of `--rtl-sdr`, with the receiver's device
+arguments, its serial number too when several receivers of its driver are
+plugged in, and restart the service:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/radiolack --ui none --soapy driver=hackrf --remote --port 8080
+```
+
+Without `python3-soapysdr`, `--soapy` exits, saying which package to
+install, and systemd tries again every 10 s. The service with a SoapySDR
+receiver is not yet checked on a receiver.
+
+- The service's user opens the receiver as it opens an RTL-SDR: through
+  the plugdev group, when the driver's device rules give the receiver to
+  plugdev. In Debian 12's packages, an RTL-SDR's and a HackRF's rules do,
+  and a LimeSDR's let every user in; an Airspy's, an Airspy HF+'s and a
+  bladeRF's give the receiver only to the user sitting at the computer
+  (`uaccess`), which the service's user never is. For those, add a rule of
+  your own that gives the receiver to plugdev, with the vendor and product
+  of the driver's rule in `/usr/lib/udev/rules.d` (or `/lib/udev/rules.d`),
+  for an Airspy in `/etc/udev/rules.d/70-radiolack-airspy.rules`:
+
+  ```text
+  SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="60a1", MODE="0660", GROUP="plugdev"
+  ```
+
+  then `sudo udevadm control --reload` and plug the receiver in again.
+- The sandbox lets the service reach USB devices (`DevicePolicy=closed`
+  with `DeviceAllow=char-usb_device rw`), which a driver that opens its
+  receiver itself through libusb, as the modules above do, needs.
+- An SDRplay is not checked as the service, and may not work there: its
+  driver talks to SDRplay's own service, which opens the receiver, by
+  means that Radiolack has not read, as SDRplay's API is closed. An
+  administrator who tries it would look first at the settings that may
+  stand in the way: `DynamicUser` (a user made at each start, and the
+  `RemoveIPC` it implies), `PrivateTmp`, `RestrictAddressFamilies`,
+  `SystemCallFilter`, `MemoryDenyWriteExecute` and `DevicePolicy`, and
+  would start the service after SDRplay's own (`After=`), loosening only
+  what the journal shows failing, with `systemctl edit`.
 
 It runs as a user of its own, which systemd makes at each start
-(`DynamicUser`), in the plugdev group that the receivers' device rules let
+(`DynamicUser`), in the plugdev group that an RTL-SDR's device rules let
 in, within systemd's sandbox: without any privilege, the users' homes
 hidden, the system's files read-only, a temporary folder of its own, and
 only the devices, address families and system calls that Radiolack and

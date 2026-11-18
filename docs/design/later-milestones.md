@@ -80,9 +80,21 @@ when it is back.
   service's administrator puts it in the unit with `systemctl edit`.
 - **I/Q recordings** take the device's format: SigMF's `ci8`, `ci16_le` or
   `cf32_le`.
-- **Package**: `Recommends: python3-soapysdr`; the drivers' modules are
-  suggested, under the names that the four supported systems give them,
-  which `package.yml` checks.
+- **Package**: `Suggests: python3-soapysdr` and the drivers' modules,
+  under the names that the four supported systems all give them; nothing
+  of SoapySDR's is recommended. The owner's decision of 2026-11-18
+  ([`scoping.md`](scoping.md)), in place of `Recommends: python3-soapysdr`:
+  measured on Debian 12, `libsoapysdr0.8` recommends
+  `soapysdr0.8-module-all`, so that with apt's default a recommended
+  `python3-soapysdr` would install every SoapySDR module at each install
+  and upgrade of Radiolack, about 33 packages and 50 MB beyond Radiolack's
+  own dependencies, SoapyRemote's module and UHD among them, against 2
+  packages and 2 MB for `python3-soapysdr` without that chain. Suggested,
+  nothing is installed unasked, and the Receiver menu and `--soapy` already
+  name the package when it is missing. A suggested name that a system
+  lacks is harmless, apt ignoring it: `package.yml` does not check the
+  names, which a test pins instead, and the design and README.md say when
+  and where they were read.
 
 ### Spikes, first pull request
 
@@ -208,7 +220,8 @@ section; pull requests 2 to 6 rely on these:
 3. The Receiver menu: the devices found, Search again, the arguments field.
 4. Gains (overall and per stage), antenna choice, antenna power.
 5. I/Q recordings in the device's format.
-6. Package, service notes, README.md, CI.
+6. Package, service notes, README.md: SoapySDR's packages suggested,
+   CI unchanged (the owner's decision of 2026-11-18, under Design).
 
 As built, pull request 2 (`soapy.py`, `--soapy`, the stand-in's
 additions); pull requests 3 to 6 rely on these:
@@ -615,6 +628,57 @@ pull request 6 relies on these:
   RSPdx-R2 a `ci16_le` one with its full scale, the HackRF its `ci8` at
   8 MS/s and what the disk does at 16 MB/s.
 
+As built, pull request 6 (the package's `Suggests`, README.md's
+installation and service notes, the manual page):
+
+- **The control file**: `Suggests: python3-soapysdr,
+  soapysdr-module-hackrf, soapysdr-module-airspy, soapysdr-module-lms7,
+  soapysdr-module-bladerf, soapysdr-module-rtlsdr`
+  (`build_deb.SUGGESTS`); `Recommends: rtl-sdr` and `Depends` unchanged.
+  The names are those that Debian 12 (its apt), Debian 13, Ubuntu 24.04
+  and Ubuntu 26.04 (their package sites) all list, read on 2026-11-18;
+  `soapysdr-module-airspyhf` exists on Ubuntu 26.04 only and stays out,
+  which README.md says; SDRplay's module is in none.
+  `tests/test_packaging.py` pins the field: changing it means reading the
+  four systems' indexes again. The description says in a line that other
+  receivers are read through SoapySDR, optional; it also gained SAM and
+  lost "simplified", which the band plan dropped on 2026-11-16.
+- **CI**: unchanged. `package.yml` installs the package with apt's
+  defaults, which install no suggested package, and lintian on Debian 13
+  reads the new field.
+- **Installation** (README.md, SoapySDR, for other receivers):
+  `--no-install-recommends` with the one module wanted, which keeps out
+  the chain above. On Debian 12, a LimeSDR's device rules are in
+  `limesuite-udev`, which `liblimesuite22.09-1` only recommends, so that
+  option leaves them out unless named: README.md names it. An SDRplay
+  needs SDRplay's API and SoapySDRPlay3, the user's to install.
+- **Device rules and the service**, read in Debian 12's packages:
+  librtlsdr0's and libhackrf0's give the receiver to `plugdev` (mode
+  0660), limesuite-udev's to every user (0666), and libairspy0's,
+  libairspyhf1's and libbladerf2's only to the user at the computer's
+  seat (`TAG+="uaccess"`), which the service's dynamic user never is. The
+  design's assumption, that a module's rules let `plugdev` in as for an
+  RTL-SDR, holds for the first two only: README.md's service section
+  gives the rule an administrator adds for the others, an Airspy's as
+  its example. The unit is unchanged but for the comment on `plugdev`,
+  which said that every receiver's rules give it to that group; its
+  sandbox's tests are as they were.
+- **SDRplay as the service**: not checked. Its closed API talks to
+  SDRplay's own service by means not read here; README.md names the
+  sandbox settings an administrator would look at (`DynamicUser` and the
+  `RemoveIPC` it implies, `PrivateTmp`, `RestrictAddressFamilies`,
+  `SystemCallFilter`, `MemoryDenyWriteExecute`, `DevicePolicy`) and the
+  ordering after SDRplay's service, without changing the unit.
+- **Documentation found out of date and brought up to date**: the manual
+  page's modes (SAM), its I/Q recordings (any receiver's, in its format)
+  and what a paired device may not do (search for SoapySDR devices, give
+  their arguments); README.md's "antenna power comes next" and "its other
+  entries are not available yet" in the Receiver list, both delivered
+  since.
+- **Not checked**: lintian here (not installed: CI's run on Debian 13
+  is the check); the device rules on Debian 13 and the two Ubuntus; the
+  service with `--soapy` on any receiver.
+
 ### Done when
 
 On the owner's laptop, the V3 opened through SoapySDR tunes, plays and
@@ -641,6 +705,28 @@ right frequency, runs as the service with `--soapy`, and never transmits.
   matter more than with a V3.
 - Network devices (SoapyRemote, USRP, PlutoSDR over IP) open through the
   arguments field only.
+
+### Where the milestone stands
+
+On 2026-11-18, after pull request 6:
+
+- **Built**: pull request 1, the spikes (#76, with the reading thread's
+  measure, #77); 2, the source and `--soapy` (#78); 3, the Receiver menu's
+  devices and the arguments field (#80), followed by the native format's
+  fix (#81); 4, gains, antenna sockets, settings and antenna power (#82);
+  5, I/Q recordings in the device's format (#83); 6, the package's
+  `Suggests`, the installation and service notes (#84).
+- **Checked on a receiver**: the owner's RTL-SDR through `driver=rtlsdr`
+  on 2026-11-18: it opens, takes its gain and the sample rates, plays WFM,
+  is released when no interface is open, and stops. That check found the
+  device read in CF32 rather than its native CS8, the format table going
+  by the device's own driver key: fixed by #81.
+- **Not yet checked**: the correction on a carrier (Calibrate through
+  SoapySDR); pull request 4's gains and settings, the Advanced section and
+  the antenna power; an I/Q recording; the service with `--soapy`; the
+  RSPdx-R2 and the HackRF One altogether. `sdrplay` joins the searched
+  drivers only once `tools/check_search.py sdrplay` has run with SDRplay's
+  API and module installed. Done when is therefore not yet met.
 
 ## 2. Listening tools
 

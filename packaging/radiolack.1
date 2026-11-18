@@ -17,7 +17,8 @@ radiolack \- receive\-only SDR receiver with band plans
 \fB\-\-version\fR | \fB\-h\fR | \fB\-\-help\fR
 .SH DESCRIPTION
 Radiolack shows the spectrum and the waterfall of an SDR receiver in a
-desktop window, plays NFM, AM, USB, LSB, CW and broadcast FM (WFM), and
+desktop window, plays NFM, AM, synchronous AM (SAM), USB, LSB, CW and
+broadcast FM (WFM), and
 lists the signals it finds, in the receiver's span or across a range that
 it sweeps.
 It only receives: it has no transmit function.
@@ -49,12 +50,14 @@ A device installs the certificate of Radiolack's local authority, whose
 SHA\-256 fingerprint Settings shows, and enters the access code that
 Settings shows, once: \fB\-\-remote\fR prints both.
 A paired device shares the receiver, but cannot change remote access, the
-update check, the recordings folder or the rtl_tcp server's address.
+update check, the recordings folder or the rtl_tcp server's address, nor
+search for SoapySDR devices or give their device arguments.
 Never make remote access's port reachable from the Internet.
 .PP
 Any interface, a paired device's included, records the audio that
-Radiolack plays into WAV files, and an RTL\-SDR's raw I/Q into SigMF
-files, about 17\ GB an hour at 2.4\ MS/s, only when asked, never at start
+Radiolack plays into WAV files, and the receiver's raw I/Q, in the format
+the receiver gives, into SigMF files, about 17\ GB an hour from an
+RTL\-SDR at 2.4\ MS/s, only when asked, never at start
 and never on the simulated band, and lists, downloads and deletes the
 recordings.
 A recording goes on without any interface until one stops it, and stops
@@ -80,9 +83,10 @@ as a user of its own, within systemd's sandbox.
 Its output, the access code included, goes to the system's journal
 (\fBjournalctl \-u radiolack\fR), and \fBsystemctl edit radiolack\fR
 changes its command, for instance to \fB\-\-soapy\fR \fIARGS\fR in place
-of \fB\-\-rtl\-sdr\fR: the service reaches USB devices only, and a driver
-that needs a service of its own, such as SDRplay's API, may not work
-within its sandbox.
+of \fB\-\-rtl\-sdr\fR: the service reaches USB devices only, its user
+opens a receiver whose device rules give it to the plugdev group, and a
+driver that needs a service of its own, such as SDRplay's API, may not
+work within its sandbox, where it is not checked.
 .SH OPTIONS
 .TP
 \fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR
@@ -154,7 +158,8 @@ separated by commas, which must name a driver, so that no search reaches
 the network: \fBdriver=sdrplay\fR, or \fBdriver=rtlsdr,serial=00000001\fR
 for one receiver among several.
 Its settings are saved under its driver and serial number.
-It needs the python3\-soapysdr package and the driver's SoapySDR module;
+It needs the python3\-soapysdr package and the driver's SoapySDR module,
+which the Debian package suggests and does not install;
 without the first, Radiolack says so and exits with status 1.
 Radiolack opens the device's receive stream alone.
 Not with \fB\-\-rtl\-sdr\fR or \fB\-\-rtl\-tcp\fR.

@@ -183,6 +183,12 @@ class PackageTest(unittest.TestCase):
                        "gir1.2-gtk-3.0", "gir1.2-webkit2-4.1", "ca-certificates"):
             self.assertIn(needed, depends)
         self.assertEqual(self.field("Recommends"), "rtl-sdr")
+        # SoapySDR's packages are suggested, never recommended: libsoapysdr0.8 recommends every SoapySDR module.
+        # The names are those that Debian 12 and 13 and Ubuntu 24.04 and 26.04 all have, as read in their package
+        # indexes on 2026-11-18; change them only after reading the four systems' indexes again.
+        self.assertEqual(self.field("Suggests"), "python3-soapysdr, soapysdr-module-hackrf, soapysdr-module-airspy, "
+                                                 "soapysdr-module-lms7, soapysdr-module-bladerf, soapysdr-module-rtlsdr")
+        self.assertNotIn("soapy", depends.lower())
 
     def test_installs_the_command_the_menu_entry_and_the_icon(self):
         listing = subprocess.run(["dpkg-deb", "--contents", str(self.package)], capture_output=True, text=True,
