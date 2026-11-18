@@ -612,6 +612,20 @@ synthetic samples, without a receiver; it takes about three minutes,
 `--output FILE` keeps its table and `--without-impulses` leaves the
 scene's impulses out, the usual case for the blanker.
 
+Three more developer tools prepare SoapySDR receivers (the Any receiver
+milestone, [docs/design/later-milestones.md](docs/design/later-milestones.md),
+section 1). `tools/measure_rates.py` measures the processor time of the
+engine and of bringing a device's samples in at sample rates from 2.4 to
+10 MS/s, on synthetic samples, in about seven minutes. `tools/check_search.py`
+runs SoapySDR's search for each driver named in a network namespace of its
+own, every socket refused and reported, and says which searches stay off
+the network; it needs `unshare`, a C compiler and the SoapySDR Python
+module, never searches for `rtlsdr` and opens no device.
+`tools/measure_reader.py` reads a SoapySDR receiver from a Python thread
+for a minute and reports the samples lost: it opens and reads the receiver
+named, so run it only on a receiver that nothing else uses. Their `--help`
+says more; the Debian package installs none of them.
+
 ### Calibration
 
 The Receiver menu's Calibrate finds the correction from a carrier whose
@@ -1892,7 +1906,11 @@ src/radiolack/
 tests/          tests without hardware
 tools/          measure_pll.py: measures how well Radiolack labels an
                 R820T's samples; measure_listening.py: the cost of each
-                listening tool; run from a checkout
+                listening tool; measure_rates.py: the sample rates the
+                engine holds; check_search.py: whether a SoapySDR search
+                stays off the network; measure_reader.py: whether a
+                Python thread reads a SoapySDR receiver without losing
+                samples; run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,

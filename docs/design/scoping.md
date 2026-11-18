@@ -439,7 +439,9 @@ Designed with the owner on 2026-11-16
 SoapySDR devices, for the owner's HackRF One, in reception only.
 
 1. Spikes: the sample rates the engine holds, a device search that stays
-   off the network, a reading thread that keeps up.
+   off the network, a reading thread that keeps up; measured on
+   2026-11-18, rates up to 8 MS/s and the searches of four drivers, the
+   reading thread waiting for the owner's V3.
 2. The SoapySDR source and `--soapy`.
 3. The Receiver menu's devices, and the arguments field.
 4. Gains, overall and per stage, antenna choice, antenna power.
@@ -535,7 +537,7 @@ band.
 | 4 | Python DSP load with scanners at 2.4 MS/s. | Measured on an i7-7500U: display FFT and one NFM channel take about 15% of one core, 23% with four channels. | Answered on 2026-11-12: the scanners need no channel of their own. Detection reads the FFTs that the engine computes anyway, 0.4 ms per averaged array about three times a second, and the memory scan reads its bookmarks' channels there, 0.08 ms per block for 200 bookmarks: together under 1% of one core, against 4.0 ms per block of 1/30 s, 12%, for the engine itself (its FFTs, one NFM channel and the audio). |
 | 5 | Packaging Python, NumPy and drivers for Windows and macOS, including the WinUSB driver on Windows. | Public release. | Before v4 |
 | 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
-| 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Any receiver, first pull request. |
+| 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | The first two answered on 2026-11-18 on the owner's laptop: the engine and the samples' intake hold 4 to 8 MS/s under 50% of one core, 33 to 38% at 8 MS/s in two measures, and 10 MS/s, 48 to 54%, on the limit, is not offered; the searches of `hackrf`, `airspy`, `lime` and `bladerf` make no socket, `airspyhf` stays by its code and `sdrplay` waits for its module ([Spike 7 result](#spike-7-result-2026-11-18)). The third waits for the owner's V3, at the owner's request, with `tools/measure_reader.py`. |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Answered on 2026-11-17: 3.2 to 3.3% of one core together on the owner's laptop, against 12.5% for the engine itself, once synchronous AM and the blanker, over their 1.5% each, were reworked once; the blanker stays at its share, 1.40 and 1.54% in two measures, and is kept with that cost, by the owner's decision of 2026-11-16 ([Spike 8 result](#spike-8-result-2026-11-17)). |
 | 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
 | 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
@@ -788,6 +790,199 @@ Not measured: the engine in other modes than AM (the notch costs the same
 in SSB; the fine spectrum alone took 0.7% at WFM's 320 kHz channel against
 0.2% at 48 kHz), other sample rates, NumPy 2, another computer, and the
 tools on a receiver's signals.
+
+### Spike 7 result (2026-11-18)
+
+The first pull request of Any receiver (later-milestones.md, section 1)
+asks three questions. The first two are answered on the owner's laptop;
+the third needs the owner's V3 and waits for the owner's word.
+
+**Which sample rates the engine holds.** Measured with
+`tools/measure_rates.py` on the owner's laptop: Intel Core i7-7500U at
+2.70 GHz, two cores and four logical processors, Python 3.11.2, NumPy
+1.24.2. The tool feeds the engine's own processing of a block
+(`engine._process_block`: DC removal, display spectrum, detection, the
+VFO's channel, its meter and its audio) with synthetic samples at 2.4,
+3.2, 4, 5, 6, 8 and 10 MS/s, in the block that the engine takes at each
+rate: white noise at -40 dBFS, an NFM station at -30 dBFS 300 kHz from
+the centre, its 1 kHz tone at 2.5 kHz of deviation, and three steady
+carriers within 1.2 MHz of the centre; the VFO on the station in NFM with
+its 10 kHz filter, audio and detection on. It times as well what bringing
+the samples in costs a SoapySDR source, which the rule's 50% includes:
+each block in CS8, CS16 and CF32, copied out in reads of 16384 samples as
+`readStream` hands them, kept in a buffer of half a second that drops the
+oldest (`NativeBuffer`, as the rtl_tcp client's), then taken and converted
+to complex64. Every rate and every format processes its blocks in an
+order that turns with each block; each block's processor time is the
+processing thread's; a run times 5 s of signal at each rate after 1 s not
+timed; seven runs, each with fresh state. The squelch was open after
+every block and detection searched three times a second at every rate.
+
+- **Nothing in the engine changes with the rate.** The engine already
+  takes the rate over 30 as its block (`Engine.run`), 80000 samples at
+  2.4 MS/s, 266667 at 8 and 333333 at 10, 30 frames a second. The display
+  keeps its four FFTs of 8192 samples a frame: they read 41% of a block's
+  samples at 2.4 MS/s and 12% at 8, and a bin grows from 293 Hz to 977 Hz
+  at 8 MS/s. Their cost stays the same; what grows with the rate is the
+  demodulator's front filter, whose transition stays 8 kHz whatever the
+  rate, so that its taps grow with it: it filters 1300 samples of overlap
+  in segments of 6400 at 2.4 MS/s, 5625 in segments of 20000 at 10 MS/s,
+  where its FFTs take most of a block's time.
+- **The intake** takes 0.7 to 1.0% of one core at 2.4 MS/s, 2.5 to 5.8% at
+  8 MS/s and 3.4 to 7.2% at 10 MS/s, CS8 the least and CF32, four times
+  CS8's bytes, the most.
+- **By the rule fixed beforehand**, a rate above 3.2 MS/s is offered when
+  the engine and the intake together stay under 50% of one core: 4, 5, 6
+  and 8 MS/s are, 8 MS/s at 32.8 to 37.5% by the format and the measure,
+  and 46.3% in the busiest run; 10 MS/s is not, 48.0 to 54.3%, on the
+  limit (below), and up to 66.6% in the busiest run. 6 MS/s cost no more
+  than 5 MS/s.
+- **What it means for the devices.** A rate between two that were measured
+  costs no more than the higher one, the cost growing with the rate: a
+  device's rates up to 8 MS/s are offered, those above are not. The
+  RSPdx-R2's, from 62.5 kHz to 10 MS/s in SoapySDRPlay3's list, are offered
+  up to 8 MS/s: 9 and 10 MS/s are not. The HackRF One's, 2 to
+  20 MS/s, are offered from 2 to 8 MS/s: the 10 to 20 MS/s that it can give
+  are not, and its documentation advises 8 MS/s or more against aliases
+  (to be read again in pull request 2), which leaves 8 MS/s as its rate.
+
+The engine and the intake, in % of one core, the median of seven runs with
+the lowest and the highest; load average 2.4 at the start, 2.1 to 3.6 at
+the runs' ends:
+
+| MS/s | Block (samples) | Display bin (Hz) | Engine | Intake CS8 | Intake CS16 | Intake CF32 | Total CS8 | Total CS16 | Total CF32 | Rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.4 | 80000 | 293 | 12.9 (12.2 to 15.5) | 0.7 (0.6 to 0.9) | 0.8 (0.7 to 1.2) | 1.0 (0.8 to 1.4) | 13.5 (12.7 to 16.4) | 13.6 (12.8 to 16.7) | 13.9 (13.0 to 16.9) | offered (up to 3.2 MS/s) |
+| 3.2 | 106667 | 391 | 15.7 (15.0 to 19.2) | 0.9 (0.9 to 1.3) | 1.2 (1.1 to 1.7) | 1.7 (1.4 to 2.3) | 16.6 (15.9 to 20.4) | 16.9 (16.0 to 20.9) | 17.4 (16.5 to 21.5) | offered (up to 3.2 MS/s) |
+| 4 | 133333 | 488 | 19.0 (17.9 to 22.6) | 1.2 (1.1 to 1.5) | 1.6 (1.4 to 2.0) | 2.8 (2.2 to 3.2) | 20.2 (19.0 to 24.1) | 20.6 (19.3 to 24.6) | 21.9 (20.1 to 25.8) | offered |
+| 5 | 166667 | 610 | 23.4 (22.1 to 27.7) | 1.6 (1.4 to 1.9) | 2.1 (1.9 to 2.6) | 3.6 (3.1 to 4.3) | 24.9 (23.5 to 29.6) | 25.8 (24.0 to 30.3) | 27.0 (25.2 to 32.0) | offered |
+| 6 | 200000 | 732 | 23.4 (22.9 to 30.1) | 1.8 (1.7 to 2.2) | 2.6 (2.3 to 3.5) | 4.1 (3.6 to 5.2) | 25.2 (24.6 to 32.3) | 26.1 (25.2 to 33.5) | 27.5 (26.5 to 35.2) | offered |
+| 8 | 266667 | 977 | 31.8 (30.3 to 39.2) | 2.5 (2.3 to 3.2) | 4.1 (3.5 to 4.9) | 5.8 (5.1 to 7.1) | 34.3 (32.6 to 42.3) | 35.9 (33.8 to 44.1) | 37.5 (35.4 to 46.3) | offered |
+| 10 | 333333 | 1221 | 47.1 (45.5 to 58.4) | 3.4 (3.1 to 4.0) | 5.0 (4.6 to 5.8) | 7.2 (6.9 to 8.2) | 50.3 (48.6 to 62.4) | 52.0 (50.2 to 64.3) | 54.3 (52.5 to 66.6) | not offered |
+
+Measured a second time right after, the load average 1.4 to 2.5, the
+laptop less busy:
+
+| MS/s | Engine | Intake CS8 | Intake CS16 | Intake CF32 | Total CS8 | Total CS16 | Total CF32 | Rule |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.4 | 11.8 (11.5 to 12.9) | 0.6 (0.6 to 0.7) | 0.7 (0.7 to 0.8) | 0.9 (0.8 to 1.0) | 12.4 (12.0 to 13.6) | 12.6 (12.2 to 13.7) | 12.7 (12.3 to 13.9) | offered (up to 3.2 MS/s) |
+| 3.2 | 14.7 (14.3 to 15.8) | 0.9 (0.8 to 1.0) | 1.0 (1.0 to 1.2) | 1.5 (1.3 to 1.7) | 15.5 (15.2 to 16.7) | 15.6 (15.3 to 16.8) | 16.1 (15.8 to 17.3) | offered (up to 3.2 MS/s) |
+| 4 | 18.0 (17.7 to 19.1) | 1.2 (1.1 to 1.3) | 1.4 (1.4 to 1.6) | 2.7 (2.5 to 3.0) | 19.1 (18.8 to 20.4) | 19.4 (19.1 to 20.7) | 20.6 (20.4 to 22.2) | offered |
+| 5 | 22.5 (21.6 to 24.4) | 1.5 (1.3 to 1.6) | 2.0 (1.8 to 2.3) | 3.3 (3.2 to 3.9) | 23.9 (22.9 to 26.0) | 24.4 (23.3 to 26.7) | 25.8 (24.7 to 28.4) | offered |
+| 6 | 22.2 (21.7 to 24.0) | 1.7 (1.6 to 2.0) | 2.3 (2.3 to 2.6) | 3.9 (3.6 to 4.4) | 23.8 (23.4 to 26.0) | 24.5 (24.0 to 26.6) | 26.0 (25.5 to 28.4) | offered |
+| 8 | 30.4 (29.0 to 32.0) | 2.4 (2.2 to 2.6) | 3.8 (3.5 to 4.3) | 5.7 (5.1 to 6.1) | 32.8 (31.3 to 34.6) | 34.3 (32.7 to 36.3) | 36.1 (34.3 to 38.1) | offered |
+| 10 | 44.8 (44.2 to 48.2) | 3.0 (2.9 to 3.5) | 4.6 (4.4 to 5.4) | 6.9 (6.5 to 7.4) | 48.0 (47.1 to 51.6) | 49.4 (48.6 to 53.4) | 51.8 (50.7 to 55.5) | the tool: offered in CS8 and CS16 |
+
+10 MS/s lies on the limit: under 50% in CS8 and CS16 in the second
+measure, by 2.0 and 0.6 points of one core, over it in CF32, over it in
+every format in the first measure, and over it in single runs of both. It
+is not offered: a rate is offered when it stays under 50%, which 10 MS/s
+does not do from one measure, or one run, to the next on this laptop; the
+measure leaves out work that grows with the rate (the noise blanker, which
+reads every sample: 1.4% of one core at 2.4 MS/s in spike 8, about 6% at
+10 MS/s) and the rest of Radiolack's work (the event loop, the frames for
+the interfaces, the reading thread's wait). 8 MS/s stayed under 47% in
+every run of both measures.
+
+**Whether a search by driver stays off the network.** Read first in the
+code, then measured with `tools/check_search.py` on the owner's laptop,
+Debian 12, SoapySDR 0.8.1 and Debian's modules: airspy 0.2.0, bladerf
+0.4.1, hackrf 0.3.3, lms7 (LimeSuite 22.09.1, driver `lime`), remote 0.5.2,
+and audio, miri, osmosdr, redpitaya, rfspace, rtlsdr and uhd; no receiver
+of the drivers searched plugged in.
+
+- **The code.** SoapySDR 0.8.1's `Device::enumerate` (lib/Factory.cpp)
+  loads every installed module at its first call, then runs the search of
+  the driver that the `driver` argument names, and that one alone, in the
+  calling thread; without a `driver` it runs every module's search, each
+  in a thread of its own. SoapyRemote 0.5.2's search (client/
+  Registration.cpp, DiscoverServers.cpp) runs, without a `remote`
+  argument, two discoveries: mDNS through avahi-daemon, which it asks
+  over D-Bus, and SSDP, which it sends itself.
+- **A network namespace is not enough.** The system bus is a Unix socket on
+  the file system, which a network namespace does not hide: from
+  `unshare -rn`, a search without a driver would still have avahi-daemon,
+  outside the namespace, search the owner's network. The tool therefore
+  adds a trap: a library preloaded into the search's process installs a
+  seccomp filter that refuses every `socket()` system call but netlink's,
+  in every thread, whichever library makes it, and reports its family and
+  type; the same library replaces librtlsdr's listing and opening, which
+  find no receiver. Every way to the network, or to a daemon that would
+  reach it, starts with a socket. A check of the trap runs first: a socket
+  of the internet family and one of the Unix family refused and reported,
+  and librtlsdr's listing replaced.
+- **What the searches did.** Each in a process of its own, as Radiolack
+  will call it, `SoapySDR.Device.enumerate({"driver": DRIVER})`:
+
+  | Driver | Devices found | Sockets tried | librtlsdr calls | Verdict |
+  | --- | --- | --- | --- | --- |
+  | hackrf | 0 | none | none | stays off the network |
+  | airspy | 0 | none | none | stays off the network |
+  | airspyhf | 0 | none | none | no module installed here registers it: nothing searched |
+  | lime | 0 | none | none | stays off the network |
+  | bladerf | 0 | none | none | stays off the network |
+  | sdrplay | 0 | none | none | no module installed here registers it: nothing searched |
+  | remote, the control | 0 | unix stream, unix stream, inet6 stream | none | tried to make a socket |
+
+  A search for a driver that no module registers loaded every module and
+  made no socket: loading the modules makes none. The control, the one
+  search that reaches for the network, was caught at its first sockets and
+  refused: two of the Unix family, as avahi's client opens to reach
+  D-Bus, and one of the internet's.
+- **By the rule fixed beforehand**, no driver measured leaves the list:
+  `hackrf`, `airspy`, `lime` and `bladerf` stay. `airspyhf`, whose module
+  is not installed here, stays by its code: SoapyAirspyHF's search calls
+  libairspyhf's `airspyhf_list_devices`, libusb's listing of the USB
+  devices, which opens only those with the Airspy HF+'s identifiers to read
+  their serial number. `sdrplay` is undecided: SoapySDRPlay3's search
+  goes through SDRplay's closed API, which speaks to SDRplay's service on
+  the same computer, and its code cannot tell how. It is decided by
+  `python3 tools/check_search.py sdrplay` once the owner has installed
+  SDRplay's API and module for the RSPdx-R2, before pull request 3 lists
+  it; a Unix socket to SDRplay's service there is not the network, which
+  the rule is about, and the planning session reads what the tool reports.
+
+Limits of the method: the trap sees the `socket()` system calls of the
+search's process on x86-64; it would miss a socket that the process did
+not make (one inherited, or opened through io_uring), and it sees what
+the modules do without a device plugged in, not what a module does once
+it finds one. The files and USB devices that a search reads are not
+traced; librtlsdr's replacement keeps an RTL-SDR out of any search.
+
+**Whether a Python thread reads 2.4 MS/s without losing samples.** Waiting
+for the owner's V3, at the owner's request. `tools/measure_reader.py`
+opens the receiver through SoapySDR, reads it from a thread into a
+`NativeBuffer` for a minute, while this thread takes the engine's blocks,
+converts and processes them as the engine does, and reports the samples
+received against those the device's timestamps span (or the wall clock,
+without timestamps), the overflows the device reported, the gaps, the
+time-outs and stream errors, the samples dropped for the engine, and both
+threads' processor time. Its tests run it against
+`tests/soapysdr/SoapySDR.py`, a stand-in for the module. The planning
+session runs, with nothing else using the V3 (Radiolack and rtl_tcp
+stopped):
+
+```
+python3 tools/measure_reader.py driver=rtlsdr --rate 2.4 --frequency 145 --seconds 60 --output reader.md
+python3 tools/measure_reader.py driver=rtlsdr --rate 2.4 --frequency 145 --seconds 60 --without-engine
+```
+
+By the rule fixed beforehand, if the first loses samples, the reader moves
+to a process of its own before pull request 2 builds the source. Read from
+the binding's code, two points bear on it: SoapySDR 0.8.1's Python module
+is built with SWIG's `-threads` (python/CMakeLists.txt), so `readStream`
+releases Python's lock while it waits for samples; and
+`getNativeStreamFormat` takes the full scale as a C++ reference that the
+binding gives Python no way to pass. The tool tries the call, then takes
+the first of the formats the device lists among CS8, CS16 and CF32, which
+its report names: the modules of the RTL-SDR, the HackRF and SDRplay list
+their native format first (CS8, CS8 and CS16, read in their code).
+
+Not measured: the listening tools above 2.4 MS/s (the blanker works on
+every sample, SAM, the notch and the fine spectrum at the channel's rate),
+the WFM channel above 2.4 MS/s, the drivers' own threads (libusb's
+transfers), NumPy 2, another computer, the searches with a device plugged
+in, `airspyhf` and `sdrplay` searched, and the reading thread.
 
 ## Preparing a public release
 
