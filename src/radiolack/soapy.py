@@ -472,7 +472,10 @@ def read_capabilities(soapy: ModuleType, device: Any, listing: Mapping[str, str]
     reception. Raises ValueError, or the module's own error, for a device
     that cannot be read."""
     receive = soapy.SOAPY_SDR_RX
-    driver = str(_optional(device.getDriverKey, "") or listing.get("driver", ""))
+    # The name that device arguments take, which names the module: the key
+    # that the device gives for itself is written otherwise, such as the
+    # rtlsdr module's "RTLSDR".
+    driver = str(listing.get("driver") or _optional(device.getDriverKey, ""))
     frequencies = tuple((low, high) for low, high, _ in _ranges(device.getFrequencyRange(receive, 0))
                         if high >= 1.0)
     if not frequencies:

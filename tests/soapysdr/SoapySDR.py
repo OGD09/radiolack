@@ -116,6 +116,7 @@ class DeviceSpec:
     rate_ranges: tuple[tuple[float, float, float], ...] = ()     # lowest, highest, step
     full_scale: float | None = None         # its native integer format's full scale, if not the nominal one
     hardware: str = ""                      # its hardware key
+    driver_key: str = ""                    # its driver key, if written otherwise than the driver, as "RTLSDR"
     bandwidths_hz: tuple[float, ...] = ()
     bandwidth_ranges: tuple[tuple[float, float, float], ...] = ()
     gains: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # each stage's range
@@ -281,7 +282,7 @@ class Device:
         self.closed = True
 
     def getDriverKey(self) -> str:  # noqa: N802
-        return self.spec.driver
+        return self.spec.driver_key or self.spec.driver
 
     def getHardwareKey(self) -> str:  # noqa: N802
         return self.spec.hardware or f"{self.spec.driver}-stand-in"

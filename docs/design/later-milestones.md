@@ -257,7 +257,10 @@ additions); pull requests 3 to 6 rely on these:
 - **Formats.** As the spikes found, with one addition: a driver outside the
   table whose device gives no CF32 reads its native CS8 or CS16 at the
   nominal full scale, which a warning says; a device with none of the
-  three waits, saying so.
+  three waits, saying so. The table goes by the driver that the device
+  arguments name, not by the key that the device gives for itself, which
+  modules write otherwise: the rtlsdr module's is "RTLSDR", and the first
+  check on a receiver found the V3 read in CF32 for it, fixed since.
 - **Sample rates**: those the device lists up to 8 MS/s, or, for a device
   that gives ranges only, the common ones within them (0.25, 1.024, 2.048,
   2.4, 3.2, 4, 5, 6 and 8 MS/s) for the menu, any rate within a range being
