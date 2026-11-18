@@ -715,7 +715,7 @@ On 2026-11-18, after pull request 6:
   devices and the arguments field (#80), followed by the native format's
   fix (#81); 4, gains, antenna sockets, settings and antenna power (#82);
   5, I/Q recordings in the device's format (#83); 6, the package's
-  `Suggests`, the installation and service notes (#PR6).
+  `Suggests`, the installation and service notes (#84).
 - **Checked on a receiver**: the owner's RTL-SDR through `driver=rtlsdr`
   on 2026-11-18: it opens, takes its gain and the sample rates, plays WFM,
   is released when no interface is open, and stops. That check found the
