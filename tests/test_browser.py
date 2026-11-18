@@ -2684,6 +2684,13 @@ class BrowserTest(unittest.TestCase):
         return float(found.group(1)), int(found.group(2))
 
     @staticmethod
+    def edges_apart(page: Page, width_hz: float) -> float:
+        """How far apart, in Hz, ``view_edges`` reads the edges of a view
+        ``width_hz`` wide: from the spectrum's first pixel to its last."""
+        width = page.locator("#specwrap").bounding_box()["width"]
+        return width_hz * (width - 2) / width
+
+    @staticmethod
     def spectrum_x(page: Page, view: tuple[float, float], frequency_hz: float) -> float:
         """Where ``frequency_hz`` lies on the spectrum, in pixels from its left
         edge, in ``view``, whose edges are given in MHz."""
@@ -2731,7 +2738,7 @@ class BrowserTest(unittest.TestCase):
                 expect(resolution).to_have_text(FINE_RESOLUTION)
                 self.assertIn({"type": "fine", "on": True}, map(json.loads, self.sent[page]))
                 view = self.view_edges(page)
-                self.assertAlmostEqual((view[1] - view[0]) * 1e6, narrowest_hz, delta=2)
+                self.assertAlmostEqual((view[1] - view[0]) * 1e6, self.edges_apart(page, narrowest_hz), delta=2)
                 self.assertLess(view[0] * 1e6, carriers[0] - 40)
                 self.assertGreater(view[1] * 1e6, carriers[1])
                 pixel_hz = (view[1] - view[0]) * 1e6 / (page.locator("#specwrap").bounding_box()["width"] - 2)
@@ -2781,7 +2788,8 @@ class BrowserTest(unittest.TestCase):
                 for _ in range(30):
                     page.keyboard.press("+")
                 low, high = self.view_edges(page)
-                self.assertAlmostEqual((high - low) * 1e6, 16 * 2_400_000 / 8192, delta=2)     # 16 wide bins
+                narrowest = self.edges_apart(page, 16 * 2_400_000 / 8192)     # 16 wide bins
+                self.assertAlmostEqual((high - low) * 1e6, narrowest, delta=2)
                 expect(page.locator("#ds-resolution")).to_have_text(WIDE_RESOLUTION)
                 self.assertNotIn("fine", [json.loads(message).get("type") for message in self.sent[page]])
                 self.assertEqual(self.fine[page], [])
