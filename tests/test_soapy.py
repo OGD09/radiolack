@@ -387,6 +387,15 @@ class SourceTest(SourceCase):
                 self.assertEqual(self.soapy.opened[0].streams[0].format, expected)
                 await self.closed(source)
 
+    async def test_a_driver_key_written_otherwise_keeps_the_native_format(self):
+        # The rtlsdr module gives "RTLSDR" as its key: the driver that the arguments name decides.
+        self.device("rtlsdr", driver_key="RTLSDR", native="CS8", formats=("CS8", "CS16", "CF32"))
+        source = self.source("driver=rtlsdr")
+        self.assertTrue(is_tone(await self.samples(source)))
+        self.assertEqual(self.soapy.opened[0].streams[0].format, "CS8")
+        self.assertEqual(source.describe()["driver"], "rtlsdr")
+        await self.closed(source)
+
     async def test_describes_the_device(self):
         self.device(serial="0007", hardware="test-tuner", frequency_range_hz=(24e6, 1766e6),
                     rates_hz=(250e3, RATE_HZ, 2.4e6, 10e6), gains={"TUNER": (0.0, 49.6, 0.0)}, gain_mode=True)
