@@ -2,6 +2,8 @@
 signal for the tests of the noise estimates."""
 
 import asyncio
+import contextlib
+import importlib
 import itertools
 import math
 import os
@@ -10,8 +12,9 @@ import struct
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import ModuleType
 from unittest import mock
 
 import numpy as np
@@ -26,6 +29,8 @@ FAKE_TONE_BIN = 1000         # with 8192-point FFTs
 LOOPBACK = "127.0.0.1"
 # Runs tests/fake_rtl_tcp.py, the stand-in for the rtl_tcp program.
 FAKE_RTL_TCP = (sys.executable, str(Path(__file__).with_name("fake_rtl_tcp.py")))
+# Holds the stand-in for SoapySDR's Python module, SoapySDR.py.
+STAND_IN_SOAPYSDR = Path(__file__).with_name("soapysdr")
 
 
 class FakeSource(FixedSource):
@@ -100,6 +105,31 @@ class FakeUpdates:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+@contextlib.contextmanager
+def stand_in_soapysdr() -> Iterator[ModuleType]:
+    """``import SoapySDR`` gives the stand-in (tests/soapysdr/SoapySDR.py)
+    while this lasts, whether the real module is installed or not, with no
+    device declared. On the way out it fails the test if anything asked the
+    stand-in for a transmit direction, even if the code under test caught
+    the refusal, and the import path and modules are as they were."""
+    saved = sys.modules.pop("SoapySDR", None)
+    sys.path.insert(0, str(STAND_IN_SOAPYSDR))
+    try:
+        module = importlib.import_module("SoapySDR")
+        assert module.__file__ is not None and Path(module.__file__).parent == STAND_IN_SOAPYSDR
+        module.reset()
+        yield module
+        requests = list(module.transmit_requests)
+        module.reset()
+        if requests:
+            raise AssertionError(f"asked the stand-in SoapySDR for a transmit direction: {requests}")
+    finally:
+        sys.path.remove(str(STAND_IN_SOAPYSDR))
+        sys.modules.pop("SoapySDR", None)
+        if saved is not None:
+            sys.modules["SoapySDR"] = saved
 
 
 def free_port() -> int:

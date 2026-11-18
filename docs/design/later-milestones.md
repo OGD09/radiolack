@@ -92,6 +92,80 @@ when it is back.
 | Does a search by driver stay off the network? | The search run in a network namespace of its own (`unshare -rn`), with the remote module installed, and the module's code. | If a driver's search sends anything, that driver leaves the list and goes through the arguments field. |
 | Does a Python thread read 2.4 MS/s without losing samples? | With the owner's V3 through `driver=rtlsdr`, at the owner's request. | If not, the reader moves to a process of its own before anything else is built. |
 
+Measured on 2026-11-18 ([`scoping.md`](scoping.md), spike 7, with the
+tables): the first two questions on the owner's laptop, with
+`tools/measure_rates.py` and `tools/check_search.py`; the third waits for
+the owner's V3, with `tools/measure_reader.py` and the command that
+scoping.md gives. Pull request 2 starts once it is answered, as its rule
+may move the reader to a process of its own.
+
+As built, where the spikes settle or put in question a point of this
+section; pull requests 2 to 6 rely on these:
+
+- **Sample rates.** The engine's processing of one receiver, one NFM
+  channel with audio and detection, and the intake together took 33 to
+  38% of one core at 8 MS/s and 48 to 54% at 10 MS/s, by the format and
+  the measure: a device's rates up to 8 MS/s are offered, those above are
+  not, 10 MS/s staying under 50% in neither every measure nor every run,
+  and a rate between two measured ones costing no more than the higher. The RSPdx-R2
+  gets its rates up to 8 MS/s, the HackRF One 2 to 8 MS/s. Nothing else
+  changes with the rate: the block stays the rate over 30, the display's
+  FFTs 8192 samples, whose bins widen to 977 Hz at 8 MS/s, and the deep
+  zoom's 48 wide bins, 47 kHz there, exceed the fine spectrum's cover, so
+  that the cover alone decides, as on a paired device. Most of the cost at
+  the higher rates is the demodulator's front filter, whose transition
+  stays 8 kHz; a first stage of decimation would lower it, should 10 MS/s
+  be wanted later.
+- **The intake.** `NativeBuffer` (tools/measure_rates.py) is the buffer
+  that pull request 2 starts from: the samples kept as bytes in the
+  device's format, half a second at most, the oldest dropped and counted,
+  converted to complex64 when the engine takes a block, as the rtl_tcp
+  client converts its bytes; reads of the stream's MTU into one array.
+- **The native format and its full scale.** SoapySDR 0.8's Python binding
+  cannot call `getNativeStreamFormat`, which takes the full scale as a C++
+  reference. The source takes the first format the device lists among
+  CS8, CS16 and CF32, as the modules of the RTL-SDR (CS8), the HackRF
+  (CS8) and SDRplay (CS16) list their native one first. The full scale,
+  which sets the levels in dBFS, comes from a table of the listed drivers'
+  native formats, read in their modules' code: 128 for the RTL-SDR's and
+  the HackRF's CS8, 32767 for SDRplay's and the Airspy's CS16, and 2048
+  for bladeRF's CS16, 12 bits, whose levels a full scale of 32768 would put
+  24 dB low. A driver outside the table reads CF32, which its module scales
+  itself, at the intake's highest cost, still within the rule.
+- **The search.** `Device.enumerate` with a `driver` runs that driver's
+  search alone, in the calling thread, after loading every installed
+  module at the first call; without one it runs every module's,
+  SoapyRemote's included, which asks avahi-daemon over D-Bus to search the
+  network, a way out that a network namespace does not close. Pull request
+  3 searches the listed drivers one by one, in a worker thread, never
+  without a driver; its tests check, through the stand-in's `searches`,
+  that every search names one of them.
+- **The drivers listed**: `hackrf`, `airspy`, `lime` and `bladerf`, whose
+  searches made no socket; `airspyhf`, by its code (libusb's listing);
+  `sdrplay` once `tools/check_search.py sdrplay` has run on the owner's
+  laptop with SDRplay's API and module installed, before pull request 3
+  lists it: SDRplay's closed API speaks to SDRplay's service on the same
+  computer, which the rule, about the network, does not exclude.
+- **The stand-in module**, `tests/soapysdr/SoapySDR.py`, which
+  `tests.fakes.stand_in_soapysdr` puts first on the import path whether
+  the real module is installed or not: SoapySDR 0.8's names and values for
+  what Radiolack uses, devices that a test declares (driver, serial,
+  formats, rates, frequency range, MTU, timestamps), found by `enumerate`,
+  which keeps every search's arguments, made by `Device(args)`, giving a
+  tone in their native format at their rate, paced by the wall clock, with
+  the overflows (and the samples they lose, which the timestamps skip),
+  time-outs and stream errors that a test scripts by read; a device can
+  fail to open. Every call that takes a direction refuses any but
+  `SOAPY_SDR_RX`, and `writeStream` refuses all, recording the request, so
+  that the test fails on the way out even if the code caught the refusal.
+  Pull request 2 adds what the source needs: gains, antennas, the settings
+  a device declares.
+- **The reading thread.** The binding releases Python's lock in
+  `readStream` (SWIG's `-threads`): the engine's processing runs while the
+  reader waits. The tool reads as the source will, and reports the device's
+  overflows, the gaps in its timestamps and the samples dropped for an
+  engine behind, three different losses.
+
 ### Pull requests
 
 1. The spikes and their results.
