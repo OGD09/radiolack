@@ -46,7 +46,7 @@ def row(text, name):
 class ReaderTest(unittest.TestCase):
     def test_a_reader_that_loses_nothing_keeps_up_and_closes_the_device(self):
         with stand_in_soapysdr() as soapy:
-            soapy.add("test", rates_hz=(RATE_HZ,), mtu=4096)
+            soapy.add("test", rates_hz=(RATE_HZ,), mtu=24_000)
             status, text, err = read(soapy, "--without-engine")
             device = soapy.opened[0]
             self.assertTrue(device.closed)
@@ -80,8 +80,85 @@ class ReaderTest(unittest.TestCase):
             status, text, _ = read(soapy, "--without-engine")
         self.assertEqual(status, reader.EXIT_LOST)
         self.assertEqual(row(text, "Samples the timestamps span"), "no timestamps")
-        self.assertRegex(row(text, "Samples the wall clock expects since the first came"), r"^\d+ \(-?\d+\.\d\d% short\)$")
+        self.assertRegex(row(text, "Samples the wall clock expects since the first came"),
+                         r"^\d+ \(-?\d+\.\d\d% short, \d+ samples allowed\)$")
         self.assertEqual(row(text, "Overflows the device reported"), "1")
+
+    def test_timestamps_twice_as_fast_as_the_samples_lose_nothing(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.add("test", rates_hz=(RATE_HZ,), mtu=24_000, timestamp_factor=2.0)
+            status, text, err = read(soapy, "--without-engine", seconds="1.5")
+        self.assertEqual(status, reader.EXIT_KEPT_UP, text + err)
+        self.assertRegex(row(text, "Samples the timestamps span"),
+                         r"^\d+: they advance 2 times as fast as the samples read, not used$")
+        self.assertEqual(row(text, "Gaps in the timestamps"), "not used")
+        self.assertIn("The timestamps do not count samples: they advance 2 times as fast", text)
+        self.assertIn("The reader kept up: no sample lost.", text)
+
+    def test_a_gap_in_timestamps_that_count_samples_loses(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.add("test", rates_hz=(RATE_HZ,), mtu=24_000, drop=1000, events={3: "skip"})
+            status, text, err = read(soapy, "--without-engine")
+        self.assertEqual(status, reader.EXIT_LOST, err)
+        self.assertEqual(row(text, "Overflows the device reported"), "0")
+        self.assertEqual(row(text, "Gaps in the timestamps"), "1 (1000 samples)")
+        verdict = text.splitlines()[-1]
+        self.assertIn("(1 gaps in the timestamps)", verdict)       # the clock alone allows that many
+        self.assertNotIn("do not count samples", text)
+
+    def test_without_timestamps_the_wall_clock_judges(self):
+        for events, lost in (({}, False), ({3: "skip"}, True)):
+            with self.subTest(events=events), stand_in_soapysdr() as soapy:
+                soapy.add("test", rates_hz=(RATE_HZ,), mtu=24_000, timestamps=False, drop=100_000, events=events)
+                status, text, err = read(soapy, "--without-engine", seconds="1.5")
+                self.assertEqual(row(text, "Samples the timestamps span"), "no timestamps")
+                if lost:
+                    self.assertEqual(status, reader.EXIT_LOST, err)
+                    self.assertRegex(text.splitlines()[-1], r"\(\d+ samples fewer than the wall clock expects,"
+                                                             r" over the \d+ allowed\)")
+                else:
+                    self.assertEqual(status, reader.EXIT_KEPT_UP, text + err)
+
+    def test_the_owners_receivers_pattern_loses_nothing(self):
+        # As SoapySDR's rtlsdr module 0.3.3 gave it on 2026-11-18: 1100
+        # reads of 131072 samples at 2.4 MS/s, each timestamp ahead by one
+        # read. The stand-in's clock moves one read at a time, without
+        # waiting.
+        rate_hz, mtu, reads = 2_400_000.0, 131_072, 1100
+        now = [0.0]
+        with stand_in_soapysdr() as soapy:
+            soapy.clock = lambda: now[0]
+            soapy.add("rtlsdr", rates_hz=(rate_hz,), mtu=mtu, timestamp_factor=2.0)
+            device = soapy.Device("driver=rtlsdr")
+            stream = device.setupStream(soapy.SOAPY_SDR_RX, "CS8", [0])
+            device.activateStream(stream)
+            buffer = reader.NativeBuffer(2, round(reader.BUFFER_S * rate_hz))
+            measured = reader.Reader(soapy, device, stream, "CS8", rate_hz, mtu, buffer, lambda: now[0])
+            for _ in range(reads):
+                now[0] += mtu / rate_hz + 1e-7
+                self.assertTrue(measured.read_once())
+                self.assertIsNotNone(buffer.take(mtu, 0.0))     # the engine takes it all
+        result = reader.Result("driver=rtlsdr", "CS8", rate_hz, mtu, 60.1, measured.reading,
+                               reader.Engine(blocks=1799), buffer.dropped, True)
+        self.assertEqual(measured.reading.received, 144_179_200)
+        self.assertEqual(result.spanned, 288_227_328)       # the figures the tool reported then
+        self.assertEqual(measured.reading.gaps, 1099)
+        self.assertAlmostEqual(result.factor, 2.0, places=6)
+        self.assertEqual(result.losses, [])
+        text = "\n".join(reader.report(result, reader.datetime.now(reader.timezone.utc), ("0", "0")))
+        self.assertIn("| Samples the timestamps span | 288227328: they advance 2 times as fast", text)
+        self.assertTrue(text.endswith("The reader kept up: no sample lost."))
+
+    def test_how_the_timestamps_advance(self):
+        rate_hz = 1e9       # a sample a nanosecond
+        honest = [(1000, 1000)] * 20
+        self.assertIsNone(reader.timestamp_factor(honest, rate_hz))
+        self.assertEqual(reader.timestamp_factor([(1000, 2000)] * 20, rate_hz), 2.0)
+        jitter = [(1000, 2000), (1000, 2001), (500, 1000)] * 10     # within a sample
+        self.assertAlmostEqual(reader.timestamp_factor(jitter, rate_hz), 2.0, places=3)
+        self.assertIsNone(reader.timestamp_factor(honest[:10] + [(1000, 1500)] + honest[10:], rate_hz))     # a gap
+        self.assertIsNone(reader.timestamp_factor([(1000, 2000)] * (reader.MIN_PAIRS - 1), rate_hz))
+        self.assertIsNone(reader.timestamp_factor([(1000, 2000), (1000, 3000)] * 10, rate_hz))      # no pattern
 
     def test_a_stream_that_keeps_failing_ends_the_measure(self):
         with stand_in_soapysdr() as soapy:

@@ -94,10 +94,10 @@ when it is back.
 
 Measured on 2026-11-18 ([`scoping.md`](scoping.md), spike 7, with the
 tables): the first two questions on the owner's laptop, with
-`tools/measure_rates.py` and `tools/check_search.py`; the third waits for
-the owner's V3, with `tools/measure_reader.py` and the command that
-scoping.md gives. Pull request 2 starts once it is answered, as its rule
-may move the reader to a process of its own.
+`tools/measure_rates.py` and `tools/check_search.py`; the third the same
+day, on the owner's word, with the owner's V3 on that laptop and
+`tools/measure_reader.py`: no sample lost over 60 s, so the reader stays a
+thread, and pull request 2 builds the source that way.
 
 As built, where the spikes settle or put in question a point of this
 section; pull requests 2 to 6 rely on these:
@@ -115,7 +115,9 @@ section; pull requests 2 to 6 rely on these:
   that the cover alone decides, as on a paired device. Most of the cost at
   the higher rates is the demodulator's front filter, whose transition
   stays 8 kHz; a first stage of decimation would lower it, should 10 MS/s
-  be wanted later.
+  be wanted later. Those figures are back to back, the rule's measure
+  (below, Back to back and paced); 8 MS/s is to confirm on a receiver at
+  that rate, the RSPdx-R2.
 - **The intake.** `NativeBuffer` (tools/measure_rates.py) is the buffer
   that pull request 2 starts from: the samples kept as bytes in the
   device's format, half a second at most, the oldest dropped and counted,
@@ -150,10 +152,12 @@ section; pull requests 2 to 6 rely on these:
   `tests.fakes.stand_in_soapysdr` puts first on the import path whether
   the real module is installed or not: SoapySDR 0.8's names and values for
   what Radiolack uses, devices that a test declares (driver, serial,
-  formats, rates, frequency range, MTU, timestamps), found by `enumerate`,
-  which keeps every search's arguments, made by `Device(args)`, giving a
-  tone in their native format at their rate, paced by the wall clock, with
-  the overflows (and the samples they lose, which the timestamps skip),
+  formats, rates, frequency range, MTU, timestamps, which may advance at a
+  multiple of the samples as the rtlsdr module's do), found by
+  `enumerate`, which keeps every search's arguments, made by
+  `Device(args)`, giving a tone in their native format at their rate,
+  paced by the wall clock, which a test may replace, with the overflows
+  (and the samples they lose, which the timestamps skip), silent losses,
   time-outs and stream errors that a test scripts by read; a device can
   fail to open. Every call that takes a direction refuses any but
   `SOAPY_SDR_RX`, and `writeStream` refuses all, recording the request, so
@@ -164,7 +168,38 @@ section; pull requests 2 to 6 rely on these:
   `readStream` (SWIG's `-threads`): the engine's processing runs while the
   reader waits. The tool reads as the source will, and reports the device's
   overflows, the gaps in its timestamps and the samples dropped for an
-  engine behind, three different losses.
+  engine behind, three different losses. On the owner's V3 through the
+  rtlsdr module, at 2.4 MS/s for 60 s with the engine's processing beside
+  it: 144179200 samples in 1100 reads of the MTU, 131072, as many as the
+  wall clock expects within a millisecond, no overflow, no read that timed
+  out or failed, nothing dropped; the reading thread took 1.2% of one
+  core. The reader stays a thread in the engine's process.
+- **Timestamps.** The rtlsdr module 0.3.3's timestamps advance by twice the
+  samples read, at every read: they count the I and Q bytes. Read as
+  samples, they made the tool's first verdict wrong. A device's timestamps
+  are not always a count of samples: should the source use them, it checks first
+  how they advance, as the tool now does; otherwise it relies on the
+  device's overflows and its own buffer's count.
+- **Back to back and paced.** The rule's figures are back to back, the
+  blocks processed one after the other: the work to do. Processed one
+  every 33 ms, as a receiver delivers them, on the owner's laptop, whose
+  processor slows down between blocks, the engine took about 40% of one
+  core at every rate from 2.4 to 10 MS/s, against 9 to 32% back to back,
+  and what grew with the rate was the time a block takes: at 8 and
+  10 MS/s, 3 blocks of 69 took longer than their 33 ms, 37 ms at most;
+  `tools/measure_rates.py`, which now measures both, found 7 and 10 of
+  750 there, 54 ms at most, and a few from 3.2 MS/s up, which the
+  half-second buffer absorbs while the mean stays under half the period
+  (scoping.md, spike 7, for the tables). The
+  decision stands, rates up to 8 MS/s offered and 10 MS/s not; a share of
+  a core read on a system monitor while Radiolack runs is the paced one.
+  Pull request 2's source therefore reports, as it runs, the blocks that
+  took longer than their period and the samples its buffer dropped, an
+  engine or a reader behind, beside the device's overflows (logged at
+  most once a minute, with their count), so that a rate that a computer
+  does not hold shows on that computer. 8 MS/s remains to be confirmed
+  with a receiver at that rate, the RSPdx-R2, once pull request 2's
+  source runs it.
 
 ### Pull requests
 

@@ -26,6 +26,38 @@ def load(name):
 rates = load("measure_rates")
 
 
+class FakeClock:
+    """A wall clock that moves only when told to, and a sleep that moves
+    it: the paced measure runs without waiting."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.slept = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+
+
+def tables_of(text):
+    """Each Markdown table of ``text``: its rows of cells, the header's
+    first, without the separator."""
+    tables, current = [], None
+    for line in text.splitlines():
+        if line.startswith("| "):
+            if current is None:
+                current = []
+                tables.append(current)
+            if not line.startswith("| ---"):
+                current.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+        else:
+            current = None
+    return tables
+
+
 class BufferTest(unittest.TestCase):
     def test_samples_come_out_in_order(self):
         buffer = rates.NativeBuffer(2, 10)
@@ -121,24 +153,40 @@ class MeasureTest(unittest.TestCase):
         self.assertFalse(rates.offered(4_000_000.0, [10.0, 50.0, 80.0]))
 
     def test_a_short_run_writes_its_tables_with_every_rate(self):
+        clock = FakeClock()
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "table.md"
             out, err = io.StringIO(), io.StringIO()
             status = rates.main(["--runs", "2", "--seconds", "0.1", "--warmup-s", "0.1", "--rates", "2.4,4",
-                                 "--output", str(output)], out, err)
+                                 "--output", str(output)], out, err, clock, clock.sleep)
             self.assertEqual(status, rates.EXIT_DONE, err.getvalue())
             text = output.read_text(encoding="utf-8")
         self.assertEqual(text, out.getvalue())
-        rows = {line.split(" | ")[0].lstrip("| "): line for line in text.splitlines() if line.startswith("| ")}
+        self.assertGreater(clock.slept, 0.0)        # paced on the clock given, without waiting
+        tables = tables_of(text)
+        self.assertEqual(len(tables), 4)
+        rows = {row[0]: row for row in tables[0][1:]}
         for rate, rule in (("2.4", r"offered \(up to 3\.2 MS/s\)"), ("4", r"(offered.*|not offered)")):
-            cells = [cell.strip() for cell in rows[rate].strip("|").split("|")]
+            cells = rows[rate]
             self.assertEqual(len(cells), 11)
             for cell in cells[3:10]:
                 float(cell.split(" ")[0])
             self.assertRegex(cells[10], f"^{rule}$")
-        self.assertEqual(len([line for line in text.splitlines() if line[:4] in ("| 1 ", "| 2 ")]), 2)
+        paced = {row[0]: row for row in tables[2][1:]}
+        self.assertEqual(tables[2][0][3], "Engine, paced")
+        for rate, period in (("2.4", "33.3"), ("4", "33.3")):
+            cells = paced[rate]
+            self.assertEqual(len(cells), 7)
+            self.assertEqual(cells[1], period)
+            for cell in cells[2:6]:
+                float(cell.split(" ")[0])
+            self.assertRegex(cells[6], r"^0 of 6$")      # the given clock stands still while a block runs
+        for table in (tables[1], tables[3]):
+            self.assertEqual([row[0] for row in table[1:]], ["1", "2"])
         self.assertIn("NumPy ", text)
         self.assertIn("load average", text)
+        self.assertIn("the rule decides on it", text)
+        self.assertIn("This measure does not decide.", text)
 
     def test_the_engine_works_where_the_measure_puts_it(self):
         run, activity = rates.measure((2_400_000.0,), 0.1, 0.4, 1)
@@ -147,6 +195,49 @@ class MeasureTest(unittest.TestCase):
         self.assertGreater(done.opened, 0)      # the station opens the squelch
         self.assertGreater(done.searches, 0)    # detection searched
         self.assertEqual(set(run.intake_ns), {(2_400_000.0, name) for name in rates.FORMATS})
+
+    def test_the_paced_measure_follows_a_receivers_pace(self):
+        clock = FakeClock()
+        durations = iter([0.010, 0.050, 0.010, 0.020, 0.040, 0.010])     # the timed blocks', on the clock
+        timeline = []
+
+        class Busy:
+            """Takes a set time on the clock, and a set processor time."""
+
+            def __init__(self, rate_hz):
+                self.rate_hz = rate_hz
+                self.warm = 2       # warm-up blocks, 0.01 s each
+
+            def process(self, samples):
+                timeline.append(clock.now)
+                self.warm -= 1
+                clock.now += 0.010 if self.warm >= 0 else next(durations)
+                return 5_000_000
+
+        run = rates.measure_paced((2_400_000.0,), 6 / 30, 2 / 30, 1, clock, clock.sleep, Busy)
+        paced = run.rates[2_400_000.0]
+        period = 1 / 30
+        self.assertAlmostEqual(paced.period_s, period)
+        self.assertEqual(paced.blocks, 6)
+        self.assertEqual(paced.over, 2)
+        self.assertAlmostEqual(max(paced.took_s), 0.050)
+        self.assertAlmostEqual(paced.percent, 0.005 * 6 / (6 * period) * 100)
+        # Each block starts once delivered, or at once when the one before
+        # ran late: the blocks after the two that ran over wait for nothing.
+        due = [(index + 1) * period for index in range(8)]
+        expected = due[:4] + [due[3] + 0.050, due[5], due[6], due[6] + 0.040]
+        for started, wanted in zip(timeline, expected):
+            self.assertAlmostEqual(started, wanted)
+        self.assertEqual(len(timeline), 8)
+
+    def test_the_paced_measure_runs_the_engine(self):
+        clock = FakeClock()
+        run = rates.measure_paced((2_400_000.0, 4_000_000.0), 0.1, 0.1, 1, clock, clock.sleep)
+        self.assertEqual(set(run.rates), {2_400_000.0, 4_000_000.0})
+        for paced in run.rates.values():
+            self.assertEqual(paced.blocks, 3)
+            self.assertGreater(paced.cpu_ns, 0)
+        self.assertAlmostEqual(clock.slept, 2 * 6 / 30, places=3)
 
     def test_options_are_checked(self):
         for argv in (["--runs", "0"], ["--seconds", "-1"], ["--rates", "0.1"], ["--rates", "x"], ["--rates", ""]):

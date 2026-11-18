@@ -16,17 +16,38 @@ format, CS8, CS16 or CF32, copied out in reads of ``READ_SAMPLES`` as
 for a reader that falls behind, as the rtl_tcp client does, then taken by
 the engine and converted to complex64 (``to_complex``).
 
-Every rate and every format processes its blocks one after the other, in an
-order that turns with every block, so that other work on the computer
-weighs on them alike; each block's processor time is that of this thread
-(``time.thread_time_ns``), not the wall clock's. A run does this over
-``--seconds`` of signal after ``--warmup-s`` that are not timed; the tool
-makes ``--runs`` runs, each with fresh state, and reports for each rate the
-median of the processor time per second of signal, as a percentage of one
-core, with the lowest and the highest, the load average after each run,
-and the rule fixed beforehand: a rate is offered when the engine and the
-intake together stay under 50% of one core; above 3.2 MS/s, the rtl_tcp
-client's highest rate, a rate that does not is not offered.
+Two measures, which tell different things.
+
+Back to back, the rule's measure: every rate and every format processes its
+blocks one after the other, in an order that turns with every block, so
+that other work on the computer weighs on them alike; each block's
+processor time is that of this thread (``time.thread_time_ns``), not the
+wall clock's. A run does this over ``--seconds`` of signal after
+``--warmup-s`` that are not timed. It gives the work to do, the processor
+kept busy, and the rule fixed beforehand decides on it: a rate is offered
+when the engine and the intake together stay under 50% of one core; above
+3.2 MS/s, the rtl_tcp client's highest rate, a rate that does not is not
+offered.
+
+Paced: then each rate in turn processes its blocks one every period, the
+block over the rate (1/30 s), as a receiver delivers them, for the same
+seconds after the same warm-up, the engine alone (the intake is a few
+percent of it). The blocks are one second of the scene made beforehand and
+processed again in turn, so that nothing but the processing runs between
+them; the scene repeats every second, its tone and carriers on whole
+hertz. A processor that slows down between blocks (a governor such as
+intel_pstate's powersave) takes longer over each, so the processor time
+per second of signal is higher than back to back: it is what a system
+monitor shows while Radiolack runs. Each block's time on the wall clock,
+against its period, says whether a block fits its period on this
+computer; one that takes longer delays the next, which the buffer absorbs
+while the mean stays under the period. This measure does not decide.
+
+The tool makes ``--runs`` runs, each with fresh state, back to back then
+paced, and reports for each rate the median of the processor time per
+second of signal, as a percentage of one core, with the lowest and the
+highest, the paced blocks' mean and longest time and how many ran over
+their period, the load average after each measure, and the rule.
 
 The signal: white noise at -40 dBFS, an NFM station at -30 dBFS 300 kHz
 above the centre frequency, the VFO on it, its 1 kHz tone at 2.5 kHz of
@@ -48,7 +69,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
@@ -319,6 +340,72 @@ def measure(rates_hz: Sequence[float], seconds: float, warmup_s: float, seed: in
     return Run(timed / FRAME_RATE, engine, intake, load()), activity
 
 
+@dataclass
+class Paced:
+    """One rate's blocks processed at a receiver's pace."""
+
+    period_s: float                 # a block's time at the rate: the block over the rate
+    cpu_ns: int = 0                 # the processing thread's processor time
+    took_s: list[float] = field(default_factory=list)      # each block's time on the wall clock
+
+    def add(self, cpu_ns: int, took_s: float) -> None:
+        self.cpu_ns += cpu_ns
+        self.took_s.append(took_s)
+
+    @property
+    def blocks(self) -> int:
+        return len(self.took_s)
+
+    @property
+    def percent(self) -> float:
+        """The processor time per second of signal, in % of one core."""
+        return self.cpu_ns / 1e9 / max(self.blocks * self.period_s, 1e-9) * 100
+
+    @property
+    def over(self) -> int:
+        """The blocks that took longer than their period."""
+        return sum(took > self.period_s for took in self.took_s)
+
+
+@dataclass
+class PacedRun:
+    rates: dict[float, Paced]
+    load: str                       # the load average at the paced measure's end
+
+
+def measure_paced(rates_hz: Sequence[float], seconds: float, warmup_s: float, seed: int,
+                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                  pipeline: Callable[[float], Pipeline] = Pipeline,
+                  progress: Callable[[str], None] = lambda line: None) -> PacedRun:
+    """Each rate in turn, its blocks processed one every period, as a
+    receiver delivers them: block ``index`` is processed once the receiver
+    has delivered it, a period after the one before, or at once when the
+    processing is late. The blocks are about one second of the scene, made
+    beforehand and processed again in turn."""
+    warmup = math.ceil(warmup_s * FRAME_RATE)
+    timed = max(1, round(seconds * FRAME_RATE))
+    results: dict[float, Paced] = {}
+    for rate in rates_hz:
+        size = block_size(rate)
+        scene = Scene(seed, rate)
+        blocks = [scene.block(index * size, size) for index in range(round(FRAME_RATE))]
+        processing = pipeline(rate)
+        paced = Paced(size / rate)
+        started = clock()
+        for index in range(warmup + timed):
+            wait = started + (index + 1) * paced.period_s - clock()
+            if wait > 0:
+                sleep(wait)
+            began = clock()
+            spent = processing.process(blocks[index % len(blocks)])
+            took = clock() - began
+            if index >= warmup:
+                paced.add(spent, took)
+        results[rate] = paced
+        progress(f"  {megas(rate)} MS/s paced")
+    return PacedRun(results, load())
+
+
 def offered(rate_hz: float, totals: Sequence[float]) -> bool:
     """The rule: at or below 3.2 MS/s always; above, when the median of the
     engine and the intake together stays under 50% of one core."""
@@ -352,8 +439,8 @@ def megas(rate_hz: float) -> str:
     return f"{rate_hz / 1e6:g}"
 
 
-def report(runs: Sequence[Run], activity: dict[float, Activity], options: argparse.Namespace,
-           started: datetime, first_load: str) -> list[str]:
+def report(runs: Sequence[Run], paced_runs: Sequence[PacedRun], activity: dict[float, Activity],
+           options: argparse.Namespace, started: datetime, first_load: str) -> list[str]:
     """The tables and what they were measured on, in Markdown."""
     rates = options.rates
     names = list(FORMATS)
@@ -361,9 +448,9 @@ def report(runs: Sequence[Run], activity: dict[float, Activity], options: argpar
         "# Sample rates the engine holds (spike 7)",
         "",
         f"- Measured on {started:%Y-%m-%d %H:%M} UTC, {len(runs)} runs of {runs[0].seconds:g} s of signal at each"
-        f" rate, after {options.warmup_s:g} s not timed, seed {options.seed}.",
+        f" rate, after {options.warmup_s:g} s not timed, seed {options.seed}; back to back, then paced.",
         f"- Processor: {processor()}, {os.cpu_count()} logical processors; load average {first_load} at start,"
-        f" {runs[-1].load} at the end.",
+        f" {paced_runs[-1].load} at the end.",
         f"- Python {platform.python_version()}, NumPy {np.__version__}.",
         f"- The engine's blocks: the rate over {FRAME_RATE:g}, its display FFTs {FFTS_PER_FRAME} of {FFT_SIZE}"
         f" samples a block; the VFO in {MODE}, {MODE_BANDWIDTHS_HZ[MODE] / 1e3:g} kHz, audio and detection on.",
@@ -371,6 +458,9 @@ def report(runs: Sequence[Run], activity: dict[float, Activity], options: argpar
         " oldest, the engine's block taken and converted to complex64.",
         "- Processor time of the measuring thread per second of signal, in % of one core: the median of the"
         " runs, then the lowest and the highest.",
+        "",
+        "Back to back, the rule's measure: the blocks processed one after the other, the processor kept busy."
+        " It gives the work to do, and the rule decides on it.",
         "",
         "| MS/s | Block (samples) | Display bin (Hz) | Engine | " + " | ".join(f"Intake {name}" for name in names)
         + " | " + " | ".join(f"Total {name}" for name in names) + " | Rule |",
@@ -396,13 +486,43 @@ def report(runs: Sequence[Run], activity: dict[float, Activity], options: argpar
                     for rate in rates) + "; detection searched "
         + ", ".join(f"{activity[rate].searches} times at {megas(rate)}" for rate in rates) + ".",
         "",
-        "Each run, the engine's % of one core at each rate, then the load average at the run's end:",
+        "Each run, the engine's % of one core at each rate back to back, then the load average at that"
+        " measure's end:",
         "",
         "| Run | " + " | ".join(f"{megas(rate)} MS/s" for rate in rates) + " | Load average |",
         "| --- | " + " | ".join("---" for _ in rates) + " | --- |",
     ]
     for number, run in enumerate(runs, 1):
         lines.append(f"| {number} | " + " | ".join(f"{run.engine(rate):.1f}" for rate in rates)
+                     + f" | {run.load} |")
+    lines += [
+        "",
+        "Paced: each rate's blocks processed one every period, as a receiver delivers them, the engine alone."
+        " The processor time per second of signal is what a system monitor shows while Radiolack runs, higher"
+        " than back to back where the processor slows down between blocks; each block's time on the wall clock"
+        " says whether a block fits its period on this computer, a block over it delaying the next, which the"
+        " buffer absorbs while the mean stays under it. This measure does not decide. The mean block is that of"
+        " every run's blocks; the longest and the blocks over the period are over every run.",
+        "",
+        "| MS/s | Period (ms) | Engine, back to back | Engine, paced | Mean block (ms) | Longest block (ms)"
+        " | Blocks over the period |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for rate in rates:
+        paced = [run.rates[rate] for run in paced_runs]
+        took = [value for one in paced for value in one.took_s]
+        lines.append(f"| {megas(rate)} | {paced[0].period_s * 1e3:.1f} | {spread([run.engine(rate) for run in runs])}"
+                     f" | {spread([one.percent for one in paced])} | {statistics.fmean(took) * 1e3:.1f}"
+                     f" | {max(took) * 1e3:.1f} | {sum(one.over for one in paced)} of {len(took)} |")
+    lines += [
+        "",
+        "Each run, the engine's paced % of one core at each rate, then the load average at the paced measure's end:",
+        "",
+        "| Run | " + " | ".join(f"{megas(rate)} MS/s" for rate in rates) + " | Load average |",
+        "| --- | " + " | ".join("---" for _ in rates) + " | --- |",
+    ]
+    for number, run in enumerate(paced_runs, 1):
+        lines.append(f"| {number} | " + " | ".join(f"{run.rates[rate].percent:.1f}" for rate in rates)
                      + f" | {run.load} |")
     return lines
 
@@ -431,10 +551,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Measure the processor time of the engine's processing of one receiver, one NFM channel"
                     " with audio and detection, and of bringing a SoapySDR device's samples in, at sample rates"
-                    " from 2.4 to 10 MS/s, on synthetic samples. No receiver, no network.")
+                    " from 2.4 to 10 MS/s, on synthetic samples: back to back, the work to do, on which the rule"
+                    " decides, then paced, one block every 1/30 s as a receiver delivers them, what a system"
+                    " monitor shows and whether a block fits its period. No receiver, no network.")
     parser.add_argument("--runs", type=positive(int), default=5, help="runs, each with fresh state (default 5)")
     parser.add_argument("--seconds", type=positive(float), default=5.0,
-                        help="seconds of signal timed at each rate in each run (default 5)")
+                        help="seconds of signal timed at each rate in each run and each measure (default 5)")
     parser.add_argument("--warmup-s", type=positive(float), default=1.0,
                         help="seconds of signal processed first in each run, not timed (default 1)")
     parser.add_argument("--rates", type=rate_list, default=RATES_HZ,
@@ -444,27 +566,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout, err: TextIO = sys.stderr) -> int:
+def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout, err: TextIO = sys.stderr,
+         clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> int:
+    """Run the measures; ``clock`` and ``sleep`` pace the paced one."""
     options = build_parser().parse_args(argv)
     started = datetime.now(timezone.utc)
     first_load = load()
     runs: list[Run] = []
+    paced_runs: list[PacedRun] = []
     activity: dict[float, Activity] = {rate: Activity() for rate in options.rates}
+
+    def progress(line: str) -> None:
+        print(line, file=err, flush=True)
+
     try:
         for number in range(1, options.runs + 1):
-            print(f"Run {number} of {options.runs}", file=err, flush=True)
-            run, done = measure(options.rates, options.seconds, options.warmup_s, options.seed,
-                                lambda line: print(line, file=err, flush=True))
+            progress(f"Run {number} of {options.runs}, back to back")
+            run, done = measure(options.rates, options.seconds, options.warmup_s, options.seed, progress)
             runs.append(run)
             for rate, counts in done.items():
                 total = activity[rate]
                 total.blocks += counts.blocks
                 total.opened += counts.opened
                 total.searches += counts.searches
+            progress(f"Run {number} of {options.runs}, paced")
+            paced_runs.append(measure_paced(options.rates, options.seconds, options.warmup_s, options.seed,
+                                            clock, sleep, progress=progress))
     except KeyboardInterrupt:
         print("Interrupted: no table.", file=err)
         return EXIT_INTERRUPTED
-    text = "\n".join(report(runs, activity, options, started, first_load)) + "\n"
+    text = "\n".join(report(runs, paced_runs, activity, options, started, first_load)) + "\n"
     out.write(text)
     if options.output is not None:
         try:
