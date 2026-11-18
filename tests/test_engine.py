@@ -170,8 +170,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         subscription = self.engine.subscribe()
         self.assertEqual(subscription.get_nowait(), {
             "type": "source", "kind": "test", "status": "streaming", "detail": "", "address": None,
-            "tuner": None, "centre_hz": FAKE_CENTRE_HZ, "centre_in_use_hz": FAKE_CENTRE_HZ,
-            "sample_rate_hz": FAKE_RATE_HZ,
+            "tuner": None, "driver": None, "centre_hz": FAKE_CENTRE_HZ, "centre_in_use_hz": FAKE_CENTRE_HZ,
+            "sample_rate_hz": FAKE_RATE_HZ, "sample_rates_hz": [],
             "gain_db": None, "ppm": None, "gains_db": [], "range_hz": [FAKE_CENTRE_HZ, FAKE_CENTRE_HZ],
             "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None, "bias_tee": None,
             "converter": None, "converter_lo_hz": None, "driver_pll": None, "tuner_grid": None,

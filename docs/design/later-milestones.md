@@ -210,6 +210,112 @@ section; pull requests 2 to 6 rely on these:
 5. I/Q recordings in the device's format.
 6. Package, service notes, README.md, CI.
 
+As built, pull request 2 (`soapy.py`, `--soapy`, the stand-in's
+additions); pull requests 3 to 6 rely on these:
+
+- **The module.** `SoapySDR` is imported when a SoapySDR source first
+  opens its device, in its reading thread, and when `--soapy` is given.
+  Missing, `--soapy` exits with status 1, saying that `python3-soapysdr`
+  brings it, as `--rtl-sdr` does without rtl_tcp; a SoapySDR source
+  reopened at start waits, with that text as its detail, which the
+  Receiver menu and the status line show, and tries again, so that
+  installing the package is enough. Radiolack starts, runs and passes its
+  tests without it: within the tests, `import SoapySDR` finds the stand-in
+  or nothing (`tests/__init__.py`), never the real module.
+- **Arguments and identity.** `--soapy ARGS` takes SoapySDR device
+  arguments that must name a driver (`soapy.parse_args`), so that no search
+  runs every module's. The source searches with them and opens the first
+  device found; from then on it searches by that device's serial number,
+  and its settings key becomes `soapy DRIVER SERIAL`, its `reopen`
+  `{"kind": "soapy", "args": "driver=DRIVER,serial=SERIAL"}`, an `index`
+  given dropped. Since the key is known only once the device opens, the
+  engine, told by the source's change, then restores the settings saved
+  for that device, as at a switch, drops what it kept under the former key,
+  and starts again a scan started meanwhile, such as `--scan`'s, from those
+  settings (`Engine._identified`). The detail of a device not found names
+  its driver alone, not its serial number nor the other arguments: it goes
+  into problem reports.
+- **Reading.** One thread per session, `radiolack-soapy`, alone calls the
+  device: it opens it, reads what it offers, applies the settings between
+  reads of the stream's MTU (100 ms time-out each) and keeps the samples in
+  a `NativeBuffer`, which moved from `tools/measure_rates.py` to `soapy.py`
+  and gained `take_now`, for the engine's read, which waits in the event
+  loop for the thread's signal. After a change of rate, frequency or
+  correction it drops 0.4 s, as the rtl_tcp client. The device not found,
+  failing to open, without a usable format or rate, a stream that cannot be
+  set up, ten stream errors in a row (an unplugged device) or 5 s without
+  samples (a silent one) end the session: the source waits with the reason
+  as its detail and tries again after 0.5 s, then twice as long each time
+  up to 5 s. Nobody reading for 2 s ends it too, releasing the device. Its
+  `finally`, whatever ends it, deactivates and closes the stream and
+  releases the device; a close repeated, or coming during that stop, only
+  waits for it (`wait_closed`, up to 5 s, then a warning).
+- **Receive only.** The source names `SOAPY_SDR_RX` alone; the stand-in
+  refuses any other direction and `writeStream`, and records the request,
+  which fails the test even when the code caught the refusal; a test reads
+  `soapy.py` for any transmit name.
+- **Formats.** As the spikes found, with one addition: a driver outside the
+  table whose device gives no CF32 reads its native CS8 or CS16 at the
+  nominal full scale, which a warning says; a device with none of the
+  three waits, saying so.
+- **Sample rates**: those the device lists up to 8 MS/s, or, for a device
+  that gives ranges only, the common ones within them (0.25, 1.024, 2.048,
+  2.4, 3.2, 4, 5, 6 and 8 MS/s) for the menu, any rate within a range being
+  accepted; at its first opening, the rate asked becomes the nearest the
+  device offers. The source state gains `sample_rates_hz`, which the menu
+  lists, and `driver`; the rtl_tcp sources send their usual seven rates and
+  null, the simulated band an empty list and null.
+- **Analogue bandwidth**: the nearest at or below 0.8 times the rate among
+  the listed ones and the ranges' steps, the narrowest if all are wider,
+  set with each new rate.
+- **Correction.** A device declares one of its own by
+  `hasFrequencyCorrection`, or by a `CORR` frequency component where the
+  binding lacks that call. It takes the whole ppm by
+  `setFrequencyCorrection` (or `setFrequency(..., "CORR", ppm)`), and each
+  overall `setFrequency` then passes `{"CORR": ppm}` as its arguments:
+  SoapySDR's default spreads the overall frequency across the components
+  and would otherwise set the correction to the remainder. The label takes
+  the device's correction to correct its sampling clock too, as librtlsdr's
+  does; a device without one takes none, and Radiolack the whole ppm, by
+  the frequency asked, the label and `rate_scale`. `grid_hz` is 0, and
+  `driver_pll` and `tuner_grid` are null. Whether the rtlsdr module, the
+  first checked, behaves so is for the owner's check on the V3.
+- **Gain.** One gain stage: `gain_db` is that stage's, by name, with
+  automatic gain where the device has a gain mode (its default then), or
+  else the device's own gain at its opening. Several stages, as a HackRF's
+  or an SDRplay's: the device's own gains, `gain_db` not settable and
+  null, `gains_db` empty, until pull request 4: one overall value spread
+  across stages would be a choice that pull request makes.
+- **`--bias-tee` with `--soapy`** is refused at parse time (status 2):
+  the source has no antenna power yet, and a service started so would run
+  without the power it asks for. A SoapySDR source reopened from the saved
+  record with `--bias-tee` alone is ignored, saying so, as the simulated
+  band is.
+- **Reporting.** Device overflows, samples the buffer dropped and blocks
+  that took the engine longer than their period (the time between one read
+  that gave samples and the next, under 2 s, a longer one being a pause)
+  are logged at most once a minute, with their counts since the previous
+  line, and once more when the source stops. The device's timestamps are
+  not used (module docstring).
+- **I/Q recordings** are refused by the source's `tap`, which the engine
+  calls before any file is written: the interface shows the refusal, and
+  no file says the wrong format. Pull request 5 brings them.
+- **The Receiver menu** before pull request 3: the entry "SoapySDR device"
+  in the list, selected while a SoapySDR source is in use; its note, such
+  as "R820T through SoapySDR, driver rtlsdr.", with "Waiting: ..." and the
+  reason while it waits; the sample rates the device offers; the centre
+  frequency, the correction, Calibrate, the converter and its oscillator
+  as for any receiver; the gain slider for a device with one gain stage
+  only. Choosing the entry from another source works once `--soapy` has
+  named a device; before that the engine refuses, saying to start with
+  `--soapy`. An interface older than this pull request shows no entry
+  selected, an empty note and its own rate list, and otherwise works
+  (protocol.md, Versions).
+- **Not checked on a receiver**: everything above runs against the
+  stand-in only. The owner's V3 through `driver=rtlsdr` checks the rest:
+  the rtlsdr module's correction and its CORR component, its gain stage
+  (`TUNER`) and gain mode, and 2.4 MS/s held without loss.
+
 ### Done when
 
 On the owner's laptop, the V3 opened through SoapySDR tunes, plays and

@@ -13,9 +13,9 @@ power or other setting, and has no code that transmits. It is run only on
 the owner's word, on the owner's receiver: tests run it against a stand-in
 for the SoapySDR module (tests/soapysdr/SoapySDR.py).
 
-It reads as the future source will (later-milestones.md, section 1,
+It reads as the SoapySDR source does (later-milestones.md, section 1,
 Samples): a thread calls ``readStream`` into an array in the device's
-format and keeps what comes in a ``NativeBuffer`` (measure_rates.py), which
+format and keeps what comes in a ``NativeBuffer`` (radiolack/soapy.py), which
 drops the oldest samples when the engine falls behind, as the rtl_tcp
 client's buffer does. Meanwhile this thread takes the engine's blocks from
 the buffer, the rate over 30, converts them to complex64 and, unless
@@ -84,9 +84,9 @@ from typing import Any, TextIO
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from measure_rates import (FORMATS, NativeBuffer, Pipeline, block_size, load, processor,  # noqa: E402
-                           to_complex)
+from measure_rates import Pipeline, block_size, load, processor  # noqa: E402
 from radiolack.rtltcp import BUFFER_S  # noqa: E402  (measure_rates puts src on the path)
+from radiolack.soapy import FORMATS, NativeBuffer, native_format, to_complex  # noqa: E402
 
 RATE_HZ = 2_400_000.0
 SECONDS = 60.0
@@ -319,28 +319,6 @@ class Result:
         return not self.losses
 
 
-def native_format(soapy: ModuleType, device: Any) -> str:
-    """The device's native format among CS8, CS16 and CF32: as
-    ``getNativeStreamFormat`` gives it where the binding can call it, or
-    else the first of those the device lists, SoapySDR converting to CF32
-    for one that lists none."""
-    receive = soapy.SOAPY_SDR_RX
-    try:
-        native = device.getNativeStreamFormat(receive, 0)
-    except TypeError:
-        # SoapySDR 0.8's binding takes the full scale as a C++ reference,
-        # which Python cannot pass: the call cannot be made.
-        native = None
-    if isinstance(native, (tuple, list)) and native:
-        native = native[0]
-    if isinstance(native, str) and native in FORMATS:
-        return native
-    for listed in device.getStreamFormats(receive, 0):
-        if listed in FORMATS:
-            return listed
-    return "CF32"
-
-
 def measure(soapy: ModuleType, args: str, rate_hz: float, seconds: float, frequency_hz: float | None,
             sample_format: str | None, with_engine: bool,
             progress: Callable[[str], None] = lambda line: None) -> Result:
@@ -359,7 +337,7 @@ def measure(soapy: ModuleType, args: str, rate_hz: float, seconds: float, freque
             actual_hz = float(device.getSampleRate(receive, 0))
             if frequency_hz is not None:
                 device.setFrequency(receive, 0, frequency_hz)
-            chosen = sample_format or native_format(soapy, device)
+            chosen = sample_format or native_format(soapy, device) or "CF32"
             stream = device.setupStream(receive, chosen, [0])
             mtu = int(device.getStreamMTU(stream))
         except Exception as error:

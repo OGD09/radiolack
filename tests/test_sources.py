@@ -4,6 +4,7 @@ source: nothing connects, and no rtl_tcp starts."""
 import unittest
 
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
+from radiolack.soapy import SoapySource
 from radiolack.sources import Sources
 from radiolack.synthetic import SyntheticBand
 
@@ -15,7 +16,7 @@ class SourcesTest(unittest.TestCase):
         return source
 
     def test_opens_each_kind_the_simulated_band_first(self):
-        self.assertEqual(Sources.kinds, ("synthetic", "rtl_sdr", "rtl_tcp"))
+        self.assertEqual(Sources.kinds, ("synthetic", "rtl_sdr", "rtl_tcp", "soapy"))
         self.assertIsInstance(self.open({"kind": "synthetic"}), SyntheticBand)
         rtl_sdr = self.open({"kind": "rtl_sdr"})
         self.assertIsInstance(rtl_sdr, RtlSdrSource)
@@ -24,9 +25,14 @@ class SourcesTest(unittest.TestCase):
         self.assertIs(type(rtl_tcp), RtlTcpSource)
         # rtl_tcp's default address, until the engine applies the saved one.
         self.assertEqual((rtl_tcp.address, rtl_tcp.given), ("127.0.0.1:1234", frozenset()))
+        # A SoapySDR device by its arguments, which --soapy gives first.
+        soapy = self.open({"kind": "soapy", "args": "driver=sdrplay,serial=1234"})
+        self.assertIsInstance(soapy, SoapySource)
+        self.assertEqual((soapy.args, soapy.settings_key), ("driver=sdrplay,serial=1234", "soapy sdrplay 1234"))
 
     def test_a_source_opens_again_from_what_it_gives(self):
-        for reopen in ({"kind": "synthetic"}, {"kind": "rtl_sdr", "device": "00000002"}, {"kind": "rtl_tcp"}):
+        for reopen in ({"kind": "synthetic"}, {"kind": "rtl_sdr", "device": "00000002"}, {"kind": "rtl_tcp"},
+                       {"kind": "soapy", "args": "driver=hackrf,serial=0000000000000000"}):
             with self.subTest(reopen=reopen):
                 source = self.open(reopen)
                 self.assertEqual(source.reopen, reopen)
@@ -34,7 +40,8 @@ class SourcesTest(unittest.TestCase):
                 self.assertEqual((again.kind, again.settings_key), (source.kind, source.settings_key))
 
     def test_refuses_an_unknown_kind_or_device(self):
-        for reopen in ({}, {"kind": "soapy"}, {"kind": 3}, {"kind": "rtl_sdr", "device": ""},
+        for reopen in ({}, {"kind": "soapy"}, {"kind": "soapy", "args": "serial=1234"}, {"kind": "soapy", "args": 3},
+                       {"kind": "airspy"}, {"kind": 3}, {"kind": "rtl_sdr", "device": ""},
                        {"kind": "rtl_sdr", "device": " "}, {"kind": "rtl_sdr", "device": 0},
                        {"kind": "rtl_sdr", "device": "x" * 65}):
             with self.subTest(reopen=reopen), self.assertRaises(ValueError):

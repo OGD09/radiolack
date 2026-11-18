@@ -176,11 +176,14 @@ _DIRECT_INPUTS = {"q": "direct sampling, Q input", "i": "direct sampling, I inpu
 
 def receiver_line(state: Mapping[str, Any]) -> str:
     """The receiver's kind and state from its source state, such as
-    "rtl_tcp, waiting, tuner R820T, 2.048 MS/s (no answer)", with the input
+    "rtl_tcp, waiting, tuner R820T, 2.048 MS/s (no answer)", with a
+    SoapySDR device's driver, the input
     in use for shortwave once one is chosen, the converter in front of it
     and the driver's computation of the tuner's PLL once set: neither its
     address nor a frequency, its oscillator's included."""
     parts = [str(state.get("kind")), str(state.get("status"))]
+    if state.get("driver"):
+        parts.append(f"driver {state['driver']}")
     if state.get("tuner"):
         parts.append(f"tuner {state['tuner']}")
     hf_input = state.get("hf_input")

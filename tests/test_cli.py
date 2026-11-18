@@ -27,9 +27,11 @@ import radiolack
 from radiolack import cli
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST
+from radiolack.soapy import SoapySource
 from radiolack.sources import Sources
 from radiolack.updates import UpdateCheck
 import tests     # tests/__init__.py gives the test run a settings folder of its own
+from tests.fakes import stand_in_soapysdr
 
 PACKAGE_PARENT = str(Path(radiolack.__file__).resolve().parents[1])
 URL_LINE = re.compile(r"Radiolack is running at (http://127\.0\.0\.1:\d+/) ")
@@ -524,6 +526,58 @@ class SignalTest(unittest.TestCase):
         # A missing display or toolkit, never a toolkit that failed to load.
         self.assertRegex(err, r"no native window \((no graphical display|PyGObject is not "
                               r"installed|GTK 3 is not installed|WebKitGTK is not installed)\)")
+
+
+class SoapyOptionTest(unittest.TestCase):
+    """--soapy: a receiver read through SoapySDR, by device arguments that
+    name a driver; never with another receiver or --bias-tee, and only
+    with SoapySDR's Python module, here the stand-in, whose devices no
+    test declares: nothing reads them before an interface listens."""
+
+    def test_device_arguments(self):
+        for text, expected in (("driver=rtlsdr", "driver=rtlsdr"), (" driver=sdrplay,serial=1234 ",
+                                                                     "driver=sdrplay,serial=1234")):
+            with self.subTest(text=text):
+                self.assertEqual(cli.build_parser().parse_args(["--soapy", text]).soapy, expected)
+
+    def test_refuses_arguments_without_a_driver_and_other_receivers(self):
+        for argv in (["--soapy"], ["--soapy", ""], ["--soapy", "serial=1234"], ["--soapy", "driver="],
+                     ["--soapy", "driver"], ["--soapy", "driver=rtlsdr,driver=hackrf"],
+                     ["--soapy", "driver=rtlsdr", "--rtl-sdr"], ["--rtl-tcp", "--soapy", "driver=rtlsdr"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.build_parser().parse_args(argv)
+                self.assertEqual(raised.exception.code, 2)
+
+    def test_refuses_the_antenna_power(self):
+        with mock.patch.object(cli, "LocalServer") as server, contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["--ui", "none", "--soapy", "driver=rtlsdr", "--bias-tee"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--bias-tee: the antenna power of a SoapySDR device is not available yet", err.getvalue())
+        server.assert_not_called()
+
+    def test_needs_the_module(self):
+        # The tests' import guard (tests/__init__.py): SoapySDR is missing.
+        with mock.patch.object(cli, "LocalServer") as server:
+            code, out, err = run_main("--ui", "none", "--soapy", "driver=rtlsdr")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "radiolack: the SoapySDR Python module is not installed (on Debian and Ubuntu: "
+                              "python3-soapysdr)\n")
+        server.assert_not_called()
+
+    def test_opens_nothing_until_an_interface_listens(self):
+        with stand_in_soapysdr() as soapy, own_settings() as settings, \
+                mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none", "--soapy", "driver=rtlsdr")
+            self.assertEqual((soapy.searches, soapy.opened), ([], []))
+            # Opened again at the next start, without --soapy.
+            saved = json.loads(settings.read_text(encoding="utf-8"))["source"]
+        self.assertEqual((code, err), (0, ""))
+        source = server.call_args.kwargs["source"]
+        self.assertIsInstance(source, SoapySource)
+        self.assertEqual((source.args, source.status), ("driver=rtlsdr", "idle"))
+        self.assertEqual(saved, {"kind": "soapy", "args": "driver=rtlsdr"})
 
 
 if __name__ == "__main__":

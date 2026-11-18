@@ -442,7 +442,8 @@ SoapySDR devices, for the owner's HackRF One, in reception only.
    off the network, a reading thread that keeps up; measured on
    2026-11-18, rates up to 8 MS/s, the searches of four drivers, and a
    reading thread that lost no sample of the owner's V3 at 2.4 MS/s.
-2. The SoapySDR source and `--soapy`.
+2. The SoapySDR source and `--soapy`; built on 2026-11-18 against the
+   stand-in module, to check on the owner's V3 through `driver=rtlsdr`.
 3. The Receiver menu's devices, and the arguments field.
 4. Gains, overall and per stage, antenna choice, antenna power.
 5. I/Q recordings in the device's format.

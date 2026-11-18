@@ -195,7 +195,11 @@ class Source(Protocol):
     ``describe`` gives the state the interfaces show
     (docs/design/protocol.md), and the source calls ``on_change`` whenever
     that state changes. ``settings_key`` names the receiver whose settings
-    the engine saves: each key has its own. ``given`` names the settings
+    the engine saves: each key has its own. A source that learns which
+    receiver it reads once it opens it, such as a SoapySDR device's serial
+    number (soapy.py), changes its key then, and calls ``on_change``: the
+    engine then restores the settings saved for that receiver, and
+    ``reopen`` names it from then on. ``given`` names the settings
     chosen when the source was made, which saved ones do not replace.
     ``reopen`` is what opens the same receiver again (sources.py).
     ``tap`` hands the receiver's raw samples to an I/Q recording, which
@@ -307,8 +311,9 @@ class FixedSource:
     def describe(self) -> dict[str, Any]:
         centre = self.centre_hz
         return {"kind": self.kind, "status": "streaming", "detail": "", "address": None,
-                "tuner": None, "centre_hz": centre, "centre_in_use_hz": centre,
-                "sample_rate_hz": self.sample_rate_hz, "gain_db": None, "ppm": None, "gains_db": [],
+                "tuner": None, "driver": None, "centre_hz": centre, "centre_in_use_hz": centre,
+                "sample_rate_hz": self.sample_rate_hz, "sample_rates_hz": [], "gain_db": None, "ppm": None,
+                "gains_db": [],
                 "range_hz": [centre, centre], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
                 "bias_tee": None, "converter": None, "converter_lo_hz": None, "driver_pll": None, "tuner_grid": None,
                 "settable": []}
@@ -1265,6 +1270,8 @@ class Engine:
             self.close()
 
     def _source_changed(self) -> None:
+        if self.source.settings_key != self._settings_key:
+            self._identified()
         self._source_changes += 1       # a carrier's measure starts again
         for subscription in self._clients:
             subscription.changed("source")
@@ -2086,7 +2093,8 @@ class Engine:
         """Start the source in use from the settings saved for its receiver,
         apart from those it was given, and the demodulation settings saved
         with them."""
-        saved = self._receivers.get(self.source.settings_key, {})
+        self._settings_key = self.source.settings_key
+        saved = self._receivers.get(self._settings_key, {})
         self._restore_source(saved.get("source"))
         described = self.source.describe()
         # Unless saved, the VFO starts a quarter of the span above the centre, clear of the DC spike.
@@ -2095,6 +2103,31 @@ class Engine:
         self._restore_demod(saved.get("demod"))
         self._capture = None
         self.source.on_change = self._source_changed
+
+    def _identified(self) -> None:
+        """The source in use has learnt which receiver it reads (``Source``):
+        what was kept under its former key, which named no receiver, goes;
+        the settings saved for that receiver, if any, apply, as at a switch,
+        and the receiver opens by its new ``reopen`` from now on."""
+        former, self._settings_key = self._settings_key, self.source.settings_key
+        self._receivers.pop(former, None)
+        self._reopen[self.source.kind] = self.source.reopen
+        saved = self._receivers.get(self._settings_key)
+        log.info("the %s source reads %s", self.source.kind, self._settings_key)
+        if not isinstance(saved, dict):
+            return
+        # A scan started before, such as --scan's, which the receiver's
+        # first opening follows at once, starts again from these settings.
+        scan = "memory" if self._memory is not None else "sweep" if self._sweep is not None else None
+        self._stop_scan(None)
+        self._restore_source(saved.get("source"))
+        self._restore_demod(saved.get("demod"))
+        self._demod_changed()
+        if scan is not None:
+            try:
+                self._start_scan(scan)
+            except ValueError as error:
+                log.warning("the %s stopped: %s", "memory scan" if scan == "memory" else "sweep", error)
 
     def _receiver_settings(self) -> dict[str, Any]:
         """The settings saved for the receiver in use: while a scan runs,

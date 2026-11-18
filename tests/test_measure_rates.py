@@ -58,50 +58,6 @@ def tables_of(text):
     return tables
 
 
-class BufferTest(unittest.TestCase):
-    def test_samples_come_out_in_order(self):
-        buffer = rates.NativeBuffer(2, 10)
-        buffer.put(bytes(range(6)))
-        buffer.put(bytes(range(6, 10)))
-        self.assertEqual(len(buffer), 5)
-        self.assertEqual(buffer.take(3, 0.0), bytes(range(6)))
-        self.assertEqual(buffer.take(2, 0.0), bytes(range(6, 10)))
-        self.assertEqual(buffer.dropped, 0)
-
-    def test_a_reader_behind_loses_the_oldest(self):
-        buffer = rates.NativeBuffer(4, 3)
-        buffer.put(bytes(range(20)))        # five samples, two too many
-        self.assertEqual(buffer.dropped, 2)
-        self.assertEqual(buffer.take(3, 0.0), bytes(range(8, 20)))
-
-    def test_a_wait_for_more_than_the_capacity_keeps_what_it_waits_for(self):
-        buffer = rates.NativeBuffer(1, 2)
-        taken = []
-        waiter = rates.threading.Thread(target=lambda: taken.append(buffer.take(4, 10.0)))
-        waiter.start()
-        while buffer._wanted != 4:     # noqa: SLF001 - the waiter is waiting
-            rates.time.sleep(0.001)
-        buffer.put(b"ab")
-        buffer.put(b"cd")
-        waiter.join(10.0)
-        self.assertEqual(taken, [b"abcd"])
-        self.assertEqual(buffer.dropped, 0)
-
-    def test_a_take_that_waits_in_vain_gives_none(self):
-        buffer = rates.NativeBuffer(2, 4)
-        buffer.put(b"ab")
-        self.assertIsNone(buffer.take(2, 0.0))
-        self.assertEqual(len(buffer), 1)
-        with self.assertRaises(ValueError):
-            buffer.take(0, 0.0)
-
-    def test_only_whole_samples_go_in(self):
-        with self.assertRaises(ValueError):
-            rates.NativeBuffer(2, 4).put(b"abc")
-        with self.assertRaises(ValueError):
-            rates.NativeBuffer(0, 4)
-
-
 class FormatTest(unittest.TestCase):
     def test_each_format_comes_back_to_the_samples(self):
         samples = rates.Scene(3, 2_400_000.0).block(0, 1000)

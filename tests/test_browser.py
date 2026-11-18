@@ -35,11 +35,12 @@ from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
+from radiolack.soapy import SoapySource
 from radiolack.sources import Sources
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
 from radiolack.synthetic import Emitter, Schedule, SyntheticBand
 from radiolack.updates import UpdateResult
-from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
+from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port, stand_in_soapysdr
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 DRIVEN = ("chromium", "firefox", "webkit")      # the browsers that the tests drive
@@ -68,8 +69,8 @@ MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "
          "display": "Display", "settings": "Settings", "about": "About"}
 # The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md); the
 # notch and the noise blanker came back, working, with the listening tools (later-milestones.md,
-# section 2).
-REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr", '#src-device option[value="soapy"]',
+# section 2), and the SoapySDR entry with SoapySDR sources (section 1).
+REMOVED_CONTROLS = ("#dm-ctcss", "#dm-agc", "#dm-nr",
                     '#src-device option[value="file"]', "#src-bias", "#ds-fft", "#ds-win", "#ds-rate", "#band-group",
                     "#st-wake", "#brand", "#toolbar", "#panel", "#mem-list")
 S_ZERO, S_TOP = -104, -10   # the S-meter's scale, in dB, from its bar's left end to its right end (main.js)
@@ -589,6 +590,36 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator(receiver_setting)).to_be_disabled()
                 expect(page.locator("#src-dc")).to_be_checked()
                 expect(page.locator("#src-dc")).to_be_enabled()
+
+    def test_shows_a_soapysdr_device_with_its_rates_and_its_wait(self):
+        soapy = self.enterContext(stand_in_soapysdr())
+        device = soapy.add("test", serial="0001", hardware="test-tuner", formats=("CS8", "CF32"),
+                           rates_hz=(1_024_000.0, 2_400_000.0, 6_000_000.0),
+                           gains={"AMP": (0.0, 14.0, 14.0), "LNA": (0.0, 40.0, 8.0)})
+        source = SoapySource("driver=test", silence_s=1.0, retry_s=(0.2, 0.2))
+        url = self.serve(source=source)
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                device.present = True
+                status = page.locator("#status")
+                expect(status).to_contain_text(f"SoapySDR {DOT} 2.400 MS/s")
+                expect(status).to_contain_text(FRAME_RATE)
+                expect(page.locator("#src-device")).to_have_value("soapy")
+                expect(page.locator("#src-note")).to_have_text("test-tuner through SoapySDR, driver test.")
+                rate = page.locator("#src-rate")
+                expect(rate).to_be_enabled()
+                expect(rate.locator("option")).to_have_text(["1.024 MS/s", "2.400 MS/s", "6.000 MS/s"])
+                rate.select_option("1024000")
+                expect(status).to_contain_text(f"SoapySDR {DOT} 1.024 MS/s")
+                # Its gains stay its own until the gains per stage come.
+                expect(page.locator("#src-gain")).to_be_disabled()
+                expect(page.locator("#src-agc")).to_be_disabled()
+                expect(page.locator("#src-ppm")).to_be_enabled()
+                rate.select_option("2400000")
+                device.present = False      # unplugged: a wait, which says why
+                expect(page.locator("#src-note")).to_contain_text(
+                    "Waiting: no test device found with its serial number. Radiolack tries again by itself.")
+                expect(status).to_contain_text("Waiting for SoapySDR: ")
 
     def logo_box(self, page: Page, em_px: float) -> dict:
         """Check the logo in the page's heading, which it names Radiolack:
@@ -2483,6 +2514,11 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("synthetic")
                     expect(page.locator("#src-address")).to_be_hidden()
+                # No SoapySDR device named yet: refused, saying how to name one.
+                first.locator("#src-device").select_option("soapy")
+                expect(first.locator("#src-note")).to_contain_text(
+                    "Change refused: no SoapySDR device chosen yet: start Radiolack with --soapy")
+                expect(first.locator("#src-device")).to_have_value("synthetic")
 
     def test_the_rtl_tcp_server_address_changes_in_the_receiver_menu(self):
         # Nothing listens on these ports: the source waits, refused.

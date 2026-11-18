@@ -14,8 +14,9 @@ web page, so that a phone, a tablet or another computer can also control it
 and listen to it over the local network.
 
 **Status: early rewrite.** Radiolack reads an RTL-SDR receiver through
-rtl_tcp, which it runs itself for a receiver plugged into this computer, or
-simulates a 2 m band (synthetic I/Q computed in memory). The
+rtl_tcp, which it runs itself for a receiver plugged into this computer,
+other receivers through SoapySDR ([SoapySDR receivers](#soapysdr-receivers)),
+or simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
 spectrum and the waterfall with WebGL2 and keeps every setting in one menu
 ([The menu](#the-menu)). The Receiver menu switches between the
@@ -61,6 +62,10 @@ English, with no translations.
   the spectrum and the waterfall stay empty.
 - For an RTL-SDR receiver: rtl_tcp, which comes with librtlsdr. Debian and
   Ubuntu: `sudo apt install rtl-sdr`.
+- For a receiver through SoapySDR (`--soapy`), optional: SoapySDR's Python
+  module and the driver's module. Debian and Ubuntu:
+  `sudo apt install python3-soapysdr` and, for instance,
+  `soapysdr-module-hackrf`.
 - Windows and macOS, each with its own installer, are planned for the public
   release.
 
@@ -159,9 +164,10 @@ stops Radiolack.
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
-| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band ignores it, which Radiolack says. |
+| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device reopened ignore it, which Radiolack says; refused with `--soapy`. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
+| `--soapy ARGS` | Reads a receiver through SoapySDR instead of the source used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). Not with `--rtl-sdr`, `--rtl-tcp` or `--bias-tee`. |
 | `--version` | Prints the version. |
 
 Without a desktop window, stop Radiolack with Ctrl+C.
@@ -195,8 +201,9 @@ its page is hidden, in a background browser tab for instance, unless it
 plays audio.
 
 Exit codes: 0 after a normal stop (window closed, Ctrl+C or SIGTERM), 1 when
-the port cannot be used, when `--rtl-sdr` finds no rtl_tcp installed or when
-`--remote` cannot turn remote access on, 2 for invalid options.
+the port cannot be used, when `--rtl-sdr` finds no rtl_tcp installed, when
+`--soapy` finds no SoapySDR Python module or when `--remote` cannot turn
+remote access on, 2 for invalid options.
 
 ### The menu
 
@@ -242,7 +249,9 @@ Radiolack reads RTL-SDR receivers through rtl_tcp. The Receiver menu's
 list switches between the simulated band ("Synthetic band (2 m)"),
 a receiver plugged into this computer ("RTL-SDR · this computer") and a
 receiver behind an rtl_tcp server ("RTL-SDR · rtl_tcp"), for every open
-interface; its other entries are not available yet. Each keeps its own
+interface, and a receiver read through SoapySDR ("SoapySDR device",
+[SoapySDR receivers](#soapysdr-receivers)); its other entries are not
+available yet. Each keeps its own
 settings, demodulation included, and Radiolack opens the one used last at
 the next start. "RTL-SDR · this computer" opens the receiver used last, the
 first one plugged in the first time, and "RTL-SDR · rtl_tcp" connects to
@@ -708,6 +717,51 @@ Limits:
   0.6 Hz at the edge of a 2.4 MS/s span. An R820T or R828D corrects none of
   it, but Radiolack scales the VFO's distance from the centre: the carrier
   measured at the VFO keeps no more.
+
+## SoapySDR receivers
+
+Radiolack reads other receivers through SoapySDR, such as an SDRplay, a
+HackRF or an Airspy, and an RTL-SDR too, with SoapySDR's Python module
+(`python3-soapysdr`) and the driver's own module installed. Name the
+receiver by its SoapySDR device arguments, which must name a driver:
+
+```bash
+radiolack --soapy driver=sdrplay
+```
+
+- `driver=rtlsdr,serial=00000001` picks one receiver among several of a
+  driver. A driver is required so that no search reaches the network:
+  without one, SoapySDR asks every module to search, its remote module
+  included.
+- Radiolack opens the receiver when an interface opens or a scan starts,
+  and releases it once none is open and no scan runs, as for an RTL-SDR
+  on this computer. Once found, the receiver is known by its driver and
+  serial number: its settings are saved under them, and the next start
+  without `--soapy` opens that receiver again.
+- The Receiver menu shows "SoapySDR device", with the receiver's name and
+  driver once it opens. Its sample rates are those the receiver offers, up
+  to 8 MS/s, which the engine holds; where the receiver has an analogue
+  filter, Radiolack sets it to the nearest bandwidth at or below 0.8 times
+  the sample rate. A receiver with one gain stage takes the gain slider
+  and automatic gain where it has one; one with several, such as a
+  HackRF's, keeps its own gains for now. The frequency correction works as
+  for an RTL-SDR: a receiver that corrects itself takes the nearest whole
+  ppm, and Radiolack the rest.
+- Without the Python module, `--soapy` says which package to install and
+  exits; a SoapySDR receiver reopened at start waits, saying the same, and
+  tries again by itself once it is installed. An unplugged or silent
+  receiver is a wait too, with its reason in the Receiver menu and the
+  status line, tried again by itself.
+- Radiolack opens the receiver's receive stream and nothing else. Its
+  overflows, the samples dropped when the computer falls behind and the
+  blocks that took longer than their period go to the error output at most
+  once a minute.
+- Not yet: the list of the receivers found and the arguments field in the
+  Receiver menu (until then, choosing "SoapySDR device" there works only
+  once `--soapy` has named a receiver), gains per stage, antenna sockets,
+  antenna power (`--bias-tee` is refused with `--soapy`), the receiver's
+  other settings and I/Q recordings, which Radiolack refuses for a
+  SoapySDR receiver.
 
 ## Demodulation and audio
 
@@ -1417,7 +1471,10 @@ ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080 --scan mem
 ```
 
 The service's command leaves out `--bias-tee`: for an active antenna that
-needs the receiver's power, add it there.
+needs the receiver's power, add it there. For a receiver read through
+SoapySDR, put `--soapy ARGS` in place of `--rtl-sdr`: the sandbox opens USB
+devices only, so a driver that talks to a service of its own, such as
+SDRplay's API, may not work there.
 
 It runs as a user of its own, which systemd makes at each start
 (`DynamicUser`), in the plugdev group that the receivers' device rules let
@@ -1570,7 +1627,11 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 The tests need no receiver and open no window or browser (the browser tests
 below run only on request); their servers listen on ephemeral ports, and
 they use a temporary settings folder, recordings folder and GnuPG home,
-never yours; they record only the fake rtl_tcp and synthetic signals. Where
+never yours; they record only the fake rtl_tcp and synthetic signals.
+SoapySDR receivers are tested against a stand-in for SoapySDR's Python
+module (`tests/soapysdr/SoapySDR.py`): within the tests, `import SoapySDR`
+finds the stand-in or nothing, never the real module, and a test fails if
+anything asks the stand-in for a transmit direction. Where
 dpkg-deb is installed, they also build the Debian package twice in a
 temporary folder, compare the builds and run the package's command, check
 its service with systemd-analyze where it is installed, and run its
@@ -1891,6 +1952,8 @@ src/radiolack/
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you,
                 an R820T's or R828D's grid, and their raw samples for an I/Q
                 recording
+  soapy.py      receivers through SoapySDR: device arguments, what the
+                device offers, the reading thread and its buffer
   r82xx.py      rtl-sdr's two computations of an R820T's PLL, ported from
                 rtl-sdr (GPL-2.0-or-later), and the tuner's grid
   converter.py  a converter in front of a receiver: frequencies on the air
