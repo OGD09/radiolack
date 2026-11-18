@@ -23,6 +23,7 @@ import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, strip
 import { modeRateNote } from './rates.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
+import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
   tunerNoteShown } from './calibration.js';
@@ -2028,7 +2029,6 @@ function bindRange(id, key, fmt, after) {
 // source can move to another server address. DC removal is the engine's own
 // setting for any source.
 let manualGainDb = null;    // the last manual gain, offered again when automatic gain is turned off
-const nearestIndex = (values, v) => values.reduce((best, x, i) => (Math.abs(x - v) < Math.abs(values[best] - v) ? i : best), 0);
 function sourceNote() {
   if (!source) return '';
   let text = '';
@@ -2051,6 +2051,7 @@ function sourceNote() {
     else if (source.status !== 'streaming') text += ' Connecting…';
   }
   if (sourceError) text += ` Change refused: ${sourceError}.`;
+  else if (source.deviceRefusal) text += ` Change refused: ${source.deviceRefusal}.`;
   return text.trim();
 }
 // The rates the receiver offers, when its state lists them; otherwise the
@@ -2143,7 +2144,35 @@ function syncSource() {
   const dcEl = $('#src-dc');
   dcEl.checked = Boolean(source?.dcRemoval);
   dcEl.disabled = !settable.has('dc_removal');
+  syncDeviceControls(settable);
 }
+// A SoapySDR device's antenna sockets and Advanced section (advanced.js).
+const advancedHandlers = {
+  onStage: (name, gainDb) => { if (!stream.sendSource({ stageGainsDb: { [name]: gainDb } })) syncSource(); },
+  onSetting: (key, value) => { if (!stream.sendSource({ deviceSettings: { [key]: value } })) syncSource(); },
+  typing: (el) => document.activeElement === el,
+};
+function syncDeviceControls(settable) {
+  const view = advancedView(source);
+  const antennaField = $('#src-antenna-field');
+  if (antennaField.hidden !== !view.antennaShown) antennaField.hidden = !view.antennaShown;
+  const antennaEl = $('#src-antenna');
+  const names = view.antennas.join('\n');
+  if (antennaEl.dataset.options !== names) {
+    antennaEl.replaceChildren(...view.antennas.map((name) => new Option(name, name)));
+    antennaEl.dataset.options = names;
+  }
+  if (antennaEl.value !== view.antenna) antennaEl.value = view.antenna;
+  antennaEl.disabled = !settable.has('antenna');
+  const section = $('#src-advanced');
+  if (section.hidden !== !view.shown) section.hidden = !view.shown;
+  renderAdvanced($('#src-advanced-controls'), view, streamState === 'open',
+    { stages: settable.has('stage_gains_db'), settings: settable.has('device_settings') }, advancedHandlers);
+}
+$('#src-antenna').addEventListener('change', (e) => {
+  const antenna = e.target.value;
+  if (!source || antenna === source.antenna || !stream.sendSource({ antenna })) syncSource();
+});
 // SoapySDR devices: the devices the engine's search found, with the one in
 // use, Search again and the device arguments, the last two on this
 // computer's interfaces only. The engine searches when this computer's

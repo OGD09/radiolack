@@ -38,7 +38,8 @@ const CLOSE_NOT_PAIRED = 4001;  // a remote device that is not paired, or no lon
 const CLOSE_REMOTE_OFF = 4002;  // the computer turned remote access off
 const SOURCE_STATUSES = ['connecting', 'streaming', 'waiting', 'idle'];
 const SETTINGS = ['address', 'hf_input', 'converter_lo_hz', 'converter', 'centre_hz', 'sample_rate_hz', 'gain_db',
-  'ppm', 'driver_pll', 'rtl_agc', 'bias_tee', 'dc_removal'];
+  'stage_gains_db', 'antenna', 'ppm', 'device_settings', 'driver_pll', 'rtl_agc', 'bias_tee', 'dc_removal'];
+const SETTING_TYPES = ['bool', 'choice', 'number'];
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
@@ -409,7 +410,34 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * @typedef {'address' | 'hf_input' | 'converter_lo_hz' | 'converter' | 'centre_hz' | 'sample_rate_hz' | 'gain_db'
- *   | 'ppm' | 'driver_pll' | 'rtl_agc' | 'bias_tee' | 'dc_removal'} Setting
+ *   | 'stage_gains_db' | 'antenna' | 'ppm' | 'device_settings' | 'driver_pll' | 'rtl_agc' | 'bias_tee'
+ *   | 'dc_removal'} Setting
+ */
+
+/**
+ * One of a SoapySDR device's several gain stages, under the device's name.
+ * @typedef {object} GainStage
+ * @property {string} name
+ * @property {number[]} gainsDb   the gains it offers, lowest first
+ */
+
+/**
+ * A SoapySDR device's value of one of its settings.
+ * @typedef {boolean | number | string} DeviceValue
+ */
+
+/**
+ * One of a SoapySDR device's settings, as the device describes it: a box,
+ * a choice among options, or a number within a range. Its texts are the
+ * device's, shown as text.
+ * @typedef {object} DeviceSetting
+ * @property {string} key
+ * @property {string} name
+ * @property {string} description
+ * @property {'bool' | 'choice' | 'number'} type
+ * @property {{ value: string, name: string }[]} options    a choice's
+ * @property {[number, number, number] | null} range         a number's lowest, highest and step (0: any)
+ * @property {boolean} integer                               a number in whole units
  */
 
 /**
@@ -431,7 +459,14 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number | null} gainDb     null: automatic gain, or no gain setting
  * @property {number | null} ppm        frequency correction, parts per million to the hundredth; null: none
  * @property {boolean} dcRemoval        the engine takes a constant offset off the samples
- * @property {number[]} gainsDb         manual gains the tuner offers, lowest first
+ * @property {number[]} gainsDb         manual gains the tuner offers, lowest first; a SoapySDR device's overall gains
+ * @property {GainStage[]} gainStages   a SoapySDR device's several gain stages; empty: one or none
+ * @property {Record<string, number>} stageGainsDb  each stage's gain, by name
+ * @property {string | null} antenna    a SoapySDR device's antenna socket in use
+ * @property {string[]} antennas        its sockets, when it has several; empty otherwise
+ * @property {Record<string, DeviceValue>} deviceSettings  a SoapySDR device's settings' values, by key
+ * @property {DeviceSetting[]} deviceSettingInfo           those settings, as the device describes them
+ * @property {string | null} deviceRefusal what the device refused last, until the next change
  * @property {[number, number]} rangeHz centre frequencies the source takes
  * @property {string | null} hfInput    what an RTL-SDR uses for shortwave: "none", "q", "i" or "tuner";
  *                                      null: a source without it
@@ -456,6 +491,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} [centreHz]
  * @property {number} [rateHz]
  * @property {number | null} [gainDb]   null: automatic gain
+ * @property {Record<string, number>} [stageGainsDb]   some stages' gains, by name
+ * @property {string} [antenna]         one of SourceState.antennas
+ * @property {Record<string, DeviceValue>} [deviceSettings]  some of the device's settings, by key
  * @property {number} [ppm]             from -100 to 100, to the hundredth
  * @property {string} [hfInput]         one of SourceState.hfInputs
  * @property {boolean} [rtlAgc]
@@ -610,11 +648,67 @@ export function decodeDemod(message) {
 }
 
 /**
+ * A SoapySDR device's gain stages, antenna sockets and settings from a
+ * source state: what is malformed, or missing in an older engine's state,
+ * reads as nothing, the rest of the state unaffected.
+ * @param {any} m  a parsed JSON message of type "source"
+ */
+export function decodeDeviceParts(m) {
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @param {unknown} value @returns {value is string} */
+  const text = (value) => typeof value === 'string';
+  /** @param {unknown} value */
+  const object = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+  /** @type {GainStage[]} */
+  const gainStages = Array.isArray(m.gain_stages) ? m.gain_stages
+    .filter((/** @type {any} */ s) => object(s) && text(s.name) && Array.isArray(s.gains_db) && s.gains_db.length > 0
+      && s.gains_db.every(finite))
+    .map((/** @type {any} */ s) => ({ name: s.name, gainsDb: s.gains_db.slice() })) : [];
+  /** @type {Record<string, number>} */
+  const stageGainsDb = {};
+  if (object(m.stage_gains_db)) {
+    for (const [name, gain] of Object.entries(m.stage_gains_db)) if (finite(gain)) stageGainsDb[name] = /** @type {number} */ (gain);
+  }
+  const antennas = Array.isArray(m.antennas) && m.antennas.every(text) ? m.antennas.slice() : [];
+  /** @type {DeviceSetting[]} */
+  const deviceSettingInfo = Array.isArray(m.device_setting_info) ? m.device_setting_info
+    .filter((/** @type {any} */ s) => object(s) && text(s.key) && text(s.name) && text(s.description)
+      && SETTING_TYPES.includes(s.type) && Array.isArray(s.options)
+      && s.options.every((/** @type {any} */ o) => object(o) && text(o.value) && text(o.name))
+      && (s.range === null || (Array.isArray(s.range) && s.range.length === 3 && s.range.every(finite)))
+      && (s.type !== 'choice' || s.options.length > 0) && (s.type !== 'number' || s.range !== null))
+    .map((/** @type {any} */ s) => ({
+      key: s.key, name: s.name, description: s.description, type: s.type,
+      options: s.options.map((/** @type {any} */ o) => ({ value: o.value, name: o.name })),
+      range: s.range === null ? null : [s.range[0], s.range[1], s.range[2]], integer: s.integer === true,
+    })) : [];
+  /** @type {Record<string, DeviceValue>} */
+  const deviceSettings = {};
+  if (object(m.device_settings)) {
+    for (const [key, value] of Object.entries(m.device_settings)) {
+      if (typeof value === 'boolean' || finite(value) || text(value)) deviceSettings[key] = /** @type {DeviceValue} */ (value);
+    }
+  }
+  return {
+    gainStages,
+    stageGainsDb,
+    antenna: text(m.antenna) ? m.antenna : null,
+    antennas,
+    deviceSettings,
+    deviceSettingInfo,
+    deviceRefusal: text(m.device_refusal) && m.device_refusal ? m.device_refusal : null,
+  };
+}
+
+/**
  * Decode a source state message. Returns null when a field is missing or
  * malformed; settings this interface does not know are left out. The
  * shortwave, antenna power, converter, driver and sample rates fields,
  * which an engine older than them does not send, read as a source without
- * them; so does a converter that this interface does not know.
+ * them; so does a converter that this interface does not know. A SoapySDR
+ * device's stages, sockets and settings read as `decodeDeviceParts` reads
+ * them.
  * @param {any} message  a parsed JSON message of type "source"
  * @returns {SourceState | null}
  */
@@ -662,6 +756,7 @@ export function decodeSource(message) {
     ppm: m.ppm,
     dcRemoval: m.dc_removal,
     gainsDb: m.gains_db.slice(),
+    ...decodeDeviceParts(m),
     rangeHz: [m.range_hz[0], m.range_hz[1]],
     hfInput: m.hf_input ?? null,
     hfInputs: Array.isArray(m.hf_inputs) ? m.hf_inputs.filter((/** @type {string} */ input) => HF_INPUTS.includes(input)) : [],
@@ -1172,13 +1267,16 @@ export class EngineStream {
    * @returns {boolean}
    */
   sendSource(changes) {
-    /** @type {Record<string, string | number | boolean | null>} */
+    /** @type {Record<string, string | number | boolean | null | Record<string, DeviceValue>>} */
     const message = { type: 'source' };
     if (changes.kind !== undefined) message.kind = changes.kind;
     if (changes.address !== undefined) message.address = changes.address;
     if (changes.centreHz !== undefined) message.centre_hz = changes.centreHz;
     if (changes.rateHz !== undefined) message.sample_rate_hz = changes.rateHz;
     if (changes.gainDb !== undefined) message.gain_db = changes.gainDb;
+    if (changes.stageGainsDb !== undefined) message.stage_gains_db = changes.stageGainsDb;
+    if (changes.antenna !== undefined) message.antenna = changes.antenna;
+    if (changes.deviceSettings !== undefined) message.device_settings = changes.deviceSettings;
     if (changes.ppm !== undefined) message.ppm = changes.ppm;
     if (changes.hfInput !== undefined) message.hf_input = changes.hfInput;
     if (changes.rtlAgc !== undefined) message.rtl_agc = changes.rtlAgc;

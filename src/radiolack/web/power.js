@@ -1,7 +1,8 @@
 /*
  * Antenna power (bias tee) in the Receiver menu: 4.5 V on the antenna
- * socket of an RTL-SDR Blog V3 or V4. Turning it on takes a second press,
- * which says what it does; turning it off is immediate.
+ * socket of an RTL-SDR Blog V3 or V4, or the power that a SoapySDR device
+ * puts on its socket, as its setting declares it. Turning it on takes a
+ * second press, which says what it does; turning it off is immediate.
  */
 
 /** How long the first press waits for the second, ms. */
@@ -9,6 +10,9 @@ export const POWER_CONFIRM_MS = 5000;
 
 /** What turning the power on does, shown on the button that waits for the second press. */
 export const POWER_WARNING = '4.5 V on the antenna socket';
+
+/** The same for a SoapySDR device, whose voltage its module does not say. */
+export const DEVICE_POWER_WARNING = 'power on the antenna socket';
 
 /**
  * The antenna power's control for a source state.
@@ -33,9 +37,10 @@ export function powerView(source, armed) {
     return { shown: true, on: true, state: 'on', button: 'Turn off', label: 'Turn the antenna power off' };
   }
   if (armed) {
+    const warning = source.kind === 'soapy' ? DEVICE_POWER_WARNING : POWER_WARNING;
     return {
-      shown: true, on: false, state: 'off', button: `Confirm: ${POWER_WARNING}`,
-      label: `Confirm turning the antenna power on: ${POWER_WARNING}`,
+      shown: true, on: false, state: 'off', button: `Confirm: ${warning}`,
+      label: `Confirm turning the antenna power on: ${warning}`,
     };
   }
   return { shown: true, on: false, state: 'off', button: 'Turn on', label: 'Turn the antenna power on' };

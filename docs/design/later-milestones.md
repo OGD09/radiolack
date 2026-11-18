@@ -288,12 +288,13 @@ additions); pull requests 3 to 6 rely on these:
   else the device's own gain at its opening. Several stages, as a HackRF's
   or an SDRplay's: the device's own gains, `gain_db` not settable and
   null, `gains_db` empty, until pull request 4: one overall value spread
-  across stages would be a choice that pull request makes.
+  across stages would be a choice that pull request makes (made since:
+  pull request 4, below).
 - **`--bias-tee` with `--soapy`** is refused at parse time (status 2):
   the source has no antenna power yet, and a service started so would run
   without the power it asks for. A SoapySDR source reopened from the saved
   record with `--bias-tee` alone is ignored, saying so, as the simulated
-  band is.
+  band is. Pull request 4 accepts it (below).
 - **Reporting.** Device overflows, samples the buffer dropped and blocks
   that took the engine longer than their period (the time between one read
   that gave samples and the next, under 2 s, a longer one being a pause)
@@ -382,6 +383,149 @@ As built, pull request 3 (`soapysearch.py`, the devices state and the
   the arguments field's `driver=rtlsdr` checks that the field opens it and
   that the list shows it in use; the listed drivers' searches with real
   modules await their receivers.
+
+As built, pull request 4 (gains, sockets, settings and antenna power in
+`soapy.py`, the stand-in's devices, `advanced.js`); pull requests 5 and 6
+rely on these:
+
+- **Gains.** One stage: as pull request 2 built it. Several: `gain_db`
+  becomes the overall gain, through SoapySDR's `setGain(RX, 0, value)`,
+  which the device's module spreads across its stages, and
+  `stage_gains_db` each stage's, by the device's names; after either, the
+  reading thread reads back every stage and the overall gain, which the
+  state then shows. A message that changes stages moves them, and the
+  overall gain follows; the overall gain moves when no stage changed. At
+  an opening, only the stages that differ from what the device holds are
+  written. The overall range is the module's `getGainRange(RX, 0)`, or
+  the stages' sum where the binding lacks it, offered in 1 dB steps unless
+  it declares others. Automatic gain where the device has a gain mode, as
+  for one stage. The gains are saved with the device; a saved stage that
+  the module no longer declares is ignored.
+- **The HackRF's amplifier**, the decision left to this pull request: a
+  stage named in `soapy.HELD_STAGES`, `AMP` alone, starts at its lowest at
+  every opening without saved gains, whatever the device's default, and
+  only its own slider moves it. SoapyHackRF's overall gain turns AMP on
+  above 51 dB, as its code was remembered, so on a device with a held
+  stage the overall gain never goes through the module's spread: the
+  source spreads the value less the held stages' gain over the other
+  stages itself, each in the order the device lists them taking what the
+  next ones leave, as SoapySDR's default spread does (`_overall`). This
+  departs from "no distribution of Radiolack's own" for that case only: a
+  first version that let the module spread the gain and then put AMP back
+  wrote AMP on for a moment, which the stand-in's log of writes showed.
+  The overall gains offered then run from the held stages' gain to the
+  other stages' highest plus it: 0 to 102 dB with AMP off, 14 to 116 dB
+  with it on. Whether SoapyHackRF spreads as remembered, and lists its
+  stages as LNA, AMP and VGA with those ranges, is for the owner's check.
+- **SDRplay's stages**, `IFGR` and `RFGR` in SoapySDRPlay3 as remembered,
+  are gain reductions: the Advanced section shows them under those names,
+  where more is less gain. What the module makes of an overall gain, which
+  it may take as a reduction or spread otherwise, is to read on the
+  RSPdx-R2, as are its stages' ranges and its settings' keys and types.
+- **Antenna sockets**: `listAntennas` with more than one name becomes
+  `antenna` and `antennas` (16 at most), the device's own choice until
+  changed, then saved; one socket or none shows nothing.
+- **Settings.** `getSettingInfo()`, the device's, then
+  `getSettingInfo(RX, 0)`, the receive channel's, become
+  `device_setting_info` and `device_settings`, 32 at most: a boolean is a
+  box; a setting with options, a choice, kept only when every option is a
+  printable name of 64 characters at most, named by `optionNames` or by
+  its value; an integer or a float with a range, a number on its steps. A
+  free text without options is left out, the decision left to this pull
+  request: the module parses it as it likes, so no check of Radiolack's
+  can make it harmless, and none of the three modules checked declares
+  one that matters; a number without a range is left out too. A setting
+  named for transmission (a word of its key or name starting with `tx` or
+  `transmit`) is never shown nor written, nor anything of a transmit
+  channel; antenna power never shows there. Names and descriptions are
+  cleaned of control characters and cut at 64 and 300 characters, and
+  the interface sets them as text. Each starts at the device's value,
+  read at its opening; the state, and so the saved record, holds every
+  value the device shows, and a later opening writes those that differ.
+  The reading thread writes a change between two reads, as text
+  (`true`/`false`, the option, the number), reads it back and keeps what
+  the device gives; a refusal keeps the value the device holds and shows
+  in `device_refusal`, which the Receiver menu's note shows as the other
+  refusals, until the next change. A key or a stage that the device does
+  not declare is ignored once the device is known, so that a saved record
+  outlives a module's update; before, anything of a JSON type passes,
+  which the opening fits.
+- **Antenna power.** A setting whose key or name, lower case with its
+  letters and digits alone, holds `bias`, `antennapower` or `antpower`
+  (`soapy.is_antenna_power`; wide on purpose, erring towards power) is
+  antenna power: `biastee` (RTL-SDR), `bias_tx` (HackRF, which powers the
+  socket in reception too) and `biasT_ctrl` (SDRplay). Off is a boolean's
+  `false`, a choice's option that says off (`off`, `0`, `false`, `no`,
+  `disabled`), or 0 within a number's range, on likewise; one whose off
+  value cannot be told is left as it is, with a warning, and never
+  written. Every such setting is written off as soon as the capabilities
+  are read, before the stream is set up, and in the session's `finally`
+  before the stream and the device are closed: at a close, when nobody
+  reads, after an error, an unplugged device included. `bias_tee` is on
+  only when asked: the interface's second press, or `--bias-tee`, now
+  accepted with `--soapy`, which the engine gives the source before the
+  device opens and the source applies once it does, or ignores with a
+  warning for a device without antenna power. Asked since the start, it
+  comes back on at the next opening, after the off. Never saved: the
+  engine's `UNSAVED_SETTINGS`, and a `biastee` in a saved record's
+  `device_settings` is dropped as an unknown key. Several such settings,
+  the other decision left here: all are off at the opening and at the
+  release, and `bias_tee` drives one, the receive channel's before the
+  device's, one not named for transmission before one that is, then the
+  first declared; the log names the others.
+- **Shortwave input**, the decision left here: an RTL-SDR's
+  `direct_samp` stays a choice in the Advanced section (Off, I-ADC,
+  Q-ADC) rather than becoming `hf_input`. The shortwave input's rules (the
+  centre brought within the new reach, the RTL2832's AGC, the tuner's gain
+  greyed, the range below the tuner's) rest on what librtlsdr does behind
+  rtl_tcp; through the module they would depend on how SoapyRTLSDR
+  declares its range and treats `setFrequency` in direct sampling, which
+  nothing here can read: out of proportion for a receiver that has the
+  rtl_tcp entries with the whole behaviour. The source reads the range
+  once, at opening: whether the module's range lets a centre below
+  24 MHz be asked while `direct_samp` is on is for the owner's check, and
+  until then shortwave on an RTL-SDR goes through those entries.
+- **Protocol**: version 6 stays (protocol.md, Versions): the new fields
+  are optional, an older interface leaves out the settings it does not
+  know and ignores the fields, and its gain slider and antenna power
+  button keep working, the second press naming an RTL-SDR's 4.5 V.
+- **Remote clients** receive the same state and may change the gains, the
+  socket, the settings and the antenna power, as they may an RTL-SDR's:
+  `engine.LOCAL_SETTINGS` stays `address` alone.
+- **The Receiver menu**: "Antenna socket" under the converter for a
+  device with several; the Advanced section at the menu's bottom, one
+  slider per stage then the settings, each with its description as a
+  note; "Tuner gain" for the overall gain; the antenna power's second
+  press says "Confirm: power on the antenna socket", without a voltage.
+  `advanced.js` (typed) holds the view and builds the controls, made anew
+  only when the device's controls change, their values written only where
+  they differ; `main.js` wires them.
+- **The stand-in** declares stages with ranges, steps and gains at
+  opening, an overall spread (SoapySDR's default or a module's), a gain
+  mode, sockets, settings of each type, the device's and the channel's,
+  refusals, and the order of writes and closes (`events`). Its three
+  shapes: `hackrf_one`, `rspdx_r2` and `rtl_sdr`. The RTL-SDR's settings
+  are those SoapyRTLSDR 0.3.3 declared on the owner's V3 (keys, names,
+  types, values and options; one antenna, `RX`; driver key `RTLSDR`),
+  their descriptions and `direct_samp`'s option names as the module's code
+  was remembered; the HackRF's and the RSPdx-R2's are remembered, to be
+  read on the devices.
+- **Unchanged**: the order of the first settings at an opening, sample
+  rate, correction, then frequency, for which librtlsdr prints "[R82XX]
+  PLL not locked!" twice, harmlessly, as the tuner is set before its
+  first frequency.
+- **Not checked on a receiver**: the stand-in only. The owner's V3
+  through `driver=rtlsdr` checks the TUNER slider and automatic gain, the
+  settings that show (direct sampling, offset tuning, I/Q swap, digital
+  AGC) and that `biastee` is the antenna power, off at opening, on at the
+  second press, off at release; the HackRF and the RSPdx-R2 the rest when
+  they come.
+- **Left for later**: I/Q recordings in the device's format (pull request
+  5); the package, the service notes and CI (pull request 6); `sdrplay`
+  among the searched drivers. The "Tuner AGC" box is enabled for a
+  SoapySDR device without a gain mode, whose engine then refuses
+  automatic gain, saying so, as since pull request 2: the state does not
+  say whether a device has one.
 
 ### Done when
 

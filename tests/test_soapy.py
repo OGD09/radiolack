@@ -7,6 +7,7 @@ tests wait for what they check, within generous limits, and never measure
 a time."""
 
 import asyncio
+import dataclasses
 import json
 import logging
 import math
@@ -23,7 +24,8 @@ from radiolack import soapy as soapy_source
 from radiolack.demod import FRAME_KIND_AUDIO
 from radiolack.engine import Engine
 from radiolack.soapy import (FORMATS, MISSING, Capabilities, Losses, NativeBuffer, SoapySource, args_text,
-                             load_module, module_problem, parse_args)
+                             is_antenna_power, load_module, module_problem, parse_args, read_capabilities,
+                             transmit_named)
 from radiolack.sources import Sources
 from radiolack.store import SETTINGS_FILE, Store
 from tests.fakes import STAND_IN_SOAPYSDR, stand_in_soapysdr
@@ -162,12 +164,21 @@ class ModuleTest(unittest.TestCase):
             with stand_in_soapysdr() as soapy:
                 soapy.add("test")
                 device = soapy.Device("driver=test")
-                for call in (lambda: device.setupStream(soapy.SOAPY_SDR_TX, "CS8"),
-                             lambda: device.writeStream(None, [], 0)):
+                transmit = soapy.SOAPY_SDR_TX
+                for call in (lambda: device.setupStream(transmit, "CS8"),
+                             lambda: device.writeStream(None, [], 0),
+                             lambda: device.getGainRange(transmit, 0),
+                             lambda: device.listAntennas(transmit, 0),
+                             lambda: device.setAntenna(transmit, 0, "TX"),
+                             lambda: device.getSettingInfo(transmit, 0),
+                             lambda: device.readSetting(transmit, 0, "bias_tx"),
+                             lambda: device.writeSetting(transmit, 0, "bias_tx", "true")):
                     try:
                         call()
-                    except AssertionError:
+                    except soapy.TransmitRequested:
                         pass        # as code under test might
+                    else:
+                        self.fail("the stand-in took a transmit direction")
 
 
 class FormatTest(unittest.TestCase):
@@ -402,9 +413,10 @@ class SourceTest(SourceCase):
         source = self.source("driver=test,index=0")
         self.assertEqual(source.settings_key, "soapy driver=test,index=0")
         before = source.describe()
-        self.assertEqual((before["driver"], before["tuner"], before["settable"]),
+        # Until it is known, every setting, which its opening fits, and no antenna power shown.
+        self.assertEqual((before["driver"], before["tuner"], before["settable"], before["bias_tee"]),
                          ("test", None, ["converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db",
-                                         "ppm"]))
+                                         "stage_gains_db", "antenna", "ppm", "device_settings", "bias_tee"], None))
         await self.samples(source)
         state = source.describe()
         self.assertEqual(state, {
@@ -413,6 +425,8 @@ class SourceTest(SourceCase):
             "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "ppm": 0.0, "gains_db": state["gains_db"],
             "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
             "bias_tee": None, "converter": "none", "converter_lo_hz": 125e6, "driver_pll": None, "tuner_grid": None,
+            "gain_stages": [], "stage_gains_db": {}, "antenna": None, "antennas": [], "device_settings": {},
+            "device_setting_info": [], "device_refusal": None,
             "settable": ["converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db", "ppm"]})
         self.assertEqual(state["gains_db"][-1], 49.6)
         # Its settings under its driver and serial number, by which it opens again.
@@ -449,7 +463,7 @@ class SourceTest(SourceCase):
                 self.assertEqual(self.soapy.opened[0].bandwidth_hz, expected)
                 await self.closed(source)
 
-    async def test_one_gain_stage_takes_the_gain_and_several_keep_their_own(self):
+    async def test_one_gain_stage_takes_the_gain(self):
         device = self.device(gains={"TUNER": (0.0, 40.0, 1.0)}, gain_mode=True)
         source = self.source()
         await self.samples(source)
@@ -468,16 +482,6 @@ class SourceTest(SourceCase):
         with self.assertRaisesRegex(ValueError, "no automatic gain"):
             source.configure({"gain_db": None})
         await self.closed(source)
-        # Several stages: their own gains, until the gains per stage come.
-        self.soapy.reset()
-        self.device(gains={"AMP": (0.0, 14.0, 14.0), "LNA": (0.0, 40.0, 8.0), "VGA": (0.0, 62.0, 2.0)})
-        source = self.source()
-        await self.samples(source)
-        state = source.describe()
-        self.assertEqual((state["gain_db"], state["gains_db"], "gain_db" in state["settable"]), (None, [], False))
-        with self.assertRaisesRegex(ValueError, "unknown setting: gain_db"):
-            source.configure({"gain_db": 20})
-        self.assertEqual(self.soapy.opened[0].gain_db, {"AMP": 0.0, "LNA": 0.0, "VGA": 0.0})
         self.assertIsNotNone(device)
 
     async def test_the_correction_goes_to_the_device_only_where_it_takes_one(self):
@@ -757,6 +761,415 @@ class EngineTest(SourceCase):
             engine.configure_recording({"iq": True}, subscription)
         self.assertIsNone(engine.recording_state()["iq"])
         self.assertEqual(list(folder.glob("*")) if folder.exists() else [], [])
+
+
+    async def test_a_devices_controls_are_saved_and_its_antenna_power_never(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        self.soapy.rspdx_r2()
+        key = "soapy sdrplay 2305012345"
+
+        async def run(**changes) -> tuple[dict, object]:
+            engine = Engine(self.source("driver=sdrplay"), sources=Sources(), store=Store(directory))
+            task = asyncio.ensure_future(engine.run())
+            subscription = engine.subscribe()
+            await eventually(lambda: engine.state()["status"] == "streaming")
+            await eventually(lambda: engine.source.settings_key == key)
+            device = self.soapy.opened[-1]
+            if changes:
+                engine.configure(changes)
+                await eventually(lambda: device.antenna == changes["antenna"])
+            state = engine.state()
+            remote = engine.state(remote=True)["settable"]
+            engine.unsubscribe(subscription)
+            engine.close()
+            await asyncio.wait_for(task, 10)
+            await asyncio.wait_for(engine.wait_closed(), 15)
+            return {**state, "remote": remote}, device
+
+        state, _ = await run(antenna="Antenna B", stage_gains_db={"RFGR": 6}, gain_db=None,
+                             device_settings={"rfnotch_ctrl": True}, bias_tee=True)
+        # A remote client may change them all, the antenna power as on this computer.
+        for name in ("gain_db", "stage_gains_db", "antenna", "device_settings", "bias_tee"):
+            self.assertIn(name, state["remote"])
+        saved = json.loads((directory / SETTINGS_FILE).read_text(encoding="utf-8"))["receivers"][key]["source"]
+        self.assertEqual((saved["antenna"], saved["stage_gains_db"], saved["device_settings"]["rfnotch_ctrl"]),
+                         ("Antenna B", {"IFGR": 40.0, "RFGR": 6.0}, True))
+        self.assertNotIn("bias_tee", saved)
+        state, device = await run()
+        self.assertEqual((state["antenna"], state["stage_gains_db"]["RFGR"], state["device_settings"]["rfnotch_ctrl"],
+                          state["bias_tee"]), ("Antenna B", 6.0, True, False))
+        await eventually(lambda: (device.antenna, device.gain_db["RFGR"], device.setting_values["rfnotch_ctrl"])
+                         == ("Antenna B", 6.0, "true"))
+        self.assertEqual(device.setting_values["biasT_ctrl"], "false")
+
+    async def test_a_saved_file_never_turns_the_antenna_power_on(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        directory.mkdir()
+        (directory / SETTINGS_FILE).write_text(json.dumps({
+            "version": 1, "receivers": {"soapy rtlsdr 00000001": {"source": {
+                "bias_tee": True, "device_settings": {"biastee": True, "offset_tune": True}}}}}), encoding="utf-8")
+        spec = self.soapy.rtl_sdr()
+        spec.settings = tuple(dataclasses.replace(setting, value="true") if setting.key == "biastee" else setting
+                              for setting in spec.settings)
+        engine = self.engine(self.source("driver=rtlsdr"), store=Store(directory))
+        engine.subscribe()
+        await eventually(lambda: engine.source.settings_key == "soapy rtlsdr 00000001")
+        device = self.soapy.opened[-1]
+        # Restored in the same pass that would write the antenna power.
+        await eventually(lambda: "offset_tune=true" in device.events)
+        self.assertEqual(device.setting_values["biastee"], "false")
+        self.assertNotIn("biastee=true", device.events)
+        self.assertFalse(engine.state()["bias_tee"])
+
+
+def opened_capabilities(soapy, driver: str) -> Capabilities:
+    """What the stand-in's ``driver`` device offers, read as the source
+    reads it."""
+    return read_capabilities(soapy, soapy.Device({"driver": driver}), {"driver": driver})
+
+
+def plain(soapy, driver: str = "test", **settings):
+    """A stand-in device of ``driver`` with ``settings``."""
+    return soapy.add(driver, **{"rates_hz": (RATE_HZ,), "formats": ("CS8", "CF32"), **settings})
+
+
+class DeviceControlsTest(unittest.TestCase):
+    """What the source reads of a device's gain stages, antenna sockets and
+    settings, and how it checks the changes asked of them."""
+
+    def test_antenna_power_and_transmission_by_key_or_name(self):
+        for key, name in (("biastee", "Bias Tee"), ("bias_tx", "Antenna Bias"), ("biasT_ctrl", "Bias-T Enable"),
+                          ("ant_power", ""), ("x", "Antenna power"), ("BIAS", "")):
+            with self.subTest(key=key):
+                self.assertTrue(is_antenna_power(key, name))
+        for key, name in (("rfnotch_ctrl", "RF Notch Filter"), ("agc_setpoint", "AGC Setpoint"),
+                          ("direct_samp", "Direct Sampling"), ("antenna", "Antenna")):
+            with self.subTest(key=key):
+                self.assertFalse(is_antenna_power(key, name))
+        self.assertTrue(transmit_named("tx_gain", ""))
+        self.assertTrue(transmit_named("mode", "Transmit mode"))
+        self.assertTrue(transmit_named("bias_tx", "Antenna Bias"))
+        self.assertFalse(transmit_named("iq_swap", "I/Q Swap"))
+
+    def test_a_hackrf_one(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.hackrf_one()
+            offered = opened_capabilities(soapy, "hackrf")
+        self.assertEqual([(stage.name, stage.span, stage.held) for stage in offered.stages],
+                         [("LNA", (0.0, 40.0, 8.0), False), ("AMP", (0.0, 14.0, 14.0), True),
+                          ("VGA", (0.0, 62.0, 2.0), False)])
+        self.assertEqual((offered.gain_stage, offered.gain_mode, offered.overall_range),
+                         (None, False, (0.0, 116.0, 0.0)))
+        self.assertEqual(dict(offered.stage_gains_db), {"LNA": 16.0, "AMP": 14.0, "VGA": 16.0})
+        # The overall gains with the amplifier off, and on.
+        off, on = offered.overall_gains_db((("AMP", 0.0),)), offered.overall_gains_db((("AMP", 14.0),))
+        self.assertEqual((off[0], off[-1], on[0], on[-1]), (0.0, 102.0, 14.0, 116.0))
+        # One socket: no choice; its antenna power, which is no setting shown.
+        self.assertEqual((offered.antennas, offered.settings), ((), ()))
+        self.assertEqual(offered.power, (soapy_source.PowerSetting("bias_tx", False, "false", "true"),))
+        self.assertEqual(soapy_source.settable(offered),
+                         ["converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db",
+                          "stage_gains_db", "ppm", "bias_tee"])
+
+    def test_an_rspdx_r2(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.rspdx_r2()
+            offered = opened_capabilities(soapy, "sdrplay")
+        self.assertEqual([stage.name for stage in offered.stages], ["IFGR", "RFGR"])
+        self.assertTrue(offered.gain_mode)
+        self.assertEqual((offered.antennas, offered.antenna), (("Antenna A", "Antenna B", "Antenna C"), "Antenna A"))
+        self.assertEqual([setting.key for setting in offered.settings],
+                         ["rfnotch_ctrl", "dabnotch_ctrl", "hdr_ctrl", "iqcorr_ctrl", "agc_setpoint"])
+        self.assertEqual(dict(offered.setting_values), {"rfnotch_ctrl": False, "dabnotch_ctrl": False,
+                                                        "hdr_ctrl": False, "iqcorr_ctrl": True, "agc_setpoint": -30})
+        setpoint = offered.setting("agc_setpoint")
+        self.assertEqual(setpoint.describe(), {"key": "agc_setpoint", "name": "AGC Setpoint",
+                                               "description": "AGC Setpoint (dBfs)", "type": "number", "options": [],
+                                               "range": [-60.0, 0.0, 1.0], "integer": True})
+        self.assertEqual([setting.key for setting in offered.power], ["biasT_ctrl"])
+
+    def test_an_rtl_sdr(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.rtl_sdr()
+            offered = opened_capabilities(soapy, "rtlsdr")
+        self.assertEqual((offered.driver, offered.gain_stage, offered.stages, offered.antennas),
+                         ("rtlsdr", "TUNER", (), ()))
+        direct = offered.setting("direct_samp")
+        self.assertEqual((direct.kind, direct.options), ("choice", (("0", "Off"), ("1", "I-ADC"), ("2", "Q-ADC"))))
+        self.assertEqual(dict(offered.setting_values),
+                         {"direct_samp": "0", "offset_tune": False, "iq_swap": False, "digital_agc": False})
+        self.assertEqual(offered.power, (soapy_source.PowerSetting("biastee", False, "false", "true"),))
+        # Options without names: named by their values.
+        with stand_in_soapysdr() as soapy:
+            spec = soapy.rtl_sdr()
+            spec.settings = tuple(dataclasses.replace(setting, option_names=()) for setting in spec.settings)
+            direct = opened_capabilities(soapy, "rtlsdr").setting("direct_samp")
+        self.assertEqual(direct.options, (("0", "0"), ("1", "1"), ("2", "2")))
+
+    def test_what_a_device_declares_is_bounded_and_kept_as_text(self):
+        with stand_in_soapysdr() as soapy:
+            spec, info = soapy.SettingSpec, soapy.ArgInfo
+            plain(soapy, settings=(
+                spec("odd", "false", "<b>Bold</b>\n\x07name", "x" * 400),
+                spec("free", "abc", "Free text", type=info.STRING),
+                spec("loose", "1", "No range", type=info.FLOAT),
+                spec("bad_option", "a", "Bad option", type=info.STRING, options=("a", "b\nc")),
+                spec(" spaced", "false", "Spaced key"),
+                spec("level", "2", "Level", type=info.INT, range=(0.0, 10.0, 1.0), channel=True)),
+                antennas=(*(f"A{index}" for index in range(20)), "A1"),
+                gains={f"S{index}": (0.0, 10.0, 1.0) for index in range(10)})
+            plain(soapy, "many", settings=tuple(spec(f"box{index}", "false", f"Box {index}") for index in range(40)))
+            offered = opened_capabilities(soapy, "test")
+            many = opened_capabilities(soapy, "many")
+        self.assertEqual([setting.key for setting in offered.settings], ["odd", "level"])
+        odd = offered.setting("odd")
+        self.assertEqual(odd.name, "<b>Bold</b> name")      # text, which the interface shows as text
+        self.assertEqual((len(odd.description), odd.description[-1]), (soapy_source.MAX_DESCRIPTION_CHARS, "…"))
+        self.assertTrue(offered.setting("level").channel)
+        self.assertEqual(len(offered.antennas), soapy_source.MAX_ANTENNAS)
+        self.assertEqual(len(offered.stages), soapy_source.MAX_STAGES)
+        self.assertEqual(len(many.settings), soapy_source.MAX_DEVICE_SETTINGS)
+
+    def test_antenna_power_values_and_several_settings(self):
+        with stand_in_soapysdr() as soapy, self.assertLogs("radiolack.soapy", logging.INFO) as logs:
+            spec, info = soapy.SettingSpec, soapy.ArgInfo
+            plain(soapy, settings=(
+                spec("biastee", "true", "Bias Tee"),
+                spec("ant_power", "On", "Antenna power", type=info.STRING, options=("Off", "On")),
+                spec("bias_level", "1", "Bias level", type=info.INT, range=(1.0, 5.0, 1.0)),
+                spec("bias_mode", "x", "Bias mode", type=info.STRING),
+                spec("bias_tx", "1", "Antenna Bias", type=info.INT, range=(0.0, 5.0, 1.0), channel=True)))
+            offered = opened_capabilities(soapy, "test")
+        # The channel's first, then the device's in their order; none shown as a setting.
+        self.assertEqual(offered.power, (soapy_source.PowerSetting("bias_tx", True, "0", "1"),
+                                         soapy_source.PowerSetting("biastee", False, "false", "true"),
+                                         soapy_source.PowerSetting("ant_power", False, "Off", "On")))
+        self.assertEqual(offered.driven_power.key, "bias_tx")
+        self.assertEqual(offered.settings, ())
+        messages = [record.getMessage() for record in logs.records]
+        self.assertIn("the antenna power 'bias_level' is left as it is: its off value cannot be told", messages)
+        self.assertIn("the antenna power 'bias_mode' is left as it is: its off value cannot be told", messages)
+        self.assertIn("antenna power: bias_tx follows the antenna power, biastee, ant_power stay off", messages)
+
+    def test_changes_to_the_stages_antenna_and_settings_are_checked(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.rspdx_r2()
+            offered = opened_capabilities(soapy, "sdrplay")
+        settings = soapy_source.fitted(soapy_source.Settings(145e6, 2e6, None, 0.0), offered)
+        changed = soapy_source.changed(settings, {"stage_gains_db": {"RFGR": 6.4, "OTHER": 3},
+                                                  "antenna": "Antenna B",
+                                                  "device_settings": {"agc_setpoint": -40.2, "gone": True}}, offered)
+        self.assertEqual((dict(changed.stage_gains), changed.antenna, dict(changed.device_settings)["agc_setpoint"]),
+                         ({"IFGR": 40.0, "RFGR": 6.0}, "Antenna B", -40))
+        self.assertNotIn("gone", dict(changed.device_settings))
+        for changes, reason in (({"stage_gains_db": [1]}, "stages' gains must be an object"),
+                                ({"stage_gains_db": {"RFGR": "loud"}}, "the gain of RFGR"),
+                                ({"antenna": "Antenna D"}, "the antenna must be one of: Antenna A, Antenna B"),
+                                ({"antenna": 3}, "the antenna must be one of the device's"),
+                                ({"device_settings": {"hdr_ctrl": "yes"}}, "HDR Mode must be true or false"),
+                                ({"device_settings": {"agc_setpoint": 10}}, "AGC Setpoint must be from -60 to 0"),
+                                ({"device_settings": "on"}, "device's settings must be an object"),
+                                ({"bias_tee": 1}, "the antenna power must be true or false")):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, reason):
+                soapy_source.changed(settings, changes, offered)
+        # Until the device is known: any stage, socket or setting of a JSON type, which its opening fits.
+        unknown = soapy_source.changed(settings, {"stage_gains_db": {"OTHER": 3}, "antenna": "X",
+                                                  "device_settings": {"biastee": True}}, None)
+        fitted = soapy_source.fitted(unknown, offered)
+        self.assertEqual((dict(fitted.stage_gains), fitted.antenna, "biastee" in dict(fitted.device_settings)),
+                         ({"IFGR": 40.0, "RFGR": 4.0}, "Antenna A", False))
+        with self.assertRaisesRegex(ValueError, "the setting x must be true, false, a number or a short text"):
+            soapy_source.changed(settings, {"device_settings": {"x": [1]}}, None)
+
+    def test_a_held_stage_starts_at_its_lowest_unless_saved(self):
+        with stand_in_soapysdr() as soapy:
+            soapy.hackrf_one()
+            offered = opened_capabilities(soapy, "hackrf")
+        start = soapy_source.Settings(145e6, 2.4e6, None, 0.0)
+        first = soapy_source.fitted(start, offered)
+        self.assertEqual((dict(first.stage_gains), first.gain_db), ({"LNA": 16.0, "AMP": 0.0, "VGA": 16.0}, 32.0))
+        saved = soapy_source.fitted(dataclasses.replace(start, stage_gains=(("AMP", 14.0), ("LNA", 8.0))), offered)
+        self.assertEqual(dict(saved.stage_gains), {"LNA": 8.0, "AMP": 14.0, "VGA": 16.0})
+        # Antenna power asked of a device without it: ignored, which the log says.
+        with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
+            none = soapy_source.fitted(dataclasses.replace(start, bias_tee=True), capabilities())
+        self.assertFalse(none.bias_tee)
+        self.assertIn("the antenna power asked is ignored: the test device has no antenna power", logs.output[0])
+
+
+class DeviceControlsSourceTest(SourceCase):
+    """A device's gain stages, antenna, settings and antenna power as the
+    source asks for them, between reads, and reads them back."""
+
+    async def opened(self, source: SoapySource):
+        """The device that ``source`` opened, once its first settings apply."""
+        await self.samples(source)
+        return self.soapy.opened[-1]
+
+    def power_on_at_opening(self, **changes):
+        """An RTL-SDR whose antenna power is on as it opens, as a device
+        left on by another program would be."""
+        spec = self.soapy.rtl_sdr(**changes)
+        spec.settings = tuple(dataclasses.replace(setting, value="true") if setting.key == "biastee" else setting
+                              for setting in spec.settings)
+        return spec
+
+    async def test_a_hackrfs_amplifier_starts_off_and_the_overall_gain_never_turns_it_on(self):
+        self.soapy.hackrf_one()
+        source = self.source("driver=hackrf")
+        device = await self.opened(source)
+        self.assertEqual(device.gain_writes, [("AMP", 0.0)])
+        state = source.describe()
+        self.assertEqual((state["gain_db"], state["stage_gains_db"]), (32.0, {"LNA": 16.0, "AMP": 0.0, "VGA": 16.0}))
+        self.assertEqual(state["gain_stages"][:2], [{"name": "LNA", "gains_db": [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]},
+                                                    {"name": "AMP", "gains_db": [0.0, 14.0]}])
+        self.assertEqual((state["gains_db"][0], state["gains_db"][-1]), (0.0, 102.0))
+        for overall in (30.0, 102.0, 0.0, 78.0):
+            source.configure({"gain_db": overall})
+            await eventually(lambda: sum(device.gain_db.values()) == overall)
+            await eventually(lambda: source.describe()["gain_db"] == overall)
+        self.assertEqual([gain for name, gain in device.gain_writes if name == "AMP"], [0.0])
+        # A stage of its own: the overall gain read back.
+        source.configure({"stage_gains_db": {"LNA": 8}})
+        await eventually(lambda: device.gain_db["LNA"] == 8.0)
+        await eventually(lambda: source.describe()["gain_db"] == 46.0)
+        # The amplifier turned on by its own slider: the overall gain keeps it on.
+        source.configure({"stage_gains_db": {"AMP": 14}})
+        await eventually(lambda: source.describe()["gain_db"] == 60.0)
+        self.assertEqual(source.describe()["gains_db"][-1], 116.0)
+        source.configure({"gain_db": 116})
+        await eventually(lambda: device.gain_db == {"LNA": 40.0, "AMP": 14.0, "VGA": 62.0})
+        self.assertEqual([gain for name, gain in device.gain_writes if name == "AMP"], [0.0, 14.0])
+
+    async def test_an_rspdx_r2s_stages_antenna_and_settings(self):
+        self.soapy.rspdx_r2(refuses=("hdr_ctrl",))
+        source = self.source("driver=sdrplay")
+        device = await self.opened(source)
+        state = source.describe()
+        self.assertTrue(device.automatic_gain)
+        self.assertEqual((state["gain_db"], state["stage_gains_db"], state["antenna"], state["antennas"]),
+                         (None, {"IFGR": 40.0, "RFGR": 4.0}, "Antenna A", ["Antenna A", "Antenna B", "Antenna C"]))
+        self.assertEqual((state["bias_tee"], state["device_refusal"]), (False, None))
+        self.assertEqual([info["key"] for info in state["device_setting_info"]],
+                         ["rfnotch_ctrl", "dabnotch_ctrl", "hdr_ctrl", "iqcorr_ctrl", "agc_setpoint"])
+        source.configure({"antenna": "Antenna B", "stage_gains_db": {"RFGR": 6},
+                          "device_settings": {"rfnotch_ctrl": True, "agc_setpoint": -40}})
+        await eventually(lambda: (device.antenna, device.gain_db["RFGR"]) == ("Antenna B", 6.0))
+        await eventually(lambda: device.setting_values["agc_setpoint"] == "-40")
+        self.assertEqual(device.setting_values["rfnotch_ctrl"], "true")
+        await eventually(lambda: source.describe()["device_settings"]["agc_setpoint"] == -40)
+        # Refused: the value the device holds stays, and the state says why.
+        with self.assertLogs("radiolack.soapy", logging.WARNING):
+            source.configure({"device_settings": {"hdr_ctrl": True}})
+            await eventually(lambda: source.describe()["device_refusal"] is not None)
+        state = source.describe()
+        self.assertEqual(state["device_refusal"], "the device refused HDR Mode: writeSetting(hdr_ctrl) refused")
+        self.assertFalse(state["device_settings"]["hdr_ctrl"])
+        self.assertEqual(device.setting_values["hdr_ctrl"], "false")
+        source.configure({"device_settings": {"dabnotch_ctrl": True}})       # the next change clears it
+        self.assertIsNone(source.describe()["device_refusal"])
+
+    async def test_an_rtl_sdrs_direct_sampling_is_a_choice(self):
+        self.soapy.rtl_sdr()
+        source = self.source("driver=rtlsdr")
+        device = await self.opened(source)
+        state = source.describe()
+        self.assertEqual((state["gain_stages"], state["antennas"], state["direct"], state["hf_inputs"]),
+                         ([], [], False, []))
+        self.assertEqual(state["device_setting_info"][0]["options"],
+                         [{"value": "0", "name": "Off"}, {"value": "1", "name": "I-ADC"},
+                          {"value": "2", "name": "Q-ADC"}])
+        source.configure({"device_settings": {"direct_samp": "2"}})
+        await eventually(lambda: device.setting_values["direct_samp"] == "2")
+        self.assertEqual(source.describe()["device_settings"]["direct_samp"], "2")
+
+    async def test_the_antenna_power_is_off_at_each_opening_and_before_each_release(self):
+        self.power_on_at_opening()
+        source = self.source("driver=rtlsdr", idle_s=0.2)
+        device = await self.opened(source)
+        self.assertEqual(device.events[:2], ["biastee=false", "setupStream"])
+        self.assertFalse(source.describe()["bias_tee"])
+        # Released once nobody reads: off first.
+        await eventually(lambda: device.closed)
+        self.assertEqual(device.events[-3:], ["biastee=false", "closeStream", "close"])
+        # Opened again: off again, whatever the device says.
+        device = await self.opened(source)
+        self.assertEqual(device.events[:2], ["biastee=false", "setupStream"])
+        self.assertFalse(any("biastee=true" in opened.events for opened in self.soapy.opened))
+
+    async def test_the_antenna_power_is_off_after_an_unplugged_device_comes_back(self):
+        spec = self.power_on_at_opening(unplugged_reads="error")
+        source = self.source("driver=rtlsdr")
+        source.configure({"bias_tee": False})
+        device = await self.opened(source)
+        spec.present = False
+        await self.state(source, "waiting", "the stream failed: STREAM_ERROR")
+        self.assertEqual(device.events[-3:], ["biastee=false", "closeStream", "close"])
+        await self.state(source, "waiting", "no rtlsdr device found with its serial number")
+        spec.present = True
+        device = await self.opened(source)
+        self.assertEqual(device.events[:2], ["biastee=false", "setupStream"])
+        self.assertFalse(any("biastee=true" in opened.events for opened in self.soapy.opened))
+
+    async def test_only_the_start_option_or_a_press_turns_it_on(self):
+        # Asked before the device opens, as --bias-tee does: on once it opens, after the off.
+        self.power_on_at_opening()
+        source = self.source("driver=rtlsdr")
+        source.configure({"bias_tee": True})
+        device = await self.opened(source)
+        self.assertEqual(device.events[:3], ["biastee=false", "setupStream", "biastee=true"])
+        self.assertTrue(source.describe()["bias_tee"])
+        # Turned off and on again by the interface's presses.
+        source.configure({"bias_tee": False})
+        await eventually(lambda: device.setting_values["biastee"] == "false")
+        source.configure({"bias_tee": True})
+        await eventually(lambda: device.setting_values["biastee"] == "true")
+        await self.closed(source)
+        self.assertEqual(device.events[-3:], ["biastee=false", "closeStream", "close"])
+
+    async def test_turned_on_since_the_start_it_comes_back_on_at_the_next_opening(self):
+        self.power_on_at_opening()
+        source = self.source("driver=rtlsdr", idle_s=0.2)
+        source.configure({"bias_tee": True})
+        device = await self.opened(source)
+        await eventually(lambda: device.closed)
+        self.assertEqual(device.events[-3:], ["biastee=false", "closeStream", "close"])
+        device = await self.opened(source)
+        self.assertEqual(device.events[:3], ["biastee=false", "setupStream", "biastee=true"])
+
+    async def test_several_antenna_power_settings_are_all_off_and_one_follows(self):
+        spec, info = self.soapy.SettingSpec, self.soapy.ArgInfo
+        self.device(settings=(spec("biastee", "true", "Bias Tee"),
+                              spec("bias_tx", "1", "Antenna Bias", type=info.INT, range=(0.0, 5.0, 1.0), channel=True)))
+        source = self.source()
+        device = await self.opened(source)
+        self.assertEqual(device.events[:3], ["bias_tx=0", "biastee=false", "setupStream"])
+        source.configure({"bias_tee": True})
+        await eventually(lambda: device.setting_values["bias_tx"] == "1")
+        self.assertEqual(device.setting_values["biastee"], "false")
+        await self.closed(source)
+        self.assertEqual(device.events[-4:], ["bias_tx=0", "biastee=false", "closeStream", "close"])
+
+    async def test_an_off_refused_is_logged_and_the_others_still_go_off(self):
+        spec = self.soapy.SettingSpec
+        self.device(settings=(spec("biastee", "true", "Bias Tee"), spec("bias_b", "true", "Second bias")),
+                    refuses=("biastee",))
+        source = self.source()
+        with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
+            device = await self.opened(source)
+        self.assertEqual(device.setting_values, {"biastee": "true", "bias_b": "false"})
+        self.assertIn("the antenna power biastee could not be turned off: writeSetting(biastee) refused",
+                      logs.output[0])
+
+    async def test_a_device_without_antenna_power_ignores_it(self):
+        self.device()
+        source = self.source()
+        source.configure({"bias_tee": True})
+        with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
+            await self.opened(source)
+        self.assertTrue(any("the antenna power asked is ignored" in line for line in logs.output))
+        state = source.describe()
+        self.assertEqual((state["bias_tee"], "bias_tee" in state["settable"]), (None, False))
 
 
 class StandInTest(unittest.TestCase):

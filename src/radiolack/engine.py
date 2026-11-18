@@ -882,7 +882,9 @@ class Engine:
 
     def power_antenna(self) -> None:
         """Turn the antenna power on for the receiver in use at start (cli's
-        --bias-tee). Raises ValueError, saying why, for a source without it."""
+        --bias-tee). Raises ValueError, saying why, for a source without it.
+        A SoapySDR device not yet opened takes it, and turns it on once it
+        opens if it has antenna power, or says that it ignores it."""
         if "bias_tee" not in self.source.describe()["settable"]:
             raise ValueError(f"the {self.source.kind} source has no antenna power")
         self.configure({"bias_tee": True})

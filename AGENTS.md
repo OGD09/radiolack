@@ -17,8 +17,7 @@ the history under the tag `v0.1.0`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
-  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`, `--soapy`, which
-  refuses `--bias-tee`), `server` (aiohttp on 127.0.0.1,
+  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`, `--soapy`), `server` (aiohttp on 127.0.0.1,
   own event loop in a background thread; interface files, read once at
   start, the `/stream` WebSocket and the recordings' downloads
   (`/recordings/<file>`); starts the scan given at start;
@@ -158,6 +157,15 @@ the history under the tag `v0.1.0`.
   `python3-soapysdr` without it; device arguments that must name a
   driver; the device's range, rates up to 8 MS/s, analogue bandwidth, one
   gain stage, correction and native format with the drivers' full scales;
+  pull request 4: several gain stages, the overall gain through the
+  module's spread, or the source's own around a held stage (the HackRF's
+  AMP, at its lowest at each opening without saved gains, never moved by
+  the overall gain), each read back; the antenna sockets; the device's
+  settings as it describes them, boxes, choices and numbers, bounded, free
+  texts and transmit-named ones left out, written between reads and read
+  back, a refusal shown; antenna power by key or name, `bias_tee`, off as
+  soon as the device opens and before it is released, on only when asked,
+  never saved;
   a reading thread per session that alone calls the device, into a
   `NativeBuffer` that drops the oldest, and closes the stream and the
   device whatever ends it; settings under driver and serial number, the
@@ -211,14 +219,18 @@ the history under the tag `v0.1.0`.
   `correction.js` (the frequency correction's field), `calibration.js`
   (the Calibrate dialog: the correction from a carrier measured and its
   true frequency, with its derivation, the driver's check and what the
-  dialog shows) and `devices.js` (the Receiver menu's SoapySDR devices:
+  dialog shows), `devices.js` (the Receiver menu's SoapySDR devices:
   the list, Search again and the arguments field, this computer's alone
-  for the last two, and when the first search is asked) carry JSDoc
+  for the last two, and when the first search is asked) and `advanced.js`
+  (a SoapySDR device's antenna sockets and Advanced section: a slider per
+  gain stage and its settings, the device's texts set as text) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
-  `history.js` in Node, and `tests/test_devices.py` `devices.js` and the
-  devices state's decoding, skipped where Node is missing. `bandplan-europe.json`
+  `history.js` in Node, `tests/test_devices.py` `devices.js` and the
+  devices state's decoding, and `tests/test_advanced.py` `advanced.js`,
+  the antenna power's warning and the device's fields' decoding, skipped
+  where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`
@@ -281,7 +293,9 @@ the history under the tag `v0.1.0`.
   also lets `import SoapySDR` find the stand-in alone
   (`tests.fakes.stand_in_soapysdr`), the real module being missing for
   the tests even where it is installed; `tests/test_soapy.py` tests the
-  SoapySDR source against the stand-in.
+  SoapySDR source against the stand-in, whose `hackrf_one`, `rspdx_r2`
+  and `rtl_sdr` declare devices shaped as their modules declare them, and
+  whose `events` log the order of settings written and closes.
   The fake rtl_tcp's optional tuner error takes `radiolack.r82xx`'s
   computations, as `tools/measure_pll.py` does.
 - `tools/`: development tools, run from a checkout and never installed:
@@ -423,7 +437,18 @@ the history under the tag `v0.1.0`.
 
 ## Safety rules (non-negotiable)
 
-- Everything is receive-only: never add transmit features.
+- Everything is receive-only: never add transmit features. A SoapySDR
+  source names the receive direction alone, reads and writes only the
+  device's own settings and its receive channel's, never a transmit
+  channel's, and neither shows nor writes a setting named for
+  transmission; a HackRF's `bias_tx` powers its socket in reception too,
+  and is antenna power, under the rule below, nothing else.
+- Antenna power, an rtl_tcp source's or a SoapySDR device's setting that
+  powers its socket (`soapy.is_antenna_power`), is off at each opening
+  whatever the device or a saved file says, turned on only by the user's
+  second press or `--bias-tee` at start, never saved, and turned off
+  before the receiver is released: never power an antenna socket unasked,
+  and never turn it on in a check on real hardware.
 - Never open the SDR receiver, start `rtl_tcp` or tune real hardware unless
   the user asks for it in the current conversation. Running the interface
   without a receiver is fine. `radiolack --rtl-sdr` starts rtl_tcp, which
