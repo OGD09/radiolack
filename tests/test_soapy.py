@@ -430,7 +430,8 @@ class SourceTest(SourceCase):
             "kind": "soapy", "status": "streaming", "detail": "", "address": None, "tuner": "test-tuner",
             "driver": "test", "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6,
             "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "automatic_gain": True, "ppm": 0.0,
-            "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
+            "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [],
+            "direct": False, "rtl_agc": None,
             "bias_tee": None, "converter": "none", "converter_lo_hz": 125e6, "driver_pll": None, "tuner_grid": None,
             "gain_stages": [], "stage_gains_db": {}, "antenna": None, "antennas": [], "device_settings": {},
             "device_setting_info": [], "device_refusal": None,
@@ -977,7 +978,8 @@ class IQRecordingTest(EngineCase):
     async def record(self, engine: Engine, subscription: Subscription, at_least: int = 50_000) -> dict:
         """The I/Q recording started, once it has ``at_least`` bytes."""
         engine.configure_recording({"iq": True})
-        state = await next_recording(subscription, lambda state: with_iq_file(state) and state["iq"]["bytes"] >= at_least)
+        state = await next_recording(subscription,
+                                     lambda state: with_iq_file(state) and state["iq"]["bytes"] >= at_least)
         return state["iq"]
 
     def recorded(self, name: str, pair_bytes: int) -> tuple[dict, list[bytes]]:
@@ -1074,7 +1076,8 @@ class IQRecordingTest(EngineCase):
         engine = self.engine(self.source(), recordings=self.folder)
         subscription = await self.streaming(engine)
         with mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 1), \
-                mock.patch.object(recordings, "IQ_PENDING_S", 0.0), self.assertLogs("radiolack.engine", logging.WARNING):
+                mock.patch.object(recordings, "IQ_PENDING_S", 0.0), \
+                self.assertLogs("radiolack.engine", logging.WARNING):
             engine.configure_recording({"iq": True})
             state = await next_recording(subscription, lambda state: state["stopped"] is not None)
         self.assertEqual((state["iq"], state["stopped"]),
