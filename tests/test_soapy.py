@@ -419,16 +419,18 @@ class SourceTest(SourceCase):
         self.assertEqual(source.settings_key, "soapy driver=test,index=0")
         before = source.describe()
         # Until it is known, every setting, which its opening fits, and no antenna power shown.
-        self.assertEqual((before["driver"], before["tuner"], before["settable"], before["bias_tee"]),
+        self.assertEqual((before["driver"], before["tuner"], before["settable"], before["bias_tee"],
+                          before["automatic_gain"]),
                          ("test", None, ["converter_lo_hz", "converter", "sample_rate_hz", "centre_hz", "gain_db",
-                                         "stage_gains_db", "antenna", "ppm", "device_settings", "bias_tee"], None))
+                                         "stage_gains_db", "antenna", "ppm", "device_settings", "bias_tee"], None,
+                          None))
         await self.samples(source)
         state = source.describe()
         self.assertEqual(state, {
             "kind": "soapy", "status": "streaming", "detail": "", "address": None, "tuner": "test-tuner",
             "driver": "test", "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6,
-            "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "ppm": 0.0, "gains_db": state["gains_db"],
-            "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
+            "sample_rates_hz": [250e3, RATE_HZ, 2.4e6], "gain_db": None, "automatic_gain": True, "ppm": 0.0,
+            "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6], "hf_input": None, "hf_inputs": [], "direct": False, "rtl_agc": None,
             "bias_tee": None, "converter": "none", "converter_lo_hz": 125e6, "driver_pll": None, "tuner_grid": None,
             "gain_stages": [], "stage_gains_db": {}, "antenna": None, "antennas": [], "device_settings": {},
             "device_setting_info": [], "device_refusal": None,
@@ -483,7 +485,7 @@ class SourceTest(SourceCase):
         self.device(gains={"TUNER": (0.0, 40.0, 1.0)})
         source = self.source()
         await self.samples(source)
-        self.assertEqual(source.describe()["gain_db"], 0.0)
+        self.assertEqual((source.describe()["gain_db"], source.describe()["automatic_gain"]), (0.0, False))
         with self.assertRaisesRegex(ValueError, "no automatic gain"):
             source.configure({"gain_db": None})
         await self.closed(source)

@@ -457,6 +457,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {number} rateHz
  * @property {number[]} sampleRatesHz   the sample rates the Receiver menu offers, lowest first; empty: its own
  * @property {number | null} gainDb     null: automatic gain, or no gain setting
+ * @property {boolean} automaticGain    the receiver has automatic gain: false for a SoapySDR device without
+ *                                      it, true otherwise, and for an engine that does not tell
  * @property {number | null} ppm        frequency correction, parts per million to the hundredth; null: none
  * @property {boolean} dcRemoval        the engine takes a constant offset off the samples
  * @property {number[]} gainsDb         manual gains the tuner offers, lowest first; a SoapySDR device's overall gains
@@ -706,7 +708,8 @@ export function decodeDeviceParts(m) {
  * malformed; settings this interface does not know are left out. The
  * shortwave, antenna power, converter, driver and sample rates fields,
  * which an engine older than them does not send, read as a source without
- * them; so does a converter that this interface does not know. A SoapySDR
+ * them; so does a converter that this interface does not know. Automatic
+ * gain, unknown (null) or not sent, reads as offered. A SoapySDR
  * device's stages, sockets and settings read as `decodeDeviceParts` reads
  * them.
  * @param {any} message  a parsed JSON message of type "source"
@@ -722,6 +725,7 @@ export function decodeSource(message) {
     && textOrNull(m.address) && textOrNull(m.tuner)
     && finite(m.centre_hz) && finite(m.sample_rate_hz) && m.sample_rate_hz > 0
     && (m.gain_db === null || finite(m.gain_db))
+    && (m.automatic_gain === undefined || m.automatic_gain === null || typeof m.automatic_gain === 'boolean')
     && (m.ppm === null || finite(m.ppm)) && typeof m.dc_removal === 'boolean'
     && Array.isArray(m.gains_db) && m.gains_db.every(finite)
     && Array.isArray(m.range_hz) && m.range_hz.length === 2 && m.range_hz.every(finite)
@@ -753,6 +757,7 @@ export function decodeSource(message) {
     rateHz: m.sample_rate_hz,
     sampleRatesHz: Array.isArray(m.sample_rates_hz) ? m.sample_rates_hz.slice() : [],
     gainDb: m.gain_db,
+    automaticGain: m.automatic_gain !== false,
     ppm: m.ppm,
     dcRemoval: m.dc_removal,
     gainsDb: m.gains_db.slice(),

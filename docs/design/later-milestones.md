@@ -522,10 +522,13 @@ rely on these:
   they come.
 - **Left for later**: I/Q recordings in the device's format (pull request
   5); the package, the service notes and CI (pull request 6); `sdrplay`
-  among the searched drivers. The "Tuner AGC" box is enabled for a
-  SoapySDR device without a gain mode, whose engine then refuses
-  automatic gain, saying so, as since pull request 2: the state does not
-  say whether a device has one.
+  among the searched drivers. The "Tuner AGC" box was enabled for a
+  SoapySDR device without a gain mode, whose engine then refused
+  automatic gain, saying so: fixed with pull request 5, the source state's
+  optional `automatic_gain` (a `soapy` source's alone, null until the
+  device opens; absent reads as offered, so that the rtl_tcp sources and
+  older engines keep the box as it was) greys the box for such a device,
+  unless automatic gain is on, so that it can be turned off.
 
 As built, pull request 5 (I/Q recordings in the device's format:
 `soapy.py`'s tap, `recordings.py`'s formats, the engine's `raw_format`);

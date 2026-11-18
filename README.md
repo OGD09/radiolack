@@ -778,7 +778,8 @@ radiolack --soapy driver=sdrplay
   the rest.
 - Gains: "Tuner gain" moves the receiver's one gain stage, or with several
   its overall gain, which the receiver's SoapySDR module spreads across
-  them; "Tuner AGC" turns automatic gain on where the receiver has it.
+  them; "Tuner AGC" turns automatic gain on where the receiver has it,
+  and is greyed where it has none.
   With several stages, the Receiver menu's Advanced section, at its
   bottom, has one slider per stage, under the receiver's names for them,
   such as a HackRF's LNA, AMP and VGA, or an SDRplay's IFGR and RFGR,

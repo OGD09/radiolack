@@ -614,6 +614,8 @@ class BrowserTest(unittest.TestCase):
                 expect(status).to_contain_text(f"SoapySDR {DOT} 1.024 MS/s")
                 # Several stages: the overall gain, and each stage's in the Advanced section.
                 expect(page.locator("#src-gain")).to_be_enabled()
+                expect(page.locator("#src-agc")).to_be_disabled()      # no automatic gain
+                expect(page.locator("#src-agc")).not_to_be_checked()
                 expect(page.locator("#src-advanced")).to_be_visible()
                 expect(page.locator("#src-advanced-controls input[type=range]")).to_have_count(2)
                 expect(page.locator("#src-antenna-field")).to_be_hidden()     # no socket to choose
@@ -632,6 +634,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#src-note")).to_contain_text("RSPdx-R2 through SoapySDR, driver sdrplay.")
+                expect(first.locator("#src-agc")).to_be_enabled()      # its automatic gain
                 # Its sockets, under its names.
                 antenna = first.locator("#src-antenna")
                 expect(antenna.locator("option")).to_have_text(["Antenna A", "Antenna B", "Antenna C"])

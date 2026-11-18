@@ -1495,6 +1495,7 @@ class SoapySource:
             "sample_rate_hz": settings.sample_rate_hz,
             "sample_rates_hz": sorted({*rates, settings.sample_rate_hz}),
             "gain_db": settings.gain_db,
+            "automatic_gain": capabilities.gain_mode if known else None,
             "ppm": settings.ppm,
             "gains_db": list(capabilities.offered_gains_db(settings.stage_gains)) if known else [],
             "gain_stages": [{"name": stage.name, "gains_db": list(stage.gains_db())}
