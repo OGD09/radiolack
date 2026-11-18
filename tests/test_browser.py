@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import struct
 import sys
 import tempfile
 import time
@@ -36,6 +37,7 @@ from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LocalServer
 from radiolack.sources import Sources
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
+from radiolack.synthetic import Emitter, Schedule, SyntheticBand
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port
 
@@ -77,6 +79,11 @@ PREFERENCES_SAVE_MS = 1000  # how often an interface gives the engine its change
 HISTORY_CONFIRM_MS = 5000   # how long a first press of a Clear in the History waits for the second (main.js)
 RECORDINGS_CONFIRM_MS = 5000  # how long a first press of a recording's Delete waits for the second (main.js)
 AUDIO_FRAME = 2         # the first byte of an audio frame (docs/design/protocol.md)
+FINE_FRAME = 3          # and of a fine frame, whose centre, in Hz, is the float64 at its byte 8
+# Display's line on the spectrum shown, on the simulated band (2.4 MS/s in
+# 8192 bins) and in its VFO's channel (48 kHz in 8192 bins).
+WIDE_RESOLUTION = "Wide spectrum: 293 Hz per bin."
+FINE_RESOLUTION = "Fine spectrum of the VFO's channel: 5.9 Hz per bin."
 DOT = "\N{MIDDLE DOT}"  # the status line's separator
 BOOKMARK_NAME = '#bm-list input[data-field="name"]'     # the name's field of the bookmark being edited
 # A new bookmark on a channel or a known frequency takes its name.
@@ -136,7 +143,9 @@ WEBGL_RENDERER = """() => {
 }"""
 # Draws lines in a waterfall view of its own, 8 bins wide and 2 lines high,
 # whose colour table gives each level code as its red: the red of each pixel,
-# newest line first, after each move of the span.
+# newest line first, after each move of the span; then the second history's
+# line, that of the fine spectrum, whose window keeps out the bins beyond its
+# cover, and the first history's lines again, which it left as they were.
 WATERFALL_PROBE = """async () => {
   const { WaterfallView } = await import(new URL('waterfall-gl.js', document.baseURI).href);
   const canvas = document.createElement('canvas');
@@ -147,8 +156,8 @@ WATERFALL_PROBE = """async () => {
   for (let code = 0; code < 256; code += 1) colours.set([code, code, code, 255], code * 4);
   view.setColours(colours);
   const gl = canvas.getContext('webgl2'), pixels = new Uint8Array(8 * 2 * 4);
-  const drawn = () => {
-    view.draw({ head: 1, lines: 2, firstBin: 0, binsPerPixel: 1 });
+  const drawn = (scene = {}) => {
+    view.draw({ head: 1, lines: 2, firstBin: 0, binsPerPixel: 1, ...scene });
     gl.readPixels(0, 0, 8, 2, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     return [1, 0].map((y) => Array.from({ length: 8 }, (_, x) => pixels[(y * 8 + x) * 4]));
   };
@@ -159,7 +168,11 @@ WATERFALL_PROBE = """async () => {
   view.setOffsets(Float32Array.of(-1, 2, 0, 0));      // then 2 bins down
   const down = drawn();
   view.setOffsets(Float32Array.of(-2.5, 0, 0, 0));    // and by half a bin
-  return [up, down, drawn()];
+  const half = drawn();
+  view.setBins(8, 1);
+  view.uploadRow(0, Uint8Array.of(11, 21, 31, 41, 51, 61, 71, 81), 1);
+  const fine = drawn({ head: 0, lines: 1, layer: 1, window: [2, 6] });
+  return [up, down, half, fine, drawn()];
 }"""
 # A span too narrow to see, as the spectrum and the waterfall draw it on
 # canvases 8 px wide: a marker 2 px wide around its middle, the spectrum's
@@ -480,12 +493,14 @@ class BrowserTest(unittest.TestCase):
         """``count`` interfaces at ``url``, each with the Receiver menu open:
         clicks, which let the audio start. ``self.audio[page]`` counts the
         audio frames each one receives, ``self.signals[page]`` the lists of
-        signals found, and ``self.sent[page]`` lists the messages each one
-        sends, as text. ``options`` go to each browser context, such as a
-        phone's viewport and touch input."""
+        signals found, ``self.fine[page]`` the centres of the fine frames,
+        in Hz, and ``self.sent[page]`` lists the messages each one sends, as
+        text. ``options`` go to each browser context, such as a phone's
+        viewport and touch input."""
         errors: list[str] = []
         self.audio: dict[Page, list[int]] = {}
         self.signals: dict[Page, list[int]] = {}
+        self.fine: dict[Page, list[float]] = {}
         self.sent: dict[Page, list[str]] = {}
         with contextlib.ExitStack() as stack:
             pages = []
@@ -495,11 +510,14 @@ class BrowserTest(unittest.TestCase):
                 page = self.watched_page(context, browser, errors)
                 self.audio[page] = received = []
                 self.signals[page] = lists = []
+                self.fine[page] = fine = []
                 self.sent[page] = sent = []
 
-                def watch(socket, received=received, lists=lists, sent=sent) -> None:
+                def watch(socket, received=received, lists=lists, fine=fine, sent=sent) -> None:
                     socket.on("framereceived", lambda payload: received.append(1) if isinstance(
                         payload, bytes) and payload[:1] == bytes([AUDIO_FRAME]) else None)
+                    socket.on("framereceived", lambda payload: fine.append(struct.unpack_from("<d", payload, 8)[0])
+                              if isinstance(payload, bytes) and payload[:1] == bytes([FINE_FRAME]) else None)
                     socket.on("framereceived", lambda payload: lists.append(1) if isinstance(
                         payload, str) and json.loads(payload).get("type") == "peaks" else None)
                     socket.on("framesent", lambda payload: sent.append(payload) if isinstance(payload, str) else None)
@@ -1047,8 +1065,8 @@ class BrowserTest(unittest.TestCase):
                 expect(dialog).to_be_hidden()
 
     def test_the_stream_decodes_the_fine_spectrum_it_asks_of_an_engine_that_knows_it(self):
-        # The interface draws nothing of it yet: a stream of stream.js's own
-        # asks, beside the interface's, which keeps working.
+        # A stream of stream.js's own asks, beside the interface's, which
+        # keeps working.
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
@@ -2646,10 +2664,127 @@ class BrowserTest(unittest.TestCase):
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
-                up, down, half = page.evaluate(WATERFALL_PROBE)
+                up, down, half, fine, again = page.evaluate(WATERFALL_PROBE)
                 self.assertEqual(up, [[1, 2, 3, 4, 5, 6, 7, 8], [40, 50, 60, 70, 80, 0, 0, 0]])
                 self.assertEqual(down, [[0, 0, 1, 2, 3, 4, 5, 6], [20, 30, 40, 50, 60, 70, 80, 0]])
                 self.assertEqual(half[1], [30, 40, 50, 60, 70, 80, 0, 0])
+                self.assertEqual(fine, [[0, 0, 31, 41, 51, 61, 0, 0], [0] * 8])
+                self.assertEqual(again, half)
+
+    @staticmethod
+    def spectrum_at(page: Page, x: float) -> tuple[float, int]:
+        """The readout with the pointer over the spectrum ``x`` pixels from
+        its left edge: the frequency in MHz and the level in dB."""
+        box = page.locator("#specwrap").bounding_box()
+        page.mouse.move(box["x"] + x, box["y"] + box["height"] * 0.3)
+        text = page.locator("#hoverinfo").inner_text()
+        found = re.match(rf"^(\d+\.\d+) MHz {DOT} (-?\d+) dB", text)
+        if not found:
+            raise AssertionError(f"no level in the readout: {text}")
+        return float(found.group(1)), int(found.group(2))
+
+    @staticmethod
+    def spectrum_x(page: Page, view: tuple[float, float], frequency_hz: float) -> float:
+        """Where ``frequency_hz`` lies on the spectrum, in pixels from its left
+        edge, in ``view``, whose edges are given in MHz."""
+        width = page.locator("#specwrap").bounding_box()["width"]
+        return 1 + (width - 2) * (frequency_hz / 1e6 - view[0]) / (view[1] - view[0])
+
+    def bins_drawn(self, page: Page, view: tuple[float, float], carriers: tuple[int, int]) -> dict:
+        """What the spectrum shows of two carriers, as the readout gives it:
+        the strongest level within 3 Hz of each, the level halfway between
+        them and 40 Hz below the first, and, in pixels, where the bin that
+        holds the first gives way to the next one up."""
+        def level(frequency_hz: float) -> int:
+            return self.spectrum_at(page, self.spectrum_x(page, view, frequency_hz))[1]
+
+        first, second = carriers
+        found = {"peaks": [max(level(f + offset) for offset in range(-3, 4)) for f in carriers],
+                 "between": level((first + second) / 2), "beyond": level(first - 40), "edge": None}
+        x, end = self.spectrum_x(page, view, first - 2.5), self.spectrum_x(page, view, first + 4.5)
+        start = self.spectrum_at(page, x)[1]
+        while found["edge"] is None and x < end:
+            x += 1
+            if self.spectrum_at(page, x)[1] != start:
+                found["edge"] = x
+        return found
+
+    def test_the_zoom_goes_on_into_the_fine_spectrum_of_the_vfo_s_channel(self):
+        # Two carriers 20 Hz apart, either side of the VFO: within one bin of
+        # the wide spectrum, 293 Hz wide, and apart among the fine one's.
+        carriers = (145_601_000, 145_601_020)
+        always = Schedule(((0.0, 1e9),), 2e9)
+        url = self.serve(SyntheticBand(emitters=[Emitter(f, -40.0, always, "cw") for f in carriers]))
+        narrowest_hz = 16 * 48_000 / 8192      # 16 bins of the fine spectrum
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                resolution, freq = page.locator("#ds-resolution"), page.locator("#freq")
+                expect(resolution).to_have_text(WIDE_RESOLUTION)
+                freq.dblclick()
+                page.locator("#freq input").fill("145.60101")
+                page.locator("#freq input").press("Enter")
+                expect(freq).to_have_attribute("aria-valuenow", "145601010")
+                for _ in range(30):                 # past the wide spectrum's narrowest view, to the fine one's
+                    page.keyboard.press("+")
+                expect(resolution).to_have_text(FINE_RESOLUTION)
+                self.assertIn({"type": "fine", "on": True}, map(json.loads, self.sent[page]))
+                view = self.view_edges(page)
+                self.assertAlmostEqual((view[1] - view[0]) * 1e6, narrowest_hz, delta=2)
+                self.assertLess(view[0] * 1e6, carriers[0] - 40)
+                self.assertGreater(view[1] * 1e6, carriers[1])
+                pixel_hz = (view[1] - view[0]) * 1e6 / (page.locator("#specwrap").bounding_box()["width"] - 2)
+
+                def drawn(vfo_hz: int, edge: float | None = None) -> dict:
+                    """Waits until three fine frames of the channel at
+                    ``vfo_hz`` came and the spectrum shows the carriers apart,
+                    and, given ``edge``, the first carrier's bin edge 1 Hz
+                    above it."""
+                    deadline = time.monotonic() + TIMEOUT_MS / 1000
+                    while True:
+                        found = None
+                        if sum(abs(centre - vfo_hz) < 0.01 for centre in self.fine[page]) >= 3:
+                            found = self.bins_drawn(page, view, carriers)
+                            apart = (found["between"] <= min(found["peaks"]) - 10
+                                     and found["beyond"] <= min(found["peaks"]) - 20 and found["edge"] is not None)
+                            moved = edge is None or (found["edge"] is not None
+                                                     and abs((found["edge"] - edge) * pixel_hz - 1) < 0.35)
+                            if apart and moved:
+                                return found
+                        self.assertLess(time.monotonic(), deadline, f"the carriers do not show as expected: {found}")
+                        page.wait_for_timeout(100)
+
+                before = drawn(145_601_010)
+                freq.focus()
+                freq.press("ArrowUp")               # the Automatic step: 1 Hz
+                freq.blur()
+                expect(freq).to_have_attribute("aria-valuenow", "145601011")
+                # The fine frames' bins move up 1 Hz with the VFO, the carriers stay where they are, and so does the view.
+                drawn(145_601_011, before["edge"])
+                self.assertEqual(self.view_edges(page), view)
+                for _ in range(16):                 # out, past the hysteresis
+                    page.keyboard.press("-")
+                expect(resolution).to_have_text(WIDE_RESOLUTION)
+                asked = [message["on"] for message in map(json.loads, self.sent[page]) if message.get("type") == "fine"]
+                self.assertEqual(asked[-1], False)
+                low, high = self.view_edges(page)
+                self.assertGreater((high - low) * 1e6, 72 * 293)
+
+    def test_an_engine_without_the_fine_spectrum_keeps_the_wide_one_s_zoom(self):
+        self.enterContext(mock.patch("radiolack.server.SPECTRA", ()))    # an engine older than the fine spectrum
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                for _ in range(30):
+                    page.keyboard.press("+")
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual((high - low) * 1e6, 16 * 2_400_000 / 8192, delta=2)     # 16 wide bins
+                expect(page.locator("#ds-resolution")).to_have_text(WIDE_RESOLUTION)
+                self.assertNotIn("fine", [json.loads(message).get("type") for message in self.sent[page]])
+                self.assertEqual(self.fine[page], [])
 
     def test_steps_stop_at_the_edge_of_the_simulated_span(self):
         url = self.serve()

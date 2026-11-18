@@ -547,6 +547,61 @@ open, and what pull request 6 needs to draw it:
   on a bin reads within 1 dB of the wide spectrum's in the tests; two
   carriers 20 Hz apart show apart in every mode.
 
+As built in pull request 6, the deep zoom in the interface, where it
+settles what the design left open:
+
+- **The decisions in typed modules.** `deepzoom.js` decides when the
+  interface asks, which spectrum shows, the cover, the narrowest view and
+  where a frequency lies among a frame's bins; `history.js` keeps a
+  spectrum's frames (trace, peak hold, waterfall lines with their time and
+  centre), one for the wide spectrum and one for the fine; `waterfall-gl.js`
+  holds a history for each, and draws a line within a window of its bins,
+  so that the fine lines' stopband never shows. `tests/test_deepzoom.py`
+  runs the first two in Node, skipped where Node is missing; main.js wires
+  them. The protocol stays at version 6.
+- **The switch.** The interface predicts the cover from the VFO and the
+  mode, before any frame: the frame's centre, the VFO or 700 Hz below it
+  in CW, and its width, 48 or 320 kHz. It asks once the view is narrower
+  than 48 wide bins and lies wholly within the cover, and stops once the
+  view is 72 wide bins wide, one key's zoom step past 48, or the cover
+  takes less than half of it, so that the view never flips at one width or
+  one edge. On a paired device, 48 wide bins (56 kHz) are wider than the
+  cover (38.4 kHz): the cover alone decides there. A hidden page never
+  asks; the wide frames go on feeding the wide history, as before.
+- **What shows.** The fine spectrum shows once a frame came since the
+  asking began and that frame's cover takes at least half the view;
+  otherwise the wide spectrum shows, at its own bins: before the first
+  frame, about 0.17 s, and after a long move of the VFO until the next
+  frame. Each is drawn at its own frames' centre, never at the VFO's. The
+  automatic scale and the noise floor follow the spectrum shown, and snap
+  to it at the switch rather than glide.
+- **The narrowest view** is 16 bins of the spectrum it may show: 94 Hz,
+  625 Hz in WFM, 375 Hz on a paired device. A view narrower than the wide
+  spectrum's narrowest, 4.7 kHz at 2.4 MS/s, must lie within the cover:
+  zooming in from a view elsewhere stops at 4.7 kHz, a narrow view dragged
+  past the cover stops at its edge, and the view never jumps to the cover.
+  A narrower view widens by itself only when it must: to 625 Hz on a change
+  to WFM, to 4.7 kHz when the fine frames can no longer come (an engine
+  without them after a restart, the VFO outside the span, a receiver
+  slower than the channel).
+- **The fine waterfall** starts empty at each asking, rather than show
+  lines from an earlier zoom; slides when the VFO moves by less than its
+  width and starts again otherwise, on a lost stream and on another
+  source. Its lines repeat the latest frame for at most 150 ms, against
+  250 ms for the wide one, as its frames come every 0.1 s, then wait.
+- **The wide spectrum moved by half a bin**: it drew bin i from its low
+  edge, 146 Hz high at 2.4 MS/s, whereas the protocol centres it there;
+  the deep zoom would show the shift. Both spectra and both waterfalls now
+  draw bins at their centres.
+- **The readout** gives the hertz once a pixel spans less than 10 Hz, the
+  fine spectrum's level under the pointer, and "beyond the fine spectrum"
+  within the span but outside the cover.
+- **A 1 Hz step**, at 94 Hz across, moves the VFO's line about 13 pixels
+  on a window 1280 pixels wide, and the fine bins with it, as the frame's
+  centre follows the VFO; a carrier stays at its frequency on the air. The
+  browser tests check that a bin's edge moves 1 Hz while two carriers
+  20 Hz apart stay apart at their frequencies.
+
 ### Pull requests
 
 1. The spike and its figures.

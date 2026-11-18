@@ -157,9 +157,16 @@ the history under the tag `v0.1.0`.
   browser).
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client, which decodes the fine frames it
-  asks for but nothing draws yet), `audio.js` and
+  asks for), `audio.js` and
   `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
-  `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views), `bandplan.js`
+  `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views; the waterfall
+  holds the wide spectrum's history and the fine spectrum's, each line
+  drawn within a window of its bins), `history.js` (a spectrum's frames as
+  the interface keeps them: trace, peak hold and waterfall lines with
+  their time and centre), `deepzoom.js` (the deep zoom, later-milestones.md,
+  section 2: when to ask for the fine frames, which spectrum shows, the
+  cover, the narrowest view and where a frequency lies among a frame's
+  bins), `bandplan.js`
   (band plan loader, and the mode the plan gives, SAM counting as AM), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
   exact frequencies), `shortwave.js` (the Receiver menu's shortwave
@@ -180,7 +187,8 @@ the history under the tag `v0.1.0`.
   dialog shows) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
-  is rewritten. `bandplan-europe.json`
+  is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
+  `history.js` in Node, skipped where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`

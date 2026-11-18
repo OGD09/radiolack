@@ -904,17 +904,39 @@ within the span only, so what leaves the span goes and the new part starts
 empty. The peak hold moves the same way. A longer move, another sample
 rate or FFT size, or another receiver starts them again.
 
-For the deep zoom to come, a few hertz per bin around the VFO, the engine
-also computes a fine spectrum of the VFO's channel, before the
-demodulator: 8192 bins over the channel's 48 kHz, 5.9 Hz each (320 kHz
-and 39 Hz in WFM), about ten times a second, of which 19.2 kHz on each
-side of the VFO (128 kHz in WFM) show the air, the samples as received
-whatever the noise blanker. It
-computes it only while an interface asks for it, which none does yet: the
-interface's zoom stops at the spectrum's own bins. A device paired through
-remote access would get 2048 bins, each the strongest of the four it
-groups, about 0.17 Mbit/s before compression ([Remote
-access](#remote-access)).
+Around the VFO, the zoom goes on into a fine spectrum of the VFO's
+channel, a few hertz per bin. The spectrum shows 8192 bins over the
+receiver's span, 293 Hz each at an RTL-SDR's 2.4 MS/s, and its narrowest
+view is 16 of them, 4.7 kHz (and never under 4 kHz). The engine also
+computes, before the demodulator, 8192 bins over the channel's 48 kHz,
+5.9 Hz each (320 kHz and 39 Hz in WFM), about ten times a second, the
+samples as received whatever the noise blanker; 19.2 kHz on each side of
+the channel's centre show the air (128 kHz in WFM), the rest the channel
+filter's edge. The channel's centre is the VFO, or 700 Hz below it in CW.
+Once the view is narrower than 48 bins of the spectrum, 14 kHz at 2.4 MS/s,
+and lies within those 19.2 kHz, the interface asks for the fine spectrum,
+and the spectrum and the waterfall show it in the same place, down to 16
+of its bins: 94 Hz (625 Hz in WFM). The view goes back to the spectrum
+once it is 72 bins of the spectrum wide, 21 kHz, or the fine spectrum
+shows less than half of it, and the interface stops asking. Zooming in
+elsewhere stops at 4.7 kHz, and a narrower view dragged towards the edge
+of the fine spectrum stops there. Display gives the spectrum shown and its
+hertz per bin.
+
+The fine spectrum's edges look like the span's, a lit window, and nothing
+is drawn beyond them: the readout says "beyond the fine spectrum" there,
+and gives the frequency to the hertz once a pixel spans less than 10 Hz.
+Until its first frame comes, about a fifth of a second after the zoom, the
+spectrum stays on show. Its waterfall is its own, apart from the
+spectrum's, which goes on: it starts empty at each zoom in, follows the
+VFO's small moves, starts again after a longer one, and pauses rather
+than stretch while no frame comes, as while the VFO moves by drag or
+wheel. The fine spectrum needs a receiver as fast as the channel (320 kHz
+in WFM), and an engine as recent as the interface; an older one keeps the
+zoom at 4.7 kHz. A hidden page asks for none. A device paired through
+remote access gets 2048 bins, 23 Hz each, each the strongest of the four
+it groups, about 0.17 Mbit/s before compression, and zooms in down to
+375 Hz ([Remote access](#remote-access)).
 
 ## Scanners
 
@@ -1265,7 +1287,9 @@ signals stay visible; its waterfall keeps its speed. The stream is also
 compressed, as every current browser offers. With the audio, a device
 receives about 0.3 Mbit/s instead of about 2.2 Mbit/s; in WFM, about
 0.65 Mbit/s, as its 32 kHz audio takes 0.5 Mbit/s. Its finest zoom is
-coarser: 18.75 kHz wide at 2.4 MS/s, instead of 4.7 kHz. On a slower link,
+coarser: 18.75 kHz wide at 2.4 MS/s, instead of 4.7 kHz, and 375 Hz
+instead of 94 Hz around the VFO, where the fine spectrum shows
+([Spectrum view](#spectrum-view)). On a slower link,
 the spectrum comes less often and the sound arrives late, by about 5 s at
 0.25 Mbit/s, but no later: Radiolack drops what the link cannot carry.
 
