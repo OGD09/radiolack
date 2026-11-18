@@ -177,15 +177,6 @@ class ReaderTest(unittest.TestCase):
         blocks = int(re.match(r"(\d+),", row(text, "The engine's blocks"))[1])
         self.assertGreater(blocks, 0)
 
-    def test_the_native_format_without_the_bindings_call(self):
-        with stand_in_soapysdr() as soapy:
-            for native, formats, expected in (("CS16", ("CS16", "CF32"), "CS16"), ("CF32", ("CF32", "CS16"), "CF32"),
-                                              ("CS8", ("CU8", "CS8"), "CS8"), ("CU8", ("CU8",), "CF32")):
-                with self.subTest(formats=formats):
-                    soapy.reset()
-                    soapy.add("test", native=native, formats=formats)
-                    self.assertEqual(reader.native_format(soapy, soapy.Device("driver=test")), expected)
-
     def test_samples_read_convert_to_the_stand_ins(self):
         with stand_in_soapysdr() as soapy:
             for name in ("CS8", "CS16", "CF32"):

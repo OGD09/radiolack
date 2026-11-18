@@ -10,7 +10,8 @@ radiolack \- receive\-only SDR receiver with band plans
 [\fB\-\-remote\fR [\fIPORT\fR]]
 [\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR]
 [\fB\-\-bias\-tee\fR]
-[\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR]]
+[\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR] |
+\fB\-\-soapy\fR \fIARGS\fR]
 .br
 .B radiolack
 \fB\-\-version\fR | \fB\-h\fR | \fB\-\-help\fR
@@ -20,13 +21,15 @@ desktop window, plays NFM, AM, USB, LSB, CW and broadcast FM (WFM), and
 lists the signals it finds, in the receiver's span or across a range that
 it sweeps.
 It only receives: it has no transmit function.
-It reads an RTL\-SDR receiver plugged into this computer, or one that an
-rtl_tcp server serves from another computer, and labels every frequency
+It reads an RTL\-SDR receiver plugged into this computer, one that an
+rtl_tcp server serves from another computer, or a receiver that SoapySDR
+reads, such as an SDRplay or a HackRF, and labels every frequency
 with a European band plan from 0\ Hz to 10.5\ GHz, a guide rather than a
 legal reference, with the IARU Region\ 1 plans inside the amateur bands.
 .PP
-Without \fB\-\-rtl\-sdr\fR or \fB\-\-rtl\-tcp\fR, Radiolack opens the
-source used last: the simulated 2\ m band the first time.
+Without \fB\-\-rtl\-sdr\fR, \fB\-\-rtl\-tcp\fR or \fB\-\-soapy\fR,
+Radiolack opens the source used last: the simulated 2\ m band the first
+time.
 The Receiver menu switches between sources.
 Closing the window stops Radiolack; without a window, stop it with
 Ctrl+C.
@@ -76,7 +79,10 @@ or starts, for a computer without a display next to the receiver:
 as a user of its own, within systemd's sandbox.
 Its output, the access code included, goes to the system's journal
 (\fBjournalctl \-u radiolack\fR), and \fBsystemctl edit radiolack\fR
-changes its command.
+changes its command, for instance to \fB\-\-soapy\fR \fIARGS\fR in place
+of \fB\-\-rtl\-sdr\fR: the service reaches USB devices only, and a driver
+that needs a service of its own, such as SDRplay's API, may not work
+within its sandbox.
 .SH OPTIONS
 .TP
 \fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR
@@ -139,6 +145,20 @@ By default, the address used last: 127.0.0.1:1234 the first time.
 The Receiver menu can change it.
 Not with \fB\-\-rtl\-sdr\fR.
 .TP
+\fB\-\-soapy\fR \fIARGS\fR
+Read a receiver through SoapySDR, such as an SDRplay, a HackRF, an Airspy
+or an RTL\-SDR, while an interface is open or a scan runs.
+\fIARGS\fR are its SoapySDR device arguments, \fIKEY\fR=\fIVALUE\fR
+separated by commas, which must name a driver, so that no search reaches
+the network: \fBdriver=sdrplay\fR, or \fBdriver=rtlsdr,serial=00000001\fR
+for one receiver among several.
+Its settings are saved under its driver and serial number.
+It needs the python3\-soapysdr package and the driver's SoapySDR module;
+without the first, Radiolack says so and exits with status 1.
+Radiolack opens the device's receive stream alone.
+Not with \fB\-\-rtl\-sdr\fR, \fB\-\-rtl\-tcp\fR or \fB\-\-bias\-tee\fR:
+a SoapySDR device has no antenna power in Radiolack yet.
+.TP
 \fB\-\-version\fR
 Print the version and exit.
 .TP
@@ -194,8 +214,9 @@ A file that Radiolack cannot read is renamed aside, never overwritten, and
 Radiolack starts from its defaults.
 .SH EXIT STATUS
 0 once Radiolack stops, after its window closes or on Ctrl+C or SIGTERM;
-1 when it cannot start, for instance on a port already in use, or when
-\fB\-\-remote\fR cannot turn remote access on;
+1 when it cannot start, for instance on a port already in use, when
+\fB\-\-remote\fR cannot turn remote access on, or with \fB\-\-soapy\fR
+without SoapySDR's Python module;
 2 for an invalid option.
 .SH SEE ALSO
 .BR rtl_tcp (1),

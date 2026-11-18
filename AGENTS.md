@@ -17,7 +17,8 @@ the history under the tag `v0.1.0`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
-  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`), `server` (aiohttp on 127.0.0.1,
+  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`, `--soapy`, which
+  refuses `--bias-tee`), `server` (aiohttp on 127.0.0.1,
   own event loop in a background thread; interface files, read once at
   start, the `/stream` WebSocket and the recordings' downloads
   (`/recordings/<file>`); starts the scan given at start;
@@ -34,7 +35,8 @@ the history under the tag `v0.1.0`.
   VFO's channel, computed once while at least one asks, remote clients'
   with fewer bins, passes their changes on,
   switches between kinds of
-  sources, restores and saves the settings and the source in use; sends a
+  sources, restores and saves the settings and the source in use, a
+  receiver's own once its source learns which it reads; sends a
   problem report to this computer's interface that asks; measures the
   carrier at the VFO for the interfaces that ask, gathering the VFO's
   channel, unblanked, only while one waits, and sends each the result
@@ -142,6 +144,18 @@ the history under the tag `v0.1.0`.
   engine), `converter` (a converter in front of a receiver: its kinds and
   oscillator, the frequency the receiver tunes for one on the air and the
   other way round, the reach on the air),
+  `soapy` (receivers through SoapySDR, later-milestones.md, section 1,
+  pull request 2: the `SoapySDR` module imported only when such a source
+  opens its device or `--soapy` is given, a waiting state naming
+  `python3-soapysdr` without it; device arguments that must name a
+  driver; the device's range, rates up to 8 MS/s, analogue bandwidth, one
+  gain stage, correction and native format with the drivers' full scales;
+  a reading thread per session that alone calls the device, into a
+  `NativeBuffer` that drops the oldest, and closes the stream and the
+  device whatever ends it; settings under driver and serial number, the
+  engine restoring them once the device is found; overflows, drops and
+  late blocks logged at most once a minute; I/Q recordings refused;
+  receive stream only),
   `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
@@ -247,7 +261,11 @@ the history under the tag `v0.1.0`.
   recordings) at a temporary folder for the whole run, and `GNUPGHOME` at
   an empty GnuPG home in it, which the
   programs the tests start inherit; those that import the package too keep
-  it rather than make their own, and the run removes it at its end.
+  it rather than make their own, and the run removes it at its end. It
+  also lets `import SoapySDR` find the stand-in alone
+  (`tests.fakes.stand_in_soapysdr`), the real module being missing for
+  the tests even where it is installed; `tests/test_soapy.py` tests the
+  SoapySDR source against the stand-in.
   The fake rtl_tcp's optional tuner error takes `radiolack.r82xx`'s
   computations, as `tools/measure_pll.py` does.
 - `tools/`: development tools, run from a checkout and never installed:
@@ -398,8 +416,15 @@ the history under the tag `v0.1.0`.
   the receiver behind a running rtl_tcp, as `tools/measure_pll.py` tunes
   the receiver behind the Radiolack it drives: tests and checks use the
   fake rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
-  `tests/fake_rtl_tcp.py` instead. `radiolack` without either option
-  reopens the source used last, which may be a receiver, read at start
+  `tests/fake_rtl_tcp.py` instead. `radiolack --soapy ARGS` searches for
+  and opens a SoapySDR device, an RTL-SDR included with `driver=rtlsdr`,
+  just as `--rtl-sdr` opens its receiver: never run it, nor call
+  `SoapySDR.Device`, `SoapySDR.Device.enumerate` or `SoapySDRUtil`, outside
+  the stand-in module of `tests/soapysdr/` unless the owner asks for it in
+  the current conversation, on the receiver the owner names.
+  `radiolack` without any of these options
+  reopens the source used last, which may be a receiver, a SoapySDR device
+  included, read at start
   with `--scan`, and choosing a receiver in the Receiver menu's list opens
   it: a check started with a temporary `XDG_CONFIG_HOME` begins on the
   simulated band.

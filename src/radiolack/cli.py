@@ -17,6 +17,7 @@ from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
 from .scanners import SCANS
 from .server import LOOPBACK_HOST, InterfaceUnreadable, LocalServer
+from .soapy import SoapySource, module_problem, parse_args
 from .sources import Sources
 from .store import Store, settings_dir
 from .updates import UpdateCheck
@@ -52,10 +53,19 @@ def _device(text: str) -> str:
     return text
 
 
+def _soapy_args(text: str) -> str:
+    """SoapySDR device arguments that name a driver (soapy.parse_args)."""
+    try:
+        parse_args(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+    return text.strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radiolack",
-        description="Receive-only SDR receiver. Without --rtl-sdr or --rtl-tcp, it opens the "
+        description="Receive-only SDR receiver. Without --rtl-sdr, --rtl-tcp or --soapy, it opens the "
                     "receiver used last, the simulated 2 m band the first time; the Receiver menu "
                     "switches between them. Settings, bookmarks and history are saved in "
                     "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack), and recordings, "
@@ -90,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bias-tee", action="store_true",
         help="turn the antenna power (bias tee: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4) "
-             "on at start, for the receiver given or reopened; off otherwise, and never saved",
+             "on at start, for the receiver given or reopened; off otherwise, and never saved; "
+             "refused with --soapy",
     )
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
@@ -106,13 +117,25 @@ def build_parser() -> argparse.ArgumentParser:
              "PORT or HOST:PORT (default: the address used last, the first time "
              f"{DEFAULT_ADDRESS[0]}:{DEFAULT_ADDRESS[1]}); the Receiver menu can change it",
     )
+    sources.add_argument(
+        "--soapy", type=_soapy_args, metavar="ARGS",
+        help="read a receiver through SoapySDR (python3-soapysdr and the driver's module), such as an "
+             "SDRplay, a HackRF or an RTL-SDR, while an interface is open or a scan runs: ARGS are its "
+             "device arguments, KEY=VALUE separated by commas, which must name a driver, such as "
+             "driver=sdrplay or driver=rtlsdr,serial=00000001",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.soapy is not None and args.bias_tee:
+        # Refused rather than ignored: a service started so would run
+        # without the antenna power it asks for.
+        parser.error("--bias-tee: the antenna power of a SoapySDR device is not available yet")
     report.keep_recent_messages()   # for the reports that the interface offers to share
-    source: RtlTcpSource | None = None
+    source: RtlTcpSource | SoapySource | None = None
     if args.rtl_sdr is not None:
         if shutil.which(RTL_TCP_PROGRAM) is None:
             print(f"radiolack: {RTL_TCP_PROGRAM} is not installed (on Debian or Ubuntu: "
@@ -121,6 +144,12 @@ def main(argv: list[str] | None = None) -> int:
         source = RtlSdrSource(args.rtl_sdr)
     elif args.rtl_tcp is not None:
         source = RtlTcpSource(*args.rtl_tcp)
+    elif args.soapy is not None:
+        problem = module_problem()
+        if problem is not None:
+            print(f"radiolack: {problem}", file=sys.stderr)
+            return 1
+        source = SoapySource(args.soapy)
     try:
         server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
                              updates=UpdateCheck(), remote_addresses=private_addresses,

@@ -14,7 +14,8 @@ what bringing those samples in costs a SoapySDR source, which the rule's
 format, CS8, CS16 or CF32, copied out in reads of ``READ_SAMPLES`` as
 ``readStream`` hands them, kept in a ``NativeBuffer`` that drops the oldest
 for a reader that falls behind, as the rtl_tcp client does, then taken by
-the engine and converted to complex64 (``to_complex``).
+the engine and converted to complex64 (``to_complex``): the SoapySDR
+source's own (radiolack/soapy.py).
 
 Two measures, which tell different things.
 
@@ -66,7 +67,6 @@ import os
 import platform
 import statistics
 import sys
-import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -82,6 +82,7 @@ from radiolack.demod import MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator  # no
 from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
 from radiolack.rtltcp import BUFFER_S, SAMPLE_RATES_HZ  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
+from radiolack.soapy import FORMATS, Format, NativeBuffer, to_complex  # noqa: E402
 from radiolack.spectrum import FFT_SIZE, FFTS_PER_FRAME, SpectrumAnalyzer  # noqa: E402
 
 RATES_HZ = (2_400_000.0, 3_200_000.0, 4_000_000.0, 5_000_000.0, 6_000_000.0, 8_000_000.0, 10_000_000.0)
@@ -105,36 +106,6 @@ EXIT_FAILED = 1
 EXIT_INTERRUPTED = 130
 
 
-@dataclass(frozen=True)
-class Format:
-    """A device's sample format, as SoapySDR names it."""
-
-    name: str
-    component: type[np.generic]     # the type of each of I and Q
-    full_scale: float               # the value of a full-scale component
-
-    @property
-    def sample_bytes(self) -> int:
-        return 2 * np.dtype(self.component).itemsize
-
-
-FORMATS = {kind.name: kind for kind in (
-    Format("CS8", np.int8, 128.0), Format("CS16", np.int16, 32768.0), Format("CF32", np.float32, 1.0))}
-
-
-def to_complex(data: bytes | bytearray | memoryview, sample_format: Format, full_scale: float | None = None) -> np.ndarray:
-    """Samples in ``format``, I then Q, as complex64 scaled to full scale 1."""
-    components = np.frombuffer(data, sample_format.component)
-    if sample_format.component is np.float32:
-        samples = components.copy()
-    else:
-        samples = components.astype(np.float32)
-    scale = sample_format.full_scale if full_scale is None else full_scale
-    if scale != 1.0:
-        samples *= np.float32(1 / scale)
-    return samples.view(np.complex64)
-
-
 def to_native(samples: np.ndarray, sample_format: Format) -> np.ndarray:
     """complex64 samples as a device in ``format`` would give them: I then
     Q, scaled and rounded to its integers, clipped at full scale."""
@@ -144,63 +115,6 @@ def to_native(samples: np.ndarray, sample_format: Format) -> np.ndarray:
     info = np.iinfo(sample_format.component)
     scaled = np.rint(components * sample_format.full_scale)
     return np.clip(scaled, info.min, info.max).astype(sample_format.component)
-
-
-class NativeBuffer:
-    """The samples a reading thread brings in for the engine, kept in the
-    device's format as bytes: at most ``capacity`` samples, or what the
-    engine asks at once if more; past that the oldest are dropped, and
-    counted, so that the engine stays current when it falls behind, as the
-    rtl_tcp client's buffer does (rtltcp.py)."""
-
-    def __init__(self, sample_bytes: int, capacity: int) -> None:
-        if sample_bytes < 1 or capacity < 1:
-            raise ValueError("a buffer holds at least one sample of at least one byte")
-        self.sample_bytes = sample_bytes
-        self.capacity = capacity
-        self.dropped = 0            # samples dropped, the oldest
-        self._data = bytearray()
-        self._wanted = 0            # samples the engine waits for
-        self._ready = threading.Condition()
-
-    def __len__(self) -> int:
-        with self._ready:
-            return len(self._data) // self.sample_bytes
-
-    def put(self, data: bytes | bytearray | memoryview) -> None:
-        """Keep whole samples: ``data`` holds a whole number of them."""
-        if len(data) % self.sample_bytes:
-            raise ValueError(f"{len(data)} bytes are not whole samples of {self.sample_bytes} bytes")
-        with self._ready:
-            self._data += data
-            limit = max(self.capacity, self._wanted) * self.sample_bytes
-            excess = len(self._data) - limit
-            if excess > 0:
-                del self._data[:excess]
-                self.dropped += excess // self.sample_bytes
-            if len(self._data) >= self._wanted * self.sample_bytes:
-                self._ready.notify_all()
-
-    def take(self, count: int, timeout_s: float) -> bytes | None:
-        """The oldest ``count`` samples, or None when they did not come
-        within ``timeout_s``."""
-        if count < 1:
-            raise ValueError(f"cannot take {count} samples")
-        size = count * self.sample_bytes
-        with self._ready:
-            self._wanted = count
-            try:
-                if not self._ready.wait_for(lambda: len(self._data) >= size, timeout_s):
-                    return None
-            finally:
-                self._wanted = 0
-            data = bytes(self._data[:size])
-            del self._data[:size]
-            return data
-
-    def clear(self) -> None:
-        with self._ready:
-            self._data.clear()
 
 
 def block_size(rate_hz: float) -> int:

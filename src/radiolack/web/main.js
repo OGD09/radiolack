@@ -50,7 +50,7 @@ const S_TOP = -10;
 const METER_FLOOR = -140;           // reading when the VFO's channel lies outside the received band
 const AXIS_H = 18;                  // frequency scale under the spectrum, CSS px (#spec-axis in style.css)
 const PIXEL_BUDGET = 3.4e6;         // GPU drawing buffers WebKitGTK redraws at full rate (scoping.md, spike 1)
-const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp' };
+const SOURCE_NAMES = { synthetic: 'Synthetic source', rtl_sdr: 'RTL-SDR', rtl_tcp: 'rtl_tcp', soapy: 'SoapySDR' };
 const FIRST_MANUAL_GAIN_DB = 30;    // offered when automatic gain is turned off before any manual gain
 const DETENT_HOLD = 1.15;           // zooming out holds at the span's width until pushed this much further
 const STRIP_SEGMENT_PX = 12;        // the band strip shows a band's ranges while they average this wide, CSS px
@@ -2024,11 +2024,22 @@ function sourceNote() {
     const where = source.kind === 'rtl_sdr' ? 'on this computer, through rtl_tcp run by Radiolack'
       : `through rtl_tcp at ${source.address}`;
     text = `${source.tuner || 'RTL-SDR receiver'} ${where}.`;
+  } else if (source.kind === 'soapy') {
+    text = `${source.tuner || 'SoapySDR device'} through SoapySDR${source.driver ? `, driver ${source.driver}` : ''}.`;
+  }
+  if (['rtl_sdr', 'rtl_tcp', 'soapy'].includes(source.kind)) {
     if (source.status === 'waiting') text += ` Waiting: ${source.detail}. Radiolack tries again by itself.`;
     else if (source.status !== 'streaming') text += ' Connecting…';
   }
   if (sourceError) text += ` Change refused: ${sourceError}.`;
   return text.trim();
+}
+// The rates the receiver offers, when its state lists them; otherwise the
+// list as it stands. Rewritten only when they change.
+function offerRates(select, ratesHz) {
+  const values = ratesHz.map(String);
+  if (!values.length || values.join() === Array.from(select.options, (o) => o.value).join()) return;
+  select.replaceChildren(...ratesHz.map((rateHz) => new Option(`${(rateHz / 1e6).toFixed(3)} MS/s`, String(rateHz))));
 }
 function selectRate(select, rateHz) {
   const value = String(rateHz);
@@ -2055,6 +2066,7 @@ function syncSource() {
   centreNoteEl.hidden = !centreNote;
   centreNoteEl.textContent = centreNote;
   const rateEl = $('#src-rate');
+  if (source) offerRates(rateEl, source.sampleRatesHz);
   selectRate(rateEl, source ? source.rateHz : S.fs);
   rateEl.disabled = !settable.has('sample_rate_hz');
   const shortwave = shortwaveView(source);

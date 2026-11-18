@@ -59,8 +59,9 @@ preferences apart from this computer's.
 
    ```json
    {"type": "source", "kind": "rtl_tcp", "status": "streaming", "detail": "",
-    "address": "127.0.0.1:1234", "tuner": "Rafael Micro R820T",
+    "address": "127.0.0.1:1234", "tuner": "Rafael Micro R820T", "driver": null,
     "centre_hz": 145000000.0, "centre_in_use_hz": 144997500.0, "sample_rate_hz": 2400000.0,
+    "sample_rates_hz": [240000.0, 300000.0, 1024000.0, 1536000.0, 2048000.0, 2400000.0, 2880000.0],
     "gain_db": null, "ppm": 0,
     "gains_db": [0.0, 0.9, 1.4, 2.7, 49.6], "range_hz": [24000000.0, 1766000000.0],
     "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": false,
@@ -68,22 +69,24 @@ preferences apart from this computer's.
     "driver_pll": "unknown", "tuner_grid": true, "dc_removal": true,
     "settable": ["address", "hf_input", "converter_lo_hz", "converter", "sample_rate_hz", "centre_hz",
                  "gain_db", "ppm", "driver_pll", "tuner_grid", "rtl_agc", "bias_tee", "dc_removal"],
-    "kinds": ["synthetic", "rtl_sdr", "rtl_tcp"]}
+    "kinds": ["synthetic", "rtl_sdr", "rtl_tcp", "soapy"]}
    ```
 
    (`gains_db` shortened here.)
 
    | Field | Meaning |
    | --- | --- |
-   | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs. |
+   | `kind` | The source: `synthetic` for the simulated 2 m band, `rtl_sdr` for an RTL-SDR receiver on the engine's computer, through an rtl_tcp that the engine runs, `rtl_tcp` for an RTL-SDR receiver behind an rtl_tcp server that the user runs, `soapy` for a receiver that SoapySDR reads on the engine's computer, such as an SDRplay, a HackRF or an RTL-SDR. The engine switches to `soapy` only once a device was chosen, by `--soapy` for now; before that it refuses the switch, saying so. |
    | `status` | `streaming` while samples arrive. Otherwise `connecting`, `waiting` (to try again; see `detail`) or `idle` (no interface listened and no scan ran, so the source hung up). |
-   | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`; empty otherwise. |
+   | `detail` | Why the source waits, such as `connection refused`, `connection lost`, `no samples`, `not an rtl_tcp server`, `no receiver found` or `the receiver is in use by another program`, and for a `soapy` source the SoapySDR module or device's reason, such as `the SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr)`, `no sdrplay device found with the arguments given` or `no samples: the device stopped answering`; empty otherwise. |
    | `address` | `host:port` of the rtl_tcp server of an `rtl_tcp` source (an IPv6 host in brackets), which an interface may change; null for the other sources. |
-   | `tuner` | Name of the receiver's tuner once known, or null. |
+   | `tuner` | Name of the receiver's tuner once known, or null; for a `soapy` source, the device's hardware key, such as `RSPdx-R2`. |
+   | `driver` | The SoapySDR driver of a `soapy` source, such as `sdrplay`, known from the start; null for the other sources. |
    | `centre_hz`, `sample_rate_hz` | The settings asked of the receiver, the centre frequency on the air, through the converter if there is one. Each frame carries the sample rate it was taken with and the centre in use (`centre_in_use_hz`): after a change, frames follow a moment later. |
    | `centre_in_use_hz` | Where the receiver sits on the air for `centre_hz`, which labels the samples: the frames' centre, the carrier's measure, the I/Q recordings' captures. An RTL-SDR whose tuner is an R820T or R828D, on that tuner, is placed on its grid: the frequency asked of it moves, by 56.25 kHz at most (up to 112.5 kHz at the very edges of its range), to one whose oscillator, the frequency plus the IF of the sample rate, is a multiple of 112.5 kHz, where the driver's error is the same at every one. It is then labelled where `driver_pll` puts the tuner, and the correction moves it too. Within half a hertz of `centre_hz` for every other source and setting: direct sampling, another tuner, an RTL-SDR Blog V4 below 28.8 MHz, an oscillator below 27.66 MHz. A float, as the frames' centre: the two are equal. |
-   | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). |
-   | `ppm` | Frequency correction of the receiver's clock, in parts per million to the hundredth, such as 37.42; null for a source without one. An RTL-SDR takes its nearest whole number itself, and the engine the rest, by scaling the frequency it asks for: `centre_hz` stays the frequency asked. An R820T or R828D takes none, since a corrected crystal would move its grid: the engine takes the whole of it, by the frequency it asks for, the samples' label and the VFO's distance from the centre, scaled by as much, as the receiver samples that much faster. An interface older than the hundredths takes whole numbers only, and drops a source state that holds another until it is reloaded. |
+   | `sample_rates_hz` | The sample rates the Receiver menu offers, lowest first, `sample_rate_hz` among them for a `soapy` source: an RTL-SDR's usual ones, or those a SoapySDR device lists, or the common ones within the ranges it gives, up to 8 MS/s, which the engine holds; empty for a source whose rate does not change. An RTL-SDR source takes other rates within librtlsdr's ranges; a `soapy` source only those its device offers. |
+   | `gain_db` | Manual tuner gain in dB, or null for automatic gain (and for a source without a gain setting). A `soapy` source has one only for a device with one gain stage, and lists `gain_db` among `settable` then; a device with several, such as a HackRF, keeps its own gains, and `gain_db` is null. |
+   | `ppm` | Frequency correction of the receiver's clock, in parts per million to the hundredth, such as 37.42; null for a source without one. An RTL-SDR takes its nearest whole number itself, and the engine the rest, by scaling the frequency it asks for: `centre_hz` stays the frequency asked. An R820T or R828D takes none, since a corrected crystal would move its grid: the engine takes the whole of it, by the frequency it asks for, the samples' label and the VFO's distance from the centre, scaled by as much, as the receiver samples that much faster. A `soapy` source corrects the same way: a device that declares a correction of its own takes the nearest whole number, any other none, and the engine the rest. An interface older than the hundredths takes whole numbers only, and drops a source state that holds another until it is reloaded. |
    | `gains_db` | Manual gains the tuner offers, lowest first; empty when it offers automatic gain only. |
    | `range_hz` | Lowest and highest centre frequency the source takes, with its shortwave input, converter and sample rate. With direct sampling and a tuner whose range starts above 28.8 MHz (E4000, FC2580), the centre frequencies between the two are refused. Through a converter, it is the receiver's range converted to frequencies on the air, from half the sample rate at the lowest, so that the span never goes below 0 Hz, to 100 GHz less half the sample rate at the highest. |
    | `hf_input` | What an RTL-SDR uses for shortwave: `none`; `q` or `i`, direct sampling on that input of the RTL2832, by itself below the tuner's range; `tuner`, a tuner that covers shortwave, as an RTL-SDR Blog V4's does. Null for a source without it. |
@@ -738,10 +741,10 @@ are:
 
 | Field | Value |
 | --- | --- |
-| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. |
+| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. `soapy` is refused, with an error that says so, until a SoapySDR device was chosen once, by `--soapy`. |
 | `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
-| `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
+| `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz; a `soapy` source the rates its device offers up to 8 MS/s, and before the device is first found any rate up to 8 MS/s, which the device then brings to the nearest it offers. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
 | `gain_db` | Tuner gain in dB, or null for automatic gain. A gain becomes the nearest in `gains_db`. |
 | `ppm` | Frequency correction in parts per million, from -100 to 100, rounded to the hundredth; a whole number, as an older interface sends, is taken as it is. The receiver retunes: frames follow a moment later, as after a change of `centre_hz`; an R820T or R828D whose request stays on the same point of its grid does not, and only the label changes. |
 | `hf_input` | One of `hf_inputs`. Without a `centre_hz` in the same message, the centre frequency moves to the nearest the new input reaches, as it does after a new `sample_rate_hz`. Entering or leaving direct sampling retunes: frames follow a moment later. |
@@ -1308,6 +1311,18 @@ and later.
   it would ignore one anyway, as it reads a binary frame by its kind and
   drops the kinds it does not know. A newer interface asks only an engine
   whose hello lists `fine`, so an older engine never receives `fine`.
+  Later that day, SoapySDR sources (later-milestones.md, section 1, pull
+  request 2), without a new version: the source state's kind `soapy`, in
+  `kind` and `kinds`, and its fields `driver` and `sample_rates_hz`, which
+  every source sends. An older interface ignores both fields; for a
+  `soapy` source its Receiver list, which has no such entry, shows none
+  selected and its note stays empty, while the spectrum, the audio, the
+  centre frequency, the correction and the other settings that `settable`
+  lists work as for any source; its sample rates are its own list's, to
+  which it adds the rate in use, and the engine refuses one the device
+  does not offer, saying which it offers. A newer interface reads a state
+  without either field, an older engine's, as one without a driver whose
+  rates are the interface's own.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

@@ -183,6 +183,14 @@ class ReceiverLineTest(unittest.TestCase):
                 state["converter"] = converter
                 self.assertEqual(report.receiver_line(state), "rtl_tcp, streaming, tuner R820T, 2.4 MS/s")
 
+    def test_a_soapysdr_devices_driver(self):
+        state = {"kind": "soapy", "status": "waiting", "detail": "no sdrplay device found with its serial number",
+                 "address": None, "tuner": None, "driver": "sdrplay", "centre_hz": 7_100_000,
+                 "sample_rate_hz": 2_000_000}
+        self.assertEqual(report.receiver_line(state), "soapy, waiting, driver sdrplay, 2 MS/s "
+                                                      "(no sdrplay device found with its serial number)")
+
+
 class CheckPageTest(unittest.TestCase):
     def test_takes_a_line_of_text(self):
         for page in ("", "a browser; WebGL2 views; 1280x800 at 1x", "x" * report.MAX_PAGE):

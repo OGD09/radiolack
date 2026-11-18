@@ -13,6 +13,16 @@ time-outs and stream errors the test scripts. A test that must not wait
 replaces ``clock`` and ``sleep``, the module's wall clock and its wait,
 which ``reset`` puts back.
 
+A device also has what a SoapySDR source reads and sets: its sample rates
+as a list or as ranges, its frequency range, its analogue bandwidths, its
+gain stages, a frequency correction of its own (a ``CORR`` frequency
+component, which SoapySDR's overall frequency spreads its remainder into
+unless the call gives its value, or a correction of the module's own, or
+none), a crystal that runs off, a carrier on the air, which its samples
+then hold where the device's tuning and sampling clock put it, and a
+device that is unplugged and plugged again, whose stream cannot be set up
+or whose stop waits for the test.
+
 Receive only: every call that takes a direction refuses any but
 ``SOAPY_SDR_RX``, and ``writeStream`` refuses whatever it is given. A
 refusal raises ``TransmitRequested``, an AssertionError, and is kept in
@@ -100,6 +110,20 @@ class DeviceSpec:
     events: dict[int, str] = field(default_factory=dict)
     drop: int = 1_000                       # samples an overflow loses
     fail_open: bool = False                 # making it fails, as an unplugged device
+    rate_ranges: tuple[tuple[float, float, float], ...] = ()     # lowest, highest, step
+    full_scale: float | None = None         # its native integer format's full scale, if not the nominal one
+    hardware: str = ""                      # its hardware key
+    bandwidths_hz: tuple[float, ...] = ()
+    bandwidth_ranges: tuple[tuple[float, float, float], ...] = ()
+    gains: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # each stage's range
+    gain_mode: bool = False                 # whether it offers automatic gain
+    correction: str = "none"                # "corr" (a CORR component), "native" (the module's own) or "none"
+    crystal_ppm: float = 0.0                # how fast its crystal runs: its tuning and sampling clock with it
+    carrier_hz: float | None = None         # a carrier on the air at half full scale; otherwise the tone
+    present: bool = True                    # False: unplugged
+    unplugged_reads: str = "error"          # what reads give once unplugged: "error" or "timeout"
+    fail_stream: bool = False               # its stream cannot be set up
+    stop_gate: threading.Event | None = None  # deactivateStream waits for it, as a slow stop
 
     def listing(self) -> dict[str, str]:
         return {"driver": self.driver, "serial": self.serial, "label": self.label or f"{self.driver} {self.serial}"}
@@ -149,7 +173,31 @@ def _kwargs(args: Mapping[str, str] | str | None) -> dict[str, str]:
 
 def _matches(spec: DeviceSpec, args: Mapping[str, str]) -> bool:
     listing = spec.listing()
-    return all(listing.get(key) == value for key, value in args.items() if key in ("driver", "serial"))
+    return spec.present and all(listing.get(key) == value for key, value in args.items()
+                                if key in ("driver", "serial"))
+
+
+class Range:
+    """SoapySDR's range: lowest, highest and step, 0 for any value between."""
+
+    def __init__(self, minimum: float, maximum: float, step: float = 0.0) -> None:
+        self._range = (float(minimum), float(maximum), float(step))
+
+    def minimum(self) -> float:
+        return self._range[0]
+
+    def maximum(self) -> float:
+        return self._range[1]
+
+    def step(self) -> float:
+        return self._range[2]
+
+
+def _within(value: float, span: tuple[float, float, float]) -> bool:
+    low, high, step = span
+    if not low <= value <= high:
+        return False
+    return step <= 0 or abs((value - low) / step - round((value - low) / step)) * step < 0.5
 
 
 class StreamResult:
@@ -205,8 +253,13 @@ class Device:
 
     def _setup(self, spec: DeviceSpec) -> None:
         self.spec = spec
-        self.rate_hz = spec.rates_hz[0]
+        self.rate_hz = spec.rates_hz[0] if spec.rates_hz else spec.rate_ranges[0][0]
         self.frequency_hz = spec.frequency_range_hz[0]
+        self.correction_ppm = 0.0               # its CORR component, or its own correction
+        self.bandwidth_hz: float | None = None
+        self.gain_db = {name: span[0] for name, span in spec.gains.items()}
+        self.automatic_gain = False
+        self.tunings: list[tuple[str, float]] = []      # every frequency component set, in order
         self.streams: list[_Stream] = []
         self.closed = False
         self._lock = threading.Lock()
@@ -218,7 +271,7 @@ class Device:
         return self.spec.driver
 
     def getHardwareKey(self) -> str:  # noqa: N802
-        return f"{self.spec.driver}-stand-in"
+        return self.spec.hardware or f"{self.spec.driver}-stand-in"
 
     def getNumChannels(self, direction: int) -> int:  # noqa: N802
         _receive_only("getNumChannels", direction)
@@ -239,9 +292,13 @@ class Device:
         _receive_only("listSampleRates", direction)
         return list(self.spec.rates_hz)
 
+    def getSampleRateRange(self, direction: int, channel: int) -> list[Range]:  # noqa: N802
+        _receive_only("getSampleRateRange", direction)
+        return [Range(*span) for span in self.spec.rate_ranges]
+
     def setSampleRate(self, direction: int, channel: int, rate: float) -> None:  # noqa: N802
         _receive_only("setSampleRate", direction)
-        if rate not in self.spec.rates_hz:
+        if rate not in self.spec.rates_hz and not any(_within(rate, span) for span in self.spec.rate_ranges):
             raise RuntimeError(f"setSampleRate({rate}) not supported")
         self.rate_hz = float(rate)
 
@@ -249,17 +306,110 @@ class Device:
         _receive_only("getSampleRate", direction)
         return self.rate_hz
 
-    def setFrequency(self, direction: int, channel: int, frequency: float,  # noqa: N802
-                     args: Mapping[str, str] | None = None) -> None:
-        _receive_only("setFrequency", direction)
-        low, high = self.spec.frequency_range_hz
-        if not low <= frequency <= high:
-            raise RuntimeError(f"setFrequency({frequency}) out of range")
-        self.frequency_hz = float(frequency)
+    def listBandwidths(self, direction: int, channel: int) -> list[float]:  # noqa: N802
+        _receive_only("listBandwidths", direction)
+        return list(self.spec.bandwidths_hz)
 
-    def getFrequency(self, direction: int, channel: int) -> float:  # noqa: N802
+    def getBandwidthRange(self, direction: int, channel: int) -> list[Range]:  # noqa: N802
+        _receive_only("getBandwidthRange", direction)
+        return [Range(*span) for span in self.spec.bandwidth_ranges]
+
+    def setBandwidth(self, direction: int, channel: int, bandwidth: float) -> None:  # noqa: N802
+        _receive_only("setBandwidth", direction)
+        if bandwidth not in self.spec.bandwidths_hz and not any(_within(bandwidth, span)
+                                                                for span in self.spec.bandwidth_ranges):
+            raise RuntimeError(f"setBandwidth({bandwidth}) not supported")
+        self.bandwidth_hz = float(bandwidth)
+
+    def getBandwidth(self, direction: int, channel: int) -> float:  # noqa: N802
+        _receive_only("getBandwidth", direction)
+        return self.bandwidth_hz or 0.0
+
+    def listGains(self, direction: int, channel: int) -> list[str]:  # noqa: N802
+        _receive_only("listGains", direction)
+        return list(self.spec.gains)
+
+    def hasGainMode(self, direction: int, channel: int) -> bool:  # noqa: N802
+        _receive_only("hasGainMode", direction)
+        return self.spec.gain_mode
+
+    def setGainMode(self, direction: int, channel: int, automatic: bool) -> None:  # noqa: N802
+        _receive_only("setGainMode", direction)
+        if not self.spec.gain_mode:
+            raise RuntimeError("setGainMode: no automatic gain")
+        self.automatic_gain = bool(automatic)
+
+    def getGainRange(self, direction: int, channel: int, name: str) -> Range:  # noqa: N802
+        _receive_only("getGainRange", direction)
+        return Range(*self.spec.gains[name])
+
+    def setGain(self, direction: int, channel: int, *args: Any) -> None:  # noqa: N802
+        _receive_only("setGain", direction)
+        if len(args) != 2:
+            raise RuntimeError("the stand-in takes a gain by its stage's name")
+        name, value = args
+        low, high, _ = self.spec.gains[name]
+        self.gain_db[name] = min(max(float(value), low), high)
+
+    def getGain(self, direction: int, channel: int, name: str) -> float:  # noqa: N802
+        _receive_only("getGain", direction)
+        return self.gain_db[name]
+
+    def listFrequencies(self, direction: int, channel: int) -> list[str]:  # noqa: N802
+        _receive_only("listFrequencies", direction)
+        return ["RF", "CORR"] if self.spec.correction == "corr" else ["RF"]
+
+    def hasFrequencyCorrection(self, direction: int, channel: int) -> bool:  # noqa: N802
+        _receive_only("hasFrequencyCorrection", direction)
+        return self.spec.correction != "none"
+
+    def setFrequencyCorrection(self, direction: int, channel: int, value: float) -> None:  # noqa: N802
+        _receive_only("setFrequencyCorrection", direction)
+        if self.spec.correction == "none":
+            raise RuntimeError("setFrequencyCorrection: no correction")
+        self._set_component("CORR", float(value))
+
+    def getFrequencyCorrection(self, direction: int, channel: int) -> float:  # noqa: N802
+        _receive_only("getFrequencyCorrection", direction)
+        return self.correction_ppm
+
+    def setFrequency(self, direction: int, channel: int, *call: Any) -> None:  # noqa: N802
+        """The overall frequency, ``(frequency[, args])``, spread across the
+        components as SoapySDR 0.8 does: the first takes it, each next one
+        the remainder, unless ``args`` gives its value; or one component,
+        ``(name, frequency[, args])``."""
+        _receive_only("setFrequency", direction)
+        if call and isinstance(call[0], str):
+            self._set_component(call[0], float(call[1]))
+            return
+        remainder = float(call[0])
+        args = _kwargs(call[1] if len(call) > 1 else None)
+        for name in self.listFrequencies(direction, channel):
+            given = args.get(name)
+            self._set_component(name, float(given) if given not in (None, "DEFAULT") else remainder)
+            remainder -= self.getFrequency(direction, channel, name)
+
+    def _set_component(self, name: str, value: float) -> None:
+        if name == "RF":
+            low, high = self.spec.frequency_range_hz
+            if not low <= value <= high:
+                raise RuntimeError(f"setFrequency({value}) out of range")
+            self.frequency_hz = value
+        elif name == "CORR" and self.spec.correction != "none":
+            self.correction_ppm = value
+        else:
+            raise RuntimeError(f"no frequency component {name}")
+        self.tunings.append((name, value))
+
+    def getFrequency(self, direction: int, channel: int, name: str | None = None) -> float:  # noqa: N802
         _receive_only("getFrequency", direction)
+        if name == "CORR":
+            return self.correction_ppm
         return self.frequency_hz
+
+    def getFrequencyRange(self, direction: int, channel: int, name: str | None = None) -> list[Range]:  # noqa: N802
+        _receive_only("getFrequencyRange", direction)
+        return [Range(*self.spec.frequency_range_hz)]
 
     def setupStream(self, direction: int, sample_format: str, channels: Sequence[int] = (0,),  # noqa: N802
                     args: Mapping[str, str] | None = None) -> _Stream:
@@ -268,6 +418,8 @@ class Device:
             raise RuntimeError(f"setupStream: format {sample_format} not supported")
         if sample_format not in _FORMATS:
             raise RuntimeError(f"the stand-in has no samples in {sample_format}")
+        if self.spec.fail_stream:
+            raise RuntimeError("setupStream: the device is busy")
         stream = _Stream(sample_format, channels)
         self.streams.append(stream)
         return stream
@@ -282,6 +434,8 @@ class Device:
         return 0
 
     def deactivateStream(self, stream: _Stream, flags: int = 0, timeNs: int = 0) -> int:  # noqa: N802,N803
+        if self.spec.stop_gate is not None:
+            self.spec.stop_gate.wait(10.0)
         stream.active = False
         return 0
 
@@ -295,6 +449,11 @@ class Device:
         made since the previous read, waiting up to ``timeoutUs`` for a few;
         a scripted event instead, at its read."""
         if self.closed or stream.closed or not stream.active:
+            return StreamResult(SOAPY_SDR_STREAM_ERROR)
+        if not self.spec.present:
+            if self.spec.unplugged_reads == "timeout":
+                sleep(timeoutUs / 1e6)
+                return StreamResult(SOAPY_SDR_TIMEOUT)
             return StreamResult(SOAPY_SDR_STREAM_ERROR)
         number = stream.reads
         stream.reads += 1
@@ -325,7 +484,7 @@ class Device:
             sleep(min(0.002, max(0.0, deadline - clock())))
         count = min(wanted, ready)
         start = stream.position
-        _fill(buffs[0], stream.format, start, count)
+        _fill(buffs[0], stream.format, self._samples(start, count), self.spec.full_scale)
         stream.position += count
         result_flags = 0
         time_ns = 0
@@ -333,6 +492,17 @@ class Device:
             result_flags |= SOAPY_SDR_HAS_TIME
             time_ns = round(start * self.spec.timestamp_factor * 1e9 / self.rate_hz)
         return StreamResult(count, result_flags, time_ns)
+
+    def _samples(self, start: int, count: int) -> np.ndarray:
+        """What the device gives from index ``start``: the tone, or the
+        carrier where its tuning and its sampling clock, both off by its
+        crystal and corrected by its own correction, put it."""
+        if self.spec.carrier_hz is None:
+            return samples(start, count)
+        scale = (1 + self.spec.crystal_ppm / 1e6) / (1 + self.correction_ppm / 1e6)
+        cycles = (self.spec.carrier_hz - self.frequency_hz * scale) / (self.rate_hz * scale)
+        phase = 2 * np.pi * ((cycles * (start + np.arange(count, dtype=np.float64))) % 1.0)
+        return (0.5 * np.exp(1j * phase)).astype(np.complex64)
 
     def readStreamStatus(self, stream: _Stream, timeoutUs: int = 100_000) -> StreamResult:  # noqa: N802,N803
         return StreamResult(SOAPY_SDR_TIMEOUT)
@@ -350,9 +520,14 @@ def samples(start: int, count: int) -> np.ndarray:
     return np.resize(np.roll(_TONE, -(start % _PERIOD)), count)
 
 
-def _fill(buffer: np.ndarray, sample_format: str, start: int, count: int) -> None:
+def _fill(buffer: np.ndarray, sample_format: str, values: np.ndarray, native_scale: float | None = None) -> None:
+    """``values`` into ``buffer`` in ``sample_format``, an integer format at
+    ``native_scale`` if given, as a module whose integers have another full
+    scale gives them."""
     component, full_scale = _FORMATS[sample_format]
-    values = samples(start, count)
+    count = len(values)
+    if native_scale is not None and component is not np.float32:
+        full_scale = native_scale
     if component is np.float32:
         native = values.view(np.float32)
     else:

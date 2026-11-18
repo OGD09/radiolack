@@ -385,15 +385,17 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * asked of the receiver, with the engine's own DC removal. Frames carry the
  * setting they were taken with.
  * @typedef {object} SourceState
- * @property {string} kind              such as "synthetic", "rtl_sdr" or "rtl_tcp"
+ * @property {string} kind              such as "synthetic", "rtl_sdr", "rtl_tcp" or "soapy"
  * @property {SourceStatus} status
  * @property {string} detail            why the source waits, or ""
  * @property {string | null} address    of a network source, as host:port
- * @property {string | null} tuner      name of the receiver's tuner, once known
+ * @property {string | null} tuner      name of the receiver's tuner, or a SoapySDR device's hardware, once known
+ * @property {string | null} driver     a SoapySDR device's driver, such as "sdrplay"; null: another source
  * @property {number} centreHz         the centre frequency asked
  * @property {number} centreInUseHz    where the receiver sits on the air for it, which labels the frames: an
  *                                      R820T's or R828D's tuner is placed on its grid, up to 56.25 kHz away
  * @property {number} rateHz
+ * @property {number[]} sampleRatesHz   the sample rates the Receiver menu offers, lowest first; empty: its own
  * @property {number | null} gainDb     null: automatic gain, or no gain setting
  * @property {number | null} ppm        frequency correction, parts per million to the hundredth; null: none
  * @property {boolean} dcRemoval        the engine takes a constant offset off the samples
@@ -576,9 +578,9 @@ export function decodeDemod(message) {
 /**
  * Decode a source state message. Returns null when a field is missing or
  * malformed; settings this interface does not know are left out. The
- * shortwave, antenna power and converter fields, which an engine older
- * than them does not send, read as a source without them; so does a
- * converter that this interface does not know.
+ * shortwave, antenna power, converter, driver and sample rates fields,
+ * which an engine older than them does not send, read as a source without
+ * them; so does a converter that this interface does not know.
  * @param {any} message  a parsed JSON message of type "source"
  * @returns {SourceState | null}
  */
@@ -606,7 +608,10 @@ export function decodeSource(message) {
     && (m.converter === undefined || m.converter === null || typeof m.converter === 'string')
     && (m.converter_lo_hz === undefined || m.converter_lo_hz === null || (finite(m.converter_lo_hz) && m.converter_lo_hz > 0))
     && (m.centre_in_use_hz === undefined || finite(m.centre_in_use_hz))
-    && (m.driver_pll === undefined || m.driver_pll === null || typeof m.driver_pll === 'string');
+    && (m.driver_pll === undefined || m.driver_pll === null || typeof m.driver_pll === 'string')
+    && (m.driver === undefined || textOrNull(m.driver))
+    && (m.sample_rates_hz === undefined || (Array.isArray(m.sample_rates_hz)
+      && m.sample_rates_hz.every((/** @type {unknown} */ rate) => finite(rate) && /** @type {number} */ (rate) > 0)));
   if (!valid) return null;
   return {
     kind: m.kind,
@@ -614,9 +619,11 @@ export function decodeSource(message) {
     detail: m.detail,
     address: m.address,
     tuner: m.tuner,
+    driver: m.driver ?? null,
     centreHz: m.centre_hz,
     centreInUseHz: m.centre_in_use_hz ?? m.centre_hz,
     rateHz: m.sample_rate_hz,
+    sampleRatesHz: Array.isArray(m.sample_rates_hz) ? m.sample_rates_hz.slice() : [],
     gainDb: m.gain_db,
     ppm: m.ppm,
     dcRemoval: m.dc_removal,

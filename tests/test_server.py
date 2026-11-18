@@ -1028,7 +1028,7 @@ class SourceSwitchStreamTest(unittest.IsolatedAsyncioTestCase):
             for ws in (first, second):
                 self.assertEqual((await ws.receive_json(timeout=5))["type"], "hello")
                 state = await ws.receive_json(timeout=5)
-                self.assertEqual((state["kind"], state["kinds"]), ("synthetic", ["synthetic", "rtl_sdr", "rtl_tcp"]))
+                self.assertEqual((state["kind"], state["kinds"]), ("synthetic", ["synthetic", "rtl_sdr", "rtl_tcp", "soapy"]))
             await first.send_json({"type": "source", "kind": "rtl_sdr", "ppm": 1})
             self.assertEqual(await self.next_of(first, "error"), {
                 "type": "error", "command": "source",

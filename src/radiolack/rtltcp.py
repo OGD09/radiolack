@@ -123,6 +123,8 @@ DEFAULT_CENTRE_HZ = 145_000_000.0      # the 2 m band, until the user tunes else
 DEFAULT_SAMPLE_RATE_HZ = 2_400_000.0
 # librtlsdr's two ranges of sample rates, lowest first.
 SAMPLE_RATES_HZ = ((225_001.0, 300_000.0), (900_001.0, 3_200_000.0))
+# The rates the Receiver menu offers, within those ranges.
+MENU_RATES_HZ = (240_000.0, 300_000.0, 1_024_000.0, 1_536_000.0, 2_048_000.0, 2_400_000.0, 2_880_000.0)
 SETTLE_S = 0.4          # samples dropped after a change of frequency, rate or correction
 BUFFER_S = 0.5          # samples kept for a reader that falls behind
 IDLE_S = 2.0            # hang up once nobody has read for this long
@@ -446,9 +448,11 @@ class RtlTcpSource:
             "detail": self.detail,
             "address": self.address,
             "tuner": tuner.name if tuner else None,
+            "driver": None,
             "centre_hz": settings.centre_hz,
             "centre_in_use_hz": _tuning(settings, tuner).centre_hz,
             "sample_rate_hz": settings.sample_rate_hz,
+            "sample_rates_hz": list(MENU_RATES_HZ),
             "gain_db": settings.gain_db,
             "ppm": settings.ppm,
             "gains_db": list(tuner.gains_db) if tuner else [],
@@ -1072,14 +1076,14 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
             raise ValueError("the antenna power must be true or false")
         settings = replace(settings, bias_tee=value)
     if "sample_rate_hz" in changes:
-        rate = float(round(_number(changes["sample_rate_hz"], "the sample rate")))
+        rate = float(round(finite_number(changes["sample_rate_hz"], "the sample rate")))
         if not any(low <= rate <= high for low, high in SAMPLE_RATES_HZ):
             ranges = " or ".join(f"from {low / 1e6:g} to {high / 1e6:g}" for low, high in SAMPLE_RATES_HZ)
             raise ValueError(f"the sample rate must be {ranges} MS/s")
         settings = replace(settings, sample_rate_hz=rate)
     reach = _reach(settings, tuner)
     if "centre_hz" in changes:
-        centre = float(round(_number(changes["centre_hz"], "the centre frequency")))
+        centre = float(round(finite_number(changes["centre_hz"], "the centre frequency")))
         if not _within(centre, reach):
             raise ValueError(_reach_text(reach, settings))
         settings = replace(settings, centre_hz=centre)
@@ -1093,7 +1097,7 @@ def _changed(settings: Settings, changes: Mapping[str, object], tuner: Tuner | N
         settings = _within_reach(settings, tuner)
     if "gain_db" in changes:
         value = changes["gain_db"]
-        gain = None if value is None else _number(value, "the gain")
+        gain = None if value is None else finite_number(value, "the gain")
         if gain is not None and tuner is not None:
             if not tuner.gains_db:
                 raise ValueError("this tuner offers automatic gain only")
@@ -1314,7 +1318,7 @@ def _nearest(gains_db: tuple[float, ...], gain_db: float) -> float:
     return min(gains_db, key=lambda gain: abs(gain - gain_db))
 
 
-def _number(value: object, what: str) -> float:
+def finite_number(value: object, what: str) -> float:
     """``value`` as a finite float; ValueError for anything else, booleans included."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:

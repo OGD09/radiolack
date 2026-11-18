@@ -153,8 +153,9 @@ class StreamingTest(SourceTest):
         state = source.describe()
         self.assertEqual(state, {
             "kind": "rtl_tcp", "status": "streaming", "detail": "",
-            "address": f"{LOOPBACK}:{self.fake.port}", "tuner": "Rafael Micro R820T",
-            "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6, "gain_db": 29.7, "ppm": 0,
+            "address": f"{LOOPBACK}:{self.fake.port}", "tuner": "Rafael Micro R820T", "driver": None,
+            "centre_hz": 145e6, "centre_in_use_hz": 145e6, "sample_rate_hz": 2.4e6,
+            "sample_rates_hz": [240e3, 300e3, 1.024e6, 1.536e6, 2.048e6, 2.4e6, 2.88e6], "gain_db": 29.7, "ppm": 0,
             "gains_db": state["gains_db"], "range_hz": [24e6, 1766e6],
             "hf_input": "none", "hf_inputs": ["none", "q", "i", "tuner"], "direct": False,
             "rtl_agc": False, "bias_tee": False, "converter": "none", "converter_lo_hz": 125e6,
