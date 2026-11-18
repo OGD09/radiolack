@@ -565,12 +565,12 @@ class SourceTest(SourceCase):
             with self.subTest(settings=settings):
                 self.soapy.reset()
                 self.device(**{"driver": "test", **settings})
-                source = self.source()
+                source = self.source(read_wait_s=0.05)
                 await self.state(source, "waiting", detail)
                 await self.closed(source)
 
     async def test_waits_without_the_module(self):
-        source = self.source(load=lambda: (None, MISSING))
+        source = self.source(load=lambda: (None, MISSING), read_wait_s=0.05)
         await self.state(source, "waiting", MISSING)
         self.assertEqual(self.soapy.searches, [])
 
@@ -597,7 +597,7 @@ class CloseTest(SourceCase):
     thread, a close repeated included."""
 
     async def test_during_a_retry(self):
-        source = self.source(load=lambda: (None, MISSING), retry_s=(60.0, 60.0))
+        source = self.source(load=lambda: (None, MISSING), retry_s=(60.0, 60.0), read_wait_s=0.05)
         await self.state(source, "waiting", MISSING)
         source.close()
         source.close()
