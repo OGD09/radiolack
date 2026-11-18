@@ -208,6 +208,13 @@
             </select>
             <p class="note" id="src-note"></p>
           </div>
+          <div class="field" id="src-soapy-field" hidden>
+            <label for="src-soapy">SoapySDR device</label>
+            <select id="src-soapy" aria-describedby="src-soapy-note" disabled></select>
+            <p class="note" id="src-soapy-note"></p>
+          </div>
+          <div class="row" id="src-soapy-search-row" hidden><button type="button" class="btn" id="src-soapy-search" disabled>Search again</button></div>
+          <div class="field" id="src-soapy-args-field" hidden><label for="src-soapy-args">SoapySDR device arguments</label><input id="src-soapy-args" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="driver=rtlsdr" disabled></div>
           <div class="field" id="src-address-field" hidden><label for="src-address">Server address</label><input id="src-address" type="text" inputmode="url" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="host:port" disabled></div>
           <div class="field" id="src-hf-field" hidden>
             <label for="src-hf">Shortwave</label>

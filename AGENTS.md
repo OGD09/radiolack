@@ -30,13 +30,19 @@ the history under the tag `v0.1.0`.
   addresses to listen on), `engine`
   (reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks, the scanner state, the
-  signals found, the recording state and the update check's findings with
+  signals found, the recording state, the SoapySDR devices found and the
+  update check's findings with
   clients, sends audio to those that ask, and the fine spectrum of the
   VFO's channel, computed once while at least one asks, remote clients'
   with fewer bins, passes their changes on,
   switches between kinds of
   sources, restores and saves the settings and the source in use, a
-  receiver's own once its source learns which it reads; sends a
+  receiver's own once its source learns which it reads; searches for
+  SoapySDR devices when this computer's interface asks, never at start
+  nor for a remote client, never the driver of the device in use, and
+  opens one chosen among them, by its driver and serial number, or by the
+  device arguments that this computer's interfaces alone give, never
+  while a search runs; sends a
   problem report to this computer's interface that asks; measures the
   carrier at the VFO for the interfaces that ask, gathering the VFO's
   channel, unblanked, only while one waits, and sends each the result
@@ -60,7 +66,9 @@ the history under the tag `v0.1.0`.
   asks; idle without
   clients unless a scan or a recording runs; remote clients get neither
   the storage, update nor remote access states, nor the recordings
-  folder, which they may not change, and lighter spectrum frames),
+  folder, which they may not change, nor the SoapySDR device arguments,
+  which they may not give, may not search for SoapySDR devices, and get
+  lighter spectrum frames),
   `recordings` (the audio's WAV files and the raw I/Q's SigMF files, data
   and metadata, each recording written by a thread of its own that checks
   the free space, and the WAV limit for the audio, named after their
@@ -155,7 +163,12 @@ the history under the tag `v0.1.0`.
   device whatever ends it; settings under driver and serial number, the
   engine restoring them once the device is found; overflows, drops and
   late blocks logged at most once a minute; I/Q recordings refused;
-  receive stream only),
+  receive stream only), `soapysearch` (the search for SoapySDR devices,
+  pull request 3: the listed local USB drivers, `LISTED_DRIVERS`, `sdrplay`
+  to join them, one at a time with `driver=NAME` alone, never without a
+  driver nor `rtlsdr`, in a thread of its own, one search at a time; each
+  device's driver, serial number and label alone, in memory only; the
+  search's state, a failed driver's and the missing module's),
   `sources` (opens each kind of source from its saved
   record, for the Receiver list and at start), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
@@ -195,14 +208,17 @@ the history under the tag `v0.1.0`.
   filter across the plan, at most 200 rows), `rates.js` (what a mode needs of the sample rate),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
-  `correction.js` (the frequency correction's field) and `calibration.js`
+  `correction.js` (the frequency correction's field), `calibration.js`
   (the Calibrate dialog: the correction from a carrier measured and its
   true frequency, with its derivation, the driver's check and what the
-  dialog shows) carry JSDoc
+  dialog shows) and `devices.js` (the Receiver menu's SoapySDR devices:
+  the list, Search again and the arguments field, this computer's alone
+  for the last two, and when the first search is asked) carry JSDoc
   types; `main.js`
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
-  `history.js` in Node, skipped where Node is missing. `bandplan-europe.json`
+  `history.js` in Node, and `tests/test_devices.py` `devices.js` and the
+  devices state's decoding, skipped where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`
@@ -418,10 +434,18 @@ the history under the tag `v0.1.0`.
   fake rtl_tcp server of `tests/fakes.py` or the fake rtl_tcp program
   `tests/fake_rtl_tcp.py` instead. `radiolack --soapy ARGS` searches for
   and opens a SoapySDR device, an RTL-SDR included with `driver=rtlsdr`,
-  just as `--rtl-sdr` opens its receiver: never run it, nor call
-  `SoapySDR.Device`, `SoapySDR.Device.enumerate` or `SoapySDRUtil`, outside
-  the stand-in module of `tests/soapysdr/` unless the owner asks for it in
-  the current conversation, on the receiver the owner names.
+  just as `--rtl-sdr` opens its receiver, and so do choosing a device in
+  the Receiver menu's SoapySDR list and its "SoapySDR device arguments"
+  field; the menu's search, at its first showing and on "Search again",
+  opens no stream but has each listed driver's module talk to the devices
+  plugged in, some opening them to read their serial number: never run
+  them, nor call `SoapySDR.Device`, `SoapySDR.Device.enumerate` or
+  `SoapySDRUtil`, outside the stand-in module of `tests/soapysdr/` unless
+  the owner asks for it in the current conversation, on the receiver the
+  owner names. To look at the interface, run Radiolack with temporary
+  `XDG_CONFIG_HOME` and `XDG_DATA_HOME` through a launcher that puts
+  `tests/soapysdr` first on the import path and declares stand-in
+  devices, never the plain command, which would find the real module.
   `radiolack` without any of these options
   reopens the source used last, which may be a receiver, a SoapySDR device
   included, read at start

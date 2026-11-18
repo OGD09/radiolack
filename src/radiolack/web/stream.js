@@ -3,13 +3,14 @@
  * spectrum's frames when this interface asks, the source state, the
  * demodulation settings, the bookmarks, the scanner state, the
  * signals the engine found, the saved preferences, the recording state, the
- * storage state, the update state and remote access's state from the
- * engine, and the observations, the recordings, a problem report, the
+ * storage state, the update state, remote access's state and the SoapySDR
+ * devices from the engine, and the observations, the recordings, a problem report, the
  * measure of a carrier and the check of the rtl-sdr driver when this
  * interface asks, and takes this interface's changes, its preferences, its
  * request for audio, its recordings, its update requests, its remote access
  * settings, its report requests, its carrier measure and driver check
- * requests and its request for the fine spectrum to it
+ * requests, its request for the fine spectrum and its SoapySDR device
+ * requests to it
  * (docs/design/protocol.md). It ignores binary frames of a kind it does not
  * know.
  * It reconnects by itself after a disconnection. On a device that remote
@@ -42,7 +43,8 @@ const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'preferences',
-  'recording', 'recordings', 'update', 'remote', 'report', 'carrier'];
+  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices'];
+const DEVICE_SEARCHES = ['never', 'searching', 'done', 'failed', 'unavailable'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
 /**
@@ -365,8 +367,38 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A SoapySDR device that the engine lists: one its search found, or the
+ * device in use.
+ * @typedef {object} SoapyDevice
+ * @property {string} driver    such as "hackrf"
+ * @property {string} serial    its serial number; "" when its module gives none
+ * @property {string} label     as its module names it
+ * @property {boolean} inUse    the source in use reads it
+ */
+
+/**
+ * The engine's search for SoapySDR devices: "never" (none yet), "searching",
+ * "done", "failed" (a driver's search failed: see `detail`) or
+ * "unavailable" (the SoapySDR module is missing: see `detail`).
+ * @typedef {'never' | 'searching' | 'done' | 'failed' | 'unavailable'} DeviceSearchStatus
+ */
+
+/**
+ * The SoapySDR devices: what the engine's search found, and the device in
+ * use, first.
+ * @typedef {object} DevicesState
+ * @property {DeviceSearchStatus} search
+ * @property {string} detail            why a search failed or cannot run, or ""
+ * @property {string[]} drivers         the drivers the engine searches, one at a time
+ * @property {SoapyDevice[]} devices
+ * @property {boolean} chosen           a device was chosen before: the Receiver list's "soapy" opens it again
+ * @property {string | null} args       the device arguments in use; null without a SoapySDR device in use,
+ *                                      and on a device that remote access serves
+ */
+
+/**
  * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'preferences'
- *   | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier'} Command
+ *   | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'} Command
  */
 
 /**
@@ -467,6 +499,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(storage: StorageState) => void} onStorage    sent next, then at every change
  * @property {(update: UpdateState) => void} onUpdate       sent next, then at every change
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
+ * @property {(devices: DevicesState) => void} [onDevices]
+ *   with sources that open SoapySDR devices: sent after the recording state, then at every change
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
  * @property {(check: DriverCheck) => void} onDriverCheck   sent when this interface asks for one
@@ -983,6 +1017,33 @@ export function decodeRemote(message) {
 }
 
 /**
+ * Decode a SoapySDR devices message. Returns null when a field is missing
+ * or malformed.
+ * @param {any} message  a parsed JSON message of type "devices"
+ * @returns {DevicesState | null}
+ */
+export function decodeDevices(message) {
+  /** @param {unknown} value */
+  const text = (value) => typeof value === 'string';
+  /** @param {any} d */
+  const device = (d) => d !== null && typeof d === 'object' && text(d.driver) && d.driver !== '' && text(d.serial)
+    && text(d.label) && typeof d.in_use === 'boolean';
+  const m = message;
+  const valid = DEVICE_SEARCHES.includes(m.search) && text(m.detail) && Array.isArray(m.drivers)
+    && m.drivers.every(text) && Array.isArray(m.devices) && m.devices.every(device)
+    && typeof m.chosen === 'boolean' && (m.args === null || text(m.args));
+  if (!valid) return null;
+  return {
+    search: m.search,
+    detail: m.detail,
+    drivers: m.drivers.slice(),
+    devices: m.devices.map((/** @type {any} */ d) => ({ driver: d.driver, serial: d.serial, label: d.label, inUse: d.in_use })),
+    chosen: m.chosen,
+    args: m.args,
+  };
+}
+
+/**
  * The fields of a bookmark command, named as the engine names them.
  * @param {BookmarkFields} fields
  */
@@ -1429,6 +1490,41 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine to search for SoapySDR devices, unless a search runs:
+   * every interface receives the devices state as it changes. This
+   * computer's interfaces only. Returns false, sending nothing, when the
+   * stream is not open.
+   * @returns {boolean}
+   */
+  searchDevices() {
+    return this.#send({ type: 'devices', search: true });
+  }
+
+  /**
+   * Ask the engine to read a SoapySDR device that its search found, by its
+   * driver and serial number, in place of the source in use: every
+   * interface then receives the new source state, or this one an error.
+   * Returns false, sending nothing, when the stream is not open.
+   * @param {string} driver
+   * @param {string} serial
+   * @returns {boolean}
+   */
+  chooseDevice(driver, serial) {
+    return this.#send({ type: 'devices', choose: { driver, serial } });
+  }
+
+  /**
+   * Ask the engine to read the SoapySDR device that device arguments name,
+   * such as "driver=rtlsdr", as `chooseDevice` does. This computer's
+   * interfaces only.
+   * @param {string} args
+   * @returns {boolean}
+   */
+  openDevice(args) {
+    return this.#send({ type: 'devices', args });
+  }
+
+  /**
    * Whether this interface wants audio: the engine sends audio frames only
    * then, on this connection and the next ones.
    * @param {boolean} on
@@ -1578,6 +1674,9 @@ export class EngineStream {
     } else if (message.type === 'carrier') {
       const measure = decodeCarrier(message);
       if (measure) this.#handlers.onCarrier(measure);
+    } else if (message.type === 'devices') {
+      const devices = decodeDevices(message);
+      if (devices && this.#handlers.onDevices) this.#handlers.onDevices(devices);
     } else if (message.type === 'driver_pll') {
       const check = decodeDriverCheck(message);
       if (check) this.#handlers.onDriverCheck(check);

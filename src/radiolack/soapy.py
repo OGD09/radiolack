@@ -781,6 +781,7 @@ class SoapySource:
         self._clock = clock
         self.given: frozenset[str] = frozenset()
         self._serial = self._args.get("serial", "")
+        self._listed_label = ""         # the device's label, as its module's search gave it
         # Shared with the reading thread, under the lock: the settings
         # asked, counted by their changes, and what the device offers.
         self._lock = threading.Lock()
@@ -841,6 +842,13 @@ class SoapySource:
         """What opens this device again (sources.py): by its driver and
         serial number once found."""
         return {"kind": self.kind, "args": self.args}
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        """The device's driver, serial number and label, the last two as
+        its module's search gave them once found, "" until then: what the
+        Receiver menu lists for the device in use (soapysearch.py)."""
+        return self._args["driver"], self._serial, self._listed_label
 
     @property
     def hardware(self) -> str:
@@ -1084,6 +1092,7 @@ class SoapySource:
             given = "with its serial number" if "serial" in wanted else "with the arguments given"
             return f"no {wanted['driver']} device found {given}", False
         listing = {**{str(key): str(value) for key, value in dict(found[0]).items()}, **wanted}
+        self._listed_label = listing.get("label", "")
         if stop.is_set():
             return None
         try:

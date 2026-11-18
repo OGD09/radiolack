@@ -8,7 +8,8 @@ its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for the fine spectrum, for an update check, for the observations,
-for the list of the recordings and for the measure of a carrier. It serves the recordings that
+for the list of the recordings, for the measure of a carrier and for the
+SoapySDR devices. It serves the recordings that
 the engine lists, and the I/Q recordings' metadata, to download
 (``/recordings/NAME``).
 
@@ -23,7 +24,8 @@ runner of its own: it serves the interface and the stream over HTTPS on
 this computer's private addresses, which it follows while on, to devices
 that entered the access code, and turning it off stops it without stopping
 the first. Remote devices may not change remote access, the update check,
-the rtl_tcp server's address or the recordings folder, and the preferences
+the rtl_tcp server's address or the recordings folder, nor search for
+SoapySDR devices or open one by its device arguments, and the preferences
 they give are their own.
 """
 
@@ -45,7 +47,8 @@ from typing import Any
 from aiohttp import WSCloseCode, WSMsgType, web
 
 from . import __version__
-from .engine import LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener, Subscription, UpdateChecker
+from .engine import (LOCAL_DEVICE_FIELDS, LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener,
+                     Subscription, UpdateChecker)
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
                      is_private, issue_server_certificate, remote_urls, server_context)
 from .recordings import open_recording
@@ -68,10 +71,10 @@ _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stre
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "scanner", "observations", "preferences", "recording",
-             "recordings", "update", "remote", "report", "carrier")
+             "recordings", "update", "remote", "report", "carrier", "devices")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
-_LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS}
+_LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS, "devices": LOCAL_DEVICE_FIELDS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
 MEASURES = ("carrier", "driver_pll")   # what the engine measures when an interface asks, as the hello tells
 SPECTRA = ("fine",)     # the spectra the engine sends besides the spectrum frames when asked, as the hello tells
@@ -332,6 +335,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.report(changes, subscription)
         elif kind == "carrier":
             engine.measure_carrier(changes, subscription)
+        elif kind == "devices":
+            engine.configure_devices(changes)
         else:
             on = changes.pop("on", None)
             what = "audio" if kind == "audio" else "the fine spectrum"
