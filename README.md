@@ -1152,11 +1152,13 @@ noise around it and when it was last found. A signal is found when it rises
 at least the threshold above that noise (12 dB by default, from 6 to 30 dB)
 over a third of a second, twice in a row, away from the outer tenth of the
 span on each side and from the 3 kHz on each side of the centre, where a
-receiver's DC spike shows. The signals found within the last 1.5 s come
-first, strongest first, then the others, latest first. The list keeps the
-signals of the spans the receiver left, and empties when detection is
-turned off or another receiver is chosen. In a channelized range of the
-band plan, a signal shows on its channel.
+receiver's DC spike shows. The list runs by frequency, the lowest first,
+so that a signal keeps its place as others come and go: those found within
+the last 1.5 s show as active. It shows 50 signals at most: the active
+ones, the strongest of them if more than 50 are active, then the latest
+found. The list keeps the signals of the spans the receiver left, and
+empties when detection is turned off or another receiver is chosen. In a
+channelized range of the band plan, a signal shows on its channel.
 
 A click on a frequency tunes to it. Ignore leaves its frequency out of the
 list, for every interface, until Restore brings the ignored frequencies

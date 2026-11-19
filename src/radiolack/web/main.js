@@ -1621,14 +1621,21 @@ function peakShownHz(p) {
 }
 // The engine sends the list when it changes: the time since each inactive signal was found counts on here.
 const peakSeen = (p, now) => (p.active ? 'active' : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
+// The engine sends the active signals first, the strongest first, which
+// reorders its lists as the margins move and signals start and stop. The
+// rows run by the frequency they show, the lowest first: a signal keeps its
+// place among the others, and only its margin and time change.
+let listedPeaks = [];               // the rows' signals, in the rows' order
 let shownPeaks = new Map();         // each row's shown frequency → the engine's, which Ignore sends
 function renderPeaks() {
   if (peaksHold.wait()) return;
   const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
+  const rows = peaks.map((p) => ({ p, f: peakShownHz(p) }))
+    .sort((a, b) => a.f - b.f || a.p.frequencyHz - b.p.frequencyHz);
+  listedPeaks = rows.map((row) => row.p);
   shownPeaks = new Map();
-  list.innerHTML = peaks.length
-    ? peaks.map((p) => {
-      const f = peakShownHz(p);
+  list.innerHTML = rows.length
+    ? rows.map(({ p, f }) => {
       shownPeaks.set(String(f), p.frequencyHz);
       return `<tr class="${p.active ? 'active' : ''}">`
         + `<td><button type="button" class="freq-link" data-tune="${f}" title="Listen">${fmtMHz(f)}</button></td>`
@@ -1643,7 +1650,7 @@ function updatePeakAges() {
   if (peaksHold.held) return;       // the rows may be an older list's until the click
   const now = performance.now();
   $$('#pk-body td.seen').forEach((cell, i) => {
-    const text = peaks[i] ? peakSeen(peaks[i], now) : '';
+    const text = listedPeaks[i] ? peakSeen(listedPeaks[i], now) : '';
     if (cell.textContent !== text) cell.textContent = text;
   });
 }
