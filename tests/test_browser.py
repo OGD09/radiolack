@@ -1829,6 +1829,23 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
                 expect(first.locator("#pk-note")).to_be_hidden()
 
+    def test_the_signals_list_runs_by_frequency(self):
+        # The engine sends the active signals first, the strongest first: on
+        # the simulated band, the beacon at 144.465 MHz before the weaker one
+        # at 144.415 MHz. Whatever order each list comes in, the rows run by
+        # frequency, the lowest first.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.open_menu(page, "scan")     # on its Signals tab
+                tunes = page.locator("#pk-body button[data-tune]")
+                expect(tunes.nth(1)).to_be_visible()      # two signals at least
+                received = len(self.signals[page])
+                for lists in range(received + 1, received + 4):
+                    self.wait_for_signals(page, lists)
+                    shown = [int(f) for f in tunes.evaluate_all("buttons => buttons.map((b) => b.dataset.tune)")]
+                    self.assertEqual(shown, sorted(shown))
+
     def test_a_signal_pressed_while_a_new_list_comes_takes_the_click(self):
         # Each list rebuilds the Signals table: on the simulated band, about
         # every second, as the beacons' margins move. A list that comes
