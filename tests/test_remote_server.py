@@ -263,7 +263,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
             [header] = response.headers.getall("Set-Cookie")
         cookie = http.cookies.SimpleCookie(header)[SESSION_COOKIE]
         self.assertEqual((cookie["path"], cookie["samesite"], cookie["max-age"], cookie["domain"]),
-                         ("/", "Strict", str(400 * 24 * 3600), ""))
+                         ("/", "Lax", str(400 * 24 * 3600), ""))
         self.assertTrue(cookie["secure"] and cookie["httponly"])
         self.assertGreaterEqual(len(cookie.value), 43)
         [paired] = (await self.next_remote(lambda state: state["devices"]))["devices"]
@@ -272,8 +272,12 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'<script type="module" src="main.js">', body)
         self.assertEqual((await self.get(device, "main.js"))[0], 200)
-        # Pairing again changes nothing.
-        self.assertEqual(await self.pair(device, "WRONG"), (200, {"paired": True}))
+        # Pairing again, whatever the code, pairs no other device and sets the same cookie again.
+        async with device.post(f"{self.base}pair", json={"code": "WRONG"}, headers={"Origin": self.origin}) as response:
+            self.assertEqual((response.status, await response.json()), (200, {"paired": True}))
+            [header] = response.headers.getall("Set-Cookie")
+        again = http.cookies.SimpleCookie(header)[SESSION_COOKIE]
+        self.assertEqual((again.value, again["samesite"], again["max-age"]), (cookie.value, "Lax", str(400 * 24 * 3600)))
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "version": __version__, "remote": True,

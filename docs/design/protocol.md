@@ -1151,7 +1151,7 @@ the user in `error`:
 
 | Status | Body | When |
 | --- | --- | --- |
-| 200 | `{"paired": true}` | The right code, with the session cookie (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, 400 days), or a device paired already. |
+| 200 | `{"paired": true}` | The right code, with the session cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, 400 days), or a device paired already, whatever the code, with its cookie set again. Not `Strict`: Safari leaves such cookies out of the pages it restores, its WebSocket included, and a Home Screen web app reopened would be asked for the code again. |
 | 400 | `{"error": "Send the access code."}` | No `code` text in the body. |
 | 403 | `{"error": "Wrong code."}` | A wrong code, answered after a second. |
 | 409 | `{"error": …}` | 20 devices are paired already. |
