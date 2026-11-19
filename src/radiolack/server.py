@@ -713,7 +713,10 @@ class RemoteListener:
         if not isinstance(code, str):
             return _answer(400, "Send the access code.")
         if self._device(request) is not None:
-            return web.json_response({"paired": True})
+            # Its page may have loaded without the cookie, which Safari can
+            # leave out (see _paired): set again, an older cookie takes the
+            # attributes in use.
+            return _paired(request.cookies[SESSION_COOKIE])
         async with self._pairing:
             access = self._access
             if not self._serving:
@@ -728,10 +731,7 @@ class RemoteListener:
             except ValueError as error:
                 reason = str(error)
                 return _answer(409, f"{reason[:1].upper()}{reason[1:]}.")
-        response = web.json_response({"paired": True})
-        response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_S, path="/", secure=True,
-                            httponly=True, samesite="Strict")
-        return response
+        return _paired(token)
 
     async def _stream(self, request: web.Request) -> web.StreamResponse:
         if not _same_origin(request):
@@ -790,6 +790,20 @@ def _same_origin(request: web.Request) -> bool:
 def _answer(status: int, message: str) -> web.Response:
     """A pairing request's refusal, with a sentence for the user."""
     return web.json_response({"error": message}, status=status)
+
+
+def _paired(token: str) -> web.Response:
+    """A paired device's answer, with its session cookie. SameSite=Lax rather
+    than Strict: Safari leaves Strict cookies out of the pages it restores,
+    the stream's WebSocket included (WebKit bug 200345), so that an iPhone's
+    Home Screen web app, reopened, was asked for the code again. Lax also
+    sends the cookie on another site's top-level navigations, which only
+    show a page or download a recording to the device; the stream and
+    pairing check the Origin header."""
+    response = web.json_response({"paired": True})
+    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_S, path="/", secure=True,
+                        httponly=True, samesite="Lax")
+    return response
 
 
 def _no_addresses() -> list[str]:
