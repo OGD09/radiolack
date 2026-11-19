@@ -1131,7 +1131,7 @@ and `Referrer-Policy: no-referrer`.
 | --- | --- |
 | `GET /` | The interface, `index.html`, to a paired device; the pairing page, `pair.html`, to any other. |
 | `GET /certificate` | The local authority's root certificate, in PEM, as an attachment of type `application/x-x509-ca-cert`, which a device installs. |
-| `GET /<file>` | An interface file, as on the loopback server. Before pairing, only `pair.js`, `pair.css` and `style.css`: 403 for the others. |
+| `GET /<file>` | An interface file, as on the loopback server. Before pairing, only `pair.js`, `pair.css`, `style.css`, `favicon.svg` and `apple-touch-icon.png`: 403 for the others. |
 | `POST /pair` | Checks an access code, below. |
 | `GET /stream` | The stream, to a paired device. |
 | `GET /recordings/<file>` | A recording, or an I/Q recording's metadata, to a paired device, as on the loopback server ([From the interface](#from-the-interface)); 403 to any other. |

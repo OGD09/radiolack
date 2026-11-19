@@ -1477,7 +1477,10 @@ joining a network you do not trust. On each device, once:
    then opens the interface at that address directly.
 
 On an iPhone or iPad, Safari's Share > Add to Home Screen then puts
-Radiolack's icon on the Home Screen. Opened from that icon as a web app,
+Radiolack on the Home Screen. An iPhone with iOS 26.6.1 shows it there as
+the letter R rather than Radiolack's icon: the part of iOS that makes the
+Home Screen icon refuses Radiolack's certificate, which Safari trusts, so
+it never gets the icon. Opened from the Home Screen as a web app,
 Radiolack runs apart from Safari: it asks for the code once more, then
 stays paired too.
 
