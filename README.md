@@ -28,10 +28,11 @@ demodulates NFM, AM, synchronous AM (SAM), USB, LSB, CW and WFM,
 broadcast FM in mono, with an automatic notch for whistles in AM, SAM and
 SSB and a noise blanker for crackle in every mode, and the interface plays
 the audio. The engine also
-finds the signals in the span, which every interface lists, watches the
-ticked bookmarks, outside the span too with a receiver that tunes, and
-sweeps a range with such a receiver ([Scanners](#scanners)), from an
-interface or, with `--scan`, at each start. Any interface records the
+finds the signals in the span, which every interface lists and the
+signals scan listens to in turn, watches the ticked bookmarks, outside the
+span too with a receiver that tunes, and sweeps a range with such a
+receiver ([Scanners](#scanners)), from an interface or, with `--scan`, at
+each start. Any interface records the
 audio into WAV files and the receiver's raw I/Q into SigMF files, and lists
 the recordings, which it downloads or deletes ([Recording](#recording)).
 Levels are in
@@ -214,7 +215,7 @@ stops Radiolack.
 | `--ui none` | Only prints the interface's address. |
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
-| `--scan memory`, `--scan sweep` | Starts the memory scan or the sweep at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
+| `--scan memory`, `--scan sweep`, `--scan signals` | Starts the memory scan, the sweep or the signals scan at start, with its saved settings, without waiting for an interface: see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
 | `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, or a SoapySDR device's own, once it opens) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device without antenna power ignore it, which Radiolack says. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
 | `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
@@ -294,7 +295,8 @@ nothing. Escape, a click outside the menu or its close button closes it,
 and the icon opens the last menu shown again. In a window 600 px wide or
 less, the list of menus comes first, and a menu takes its place with an
 arrow back to the list. A dot on the icon tells that a recording runs, in
-red, or that the memory scan or the sweep runs, in green.
+red, or that the memory scan, the sweep or the signals scan runs, in
+green.
 
 ## RTL-SDR receivers
 
@@ -1168,6 +1170,38 @@ for every interface, a paired device's included, and kept for the next
 start. "Mark on the spectrum" is each interface's own: it marks the signals
 found within the last 1.5 s on the spectrum.
 
+The signals scan, under Scan the signals in the Signals tab, listens to
+the active signals of the span one after the other, the strong and the
+weak alike, with the VFO alone: it never tunes the receiver. It runs in
+the engine, the same for every interface. It tunes the VFO to the active
+signal that waited longest, one it never tuned to first, the lowest of
+them, then the one it tuned to least recently, so that each takes its
+turn; the VFO lands on the frequency the list shows, in the mode that the
+band plan gives there, as the History's Bookmark button does (NFM on a
+2 m repeater, USB in the SSB part, AM in the airband, WFM on broadcast
+FM), taking that mode's usual filter width when the mode changes, and
+keeps its mode where the plan gives none. It stays while the squelch opens within a quarter of a
+second and stays open, then waits the resume time once it closes, as the
+memory scan does. After the longest listening time (10 s by default, from
+2 to 60 s), it leaves the signal for another one that waits, even while
+the squelch is open, so that a signal on the air all the time does not
+keep the others from their turn; with no other active signal, it stays.
+The list marks the signal it listens to, and the VFO's marker moves on
+the spectrum of every interface. One VFO hears one signal at a time: a
+short transmission may end before its turn comes, but it still joins the
+list and the History. Ignoring the signal it listens to moves it on at
+once. It needs detection, and stops when detection is turned off.
+
+Any interface starts and stops the signals scan, a paired device's
+included; their status lines add "signals scan" while it runs. It goes on
+with no interface open until an interface stops it, and a stop leaves the
+VFO where it is. Tuning by hand from any interface (the VFO, the centre
+frequency or the sample rate) or choosing another receiver stops it. While
+it runs, the receiver's settings saved are those of its start. Whether it
+runs is never saved: none runs at start, unless `--scan signals` starts it
+([Without a window](#without-a-window)). The longest listening time and the
+resume time are the same for every interface and kept for the next start.
+
 The memory scan, at the foot of the Bookmarks menu, runs in the engine,
 the same for every interface. It watches every ticked bookmark of the receiver's span at once,
 in the part that detection searches. A bookmark is active when the power
@@ -1238,8 +1272,8 @@ overlap it ([Spectrum view](#spectrum-view)).
 
 Any interface starts and stops the sweep, a paired device's included, and
 every interface shows the pass and the window it is at; their status lines
-add "sweep" while it runs. One scan runs at a time: starting the sweep
-stops the memory scan, and starting the memory scan stops the sweep. The
+add "sweep" while it runs. One scan runs at a time: starting the memory
+scan, the sweep or the signals scan stops the one that runs. The
 sweep starts only when the receiver tunes to every window of the range. It
 goes on with no interface open until an interface stops it, which brings
 the receiver back to its centre frequency and the VFO where they were when
@@ -1381,7 +1415,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   number, have their own; rtl_tcp has one set whatever its address, which is
   saved with them. It also records the source in use, for the next start,
   and the scanners' settings: whether detection is on, its threshold, the
-  ignored frequencies, the memory scan's resume time, and the sweep's range
+  ignored frequencies, the memory scan's and the signals scan's resume
+  time, the signals scan's longest listening time, and the sweep's range
   and time per window ([Scanners](#scanners)). It also holds the own
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
@@ -1572,7 +1607,8 @@ ssh -L 8080:127.0.0.1:8080 COMPUTER
 
 then open `http://127.0.0.1:8080/` on the computer that runs ssh.
 
-`--scan memory` or `--scan sweep` starts that scan at each start, with its
+`--scan memory`, `--scan sweep` or `--scan signals` starts that scan at
+each start, with its
 saved settings, as an interface starts it, so that after a power
 cut or an upgrade the computer goes on scanning, and the History fills,
 without any interface:
@@ -1583,7 +1619,8 @@ radiolack --ui none --rtl-sdr --scan memory
 
 The receiver then opens at start, not once an interface opens. When the
 scan cannot start, as the memory scan without a ticked bookmark within the
-receiver's reach or the sweep with a source that does not tune, Radiolack
+receiver's reach, the sweep with a source that does not tune or the signals
+scan with detection turned off, Radiolack
 says why in its output and in the menu that starts that scan, and runs on
 without it: an interface can start it later. A receiver's range is known once it
 answers: the output also says when the memory scan then stops because no
@@ -1859,7 +1896,7 @@ program and rtl_tcp addresses where nothing listens: the stream, the menu,
 its keys and its layout from a phone to a computer, the Receiver menu and
 its list, a change made in one interface showing in another, the bookmarks,
 their names and a click that tunes, the S-meter's squelch, the signals
-found, the memory scan, in the span and
+found, the signals scan, the memory scan, in the span and
 across windows, the sweep, the History, the recordings, their downloads and
 their folder, the view past the span and tuning outside it, and the saved
 interface settings. They
@@ -2134,7 +2171,10 @@ src/radiolack/
                 its list
   scanners.py   detection: the signals in the receiver's span, their list
                 and the ignored frequencies; the memory scan, its windows
-                and its visits; the sweep's windows and progress
+                and its visits; the sweep's windows and progress; the
+                signals scan's turns
+  bandplan.py   the band plan's modes and channels, as the engine reads
+                them for the signals scan and the lists of signals
   observations.py
                 the channels where signals were found, for the History
   remote.py     remote access: access code, paired devices and their

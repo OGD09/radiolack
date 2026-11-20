@@ -15,7 +15,7 @@ from . import __version__, report, window
 from .recordings import default_folder
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
-from .scanners import SCANS
+from .scanners import SCAN_NAMES, SCANS
 from .server import LOOPBACK_HOST, InterfaceUnreadable, LocalServer
 from .soapy import SoapySource, module_problem, parse_args
 from .sources import Sources
@@ -94,8 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scan", choices=SCANS,
-        help="start the memory scan or the sweep at start, with its saved settings, which goes on "
-             "without any interface; when it cannot start, say why and run on without it",
+        help="start the memory scan, the sweep or the signals scan at start, with its saved settings, which "
+             "goes on without any interface; when it cannot start, say why and run on without it",
     )
     parser.add_argument(
         "--bias-tee", action="store_true",
@@ -224,7 +224,7 @@ def _start_scan(server: LocalServer, scan: str) -> None:
     """Start the scan given to --scan, before any interface opens; when it
     cannot start, the error output says why, and Radiolack runs on without
     it."""
-    name = "memory scan" if scan == "memory" else "sweep"
+    name = SCAN_NAMES[scan]
     try:
         server.start_scan(scan)
     except ValueError as error:

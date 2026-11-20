@@ -1,9 +1,19 @@
-"""Checks of the band plan the interface shows (format in docs/design/band-plan.md)."""
+"""Checks of the band plan the interface shows (format in docs/design/band-plan.md),
+and of what the engine reads of it (bandplan.py): the modes it gives, which
+Node.js checks against the interface's where it is installed, and the
+channels its signals show on."""
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from radiolack import bandplan
+from radiolack.bandplan import BandPlan, plan_mode
 from radiolack.server import WEB_DIR
 
 # The modes the band plan may name: the interface's (MODES in main.js), but SAM,
@@ -236,6 +246,171 @@ class BandPlanTest(unittest.TestCase):
         self.assertIs(type(name), str)
         self.assertTrue(name and name == name.strip() and name.isascii(), name)
         self.assertLessEqual(len(name), LONGEST_NAME)
+
+
+NODE = shutil.which("node")
+
+# The mode the interface's History gives each frequency of its first
+# argument, a JSON list, for the plan of its second, a file URL: as its
+# Bookmark button does.
+INTERFACE_MODES_SCRIPT = """
+const { readFileSync } = await import('node:fs');
+const { parseBandPlan, rangeAt } = await import(new URL('bandplan.js', process.argv[2]));
+const { modeAt } = await import(new URL('channels.js', process.argv[2]));
+const plan = parseBandPlan(JSON.parse(readFileSync(new URL(process.argv[2]), 'utf8')),
+  ['NFM', 'AM', 'SAM', 'USB', 'LSB', 'CW', 'WFM']);
+const modes = JSON.parse(process.argv[1]).map((f) => modeAt(plan, f) ?? rangeAt(plan.ranges, f)?.mode ?? null);
+console.log(JSON.stringify(modes));
+"""
+
+# A small plan: a band whose segments leave parts out, a band with a step,
+# a channel set and spots.
+SMALL_PLAN = {
+    "format": 2, "name": "Test", "types": {"amateur": "#123456"},
+    "bands": [
+        {"from": 100_000_000, "to": 101_000_000, "name": "Band", "type": "amateur", "mode": "NFM", "step": 12_500,
+         "segments": [
+             {"from": 100_100_000, "to": 100_200_000, "name": "SSB", "type": "amateur", "mode": "USB"},
+             {"from": 100_500_000, "to": 100_600_000, "name": "No mode", "type": "amateur"}]},
+        {"from": 118_000_000, "to": 137_000_000, "name": "Airband", "type": "amateur", "mode": "AM",
+         "step": 25_000 / 3},
+        {"from": 156_000_000, "to": 157_000_000, "name": "Marine", "type": "amateur"},
+    ],
+    "channels": [
+        {"name": "Marine VHF", "from": 156_000_000, "to": 157_000_000, "label": "Ch {n}", "spacing": 25_000,
+         "mode": "NFM", "first": 156_025_000, "count": 3, "number": 1},
+        {"name": "Listed", "from": 100_150_000, "to": 100_160_000, "label": "L{n}", "spacing": 5_000, "mode": "NFM",
+         "list": [{"n": "2", "f": 100_155_000}, {"n": "1", "f": 100_150_000}]},
+    ],
+    "spots": [
+        {"f": 100_300_000, "name": "Image modes", "type": "amateur", "mode": "USB"},
+        {"f": 100_152_000, "name": "Beacon", "type": "amateur"},
+    ],
+}
+
+
+class EnginePlanTest(unittest.TestCase):
+    """What the engine reads of the band plan."""
+
+    def test_the_engine_reads_the_plan_that_main_js_loads(self):
+        self.assertEqual(bandplan.PLAN_PATH, plan_path())
+        plan = bandplan.default_plan()
+        self.assertEqual(plan.range_at(145_600_000).mode, "NFM")
+        self.assertEqual(plan.range_at(144_300_000).mode, "USB")
+        self.assertEqual(plan.mode_at(156_800_000), "NFM")      # maritime VHF's channel 16
+        self.assertEqual(plan.mode_at(98_100_000), "WFM")
+        self.assertEqual(plan.mode_at(124_500_000), "AM")
+
+    def test_ranges_take_their_own_mode_and_step_and_gaps_the_band_s(self):
+        plan = BandPlan.parse(SMALL_PLAN)
+        cases = [(100_000_000, "NFM", 12_500), (100_150_000, "USB", None), (100_300_000, "NFM", 12_500),
+                 (100_550_000, None, None), (100_999_999, "NFM", 12_500), (156_500_000, None, None)]
+        for frequency, mode, step in cases:
+            with self.subTest(frequency=frequency):
+                found = plan.range_at(frequency)
+                self.assertEqual((found.mode, found.step_hz), (mode, step))
+        for frequency in (99_999_999, 101_000_000, 0, 200_000_000):
+            self.assertIsNone(plan.range_at(frequency))
+
+    def test_a_spot_s_mode_comes_first_then_a_channel_set_s_then_the_range_s(self):
+        plan = BandPlan.parse(SMALL_PLAN)
+        cases = [
+            (100_300_050, "USB"),       # on the image modes' spot, in an NFM part
+            (100_300_051, "NFM"),       # beyond its tolerance
+            (100_152_000, "USB"),       # a spot without a mode: the range's, not the channel set's
+            (100_150_000, "NFM"),       # the listed set's channel, in the SSB segment
+            (100_157_400, "NFM"),       # within half the spacing of its channel 2
+            (156_037_500, "NFM"),       # between the marine channels 1 and 2, within half the spacing
+            (156_087_501, None),        # more than half the spacing above its last channel: the range names none
+            (100_550_000, None),
+            (50_000_000, None),         # outside the plan
+        ]
+        for frequency, mode in cases:
+            with self.subTest(frequency=frequency):
+                self.assertEqual(plan.mode_at(frequency), mode)
+
+    def test_signals_show_on_their_channel_where_the_step_is_wide(self):
+        plan = BandPlan.parse(SMALL_PLAN)
+        cases = [
+            (100_012_000, 600, 100_012_500),        # within 1.5 kHz of a 12.5 kHz channel
+            (100_010_900, 600, 100_010_900),        # beyond: to the 100 Hz
+            (100_010_900, 4_000, 100_012_500),      # but a wide one on the nearest channel
+            (100_006_250, 600, 100_006_300),        # halfway between two channels, too far from either
+            (100_006_250, 5_000, 100_012_500),      # a wide one: the upper one, as Math.round has it
+            (118_008_040, 600, 118_008_000),        # the airband's 8.33 kHz step is too narrow: to the 100 Hz
+            (100_150_049, 600, 100_150_000),        # no step: to the 100 Hz
+            (100_150_050, 600, 100_150_100),        # halves upwards
+            (50_000_049, 600, 50_000_000),          # outside the plan
+        ]
+        for frequency, width, shown in cases:
+            with self.subTest(frequency=frequency, width=width):
+                self.assertEqual(plan.channel(frequency, width), shown)
+                self.assertIsInstance(plan.channel(frequency, width), int)
+
+    def test_the_vfo_s_mode_where_the_plan_names_one(self):
+        self.assertEqual(plan_mode(None, "USB"), "USB")
+        self.assertEqual(plan_mode("NFM", "USB"), "NFM")
+        self.assertEqual(plan_mode("AM", "SAM"), "SAM")
+        self.assertEqual(plan_mode("AM", "NFM"), "AM")
+        self.assertEqual(plan_mode("USB", "SAM"), "USB")
+
+    def test_a_malformed_plan_is_refused(self):
+        def changed(**changes) -> dict:
+            data = json.loads(json.dumps(SMALL_PLAN))
+            for path, value in changes.items():
+                *parents, last = path.split("__")
+                item = data
+                for key in parents:
+                    item = item[int(key)] if isinstance(item, list) else item[key]
+                item[last] = value
+            return data
+
+        for data in ([], {**SMALL_PLAN, "format": 1}, changed(bands="none"), changed(bands__0__mode="FM"),
+                     changed(bands__1__from=99_000_000), changed(bands__0__segments__1__from=100_150_000),
+                     changed(bands__0__step=0), changed(bands__0__to=100_000_000),
+                     changed(channels__0__count=0), changed(channels__0__first=155_000_000),
+                     changed(channels__1__from=156_100_000, channels__1__to=156_200_000,    # overlapping
+                             channels__1__list__0__f=156_155_000, channels__1__list__1__f=156_150_000),
+                     changed(spots__0__f=-1), changed(spots__0__mode="DIGI"), changed(bands__2__name="")):
+            with self.subTest(data=str(data)[:80]), self.assertRaises(ValueError):
+                BandPlan.parse(data)
+
+    def test_an_unreadable_plan_gives_no_mode_and_no_channel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            broken = Path(folder) / "bandplan.json"
+            broken.write_text("{", encoding="utf-8")
+            for path in (broken, Path(folder) / "missing.json"):
+                with self.subTest(path=path.name), mock.patch.object(bandplan, "PLAN_PATH", path):
+                    bandplan.default_plan.cache_clear()
+                    try:
+                        with self.assertLogs("radiolack.bandplan", "WARNING"):
+                            plan = bandplan.default_plan()
+                    finally:
+                        bandplan.default_plan.cache_clear()
+                    self.assertIsNone(plan.mode_at(145_600_000))
+                    self.assertEqual(plan.channel(145_600_049, 10_000), 145_600_000)
+
+    @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
+    def test_the_engine_gives_the_modes_that_the_interface_gives(self):
+        data = load_plan()
+        frequencies = set()
+        for entry in [entry for band in data["bands"] for entry in (band, *band.get("segments", ()))]:
+            frequencies.update((entry["from"], entry["to"] - 1, (entry["from"] + entry["to"]) // 2))
+        for spot in data["spots"]:
+            frequencies.update(spot["f"] + offset for offset in (-51, -50, 0, 50, 51))
+        plan = BandPlan.parse(data)
+        for channel_set in plan._sets:
+            half = channel_set.spacing_hz // 2
+            for channel in channel_set.channels[:3] + channel_set.channels[-3:]:
+                frequencies.update(channel + offset for offset in (-half - 1, -half, 0, half, half + 1))
+        frequencies = sorted(f for f in frequencies if f >= 0)
+        done = subprocess.run([NODE, "--input-type=module", "-e", INTERFACE_MODES_SCRIPT, json.dumps(frequencies),
+                               plan_path().as_uri()], capture_output=True, text=True, timeout=60, check=True)
+        interface = json.loads(done.stdout)
+        engine = [plan.mode_at(f) for f in frequencies]
+        differ = [(f, mine, theirs) for f, mine, theirs in zip(frequencies, engine, interface) if mine != theirs]
+        self.assertEqual(differ, [])
+        self.assertGreater(len(frequencies), 1000)
 
 
 if __name__ == "__main__":

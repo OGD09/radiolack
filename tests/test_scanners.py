@@ -4,8 +4,8 @@ of signals found twice in a row, ignored frequencies; for the memory scan:
 the bookmarks it watches, their channels' power and noise, its progress
 from channel to channel, the windows its bookmarks take and its visits from
 window to window; for the sweep: its windows across a range and its
-progress from window to window; and the checks of the values the interfaces
-give."""
+progress from window to window; for the signals scan: its progress from
+signal to signal; and the checks of the values the interfaces give."""
 
 import math
 import unittest
@@ -16,11 +16,11 @@ import numpy as np
 from radiolack import r82xx
 from radiolack.bookmarks import Bookmark
 from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
-                                MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch, Detection, Detector,
-                                MemoryScan, MemoryTour, Placement, Signals, Sweep, SweepWindows, checked_frequency,
-                                checked_resume, checked_sweep_range, checked_threshold, checked_window, find_signals,
-                                local_noise, memory_window, memory_windows, search_blocks, sweep_windows,
-                                watched_channels)
+                                MAX_SIGNALS, MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch,
+                                Detection, Detector, MemoryScan, MemoryTour, Placement, Signals, SignalScan, Sweep,
+                                SweepWindows, checked_frequency, checked_listen, checked_resume, checked_sweep_range,
+                                checked_threshold, checked_window, find_signals, local_noise, memory_window,
+                                memory_windows, search_blocks, sweep_windows, watched_channels)
 from radiolack.spectrum import SpectrumAnalyzer
 from tests.fakes import wide_signal
 
@@ -231,6 +231,16 @@ class SignalsTest(unittest.TestCase):
                          [145_100_000, 145_000_000, 146_000_000])
         self.assertEqual(signals.describe(10.6 + ACTIVE_S + 1)[0]["age_s"], ACTIVE_S + 1)
 
+    def test_the_active_signals_are_those_found_lately(self):
+        signals = Signals()
+        for now in (0.0, 0.3):
+            signals.update([carrier(144_000_000, width_hz=500.0)], now)
+        for now in (1.0, 1.3):
+            signals.update([carrier(145_000_000, width_hz=12_000.0)], now)
+        self.assertEqual(sorted(signals.active(1.3)), [(144_000_000, 500.0), (145_000_000, 12_000.0)])
+        self.assertEqual(signals.active(0.3 + ACTIVE_S + 0.1), [(145_000_000, 12_000.0)])
+        self.assertEqual(signals.active(1.3 + ACTIVE_S + 0.1), [])
+
     def test_only_the_latest_signals_are_kept_and_listed(self):
         signals = Signals()
         with mock.patch("radiolack.scanners.MAX_SIGNALS", 3), mock.patch("radiolack.scanners.LISTED", 2):
@@ -409,6 +419,117 @@ class MemoryScanTest(unittest.TestCase):
         self.assertEqual((scan.state, scan.bookmark_id), ("checking", 1))
         scan.keep([2])
         self.assertEqual((scan.state, scan.bookmark_id), ("watching", None))
+
+
+class SignalScanTest(unittest.TestCase):
+    A, B, C, D = 145_212_500.0, 145_600_000.0, 145_750_000.0, 145_400_000.0
+
+    def listen(self, scan: SignalScan, start: float, channels, seconds: float = 1.0, resume_s: float = 2.0) -> float:
+        """Let the squelch open on the channel tuned to at ``start``, stay
+        open ``seconds``, then close for the resume time: returns when the
+        scan watches again."""
+        scan.step(start + 0.05, channels, True, resume_s, 10.0)
+        self.assertEqual(scan.state, "listening")
+        closed = start + 0.05 + seconds
+        scan.step(closed, channels, False, resume_s, 10.0)
+        self.assertEqual(scan.state, "waiting")
+        scan.step(closed + resume_s, channels, False, resume_s, 10.0)
+        self.assertEqual((scan.state, scan.frequency_hz), ("watching", None))
+        return closed + resume_s
+
+    def test_every_active_signal_takes_its_turn_the_lowest_first(self):
+        scan = SignalScan()
+        channels = [self.C, self.A, self.B]
+        self.assertIsNone(scan.step(0.0, [], False, 2.0, 10.0))       # nothing active yet
+        now = 0.1
+        for expected in (self.A, self.B, self.C, self.A, self.B):
+            with self.subTest(at=now):
+                self.assertEqual(scan.step(now, channels, False, 2.0, 10.0), expected)
+                self.assertEqual((scan.state, scan.frequency_hz), ("checking", expected))
+                now = self.listen(scan, now, channels) + 0.05
+
+    def test_a_signal_never_tuned_to_comes_before_the_others(self):
+        scan = SignalScan()
+        now = 0.0
+        for expected in (self.A, self.B):
+            self.assertEqual(scan.step(now, [self.A, self.B], False, 2.0, 10.0), expected)
+            now = self.listen(scan, now, [self.A, self.B]) + 0.05
+        self.assertEqual(scan.step(now, [self.A, self.B, self.C], False, 2.0, 10.0), self.C)
+        now = self.listen(scan, now, [self.A, self.B, self.C]) + 0.05
+        self.assertEqual(scan.step(now, [self.A, self.B, self.C], False, 2.0, 10.0), self.A)
+
+    def test_the_longest_listening_time_gives_the_others_their_turn(self):
+        scan = SignalScan()
+        self.assertEqual(scan.step(0.0, [self.A], False, 2.0, 10.0), self.A)
+        for now in (0.05, 5.0, 9.99):
+            self.assertIsNone(scan.step(now, [self.A, self.B], True, 2.0, 10.0))
+        self.assertEqual(scan.step(10.0, [self.A, self.B], True, 2.0, 10.0), self.B)
+        self.assertEqual((scan.state, scan.frequency_hz), ("checking", self.B))
+        # Alone on the air, a signal keeps the scan as long as it lasts.
+        scan.step(10.05, [self.B], True, 2.0, 10.0)
+        for now in (20.05, 60.0):
+            self.assertIsNone(scan.step(now, [self.B], True, 2.0, 10.0))
+            self.assertEqual((scan.state, scan.frequency_hz), ("listening", self.B))
+        self.assertEqual(scan.step(60.1, [self.A, self.B], True, 2.0, 10.0), self.A)
+
+    def test_the_resume_time_gives_way_once_the_listening_time_is_over(self):
+        scan = SignalScan()
+        scan.step(0.0, [self.A], False, 8.0, 3.0)
+        scan.step(0.05, [self.A], True, 8.0, 3.0)
+        scan.step(1.0, [self.A, self.B], False, 8.0, 3.0)
+        self.assertEqual(scan.state, "waiting")
+        self.assertIsNone(scan.step(2.9, [self.A, self.B], False, 8.0, 3.0))
+        self.assertEqual(scan.step(3.0, [self.A, self.B], False, 8.0, 3.0), self.B)
+
+    def test_a_channel_whose_squelch_stays_closed_is_held_a_moment(self):
+        scan = SignalScan()
+        self.assertEqual(scan.step(0.0, [self.A], False, 2.0, 10.0), self.A)
+        scan.step(CHECK_S - 0.01, [self.A], False, 2.0, 10.0)
+        self.assertEqual(scan.state, "checking")
+        self.assertIsNone(scan.step(CHECK_S, [self.A], False, 2.0, 10.0))
+        self.assertEqual((scan.state, scan.frequency_hz), ("watching", None))
+        self.assertIsNone(scan.step(CHECK_S + 0.1, [self.A], False, 2.0, 10.0))       # held
+        self.assertEqual(scan.step(CHECK_S + 0.1, [self.A, self.B], False, 2.0, 10.0), self.B)
+        scan.step(2 * CHECK_S + 0.1, [self.A, self.B], False, 2.0, 10.0)
+        self.assertIsNone(scan.step(1.0, [self.A, self.B], False, 2.0, 10.0))      # both held
+        self.assertEqual(scan.step(CHECK_S + HOLD_S, [self.A, self.B], False, 2.0, 10.0), self.A)
+
+    def test_close_channels_are_one(self):
+        scan = SignalScan()
+        nearby = self.A + MERGE_HZ, self.A - MERGE_HZ / 2
+        self.assertEqual(scan.step(0.0, [self.A], False, 2.0, 10.0), self.A)
+        scan.step(0.05, [self.A], True, 2.0, 10.0)
+        # Its own channel, a little off as its signal drifts, never takes the
+        # scan away from it, and has had its turn after it.
+        self.assertIsNone(scan.step(10.0, [nearby[0]], True, 2.0, 10.0))
+        scan.step(10.1, [self.A], False, 2.0, 10.0)
+        scan.step(12.1, [self.A], False, 2.0, 10.0)
+        self.assertEqual(scan.step(12.2, [nearby[1], self.B], False, 2.0, 10.0), self.B)
+        self.assertEqual(scan.step(12.2 + CHECK_S, [nearby[1]], False, 2.0, 10.0), None)    # B held
+        self.assertEqual(scan.step(12.3 + CHECK_S, [nearby[1], self.A + MERGE_HZ + 1], False, 2.0, 10.0),
+                         self.A + MERGE_HZ + 1)
+
+    def test_leave_watches_again(self):
+        scan = SignalScan()
+        scan.step(0.0, [self.A, self.B], False, 2.0, 10.0)
+        scan.step(0.05, [self.A, self.B], True, 2.0, 10.0)
+        scan.leave()
+        self.assertEqual((scan.state, scan.frequency_hz), ("watching", None))
+        self.assertEqual(scan.step(0.1, [self.B], False, 2.0, 10.0), self.B)
+
+    def test_the_channels_tuned_to_are_remembered_up_to_a_limit(self):
+        scan = SignalScan()
+        channels = [144_000_000.0 + 10_000 * n for n in range(MAX_SIGNALS + 1)]
+        now = 0.0
+        for expected in channels:
+            self.assertEqual(scan.step(now, channels, False, 2.0, 10.0), expected)
+            now += CHECK_S
+            scan.step(now, channels, False, 2.0, 10.0)      # held
+            now += 0.01
+        # The first, forgotten, waited longest, then the second.
+        self.assertEqual(scan.step(now + HOLD_S, channels, False, 2.0, 10.0), channels[0])
+        scan.step(now + HOLD_S + CHECK_S, channels, False, 2.0, 10.0)
+        self.assertEqual(scan.step(now + HOLD_S + CHECK_S + 0.01, channels, False, 2.0, 10.0), channels[1])
 
 
 R820T_HZ = (24e6, 1766e6)       # the centre frequencies an RTL-SDR's usual tuner tunes to
@@ -664,6 +785,14 @@ class CheckTest(unittest.TestCase):
         for value in (-0.1, 8.1, True, "2", None, float("nan"), float("inf"), 10 ** 400):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 0 to 8"):
                 checked_resume(value)
+
+    def test_listening_times(self):
+        self.assertEqual(checked_listen(2), 2.0)
+        self.assertEqual(checked_listen(10.5), 10.5)
+        self.assertEqual(checked_listen(60), 60.0)
+        for value in (1.9, 60.1, 0, True, "10", None, float("nan"), float("inf"), 10 ** 400):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 2 to 60"):
+                checked_listen(value)
 
     def test_times_per_window(self):
         self.assertEqual(checked_window(0.25), 0.25)

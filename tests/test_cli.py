@@ -232,7 +232,7 @@ class ScanOptionTest(unittest.TestCase):
     reported while Radiolack runs on."""
 
     def test_scans(self):
-        for scan in ("memory", "sweep"):
+        for scan in ("memory", "sweep", "signals"):
             with self.subTest(scan=scan):
                 self.assertEqual(cli.build_parser().parse_args(["--scan", scan]).scan, scan)
         for argv in (["--scan"], ["--scan", "history"], ["--scan", "Memory"]):
@@ -250,6 +250,23 @@ class ScanOptionTest(unittest.TestCase):
                 code, out, err = run_main("--ui", "none", "--scan", scan)
             self.assertEqual((code, err), (0, f"radiolack: {message}\n"))
             self.assertRegex(out, URL_LINE)
+
+    def test_says_why_the_signals_scan_cannot_start_without_detection(self):
+        with own_settings() as settings:
+            settings.parent.mkdir()
+            settings.write_text(json.dumps({"version": 1, "scanner": {"detection": False}}), encoding="utf-8")
+            code, out, err = run_main("--ui", "none", "--scan", "signals")
+        self.assertEqual((code, err), (0, "radiolack: the signals scan cannot start: the signals scan needs "
+                                          "detection: turn it on first\n"))
+        self.assertRegex(out, URL_LINE)
+
+    def test_starts_the_signals_scan_on_the_simulated_band(self):
+        with own_settings(), mock.patch.object(cli.LocalServer, "start_scan", autospec=True,
+                                               side_effect=cli.LocalServer.start_scan) as start_scan:
+            code, out, err = run_main("--ui", "none", "--scan", "signals")
+        self.assertEqual((code, err), (0, ""))
+        start_scan.assert_called_once_with(mock.ANY, "signals")
+        self.assertRegex(out, URL_LINE)
 
     def test_starts_the_memory_scan_on_the_simulated_band(self):
         with own_settings() as settings:

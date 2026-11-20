@@ -1866,6 +1866,38 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#pk-excluded")).to_have_text("1 ignored frequency.")
                 expect(page.locator(f'#pk-body button[data-tune="{frequency}"]')).to_have_count(0)
 
+    def test_every_interface_follows_the_signals_scan_until_one_tunes_by_hand(self):
+        url = self.serve()      # the simulated band, whose beacons are always on the air
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "scan")     # on its Signals tab
+                    expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
+                    expect(page.locator("#sig-state")).to_have_text("Stopped")
+                    expect(page.locator("#sig-listen-v")).to_have_text("10 s")
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
+                first.locator("#sig-start").click()
+                for page in (first, second):    # on a signal of the list, which marks it
+                    expect(page.locator("#sig-state")).to_have_text(
+                        re.compile(r"^(Checking|Listening|Waiting): \d+\.\d{4} MHz$"))
+                    expect(page.locator("#pk-body tr.listening")).to_have_count(1)
+                    expect(page.locator("#sig-start")).to_have_text("Stop the scan")
+                    expect(page.locator(MENU_BUTTON)).to_have_class(SCANNING)     # the icon's dot, green
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} signals scan")
+                second.keyboard.press("ArrowRight")     # one step up: tuning by hand stops the scan
+                for page in (first, second):
+                    expect(page.locator("#sig-state")).to_have_text("Stopped: the receiver was tuned by hand.")
+                    expect(page.locator("#sig-start")).to_have_text("Scan the signals")
+                    expect(page.locator("#pk-body tr.listening")).to_have_count(0)
+                    expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
+                    expect(page.locator("#status")).not_to_contain_text("signals scan")
+                first.locator("#pk-on").uncheck()       # the scan needs detection
+                for page in (first, second):
+                    expect(page.locator("#sig-state")).to_have_text("Turn detection on to scan the signals.")
+                    expect(page.locator("#sig-start")).to_be_disabled()
+                first.locator("#pk-on").check()
+                expect(first.locator("#pk-note")).to_be_hidden()
+
     def test_every_interface_follows_the_memory_scan_until_one_tunes_by_hand(self):
         for browser in BROWSERS:
             directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"

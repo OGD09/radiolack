@@ -281,7 +281,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         ws = await self.remote_stream(device)
         self.assertEqual(await ws.receive_json(timeout=5),
                          {"type": "hello", "protocol": 6, "version": __version__, "remote": True,
-                          "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
+                          "scanners": ["peaks", "memory", "history", "sweep", "signals"], "recording": ["audio", "iq"],
                           "measures": ["carrier", "driver_pll"], "spectra": ["fine"]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(7)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording"])

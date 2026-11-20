@@ -432,7 +432,7 @@ const stream = new EngineStream({
     // that runs, which an interface made.
     const changed = scanner === null || scannerSettings(scanner) !== scannerSettings(state);
     scanner = state;
-    if (!changed) { syncMem(); syncSweep(); return; }
+    if (!changed) { syncMem(); syncSweep(); syncSignalScan(); return; }
     scannerNote = '';
     syncScanner();
   },
@@ -1277,6 +1277,7 @@ function showTunePreview(at, f) {
       tip = 'Click: tune here';
       if (memoryRuns()) tip += ' · stops the memory scan';
       else if (sweepRuns()) tip += ' · stops the sweep';
+      else if (signalsRun()) tip += ' · stops the signals scan';
     }
   }
   showPreviewSpan(range);
@@ -1361,6 +1362,7 @@ function updateStatus() {
   }
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
   if (streamState === 'open' && sweepRuns()) text += ' · sweep';
+  if (streamState === 'open' && signalsRun()) text += ' · signals scan';
   if (streamState === 'open') text += recordingStatus();
   shownRateNote = streamState === 'open' ? modeRateNote(S.mode, S.fs) : '';
   if (shownRateNote) text = `${shownRateNote} · ${text}`;
@@ -1607,20 +1609,17 @@ function applyDemod(state) {
 
 // ------------------------------------------------------------------ scanners
 // The engine finds the signals and keeps their list, the same for every
-// interface, and its detection settings; this interface shows them. In a
-// channelized range of the band plan, a signal shows on its channel when it
-// is wide, as a voice moves an FM signal's centre of power, or close to it;
-// others show to the nearest 100 Hz.
-function peakShownHz(p) {
-  const f = p.frequencyHz, seg = segmentAt(f);
-  if (seg && seg.step >= 12500) {
-    const channel = Math.round(f / seg.step) * seg.step;
-    if (p.widthHz >= 4000 || Math.abs(f - channel) <= 1500) return channel;
-  }
-  return Math.round(f / 100) * 100;
-}
+// interface, with the frequency each shows on, its channel in a channelized
+// range of the band plan, and its detection settings; this interface shows
+// them. The row of the signal that the signals scan is on says so: the one
+// nearest its channel, within the 1.5 kHz in which the engine takes two
+// detections for one signal.
+const SAME_SIGNAL_HZ = 1500;
+let listenedPeak = null;            // the signal whose row says that the signals scan is on it
+let listenedShownHz = null;         // listenedHz() as the rows show it
 // The engine sends the list when it changes: the time since each inactive signal was found counts on here.
-const peakSeen = (p, now) => (p.active ? 'active' : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
+const peakSeen = (p, now) => (p === listenedPeak ? 'listening' : p.active ? 'active'
+  : `${fmtAgo(p.ageS + (now - peaksAt) / 1000)} ago`);
 // The engine sends the active signals first, the strongest first, which
 // reorders its lists as the margins move and signals start and stop. The
 // rows run by the frequency they show, the lowest first: a signal keeps its
@@ -1630,14 +1629,22 @@ let shownPeaks = new Map();         // each row's shown frequency → the engine
 function renderPeaks() {
   if (peaksHold.wait()) return;
   const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
-  const rows = peaks.map((p) => ({ p, f: peakShownHz(p) }))
+  const rows = peaks.map((p) => ({ p, f: p.channelHz }))
     .sort((a, b) => a.f - b.f || a.p.frequencyHz - b.p.frequencyHz);
   listedPeaks = rows.map((row) => row.p);
+  listenedShownHz = listenedHz();
+  listenedPeak = null;
+  let nearest = SAME_SIGNAL_HZ;
+  for (const { p, f } of listenedShownHz === null ? [] : rows) {
+    const away = Math.abs(f - listenedShownHz);
+    if (away <= nearest) { nearest = away; listenedPeak = p; }
+  }
   shownPeaks = new Map();
   list.innerHTML = rows.length
     ? rows.map(({ p, f }) => {
       shownPeaks.set(String(f), p.frequencyHz);
-      return `<tr class="${p.active ? 'active' : ''}">`
+      const classes = [p.active ? 'active' : '', p === listenedPeak ? 'listening' : ''].filter(Boolean).join(' ');
+      return `<tr class="${classes}">`
         + `<td><button type="button" class="freq-link" data-tune="${f}" title="Listen">${fmtMHz(f)}</button></td>`
         + `<td>+${Math.round(p.marginDb)} dB</td><td class="seen">${peakSeen(p, now)}</td>`
         + `<td class="acts"><button type="button" class="link" data-ignore="${f}">Ignore</button></td></tr>`;
@@ -1656,7 +1663,7 @@ function updatePeakAges() {
 }
 const pkOn = $('#pk-on'), pkThr = $('#pk-thr'), pkThrOut = $('#pk-thr-v');
 // What interfaces change in the scanner state: the settings and the scan that runs.
-const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.scan,
+const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.listenS, s.scan,
   s.sweep && [s.sweep.lowHz, s.sweep.highHz, s.sweep.windowS]]);
 // The scanners' controls show the engine's settings once it sent them, and
 // stay off with an engine that lacks the scanner.
@@ -1677,25 +1684,37 @@ function syncScanner() {
     memResume.value = String(scanner.resumeS);
     memResumeOut.textContent = `${scanner.resumeS} s`;
   }
+  // The signals scan's resume time is the memory scan's.
+  sigListen.disabled = !signalsKnown();
+  sigResume.disabled = !signalsKnown();
+  if (signalsKnown()) {
+    sigListen.value = String(scanner.listenS);
+    sigListenOut.textContent = `${scanner.listenS} s`;
+    sigResume.value = String(scanner.resumeS);
+    sigResumeOut.textContent = `${scanner.resumeS} s`;
+  }
   syncSweepSettings();
   syncScannerNote();
   if (signalsShown()) renderPeaks();
   if (historyShown()) { syncHistorySummary(); syncHistoryNote(); }
   syncMem();
   syncSweep();
+  syncSignalScan();
   updateStatus();       // it names the scan that runs
 }
 // The latest refusal shows in every scan's place, Signals, Sweep and the
-// Bookmarks menu's dock; each tells when the engine that runs lacks its scanner.
+// Bookmarks menu's dock; each tells when the engine that runs lacks its
+// scanners, the first it lacks: Signals both detection and the signals scan.
 const SCANNER_NOTES = [
-  ['#pk-note', 'peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
-  ['#sw-note', 'sweep', 'The engine that runs does not sweep: restart Radiolack after its update.'],
-  ['#mem-note', 'memory', 'The engine that runs does not scan the bookmarks: restart Radiolack after its update.'],
+  ['#pk-note', [['peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
+    ['signals', 'The engine that runs does not scan the signals: restart Radiolack after its update.']]],
+  ['#sw-note', [['sweep', 'The engine that runs does not sweep: restart Radiolack after its update.']]],
+  ['#mem-note', [['memory', 'The engine that runs does not scan the bookmarks: restart Radiolack after its update.']]],
 ];
 function syncScannerNote() {
-  for (const [selector, name, restart] of SCANNER_NOTES) {
+  for (const [selector, restarts] of SCANNER_NOTES) {
     let note = scannerNote;
-    if (!note && streamState === 'open' && !stream.scanners.includes(name)) note = restart;
+    if (!note && streamState === 'open') note = restarts.find(([name]) => !stream.scanners.includes(name))?.[1] ?? '';
     const el = $(selector);
     el.textContent = note;
     el.hidden = !note;
@@ -1732,6 +1751,12 @@ function stoppedText(reasons, scan) {
   const about = scanner.stoppedScan ?? 'memory';
   return (about === scan && reasons[scanner.stopped]) || 'Stopped';
 }
+// While another scan runs, what starting `scan` with `start` does: it stops it.
+const SCAN_NAMES = { memory: 'The memory scan', sweep: 'The sweep', signals: 'The signals scan' };
+function otherScanText(scan, start) {
+  const other = scanner.scan !== null && scanner.scan !== scan ? SCAN_NAMES[scanner.scan] : undefined;
+  return other ? `${other} runs: ${start} stops it.` : '';
+}
 const memStart = $('#mem-start'), memResume = $('#mem-resume'), memResumeOut = $('#mem-resume-v');
 const memoryKnown = () => scanner !== null && stream.scanners.includes('memory');
 const memoryRuns = () => memoryKnown() && scanner.scan === 'memory';
@@ -1756,7 +1781,7 @@ function syncMem() {
     if (memory.windows > 1 && memory.window !== null) text += `, window ${memory.window + 1} of ${memory.windows}`;
   } else if (known) {
     // While the sweep runs, the span is the one it brings the receiver back to.
-    if (watched) text = sweepRuns() ? 'The sweep runs: scanning stops it.' : stoppedText(MEM_STOPPED, 'memory');
+    if (watched) text = otherScanText('memory', 'scanning') || stoppedText(MEM_STOPPED, 'memory');
     else if (!bookmarks.some((b) => b.scan)) text = 'Tick the bookmarks to scan.';
     else text = memoryVisits() ? "No ticked bookmark lies within the receiver's reach." : 'No ticked bookmark lies in the span.';
   }
@@ -1804,12 +1829,51 @@ function syncSweep() {
       : `Pass ${sweep.passes + 1}, window ${sweep.window + 1} of ${sweep.windows}`;
   } else if (known) {
     if (!sourceTunes()) text = 'The source in use does not tune.';
-    else text = memoryRuns() ? 'The memory scan runs: Start stops it.' : stoppedText(SWEEP_STOPPED, 'sweep');
+    else text = otherScanText('sweep', 'Start') || stoppedText(SWEEP_STOPPED, 'sweep');
   }
   const el = $('#sw-state');
   if (el.textContent !== text) el.textContent = text;
   syncMenuBadge();
 }
+// The engine's signals scan tunes the VFO to the active signals of the span
+// in turn, the receiver staying where it is, the same for every interface:
+// this interface starts and stops it, sets its longest listening time and
+// its resume time, the memory scan's (syncScanner), and shows where it
+// stands, in Signals, whose list says which signal it is on.
+const SIGNALS_STOPPED = {
+  tuned: 'Stopped: the receiver was tuned by hand.',
+  source: 'Stopped: another receiver was chosen.',
+  detection: 'Stopped: detection was turned off.',
+  start: 'Did not start with Radiolack: detection was off.',
+};
+const sigStart = $('#sig-start'), sigListen = $('#sig-listen'), sigListenOut = $('#sig-listen-v');
+const sigResume = $('#sig-resume'), sigResumeOut = $('#sig-resume-v');
+const signalsKnown = () => scanner !== null && scanner.signals !== null && scanner.listenS !== null
+  && stream.scanners.includes('signals');
+const signalsRun = () => signalsKnown() && scanner.scan === 'signals';
+// The channel the signals scan is on; null while it watches or does not run.
+const listenedHz = () => (signalsRun() ? scanner.signals.frequencyHz : null);
+function syncSignalScan() {
+  const known = signalsKnown(), runs = signalsRun();
+  // The scan's progress calls this several times a second: an unchanged text is not rewritten.
+  const label = runs ? 'Stop the scan' : 'Scan the signals';
+  if (sigStart.textContent !== label) sigStart.textContent = label;
+  sigStart.disabled = !known || (!runs && !scanner.detection);
+  let text = '';
+  if (runs) {
+    const { state, frequencyHz } = scanner.signals;
+    text = MEM_STATES[state] && frequencyHz !== null ? `${MEM_STATES[state]}: ${fmtMHz(frequencyHz)} MHz`
+      : 'Watching the active signals';
+  } else if (known) {
+    text = scanner.detection ? otherScanText('signals', 'scanning') || stoppedText(SIGNALS_STOPPED, 'signals')
+      : 'Turn detection on to scan the signals.';
+  }
+  const el = $('#sig-state');
+  if (el.textContent !== text) el.textContent = text;
+  if (listenedHz() !== listenedShownHz && signalsShown()) renderPeaks();
+  syncMenuBadge();
+}
+
 // A new end of the range that would leave it empty moves the other end too,
 // keeping the range's width: the range moves.
 function sendSweepRange(el) {
@@ -1904,7 +1968,7 @@ function renderHistory() {
   const list = observations || [];
   const html = list.length
     ? list.map((c) => {
-      const f = peakShownHz({ frequencyHz: c.frequencyHz, widthHz: 0 });
+      const f = c.channelHz;
       const armed = historyArmed === c.frequencyHz;
       return `<tr><td><button type="button" class="freq-link" data-tune="${f}" title="${escapeHtml(historyTitle(c))}">${fmtMHz(f)}</button></td>`
         + `<td>${c.transmissions}×</td><td>${fmtActive(c.activeS)}</td><td>${fmtHeardAgo(now - c.lastS)}</td>`
@@ -2002,9 +2066,9 @@ function closeMenu(keyboard = false) {
   poke();
 }
 function toggleMenu(name) { if (openName === name) closeMenu(true); else showMenu(name); }
-// The dot on the menu's icon: red while a recording runs, green while the memory scan or the sweep does.
+// The dot on the menu's icon: red while a recording runs, green while a scan does.
 function syncMenuBadge() {
-  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns();
+  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns() || signalsRun();
   if (menuButton.classList.contains('recording') !== recordingNow) menuButton.classList.toggle('recording', recordingNow);
   if (menuButton.classList.contains('scanning') !== scanningNow) menuButton.classList.toggle('scanning', scanningNow);
 }
@@ -2934,6 +2998,11 @@ for (const el of [swFrom, swTo]) {
 swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow.value} s`; });
 swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
 swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
+sigStart.addEventListener('click', () => sendScanner(() => stream.setScan(signalsRun() ? null : 'signals')));
+sigListen.addEventListener('input', () => { sigListenOut.textContent = `${sigListen.value} s`; });
+sigListen.addEventListener('change', () => sendScanner(() => stream.setScanner({ listenS: Number(sigListen.value) })));
+sigResume.addEventListener('input', () => { sigResumeOut.textContent = `${sigResume.value} s`; });
+sigResume.addEventListener('change', () => sendScanner(() => stream.setScanner({ resumeS: Number(sigResume.value) })));
 
 // Recording: the engine records the VFO's audio, and the receiver's raw
 // I/Q, when an interface asks, the same for every interface, into WAV and
