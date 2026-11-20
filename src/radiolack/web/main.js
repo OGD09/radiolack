@@ -1661,7 +1661,16 @@ function updatePeakAges() {
     if (cell.textContent !== text) cell.textContent = text;
   });
 }
-const pkOn = $('#pk-on'), pkThr = $('#pk-thr'), pkThrOut = $('#pk-thr-v');
+const pkOn = $('#pk-on');
+// The detection threshold shows in the Signals tab and in the Sweep tab: one
+// setting, the engine's, which both sliders show and either changes.
+const thresholds = [[$('#pk-thr'), $('#pk-thr-v')], [$('#sw-thr'), $('#sw-thr-v')]];
+function showThreshold(db) {
+  for (const [slider, output] of thresholds) {
+    slider.value = String(db);
+    output.textContent = `${db} dB`;
+  }
+}
 // What interfaces change in the scanner state: the settings and the scan that runs.
 const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.listenS, s.scan,
   s.sweep && [s.sweep.lowHz, s.sweep.highHz, s.sweep.windowS]]);
@@ -1670,11 +1679,10 @@ const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ign
 function syncScanner() {
   const known = scanner !== null && stream.scanners.includes('peaks');
   pkOn.disabled = !known;
-  pkThr.disabled = !known;
+  for (const [slider] of thresholds) slider.disabled = !known;
   if (scanner) {
     pkOn.checked = scanner.detection;
-    pkThr.value = String(scanner.thresholdDb);
-    pkThrOut.textContent = `${scanner.thresholdDb} dB`;
+    showThreshold(scanner.thresholdDb);
   }
   const ignored = scanner ? scanner.ignoredHz.length : 0;
   $('#pk-excluded').textContent = ignored ? `${ignored} ignored ${ignored === 1 ? 'frequency' : 'frequencies'}.` : '';
@@ -2958,8 +2966,10 @@ function syncScanTabs() {
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
 pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ detection: pkOn.checked })));
-pkThr.addEventListener('input', () => { pkThrOut.textContent = `${pkThr.value} dB`; });
-pkThr.addEventListener('change', () => sendScanner(() => stream.setScanner({ thresholdDb: Number(pkThr.value) })));
+for (const [slider] of thresholds) {
+  slider.addEventListener('input', () => showThreshold(Number(slider.value)));
+  slider.addEventListener('change', () => sendScanner(() => stream.setScanner({ thresholdDb: Number(slider.value) })));
+}
 bindCheck('pk-marks', 'peakMarks');
 // The Signals table, rebuilt by every list, and the History's, by every
 // change, keep their rows under a pressed pointer.

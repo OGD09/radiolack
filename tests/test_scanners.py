@@ -774,8 +774,9 @@ class CheckTest(unittest.TestCase):
     def test_thresholds(self):
         self.assertEqual(checked_threshold(6), 6.0)
         self.assertEqual(checked_threshold(12.5), 12.5)
-        for value in (5.9, 30.1, True, "12", None, float("nan"), float("inf")):
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 6 to 30"):
+        self.assertEqual(checked_threshold(50), 50.0)
+        for value in (5.9, 50.1, True, "12", None, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 6 to 50"):
                 checked_threshold(value)
 
     def test_resume_times(self):

@@ -173,7 +173,7 @@ preferences apart from this computer's.
    | Field | Meaning |
    | --- | --- |
    | `detection` | Whether the engine looks for signals in its spectra. |
-   | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 30 dB. |
+   | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 50 dB. |
    | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
    | `resume_s` | How long the memory scan and the signals scan wait, once the squelch closed, before they watch again, from 0 to 8 s. |
    | `listen_s` | How long the signals scan stays on a signal at most while another one waits, from 2 to 60 s. |
@@ -918,7 +918,7 @@ sweep or the signals scan, the same for every interface:
 | Field | Value |
 | --- | --- |
 | `detection` | `true` or `false`. Turning detection off empties the list of the signals found and stops the signals scan. |
-| `threshold_db` | A number from 6 to 30. |
+| `threshold_db` | A number from 6 to 50. |
 | `resume_s` | A number from 0 to 8. |
 | `listen_s` | A number from 2 to 60. |
 | `sweep_low_hz`, `sweep_high_hz` | Frequencies from 1 Hz to 100 GHz, rounded to the Hz, the lowest below the highest once the message applies: one may come without the other. A new range starts a running sweep again from its first window. |
@@ -1489,6 +1489,10 @@ and later.
   signals found and the observations where it did, finding the same
   channels itself. A newer interface offers no signals scan to an older
   engine.
+  On 2026-11-20, the detection threshold's range widened from 6-30 dB to
+  6-50 dB, without a new version: an older interface's slider stops at
+  30 dB and shows a threshold above it at its end, and an older engine
+  refuses a threshold above 30 dB with an error, keeping its own.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

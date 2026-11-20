@@ -146,7 +146,7 @@
           </div>
           <div data-tab-panel="signals">
             <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
-            <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
+            <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="50" step="1"></div>
             <label class="check"><input id="pk-marks" type="checkbox"> Mark on the spectrum</label>
             <div class="row"><button type="button" class="btn primary" id="sig-start" disabled>Scan the signals</button><span class="note" id="sig-state"></span></div>
             <div class="grid2">
@@ -167,9 +167,10 @@
               <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" inputmode="decimal" autocomplete="off" disabled></div>
             </div>
             <div class="field"><label for="sw-window">Time per window <output id="sw-window-v"></output></label><input id="sw-window" type="range" min="0.25" max="2" step="0.25" disabled></div>
+            <div class="field"><label for="sw-thr">Threshold above noise <output id="sw-thr-v"></output></label><input id="sw-thr" type="range" min="6" max="50" step="1"></div>
             <p class="note" id="sw-note" role="status" hidden></p>
             <div class="row"><button type="button" class="btn primary" id="sw-start" disabled>Start</button><span class="note" id="sw-state"></span></div>
-            <p class="note">Steps the receiver across the range, pass after pass; the signals it finds join Signals and the History. Tuning by hand stops it, Stop brings the receiver back.</p>
+            <p class="note">Steps the receiver across the range, pass after pass; the signals it finds above the threshold, the one the Signals tab sets, join Signals and the History. Tuning by hand stops it, Stop brings the receiver back.</p>
           </div>
           <div data-tab-panel="history" hidden>
             <p class="note" id="hist-note" role="status" hidden></p>

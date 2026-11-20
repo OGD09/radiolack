@@ -486,8 +486,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                                "100 characters or null"),
             '{"type": "scanner"}': ("scanner", "a scanner message needs a setting"),
             '{"type": "scanner", "sweep": true}': ("scanner", "unknown scanner setting: sweep"),
-            '{"type": "scanner", "threshold_db": 40}': (
-                "scanner", "the threshold must be a number of dB from 6 to 30"),
+            '{"type": "scanner", "threshold_db": 60}': (
+                "scanner", "the threshold must be a number of dB from 6 to 50"),
             '{"type": "scanner", "ignore": 145e6, "restore": true}': (
                 "scanner", "ignore, restore and scan come alone in their message"),
             '{"type": "scanner", "scan": "panorama"}': (

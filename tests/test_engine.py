@@ -1354,13 +1354,13 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
         for subscription in subscriptions:
             self.assertEqual(waiting(subscription)[-1], changed)
         refused = ({}, {"threshold": 20}, {"detection": "on"}, {"detection": None}, {"threshold_db": 5},
-                   {"threshold_db": 31}, {"threshold_db": "12"}, {"threshold_db": float("nan")},
+                   {"threshold_db": 51}, {"threshold_db": "12"}, {"threshold_db": float("nan")},
                    {"resume_s": -0.5}, {"resume_s": 8.5}, {"resume_s": True}, {"resume_s": "2"},
                    {"listen_s": 1}, {"listen_s": 61}, {"listen_s": None}, {"listen_s": "10"},
                    {"sweep_low_hz": 1300e6}, {"sweep_high_hz": 1200e6}, {"sweep_low_hz": 0},
                    {"sweep_high_hz": "1300 MHz"}, {"sweep_low_hz": None}, {"sweep_window_s": 0.2},
                    {"sweep_window_s": 2.5}, {"sweep_window_s": float("inf")}, {"sweep_window_s": False},
-                   {"sweep_low_hz": 1250e6, "threshold_db": 40},
+                   {"sweep_low_hz": 1250e6, "threshold_db": 60},
                    {"ignore": 145e6, "restore": True}, {"ignore": 145e6, "detection": False},
                    {"ignore": "145 MHz"}, {"ignore": 0}, {"restore": False}, {"restore": 1},
                    {"scan": "panorama"}, {"scan": True}, {"scan": "memory", "resume_s": 2},
