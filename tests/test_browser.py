@@ -1663,6 +1663,7 @@ class BrowserTest(unittest.TestCase):
                     self.open_menu(page, "bookmarks")
                     expect(page.locator(headings)).to_have_text(["Uncategorized", "Repeaters"])
                     expect(page.locator(counts)).to_have_text(["2", "1"])
+                    expect(page.locator("#bm-list li.bm.in")).to_have_count(3)     # indented under their headings
                 first.locator("#bm-new-category").click()
                 field = first.locator('#bm-list input[data-field="cname"]')
                 expect(field).to_be_focused()
