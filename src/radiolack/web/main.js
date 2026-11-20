@@ -2985,12 +2985,12 @@ function renderBookmarks() {
   scanMarksShown = scanMarksKey();
   const namingField = (label) => `<li class="cat" data-naming><input type="text" data-field="cname" maxlength="${CATEGORY_NAME_MAX}" aria-label="${label}"></li>`;
   const bookmarkRow = (b) => (edited(b)
-    ? `<li class="bm" data-editing><input type="text" data-field="name" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${formatFrequency(b.f)} MHz">`
+    ? `<li class="bm${grouped ? ' in' : ''}" data-editing><input type="text" data-field="name" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${formatFrequency(b.f)} MHz">`
       + `<input type="text" data-field="freq" inputmode="decimal" title="In MHz, or with Hz, kHz, MHz or GHz" aria-label="Frequency of ${escapeHtml(b.name)}">`
       + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button>`
       + (grouped ? `<select data-field="category" aria-label="Category of ${escapeHtml(b.name)}">${categoryOptions(b.category)}</select>` : '')
       + '</li>'
-    : `<li class="bm">${selecting
+    : `<li class="bm${grouped ? ' in' : ''}">${selecting
       ? `<input type="checkbox" data-pick="${b.id}"${selected.has(b.id) ? ' checked' : ''} title="Select this bookmark" aria-label="Select ${escapeHtml(b.name)}">`
       : `<input type="checkbox" data-scan="${b.id}"${b.scan ? ' checked' : ''} title="Scan this bookmark" aria-label="Scan ${escapeHtml(b.name)}">`}`
       + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${formatFrequency(b.f)} MHz · ${b.mode}`)}">`

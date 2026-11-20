@@ -1499,8 +1499,8 @@ Bookmarks sort into categories, one level deep. "New category" opens a
 field for its name, up to 40 characters and unlike any other category's,
 whatever the case: Enter keeps it and Escape leaves it. Once a category
 exists, the list shows the uncategorized bookmarks first, under
-Uncategorized, then each category by name, each under a heading that
-shows how many bookmarks it holds and hides or shows them on a click;
+Uncategorized, then each category by name, its bookmarks indented under
+a heading that shows how many it holds and hides or shows them on a click;
 what each interface hides is its own, and not saved. The heading's box
 ticks all its bookmarks for the memory scan, or unticks them all when all
 are ticked, and shows a dash when some are. Rename opens the name as

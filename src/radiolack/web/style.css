@@ -312,6 +312,8 @@ input:disabled, select:disabled { opacity: 0.45; }
 .list li.cat:first-child { margin-top: 0; border-top: 0; }
 .list li.cat > input[type="checkbox"] { flex: none; margin: 0 2px 0 6px; accent-color: var(--accent); cursor: pointer; }
 .list li.cat > .link { flex: none; }
+/* A category's bookmarks sit indented under its heading, their boxes under its name. */
+.list li.bm.in { margin-left: 22px; }
 .list li.cat > input.unseen { visibility: hidden; }
 .list li.cat[data-naming] { padding: 2px 0 2px 6px; }
 .list li.cat[data-naming] > input { flex: 1; min-width: 0; }
