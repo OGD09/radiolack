@@ -3,8 +3,9 @@ span's edges and centre, the detector's average over one capture, the list
 of signals found twice in a row, ignored frequencies; for the memory scan:
 the bookmarks it watches, their channels' power and noise, its progress
 from channel to channel, the windows its bookmarks take and its visits from
-window to window; for the sweep: its windows across a range and its
-progress from window to window; for the signals scan: its progress from
+window to window; for the sweep: its windows across a range, the one
+window of a range within the span, its progress from window to window,
+its listening to each window's signals and its passes; for the signals scan: its progress from
 signal to signal; and the checks of the values the interfaces give."""
 
 import math
@@ -18,9 +19,10 @@ from radiolack.bookmarks import Bookmark
 from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
                                 MAX_SIGNALS, MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch,
                                 Detection, Detector, MemoryScan, MemoryTour, Placement, Signals, SignalScan, Sweep,
-                                SweepWindows, checked_frequency, checked_listen, checked_resume, checked_sweep_range,
-                                checked_threshold, checked_window, find_signals, local_noise, memory_window,
-                                memory_windows, search_blocks, sweep_windows, watched_channels)
+                                SweepWindows, checked_frequency, checked_listen, checked_passes, checked_resume,
+                                checked_sweep_range, checked_threshold, checked_window, find_signals, local_noise,
+                                memory_window, memory_windows, range_window, search_blocks, sweep_windows,
+                                watched_channels)
 from radiolack.spectrum import SpectrumAnalyzer
 from tests.fakes import wide_signal
 
@@ -761,6 +763,103 @@ class SweepTest(unittest.TestCase):
         self.assertEqual([search_blocks(window_s, 30.0) for window_s in (0.25, 0.5, 1.0, 2.0)], [4, 8, 15, 30])
         self.assertEqual(search_blocks(0.25, 4.0), 1)
 
+    def test_the_passes_set_end_it(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=0.0, passes_set=2)
+        targets = [sweep.step(1.0, sweep.centre_hz) for _ in range(SWEEP_SEARCHES * 3 * 2)]
+        self.assertEqual((targets[-1], sweep.passes, sweep.done), (None, 2, True))
+        self.assertNotIn(None, [target for target in targets[SWEEP_SEARCHES - 1:-1:SWEEP_SEARCHES]])
+        endless = Sweep(self.WINDOWS, search_blocks=1, now=0.0)
+        for _ in range(SWEEP_SEARCHES * 3 * 5):
+            endless.step(1.0, endless.centre_hz)
+        self.assertEqual((endless.passes, endless.done), (5, False))
+
+
+class ListeningSweepTest(unittest.TestCase):
+    """The sweep that listens to each window's signals once its searches
+    end, as the signals scan does, then goes on to the next window."""
+
+    WINDOWS = SweepWindows(145e6, 600e3, 2)
+    A, B, C = 144_812_500.0, 145_212_500.0, 145_250_000.0
+
+    def searched(self, sweep: Sweep, now: float, channels) -> None:
+        """Read the window's searches: the last block starts listening."""
+        for _ in range(SWEEP_SEARCHES):
+            self.assertIsNone(sweep.step(now, sweep.centre_hz, channels))
+        self.assertIsNotNone(sweep.listening)
+
+    def test_listens_to_each_signal_of_the_window_then_goes_on(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=0.0, listen=True)
+        self.searched(sweep, 0.0, [self.B, self.A])
+        self.assertEqual(sweep.step(0.1, sweep.centre_hz, [self.A, self.B]), None)     # it listens: no block counts
+        self.assertEqual(sweep.listen_step(0.1, [self.A, self.B], False, 2.0, 10.0), (None, self.A))
+        sweep.listen_step(0.2, [self.A, self.B], True, 2.0, 10.0)
+        self.assertEqual(sweep.listening.state, "listening")
+        sweep.listen_step(3.0, [self.A, self.B], False, 2.0, 10.0)
+        self.assertEqual(sweep.listen_step(5.0, [self.A, self.B], False, 2.0, 10.0), (None, None))
+        self.assertEqual(sweep.listen_step(5.1, [self.A, self.B], False, 2.0, 10.0), (None, self.B))
+        self.assertEqual(sweep.listen_step(5.2, [self.A, self.B], False, 2.0, 10.0), (None, None))
+        # B's squelch does not open: the queue is done, the next window comes.
+        self.assertEqual(sweep.listen_step(5.1 + CHECK_S, [self.A, self.B], False, 2.0, 10.0), (145.6e6, None))
+        self.assertEqual((sweep.window, sweep.listening), (1, None))
+
+    def test_a_signal_found_after_the_searches_waits_for_the_next_pass(self):
+        sweep = Sweep(SweepWindows(145e6, 0.0, 1), search_blocks=1, now=0.0, listen=True)
+        self.searched(sweep, 0.0, [self.A])
+        self.assertEqual(sweep.listen_step(0.1, [self.A, self.C], False, 2.0, 10.0), (None, self.A))
+        # One window: the next pass begins with its searches, which find C.
+        self.assertEqual(sweep.listen_step(0.1 + CHECK_S, [self.A, self.C], False, 2.0, 10.0), (145e6, None))
+        self.assertEqual(sweep.passes, 1)
+        self.searched(sweep, 1.0, [self.A, self.C])
+        self.assertEqual(sweep.listen_step(1.1, [self.A, self.C], False, 2.0, 10.0), (None, self.C))
+
+    def test_the_longest_listening_time_ends_the_last_signal_of_the_queue(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=0.0, listen=True)
+        self.searched(sweep, 0.0, [self.A])
+        self.assertEqual(sweep.listen_step(0.0, [self.A], False, 2.0, 10.0), (None, self.A))
+        for now in (0.1, 5.0, 9.9):
+            self.assertEqual(sweep.listen_step(now, [self.A], True, 2.0, 10.0), (None, None))
+        # On the air all the time, it does not hold the sweep.
+        self.assertEqual(sweep.listen_step(10.0, [self.A], True, 2.0, 10.0), (145.6e6, None))
+
+    def test_a_signal_that_ends_leaves_the_queue_and_listening_turned_off_leaves_the_window(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=0.0, listen=True)
+        self.searched(sweep, 0.0, [self.A, self.B])
+        self.assertEqual(sweep.listen_step(0.1, [self.A], False, 2.0, 10.0), (None, self.A))
+        sweep.listen_step(0.2, [self.A], True, 2.0, 10.0)
+        sweep.listen = False
+        self.assertEqual(sweep.listen_step(0.3, [self.A, self.B], True, 2.0, 10.0), (145.6e6, None))
+        self.assertEqual(sweep.step(0.4, 145.6e6), None)    # searches again, without listening
+        self.assertEqual(sweep.step(0.4, 145.6e6), 145e6)
+        self.assertIsNone(sweep.listening)
+
+    def test_a_signal_heard_in_one_window_is_not_queued_again_in_the_pass(self):
+        sweep = Sweep(self.WINDOWS, search_blocks=1, now=0.0, listen=True)
+        self.searched(sweep, 0.0, [self.B])
+        self.assertEqual(sweep.listen_step(0.1, [self.B], False, 2.0, 10.0), (None, self.B))
+        self.assertEqual(sweep.listen_step(0.1 + CHECK_S, [self.B], False, 2.0, 10.0), (145.6e6, None))
+        # The next window overlaps the first: B, heard in this pass, is left out.
+        self.searched(sweep, 1.0, [self.B + 100, self.C])
+        self.assertEqual(sweep.listen_step(1.1, [self.B + 100, self.C], False, 2.0, 10.0), (None, self.C))
+        self.assertEqual(sweep.listen_step(1.1 + CHECK_S, [self.B + 100, self.C], False, 2.0, 10.0), (145e6, None))
+        # A new pass: B again.
+        self.searched(sweep, 2.0, [self.B])
+        self.assertEqual(sweep.listen_step(2.1, [self.B], False, 2.0, 10.0), (None, self.B))
+
+    def test_the_passes_set_end_it_once_the_last_window_listened(self):
+        sweep = Sweep(SweepWindows(145e6, 0.0, 1), search_blocks=1, now=0.0, listen=True, passes_set=1)
+        self.searched(sweep, 0.0, [])
+        self.assertEqual(sweep.listen_step(0.1, [], False, 2.0, 10.0), (None, None))
+        self.assertEqual((sweep.passes, sweep.done), (1, True))
+
+    def test_a_range_within_the_searched_part_of_the_span_takes_that_one_window(self):
+        rate = 2.4e6
+        reach = USABLE_FRACTION * rate
+        self.assertEqual(range_window(145e6 - reach, 145e6 + reach, 145e6, rate), SweepWindows(145e6, 0.0, 1))
+        self.assertEqual(range_window(145.1e6, 145.2e6, 145e6, rate), SweepWindows(145e6, 0.0, 1))
+        self.assertIsNone(range_window(145e6 - reach - 1, 145e6, 145e6, rate))
+        self.assertIsNone(range_window(145e6, 145e6 + reach + 1, 145e6, rate))
+        self.assertEqual(SweepWindows(145_000_000.4, 0.0, 1).centre(0), 145e6)
+
 
 class CheckTest(unittest.TestCase):
     def test_frequencies(self):
@@ -770,6 +869,12 @@ class CheckTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(
                     ValueError, r"a frequency must be a number from 1 Hz to 1e\+11 Hz"):
                 checked_frequency(value, "a frequency")
+
+    def test_passes(self):
+        self.assertEqual([checked_passes(value) for value in (None, 1, 99, 3.0)], [None, 1, 99, 3])
+        for value in (0, 100, 2.5, True, "3", float("nan"), float("inf"), [3]):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "from 1 to 99, or null for endless"):
+                checked_passes(value)
 
     def test_thresholds(self):
         self.assertEqual(checked_threshold(6), 6.0)

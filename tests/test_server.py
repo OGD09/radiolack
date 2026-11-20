@@ -38,9 +38,9 @@ IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
                  "listen_s": 10.0, "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5,
-                 "scan": None, "stopped": None, "stopped_scan": None,
+                 "sweep_listen": False, "sweep_passes": None, "scan": None, "stopped": None, "stopped_scan": None,
                  "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
-                 "sweep": {"windows": None, "window": None, "passes": None},
+                 "sweep": {"windows": None, "window": None, "passes": None, "passes_set": None},
                  "signals": {"state": None, "frequency_hz": None}}
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",

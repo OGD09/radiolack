@@ -164,9 +164,10 @@ preferences apart from this computer's.
    ```json
    {"type": "scanner", "detection": true, "threshold_db": 12.0, "ignored_hz": [144800000.0],
     "resume_s": 2.0, "listen_s": 10.0, "sweep_low_hz": 430000000.0, "sweep_high_hz": 440000000.0,
-    "sweep_window_s": 0.5, "scan": "memory", "stopped": null, "stopped_scan": null,
+    "sweep_window_s": 0.5, "sweep_listen": false, "sweep_passes": null, "scan": "memory", "stopped": null,
+    "stopped_scan": null,
     "memory": {"watched": [3, 7, 12], "windows": 1, "window": 0, "state": "listening", "bookmark_id": 7},
-    "sweep": {"windows": null, "window": null, "passes": null},
+    "sweep": {"windows": null, "window": null, "passes": null, "passes_set": null},
     "signals": {"state": null, "frequency_hz": null}}
    ```
 
@@ -176,11 +177,13 @@ preferences apart from this computer's.
    | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 50 dB. |
    | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
    | `resume_s` | How long the memory scan and the signals scan wait, once the squelch closed, before they watch again, from 0 to 8 s. |
-   | `listen_s` | How long the signals scan stays on a signal at most while another one waits, from 2 to 60 s. |
+   | `listen_s` | How long the signals scan stays on a signal at most while another one waits, and the listening sweep on a signal of a window, from 2 to 60 s. |
    | `sweep_low_hz`, `sweep_high_hz` | The range the sweep steps the receiver across, the lowest below the highest, each a whole number of Hz from 1 Hz to 100 GHz: 430 to 440 MHz until an interface changes it. |
    | `sweep_window_s` | How long the sweep reads each window, once the receiver's samples come from there, from 0.25 to 2 s. |
+   | `sweep_listen` | Whether the sweep listens to each window's active signals once it read the window: false until an interface changes it. |
+   | `sweep_passes` | How many passes the sweep makes before it stops by itself, from 1 to 99, or null for endless: null until an interface changes it. |
    | `scan` | The scan that runs: `memory`, `sweep`, `signals`, or null. |
-   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source), `bookmarks` (no ticked bookmark lies within the receiver's reach any more), `range` (the receiver refused a window of the memory scan or of the sweep's range), `detection` (an interface turned detection off while the signals scan ran) or `start` (the scan given at start, by `--scan`, could not start: Radiolack's output says why); null while a scan runs, when an interface stopped it and before any. An older interface shows a reason it does not know as a plain stop. |
+   | `stopped` | Why the latest scan stopped by itself: `tuned` (an interface tuned the VFO elsewhere, or changed the centre frequency or the sample rate), `source` (an interface chose another kind of source), `bookmarks` (no ticked bookmark lies within the receiver's reach any more), `range` (the receiver refused a window of the memory scan or of the sweep's range), `detection` (an interface turned detection off while the signals scan or a listening sweep ran), `done` (the sweep made its `sweep_passes` passes) or `start` (the scan given at start, by `--scan`, could not start: Radiolack's output says why); null while a scan runs, when an interface stopped it and before any. An older interface shows a reason it does not know as a plain stop. |
    | `stopped_scan` | The scan that `stopped` is about: `memory`, `sweep` or `signals`; null when `stopped` is. |
    | `memory.watched` | The ids of the ticked bookmarks that the memory scan watches, whether it runs or not, in frequency order: those in the part of the span that detection searches, or, with a receiver that tunes when others lie within its reach, those it can bring into that part of its span. While a scan runs, the span is the one it started from. |
    | `memory.windows` | How many windows of the receiver they take: 1 when they all lie in the span, 0 when there is none. |
@@ -190,8 +193,9 @@ preferences apart from this computer's.
    | `sweep.windows` | How many windows the sweep's range takes at the sample rate; null while the sweep does not run, as are the next two. |
    | `sweep.window` | The window the receiver is asked for, from 0. |
    | `sweep.passes` | The passes done since the sweep started, or since its range last changed. |
-   | `signals.state` | The signals scan's state: `watching` the active signals, `checking` that the squelch opens on the one just tuned to, `listening` while it stays open, `waiting` for `resume_s` since it closed; null while the signals scan does not run. |
-   | `signals.frequency_hz` | The signal tuned to, at the frequency it shows on among the signals found (their `channel_hz`), a whole number of Hz; null while watching, and while the signals scan does not run. |
+   | `sweep.passes_set` | The passes it makes before it stops, as `sweep_passes` stood when it started or last changed; null while it is endless. |
+   | `signals.state` | The signals scan's state, or the listening sweep's while it listens in a window: `watching` the active signals, `checking` that the squelch opens on the one just tuned to, `listening` while it stays open, `waiting` for `resume_s` since it closed; null while the signals scan does not run. |
+   | `signals.frequency_hz` | The signal tuned to, at the frequency it shows on among the signals found (their `channel_hz`), a whole number of Hz; null while watching, and while neither the signals scan nor a listening sweep listens. |
 
    The memory scan watches every ticked bookmark of the span at once, in
    every block of samples: the power in the passband of its mode's filter,
@@ -244,7 +248,24 @@ preferences apart from this computer's.
    the last one, a new pass begins with the first. It also moves on when,
    2 s after asking for a window, the samples still come from another
    centre frequency. The VFO stays inside each window, as it does whenever
-   the span changes.
+   the span changes. A range that lies within the part of the receiver's
+   span that detection searches, its centre frequency plus or minus 0.4
+   times the sample rate, when the sweep starts takes that one window, the
+   span itself: the sweep then never tunes the receiver, and runs with any
+   source. After `sweep_passes` passes, the sweep stops by itself (`done`).
+
+   With `sweep_listen`, once the engine read a window, it takes the
+   window's active signals of that moment as the window's queue, leaving
+   out those it tuned to earlier in the pass, which another window that
+   overlaps this one held, and listens to each in turn as the signals scan
+   does (below), the one that waited longest first across windows and
+   passes; once `listen_s` has passed on a signal of the queue, it leaves
+   it, whether another waits or not. Once every signal of the queue was
+   tuned to, or is no longer active, and the scan left the last, it asks
+   for the next window. A signal found after the window was read waits for
+   the next pass. While it listens, `signals` gives its state and the
+   signal tuned to. A listening sweep needs detection, and stops when
+   detection turns off (`detection`).
 
    The signals scan listens to the active signals of the span in turn, with
    the VFO alone: those found within the last 1.5 s (the signals found,
@@ -278,8 +299,10 @@ preferences apart from this computer's.
    `range`, the engine asks the receiver for its centre frequency at the
    scan's start again and puts the VFO back: after a sweep, and after a
    memory scan that asked the receiver for another centre frequency and
-   stops while watching; on a bookmark, they stay. The signals scan leaves
-   the VFO where it is. Tuning by hand (`tuned`) or another kind of source
+   stops while watching; on a bookmark, they stay. A sweep that stops by
+   itself after its passes (`done`) comes back too, and a listening sweep
+   on a signal (checking, listening or waiting) stays there. The signals
+   scan leaves the VFO where it is. Tuning by hand (`tuned`) or another kind of source
    (`source`) leaves them as they are. While a scan runs, the receiver's
    settings that the engine saves are its centre frequency, and the VFO's
    frequency, mode and filter width, at the scan's start.
@@ -907,6 +930,7 @@ sweep or the signals scan, the same for every interface:
 {"type": "scanner", "listen_s": 20}
 {"type": "scanner", "sweep_low_hz": 1240000000, "sweep_high_hz": 1300000000}
 {"type": "scanner", "sweep_window_s": 1}
+{"type": "scanner", "sweep_listen": true, "sweep_passes": 3}
 {"type": "scanner", "ignore": 144800000}
 {"type": "scanner", "restore": true}
 {"type": "scanner", "scan": "memory"}
@@ -917,24 +941,28 @@ sweep or the signals scan, the same for every interface:
 
 | Field | Value |
 | --- | --- |
-| `detection` | `true` or `false`. Turning detection off empties the list of the signals found and stops the signals scan. |
+| `detection` | `true` or `false`. Turning detection off empties the list of the signals found and stops the signals scan and a listening sweep. |
 | `threshold_db` | A number from 6 to 50. |
 | `resume_s` | A number from 0 to 8. |
 | `listen_s` | A number from 2 to 60. |
 | `sweep_low_hz`, `sweep_high_hz` | Frequencies from 1 Hz to 100 GHz, rounded to the Hz, the lowest below the highest once the message applies: one may come without the other. A new range starts a running sweep again from its first window. |
 | `sweep_window_s` | A number from 0.25 to 2. A running sweep takes it at once. |
+| `sweep_listen` | `true` or `false`. A running sweep takes it at once: turned off while it listens, it goes on to the next window. |
+| `sweep_passes` | A whole number from 1 to 99, or null for endless. A running sweep takes it at once, the passes done counting: it stops at the end of a pass once they reach it. |
 | `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
 | `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
 | `scan` | `memory` starts the memory scan, `sweep` the sweep, `signals` the signals scan, unless it runs, stopping the scan that runs; null stops the scan that runs, if any. |
 
 `detection`, `threshold_db`, `resume_s`, `listen_s`, `sweep_low_hz`,
-`sweep_high_hz` and `sweep_window_s` may come together; `ignore`, `restore` and `scan`
+`sweep_high_hz`, `sweep_window_s`, `sweep_listen` and `sweep_passes` may come together; `ignore`, `restore` and `scan`
 come alone in their message. The engine refuses the whole message,
 changing nothing, when it has no setting, an unknown or invalid one, a new
 frequency to ignore while 200 are ignored already, the memory scan to start
 while it would watch no bookmark (`memory.watched` is empty), the
-signals scan to start while detection is off, the sweep to start with a
-source that does not tune, or the sweep to start or
+signals scan to start while detection is off, the sweep to start with
+`sweep_listen` while detection is off, `sweep_listen` turned on while a
+sweep runs and detection is off, the sweep to start with a source that does
+not tune and a range wider than its span, or the sweep to start or
 a running sweep's new range when the receiver cannot tune to every window
 of the range (its `range_hz`). Otherwise every interface receives the
 scanner state, and the signals found at once if they changed.
@@ -1493,6 +1521,14 @@ and later.
   6-50 dB, without a new version: an older interface's slider stops at
   30 dB and shows a threshold above it at its end, and an older engine
   refuses a threshold above 30 dB with an error, keeping its own.
+  The same day, the range scan's engine (range-scan.md, pull request 2),
+  without a new version: the scanner state's `sweep_listen`,
+  `sweep_passes` and `sweep.passes_set`, the `signals` object while the
+  sweep listens, `stopped`'s value `done`, the `scanner` message's
+  `sweep_listen` and `sweep_passes`, and the one window of a range within
+  the span. An older interface ignores the fields it does not know, starts
+  the sweep with the saved settings, shows `done` as a plain stop and a
+  listening sweep as a sweep, its VFO following it.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

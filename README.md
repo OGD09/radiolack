@@ -1252,8 +1252,11 @@ The resume time is the same for every interface and kept for the next
 start.
 
 The Sweep tab's sweep runs in the engine too, the same for every interface,
-with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
-It steps the receiver across a range, 430 to 440 MHz by default, window
+with a receiver that tunes, such as an RTL-SDR, or with any source when the
+range lies within the part of the receiver's span that detection searches
+(its centre frequency plus or minus 0.4 times the sample rate): the sweep
+then searches that span pass after pass and never tunes the receiver.
+Otherwise it steps the receiver across a range, 430 to 440 MHz by default, window
 after window, pass after pass, and detection searches each window as it
 does the span, with the same threshold, which the Sweep tab shows too: the
 signals found there join the Signals list and the History.
@@ -1287,6 +1290,12 @@ where a memory scan started then begins. A new range starts a running
 sweep again from its first window. Whether it runs is never saved: none
 runs at start, unless `--scan sweep` starts it. The range and the time per
 window are the same for every interface and kept for the next start.
+
+The engine's sweep can also listen to each window's signals and stop by
+itself after a number of passes, the range scan of
+[docs/design/range-scan.md](docs/design/range-scan.md), whose Range tab
+brings these settings to the interface; until then, the sweep listens to
+nothing and runs until stopped.
 
 The engine keeps the channels where it found signals for 90 days: for each
 one, when it was first and last heard, how many transmissions, how long it
