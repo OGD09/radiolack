@@ -9,7 +9,8 @@ docs/design/scoping.md: read it before substantive work. The milestones
 after v3 are designed in docs/design/coverage-and-precision.md (shortwave,
 tuning to the hertz, the band plan from 0 Hz to 10.5 GHz: each pull
 request's rules and limits) and docs/design/later-milestones.md (SoapySDR
-and those that follow, up to v4).
+and those that follow, up to v4); docs/design/range-scan.md designs the
+range scan that replaces the sweep and the signals scan.
 docs/design/ui-mockup.html is the visual reference, and docs/design/lessons.md
 keeps what the rewrite reuses from the airband explorer, whose code stays in
 the history under the tag `v0.1.0`.

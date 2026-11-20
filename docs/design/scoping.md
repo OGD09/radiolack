@@ -103,6 +103,7 @@ radio program, only on receiver drivers.
 | 2026-11-18 | SoapySDR's packages are suggested, never recommended, as the owner chose: the Debian package's `Suggests` names `python3-soapysdr` and the drivers' modules that Debian 12 and 13 and Ubuntu 24.04 and 26.04 all have under the same name, read in their package indexes that day, and its `Recommends` stays `rtl-sdr` alone. Measured on Debian 12: `libsoapysdr0.8` recommends `soapysdr0.8-module-all`, so that with apt's default a recommended `python3-soapysdr` would install every SoapySDR module at each install and upgrade of Radiolack, about 33 packages and 50 MB beyond Radiolack's own dependencies, SoapyRemote's module and UHD among them, against 2 packages and 2 MB for `python3-soapysdr` without that chain. The Receiver menu and `--soapy` already name the package when it is missing. A suggested name that a system lacks is harmless, apt ignoring it, so CI does not check the names on each system, which a test pins instead. This replaces `Recommends: python3-soapysdr` and the names' check in `package.yml` in [`later-milestones.md`](later-milestones.md), section 1. |
 | 2026-11-19 | The signals scan, as the owner chose after the sweep's acceptance, where the sweep found the signals across a range but listened to none: it listens to every active signal of the span in turn, not only the strongest, with the VFO alone, never tuning the receiver. The signal that waited longest goes first, one never tuned to before the others, so that none is left out while several are on the air; it stays while the squelch is open and the resume time after, and leaves after the longest listening time (10 s by default, from 2 to 60 s) when another signal waits. The VFO lands on the frequency the list shows, in the band plan's mode, which the engine now reads as the interface does (`bandplan.py`), and the list marks the signal it listens to. Tuning by hand stops it, and `--scan signals` starts it at start. One VFO hears one signal at a time: a short transmission may end before its turn, the list and the History keeping it all the same. |
 | 2026-11-20 | The detection threshold shows in the Sweep tab too, as the owner chose, where the sweep kept weak peaks that look like noise: one setting, the Signals tab's, which either slider changes, not a threshold of the sweep's own (2026-11-12), and its range widens from 6-30 dB to 6-50 dB so that only strong signals may be kept. An absolute level in dBFS was set aside: uncalibrated, it would move with the gain. |
+| 2026-11-20 | The range scan, as the owner chose after 0.18.0, who did not see the difference between the sweep and the signals scan: one scan across a range replaces both, "Stop to listen" on or off, a range within the receiver's span never tuning it; a number of passes, 1 to 99, or endless; each scan kept under a name with the channels it found, until deleted, in the scan's tab. The Signals tab keeps detection alone; the memory scan and the History stay. Designed in [`range-scan.md`](range-scan.md). |
 
 ## Scope
 
@@ -478,6 +479,21 @@ frequency, runs as the service, and never transmits.
 Done when, on shortwave, synchronous AM holds a fading station, the notch
 removes a whistle, the blanker thins a crackle, and the zoom goes on to
 less than 100 Hz across.
+
+### Range scan
+
+Designed in [`range-scan.md`](range-scan.md) (2026-11-20).
+
+1. The design.
+2. Listening, passes and the one-window range in the engine.
+3. The Range tab, and the Signals tab without its scan.
+4. Named scans, kept with their channels.
+
+Done when a range scan of the 2 m repeaters, listening, stops on a
+conversation, goes on through its windows and stops by itself after 3
+passes with the receiver back; "Current window" never moves the receiver;
+a named scan's channels show again after a restart; and `--scan sweep` and
+`--scan signals` still start the service.
 
 ### Automatic calibration
 
