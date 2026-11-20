@@ -5,18 +5,18 @@ Origin: Radiolack
 Label: Radiolack
 Suite: stable
 Codename: stable
-Date: Fri, 20 Nov 2026 10:36:10 +0000
+Date: Fri, 20 Nov 2026 12:37:38 +0000
 Architectures: all
 Components: main
 Description: Radiolack, a receive-only SDR receiver
 Acquire-By-Hash: yes
 SHA256:
- da24bacfa302861446669092488ecee6498defa8845b0aa40566dc7472cf1e28 24958 main/binary-all/Packages
- 3cc2e9bb3b0eb7c56e4f86d5628eaba4f0ef2e1635eeee3cec7bbb395284340a 2303 main/binary-all/Packages.gz
+ 457999965716c306ec97dcba5a9745a11eb7aa4d876218a092a478e7922191c4 26408 main/binary-all/Packages
+ 6a76a1790017f7411850b2f834da9df17fc8fa53e8c2e67f61653a9879e3ec49 2375 main/binary-all/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQ05izIs+XgB9tgmhRRVMHHv22ekwUCawAiogAKCRBRVMHHv22e
-k6nGAQClSiifshveAMDU06+TGSWgWKXSH+6Qb9hxKiRz244HwAD/Ri/FBKb75RU1
-OdYcO2A9SD4gWVabNjyBEWiCWi86hw8=
-=YZqW
+iHUEARYKAB0WIQQ05izIs+XgB9tgmhRRVMHHv22ekwUCawA/HQAKCRBRVMHHv22e
+k17wAQCBcpsh+QJfnuRkeSdzitaKNALUgR2jMUGL6VjRJCX7QgEA5B6TG38zIz4S
+BarYWAMUsfEuQp91hb+3n4wS0RLBHgw=
+=WyaB
 -----END PGP SIGNATURE-----
