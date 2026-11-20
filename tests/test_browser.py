@@ -1960,7 +1960,10 @@ class BrowserTest(unittest.TestCase):
                 second.locator("#ks-name").fill("Carrier")
                 second.locator("#ks-rename").click()
                 expect(first.locator("#ks-body button[data-open]")).to_have_text(["Carrier"])
-                self.assertEqual([scan["name"] for scan in Store(directory).load(SCANS_FILE)["scans"]], ["Carrier"])
+                deadline = time.monotonic() + TIMEOUT_MS / 1000     # the file follows, from a worker thread
+                while [scan["name"] for scan in Store(directory).load(SCANS_FILE).get("scans", [])] != ["Carrier"]:
+                    self.assertLess(time.monotonic(), deadline, "the new name did not reach scans.json")
+                    time.sleep(0.05)
                 second.locator("#ks-delete").click()
                 expect(second.locator("#ks-delete")).to_have_text("Confirm: delete")
                 second.locator("#ks-delete").click()
