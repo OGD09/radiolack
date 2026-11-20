@@ -104,6 +104,7 @@ radio program, only on receiver drivers.
 | 2026-11-19 | The signals scan, as the owner chose after the sweep's acceptance, where the sweep found the signals across a range but listened to none: it listens to every active signal of the span in turn, not only the strongest, with the VFO alone, never tuning the receiver. The signal that waited longest goes first, one never tuned to before the others, so that none is left out while several are on the air; it stays while the squelch is open and the resume time after, and leaves after the longest listening time (10 s by default, from 2 to 60 s) when another signal waits. The VFO lands on the frequency the list shows, in the band plan's mode, which the engine now reads as the interface does (`bandplan.py`), and the list marks the signal it listens to. Tuning by hand stops it, and `--scan signals` starts it at start. One VFO hears one signal at a time: a short transmission may end before its turn, the list and the History keeping it all the same. |
 | 2026-11-20 | The detection threshold shows in the Sweep tab too, as the owner chose, where the sweep kept weak peaks that look like noise: one setting, the Signals tab's, which either slider changes, not a threshold of the sweep's own (2026-11-12), and its range widens from 6-30 dB to 6-50 dB so that only strong signals may be kept. An absolute level in dBFS was set aside: uncalibrated, it would move with the gain. |
 | 2026-11-20 | The range scan, as the owner chose after 0.18.0, who did not see the difference between the sweep and the signals scan: one scan across a range replaces both, "Stop to listen" on or off, a range within the receiver's span never tuning it; a number of passes, 1 to 99, or endless; each scan kept under a name with the channels it found, until deleted, in the scan's tab. The Signals tab keeps detection alone; the memory scan and the History stay. Designed in [`range-scan.md`](range-scan.md). |
+| 2026-11-20 | Bookmark categories, as the owner chose after 0.19.0: categories that the owner makes, one level deep, named "Category", a bookmark in one at most, uncategorized ones first; dragging a bookmark onto a category asks Confirm or Cancel, which the owner chose over an Undo; Edit's Category choice and a Select mode move them without dragging, on the iPhone and from the keyboard; a category's box ticks its bookmarks for the memory scan; removing a category keeps its bookmarks. `bookmarks.json` keeps its bookmarks as they are and lists the categories beside them, so that an older Radiolack loses the categories, not the bookmarks. Set aside: categories within categories, categories from the band plan, a bookmark in several categories, a manual order, and dragging on a touch screen. Designed in [`bookmark-categories.md`](bookmark-categories.md). |
 
 ## Scope
 
@@ -494,6 +495,18 @@ conversation, goes on through its windows and stops by itself after 3
 passes with the receiver back; "Current window" never moves the receiver;
 a named scan's channels show again after a restart; and `--scan sweep` and
 `--scan signals` still start the service.
+
+### Bookmark categories
+
+Designed in [`bookmark-categories.md`](bookmark-categories.md) (2026-11-20).
+
+1. The design.
+2. Categories in the engine, their file and their messages.
+3. The grouped list, Select, and the drag and drop with its confirmation.
+
+Done when bookmarks dragged and moved into categories, a category's box
+ticking them for the memory scan, a category renamed and one removed all
+show again after a restart.
 
 ### Automatic calibration
 
