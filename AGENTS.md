@@ -102,7 +102,7 @@ the history under the tag `v0.1.0`.
   Radiolack), `store` (settings, bookmarks, observations, kept scans and
   remote access files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
-  only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
+  only, unreadable files set aside), `bookmarks` (bookmarks, their categories, one level deep, and their checks; the file keeps the bookmarks as an older Radiolack reads them and the categories beside them),
   `scanners` (detection on the engine's FFTs, averaged over a third of a
   second, against the local noise; the list of the signals found and the
   ignored frequencies; the memory scan's watch of the ticked bookmarks'

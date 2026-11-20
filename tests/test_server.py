@@ -262,7 +262,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((state["type"], state["kind"], state["centre_hz"]), ("source", "test", FAKE_CENTRE_HZ))
             settings = await ws.receive_json(timeout=5)
             self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
-            self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": []})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": [], "categories": []})
             self.assertEqual(await ws.receive_json(timeout=5),
                              SCANNER_STATE)
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
@@ -327,10 +327,11 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                                     "name": "Calling", "mode": "NFM", "scan": False})
             for ws in (sender, other):
                 self.assertEqual(await next_text(ws), {"type": "bookmarks", "bookmarks": [
-                    {"id": 1, "frequency_hz": 145_500_000.0, "name": "Calling", "mode": "NFM", "scan": False}]})
+                    {"id": 1, "frequency_hz": 145_500_000.0, "name": "Calling", "mode": "NFM", "scan": False,
+                     "category": None}], "categories": []})
             await sender.send_json({"type": "bookmark", "action": "remove", "id": 1})
             for ws in (sender, other):
-                self.assertEqual(await next_text(ws), {"type": "bookmarks", "bookmarks": []})
+                self.assertEqual(await next_text(ws), {"type": "bookmarks", "bookmarks": [], "categories": []})
             await other.send_json({"type": "bookmark", "action": "remove", "id": 1})
             self.assertEqual(await next_text(other), {
                 "type": "error", "command": "bookmark",
@@ -476,7 +477,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "fine", "on": "yes"}': ("fine", "the fine spectrum must be turned on or off: true or false"),
             '{"type": "fine", "on": true, "bins": 4}': ("fine", "unknown fine setting: bins"),
             '{"type": "bookmark", "action": "rename"}': (
-                "bookmark", 'a bookmark action is "add", "change" or "remove"'),
+                "bookmark", 'a bookmark action is "add", "change", "remove", "add_category", '
+                '"rename_category" or "remove_category"'),
             '{"type": "bookmark", "action": "add", "name": "A", "mode": "NFM"}': (
                 "bookmark", "a bookmark needs a frequency"),
             '{"type": "preferences"}': ("preferences", "the preferences must be a JSON object"),
@@ -615,7 +617,7 @@ class SavedSettingsTest(unittest.IsolatedAsyncioTestCase):
             states = await read_start(self, ws)
         self.assertEqual((states["demod"]["frequency_hz"], states["demod"]["squelch_auto"],
                           states["demod"]["acknowledged"]), (145_010_000.0, False, 0))
-        self.assertEqual(states["bookmarks"]["bookmarks"], [{"id": 1, **bookmark}])
+        self.assertEqual(states["bookmarks"]["bookmarks"], [{"id": 1, **bookmark, "category": None}])
         self.assertEqual(states["preferences"]["values"], values)
         self.assertEqual((states["storage"]["saving"], states["storage"]["problem"]), (True, ""))
 

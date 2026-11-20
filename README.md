@@ -1458,7 +1458,9 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
   ([Updates](#updates)) and the recordings folder chosen in Settings
   ([Recording](#recording)).
-- `bookmarks.json` holds the bookmarks.
+- `bookmarks.json` holds the bookmarks and, once one is made, their
+  categories, listed beside the bookmarks: an older Radiolack reads the
+  same bookmarks, and loses only the categories when it saves them.
 - `observations.json` holds the channels of the History
   ([Scanners](#scanners)). It reaches the disk at most every 10 minutes, a
   few seconds after a Clear, and when Radiolack stops.
@@ -2225,7 +2227,7 @@ src/radiolack/
                 addresses to listen on
   store.py      settings, bookmarks, observations, kept scans and remote
                 access files
-  bookmarks.py  bookmarks and their checks
+  bookmarks.py  bookmarks, their categories and their checks
   preferences.py
                 the interfaces' own settings and their checks
   demod.py      one VFO: channel level, squelch and the audio of each mode

@@ -190,7 +190,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "blanker": False, "sam_locked": None, "notch_lines": None, "blanker_impulses": None,
             "modes": list(MODES), "audio_modes": list(MODES), "acknowledged": 0,
         })
-        self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": []})
+        self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": [], "categories": []})
         self.assertEqual(subscription.get_nowait(), scanner_state())
         self.assertEqual(subscription.get_nowait(), {"type": "peaks", "peaks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
@@ -708,7 +708,8 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({key: engine.demod_state()[key] for key in demod}, demod)
         self.assertIs(engine.demod_state()["notch"], False)    # saved before the notch: off
         self.assertIs(engine.demod_state()["blanker"], False)  # and before the blanker
-        self.assertEqual(engine.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
+        self.assertEqual(engine.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING, "category": None}],
+                                                    "categories": []})
         self.assertEqual(engine.preferences_state(),
                          {"type": "preferences", "values": {"volume": 40, "palette": "classic"}})
         self.assertEqual(engine.storage_state(),
@@ -727,7 +728,19 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         state = again.demod_state()
         self.assertEqual((state["frequency_hz"], state["mode"], state["bandwidth_hz"], state["sam_locked"]),
                          (145_010_000.0, "SAM", 8_000.0, False))
-        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark, "category": None}])
+
+    async def test_bookmark_categories_come_back_after_a_restart(self):
+        engine = self.engine(save_delay_s=0.01)
+        engine.edit_bookmarks({"action": "add", **CALLING})
+        engine.edit_bookmarks({"action": "add_category", "name": "Local"})
+        engine.edit_bookmarks({"action": "change", "ids": [1], "category": 1})
+        await self.stop(engine)
+        self.assertEqual(self.read(BOOKMARKS_FILE), {"version": 1, "bookmarks": [CALLING],
+                                                     "categories": [{"name": "Local", "bookmarks": [0]}]})
+        again = self.engine()
+        self.assertEqual(again.bookmarks_state(), {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING, "category": 1}],
+                                                   "categories": [{"id": 1, "name": "Local"}]})
 
     async def test_the_notch_comes_back_after_a_restart_and_no_bookmark_carries_it(self):
         engine = self.engine(save_delay_s=0.01)
@@ -741,7 +754,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         again = self.engine()
         state = again.demod_state()
         self.assertEqual((state["mode"], state["notch"], state["notch_lines"]), ("USB", True, 0))
-        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark, "category": None}])
         await self.stop(again)
         # A saved notch that is not true or false is left off.
         self.write(SETTINGS_FILE, {"receivers": {"test": {"demod": {"mode": "AM", "notch": "yes"}}}})
@@ -762,7 +775,7 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
         again = self.engine()
         state = again.demod_state()
         self.assertEqual((state["mode"], state["blanker"], state["blanker_impulses"]), ("AM", True, 0))
-        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark}])
+        self.assertEqual(again.bookmarks_state()["bookmarks"], [{"id": 1, **bookmark, "category": None}])
         await self.stop(again)
         # A saved blanker that is not true or false is left off.
         self.write(SETTINGS_FILE, {"receivers": {"test": {"demod": {"mode": "AM", "blanker": 1}}}})
@@ -1028,8 +1041,8 @@ class PersistenceTest(unittest.IsolatedAsyncioTestCase):
             waiting(subscription)
         engine.edit_bookmarks({"action": "add", **CALLING})
         for subscription in subscriptions:
-            self.assertEqual(subscription.get_nowait(),
-                             {"type": "bookmarks", "bookmarks": [{"id": 1, **CALLING}]})
+            self.assertEqual(subscription.get_nowait(), {
+                "type": "bookmarks", "bookmarks": [{"id": 1, **CALLING, "category": None}], "categories": []})
         with self.assertRaisesRegex(ValueError, "no such bookmark"):
             engine.edit_bookmarks({"action": "remove", "id": 2})
         for subscription in subscriptions:

@@ -147,7 +147,8 @@ preferences apart from this computer's.
 
    ```json
    {"type": "bookmarks", "bookmarks": [
-     {"id": 2, "frequency_hz": 145500000.0, "name": "FM calling", "mode": "NFM", "scan": true}]}
+     {"id": 2, "frequency_hz": 145500000.0, "name": "FM calling", "mode": "NFM", "scan": true, "category": 1}],
+    "categories": [{"id": 1, "name": "Local"}]}
    ```
 
    | Field | Meaning |
@@ -157,8 +158,15 @@ preferences apart from this computer's.
    | `name` | 1 to 60 characters on one line. |
    | `mode` | One of the demodulation settings' `modes`. |
    | `scan` | Whether the memory scan stops on it. |
+   | `category` | The `id` of its category, or null: uncategorized. |
 
    They come in frequency order, then by name, ignoring case: at most 2000.
+   `categories` lists the categories that the bookmarks are sorted into
+   ([bookmark-categories.md](bookmark-categories.md)), by name, ignoring
+   case, at most 100: each `id`, which names it in `bookmark` messages
+   while the engine runs, numbered again at each start, and its `name`, 1
+   to 40 characters on one line, which no other category has, ignoring
+   case. A category holds bookmarks alone.
 
 5. Then the scanner state, a JSON text message, sent again whenever it
    changes, whichever interface or scan changed it. The engine saves its
@@ -972,18 +980,29 @@ A `bookmark` message adds, changes or removes one bookmark:
 ```json
 {"type": "bookmark", "action": "add", "frequency_hz": 145500000, "name": "FM calling", "mode": "NFM", "scan": true}
 {"type": "bookmark", "action": "change", "id": 2, "name": "Calling"}
+{"type": "bookmark", "action": "change", "ids": [2, 5, 7], "category": 1}
 {"type": "bookmark", "action": "remove", "id": 2}
+{"type": "bookmark", "action": "add_category", "name": "Local"}
+{"type": "bookmark", "action": "rename_category", "id": 1, "name": "Local repeaters"}
+{"type": "bookmark", "action": "remove_category", "id": 1}
 ```
 
-`add` needs `frequency_hz`, `name` and `mode`; `scan` is true unless given.
-`change` names a bookmark by its `id` and sets the fields it gives, and
-`remove` takes only the `id`. The fields take the values listed under the
+`add` needs `frequency_hz`, `name` and `mode`; `scan` is true unless given,
+and `category` null. `change` names a bookmark by its `id` and sets the
+fields it gives; with `ids`, a list of 1 to 2000 bookmark ids, each named
+once, it sets `category`, `scan` or both, and nothing else, on all of them
+at once. `remove` takes only the `id`. `add_category` makes a category
+with its `name`, `rename_category` gives the category `id` a new `name`,
+and `remove_category` removes the category `id`, whose bookmarks become
+uncategorized. The fields take the values listed under the
 bookmarks message: the frequency is rounded to the Hz, and a name loses its
 spaces at both ends and keeps single spaces between words. The engine
 refuses the whole message, changing nothing, when a field is missing,
 unknown or invalid, when the `id` is unknown (another interface may have
-removed the bookmark) or when there are already 2000 bookmarks. Otherwise
-every interface receives the bookmarks.
+removed the bookmark), a `category` that names no category, a category's
+name that another has, ignoring case, or when there are already 2000
+bookmarks or 100 categories. Otherwise every interface receives the
+bookmarks.
 
 A `scanner` message changes the signal detection, the memory scan or the
 range scan (the sweep), the same for every interface:
@@ -1634,6 +1653,13 @@ and later.
   `name`. An older interface ignores the kept scans and never asks for a
   scan's channels; the scans it starts are kept under their range and
   start.
+  The same day, the bookmarks' categories (bookmark-categories.md, pull
+  request 2), without a new version: the bookmarks message's `categories`
+  and each bookmark's `category`, and the `bookmark` message's `category`,
+  `ids`, `add_category`, `rename_category` and `remove_category`. An
+  older interface ignores the categories and shows one list; the
+  bookmarks it adds are uncategorized, and its changes leave a bookmark's
+  category as it is.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`
