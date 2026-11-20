@@ -2183,8 +2183,9 @@ $('#ks-channels').addEventListener('click', (e) => {
 });
 $('#ks-back').addEventListener('click', () => { setScansNote(''); closeScan(); });
 const ksName = $('#ks-name');
+// What the user types stays until Rename, or another scan opens: a press on
+// Rename blurs the field first, which must not bring the old name back.
 ksName.addEventListener('input', () => typingIn.add(ksName));
-ksName.addEventListener('blur', () => { if (typingIn.delete(ksName) && rangeShown()) renderScans(); });
 function renameKeptScan() {
   typingIn.delete(ksName);
   const name = ksName.value.trim();
