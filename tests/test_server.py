@@ -31,8 +31,8 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "storage", "update",
-          "remote")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "storage",
+          "update", "remote")
 RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
@@ -254,7 +254,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
-                              "scanners": ["peaks", "memory", "history", "sweep", "signals"], "recording": ["audio", "iq"],
+                              "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
                               "measures": ["carrier", "driver_pll"], "spectra": ["fine"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
@@ -271,6 +271,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "recording", "audio": None, "iq": None, "stopped": None, "folder": None,
                               "default_folder": None})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "scans", "scans": []})
             # Without a settings folder, nothing is saved.
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "storage", "directory": None, "saving": False, "problem": ""})

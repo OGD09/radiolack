@@ -137,6 +137,7 @@ from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
                     has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
 from .fine import REMOTE_FINE_BINS, FineSpectrum, encode_fine
+from .keptscans import KeptScans, checked_name
 from .observations import Observations
 from .pllcheck import LOST, MAX_MOVE_HZ, Point, choose_points, identify
 from .preferences import check_preferences, saved_preferences
@@ -153,7 +154,7 @@ from .scanners import (DC_GAP_HZ, DEFAULT_LISTEN_S, DEFAULT_RESUME_S, DEFAULT_SW
                        checked_resume, checked_sweep_range, checked_threshold, checked_window, memory_window,
                        memory_windows, range_window, same_signal, search_blocks, sweep_windows, watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
-from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
+from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SCANS_FILE, SETTINGS_FILE, Store, shown_path
 from .updates import UpdateResult
 
 FRAME_RATE = 30.0       # display frames per second
@@ -169,8 +170,10 @@ UNRECORDED_KINDS = ("synthetic",)   # sources neither observed nor recorded: the
 PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
 LISTEN_NEEDS_DETECTION = "the range scan stops to listen only while detection is on: turn it on first"
 SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "listen_s", "sweep_low_hz", "sweep_high_hz",
-                    "sweep_window_s", "sweep_listen", "sweep_passes", "ignore", "restore", "scan")
+                    "sweep_window_s", "sweep_listen", "sweep_passes", "ignore", "restore", "scan", "name")
 OBSERVATIONS_FIELDS = ("clear", "clear_all")
+SCANS_FIELDS = ("get", "rename", "name", "delete", "clear_all")
+SCANS_SAVE_S = 10.0     # a running scan is kept on disk and in the clients' list at most this long after a change
 CARRIER_TIMEOUT_S = 6.0     # a carrier's measure that settings kept starting again ends this long after it began
 MAX_REQUEST_ID = 2 ** 53 - 1    # the largest whole number JavaScript counts exactly
 CHECK_POINT_TIMEOUT_S = 6.0     # a point of the driver's check whose carrier is not measured within this ends it
@@ -540,6 +543,7 @@ class Engine:
             self._device_search = DeviceSearch()
             self._device_search.on_change = self._follow_devices
             self._states["devices"] = lambda subscription: self.devices_state(subscription.remote)
+        self._states["scans"] = lambda _: self.scans_state()
         self._states["storage"] = lambda _: self.storage_state()
         self._states["update"] = lambda _: self.update_state()
         self._remote = remote
@@ -584,6 +588,15 @@ class Engine:
         self._observations_due = False
         self._observations_saved_s = time.monotonic()
         self._observations_timer: asyncio.TimerHandle | None = None
+        # Kept scans: each range scan under a name with the channels it
+        # found. Their file is written, and the clients' list sent, at most
+        # SCANS_SAVE_S after a change while a scan runs, at once otherwise.
+        self._kept = KeptScans(store.load(SCANS_FILE) if store is not None else None)
+        self._scans_due = False
+        self._scans_timer: asyncio.TimerHandle | None = None
+        self._kept_name: str | None = None      # the name given to the range scan about to start
+        self._kept_resumed = False      # the range scan starting again goes on with the kept scan that runs
+        self._kept_step_s = 0.0         # the latest block of the range scan, in time.monotonic()
         # Scanners: detection's settings, the signals found and the ignored
         # frequencies; the band plan, which gives the channels they show on
         # and the modes the range scan takes; the memory scan's resume
@@ -659,7 +672,7 @@ class Engine:
         self._update = UpdateResult("idle") if reason is None else UpdateResult("unavailable", detail=reason)
         self._checking: asyncio.Future | None = None
         if store is not None:
-            self._saved = self._contents(observations=True)     # nothing to write until something changes,
+            self._saved = self._contents(observations=True, scans=True)     # nothing to write until a change,
             # but a source or a setting given at start replaces the saved one at the next write.
             default_choice = {"kind": self._sources.kinds[0]} if self._sources is not None else None
             if (_given_differ(self.state(), saved_source, self.source.given)
@@ -866,8 +879,11 @@ class Engine:
         for name in changes:
             if name not in SCANNER_SETTINGS:
                 raise ValueError(f"unknown scanner setting: {str(name)[:40]}")
-        if any(name in changes for name in ("ignore", "restore", "scan")) and len(changes) > 1:
+        if (any(name in changes for name in ("ignore", "restore", "scan")) and len(changes) > 1
+                and set(changes) != {"scan", "name"}):
             raise ValueError("ignore, restore and scan come alone in their message")
+        if "name" in changes and changes.get("scan") not in ("sweep", "signals"):
+            raise ValueError("a name goes with the range scan's start alone")
         if "ignore" in changes:
             ignored = checked_frequency(changes["ignore"], "an ignored frequency")
             self._signals.ignore(ignored)
@@ -879,7 +895,11 @@ class Engine:
                 raise ValueError("restore takes true")
             self._signals.restore()
         elif "scan" in changes:
-            self._start_scan(changes["scan"])
+            self._kept_name = checked_name(changes.get("name"))
+            try:
+                self._start_scan(changes["scan"])
+            finally:
+                self._kept_name = None
         else:
             detection = changes.get("detection", self._detection)
             if not isinstance(detection, bool):
@@ -989,6 +1009,34 @@ class Engine:
         if cleared:
             self._observations_changed(soon=True)
         subscription.reply(self.observations_state())
+
+    def scans_state(self) -> dict[str, Any]:
+        """The scans message: the kept scans, the latest first."""
+        return {"type": "scans", "scans": self._kept.summaries()}
+
+    def configure_scans(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Answer a client's scans message: ``get`` a kept scan's channels,
+        which the client alone receives; ``rename`` one, with its new
+        ``name``; ``delete`` one, not the scan that runs; or ``clear_all``
+        (true) but the scan that runs. Every client then receives the kept
+        scans. Raises ValueError, changing nothing, when refused."""
+        for name in changes:
+            if name not in SCANS_FIELDS:
+                raise ValueError(f"unknown scans field: {str(name)[:40]}")
+        if set(changes) not in ({"get"}, {"rename", "name"}, {"delete"}, {"clear_all"}):
+            raise ValueError("a scans message is get, rename with name, delete or clear_all, alone")
+        if "get" in changes:
+            subscription.reply({"type": "scan", **self._kept.channels(changes["get"])})
+            return
+        if "rename" in changes:
+            self._kept.rename(changes["rename"], changes["name"])
+        elif "delete" in changes:
+            self._kept.delete(changes["delete"])
+        else:
+            if changes["clear_all"] is not True:
+                raise ValueError("clear_all takes true")
+            self._kept.clear_all()
+        self._scans_changed(soon=True)
 
     def preferences_state(self, device: str | None = None) -> dict[str, Any]:
         """The preferences message: what a new interface of this computer, or
@@ -1315,6 +1363,9 @@ class Engine:
         if self._observations_timer is not None:
             self._observations_timer.cancel()
             self._observations_timer = None
+        if self._scans_timer is not None:
+            self._scans_timer.cancel()
+            self._scans_timer = None
         self._carrier = None
         self._carrier_waiting.clear()
         self._fine = None
@@ -1340,7 +1391,9 @@ class Engine:
         if self._saver is not None:
             await asyncio.gather(self._saver, return_exceptions=True)
         self._observations_due = True
-        await self._save()      # also what a failed write left unsaved, and the observations
+        self._kept.end(time.time(), "closed")
+        self._scans_due = True
+        await self._save()      # also what a failed write left unsaved, the observations and the kept scans
 
     async def run(self) -> None:
         """Produce frames until closed or cancelled, having started the update
@@ -1695,10 +1748,17 @@ class Engine:
 
     def _record(self, found: Sequence[Signal]) -> None:
         """Keep the signals found in a search as observations, at this
-        computer's time and hour."""
+        computer's time and hour, and those within its range for the range
+        scan that runs."""
         now = time.time()
         self._observations.record(found, now, time.localtime(now).tm_hour)
         self._observations_changed()
+        running = self._kept.running
+        if self._sweep is not None and running is not None:
+            channels = [(self._plan.channel(round(signal.frequency_hz), round(signal.width_hz)), signal.margin_db)
+                        for signal in found if running.low_hz <= signal.frequency_hz <= running.high_hz]
+            if self._kept.record(channels, now):
+                self._scans_changed()
 
     def _observations_changed(self, soon: bool = False) -> None:
         """The observations changed: their file is written once
@@ -1715,6 +1775,27 @@ class Engine:
             wait = self._observations_saved_s + self._observations_save_s - time.monotonic()
             self._observations_timer = asyncio.get_running_loop().call_later(max(0.0, wait),
                                                                              self._observations_save_due)
+
+    def _scans_changed(self, soon: bool = False) -> None:
+        """The kept scans changed: every client receives them, and their file
+        is written, at once when ``soon``, as when a scan starts or ends or
+        a client renamed or deleted one, otherwise SCANS_SAVE_S later, as
+        while a scan finds channels. ``wait_closed`` writes it in any case."""
+        if self._closed:
+            return
+        if soon:
+            if self._scans_timer is not None:
+                self._scans_timer.cancel()
+            self._scans_save_due()
+        elif self._scans_timer is None:
+            self._scans_timer = asyncio.get_running_loop().call_later(SCANS_SAVE_S, self._scans_save_due)
+
+    def _scans_save_due(self) -> None:
+        self._scans_timer = None
+        self._scans_due = True
+        for subscription in self._clients:
+            subscription.changed("scans")
+        self._settings_changed()
 
     def _observations_save_due(self) -> None:
         self._observations_timer = None
@@ -2022,10 +2103,30 @@ class Engine:
                             listen, passes)
         self._sweep_here = here
         self._home = (centre_hz, self._demod)
+        self._keep_sweep(here, windows, listen, passes)
         self._stopped = None
         self._wanted.set()          # the scan goes on without any client
         if self._sweep.centre_hz != self._span()[0]:    # a range within the span stays there
             self._tune_scan(self._sweep.centre_hz)
+
+    def _keep_sweep(self, here: bool, windows: SweepWindows, listen: bool, passes: int | None) -> None:
+        """Keep the range scan that starts, under the name given or its range
+        and start, unless it reads the simulated band, or goes on with the
+        kept scan that runs, after a new receiver's settings."""
+        self._kept_step_s = time.monotonic()
+        if self.source.kind in UNRECORDED_KINDS:
+            if self._kept.end(time.time(), "source"):      # one that ran on a receiver stops there
+                self._scans_changed(soon=True)
+            return
+        if self._kept_resumed and self._kept.running is not None:
+            return
+        if here:
+            rate_hz = self._span()[1]
+            low_hz, high_hz = windows.centre(0) - USABLE_FRACTION * rate_hz, windows.centre(0) + USABLE_FRACTION * rate_hz
+        else:
+            low_hz, high_hz = self._sweep_low_hz, self._sweep_high_hz
+        self._kept.start(self._kept_name, time.time(), max(1.0, low_hz), high_hz, listen, passes)
+        self._scans_changed(soon=True)
 
     def _sweep_windows(self, low_hz: float, high_hz: float) -> SweepWindows:
         """The sweep's windows from ``low_hz`` to ``high_hz`` at the receiver's
@@ -2075,6 +2176,7 @@ class Engine:
             target, channel = sweep.listen_step(now, list(signals), squelch_open, self._resume_s, self._listen_s)
         if channel is not None:
             self._tune_signal(channel, signals)
+        self._keep_progress(sweep, now, squelch_open)
         if sweep.done:
             self._stop_scan("done")
             return
@@ -2084,6 +2186,19 @@ class Engine:
         if (sweep.window, sweep.passes,
                 None if listening is None else (listening.state, listening.frequency_hz)) != before:
             self._scanner_changed()
+
+    def _keep_progress(self, sweep: Sweep, now: float, squelch_open: bool) -> None:
+        """Keep the range scan's passes done and, while it listens with the
+        squelch open, the time since its latest block on the signal heard."""
+        elapsed = min(max(0.0, now - self._kept_step_s), 1.0)     # a block longer than a second counts for one
+        self._kept_step_s = now
+        listening = sweep.listening
+        if (listening is not None and listening.state == "listening" and listening.frequency_hz is not None
+                and squelch_open):
+            self._kept.listened(listening.frequency_hz, elapsed)
+            self._scans_changed()
+        if self._kept.progress(sweep.passes):
+            self._scans_changed()
 
     def _span_signals(self, label: tuple[float, float], now: float) -> dict[int, tuple[float, float]]:
         """The active signals of the part of the span that ``label``, the
@@ -2148,6 +2263,8 @@ class Engine:
             log.warning("the memory scan stopped: no ticked bookmark lies within the receiver's reach any more")
         self._memory = self._tour = self._sweep = self._home = None
         self._sweep_here = False
+        if sweep is not None and not self._kept_resumed and self._kept.end(time.time(), reason or "stopped"):
+            self._scans_changed(soon=True)
         self._stopped = None if reason is None else (scan, reason)
         if home is not None:
             back = ((sweep is not None and (sweep.listening is None or sweep.listening.frequency_hz is None))
@@ -2429,15 +2546,21 @@ class Engine:
         # A scan started before, such as --scan's, which the receiver's
         # first opening follows at once, starts again from these settings.
         scan = "signals" if self._sweep_here else self._running_scan()
-        self._stop_scan(None)
-        self._restore_source(saved.get("source"))
-        self._restore_demod(saved.get("demod"))
-        self._demod_changed()
-        if scan is not None:
-            try:
-                self._start_scan(scan)
-            except ValueError as error:
-                log.warning("the %s stopped: %s", SCAN_NAMES[scan], error)
+        self._kept_resumed = True       # a range scan's kept scan goes on
+        try:
+            self._stop_scan(None)
+            self._restore_source(saved.get("source"))
+            self._restore_demod(saved.get("demod"))
+            self._demod_changed()
+            if scan is not None:
+                try:
+                    self._start_scan(scan)
+                except ValueError as error:
+                    log.warning("the %s stopped: %s", SCAN_NAMES[scan], error)
+        finally:
+            self._kept_resumed = False
+        if self._sweep is None and self._kept.end(time.time(), "stopped"):
+            self._scans_changed(soon=True)
 
     def _receiver_settings(self) -> dict[str, Any]:
         """The settings saved for the receiver in use: while a scan runs,
@@ -2553,9 +2676,10 @@ class Engine:
             except ValueError as error:
                 log.warning("a saved ignored frequency is not used: %s", error)
 
-    def _contents(self, observations: bool = False) -> dict[str, dict[str, Any]]:
+    def _contents(self, observations: bool = False, scans: bool = False) -> dict[str, dict[str, Any]]:
         """What the settings, bookmarks and remote access files hold, as
-        things stand, and with ``observations`` the observations file: with
+        things stand, with ``observations`` the observations file and with
+        ``scans`` the kept scans' file: with
         sources to open, which source opens at the next start."""
         settings: dict[str, Any] = {} if self._sources is None else {"source": self.source.reopen}
         settings["receivers"] = {**self._receivers, self.source.settings_key: self._receiver_settings()}
@@ -2573,6 +2697,8 @@ class Engine:
             contents[REMOTE_FILE] = self._remote.stored()
         if observations:
             contents[OBSERVATIONS_FILE] = self._observations.stored()
+        if scans:
+            contents[SCANS_FILE] = self._kept.stored()
         return contents
 
     def _settings_changed(self) -> None:
@@ -2594,7 +2720,8 @@ class Engine:
 
     async def _save(self) -> None:
         """Write the files whose content changed since their latest write, in a
-        worker thread, as the disk may be slow, the observations' once due.
+        worker thread, as the disk may be slow, the observations' and the
+        kept scans' once due.
         Clients learn when the storage state changes."""
         store = self._store
         if store is None:
@@ -2607,8 +2734,9 @@ class Engine:
             # made meanwhile does not ask for another write at once.
             self._observations_saved_s = time.monotonic()
             self._observations.forget(time.time())
+        scans, self._scans_due = self._scans_due, False
         try:
-            for name, content in self._contents(observations).items():
+            for name, content in self._contents(observations, scans).items():
                 if content != self._saved.get(name) and await asyncio.to_thread(store.save, name, content):
                     self._saved[name] = content
         except Exception:

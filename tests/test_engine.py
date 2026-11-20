@@ -37,7 +37,8 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 # What a new client gets first; a remote client, without the last two.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "storage", "update")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "storage",
+          "update")
 
 
 def scanner_state(**changes) -> dict:
@@ -138,6 +139,11 @@ def waiting(subscription: Subscription) -> list:
             return messages
 
 
+def of_type(messages: list, kind: str) -> list[dict]:
+    """The JSON messages of ``kind`` among ``messages``, frames left out."""
+    return [message for message in messages if isinstance(message, dict) and message["type"] == kind]
+
+
 def preferences_of(subscription: Subscription) -> dict:
     """The values of the preferences message ready for a client, now."""
     [message] = [message for message in waiting(subscription)
@@ -191,6 +197,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         # Without a recordings folder, nothing is recorded.
         self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                      "folder": None, "default_folder": None})
+        self.assertEqual(subscription.get_nowait(), {"type": "scans", "scans": []})
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
                          {"type": "storage", "directory": None, "saving": False, "problem": ""})
@@ -2290,6 +2297,123 @@ class ListeningSweepTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "stops to listen only while detection is on"):
             engine.configure_scanner({"sweep_listen": True})
         self.assertEqual((engine.scanner_state()["scan"], engine.scanner_state()["sweep_listen"]), ("sweep", False))
+
+
+class SimulatedSource(TonesSource):
+    """TonesSource as the simulated band: the kind that is never kept."""
+
+    kind = "synthetic"
+
+
+class KeptScanTest(unittest.IsolatedAsyncioTestCase):
+    """The kept scans (keptscans.py) in the engine: each range scan under
+    its name, with the channels it found, for every client, and in
+    scans.json across restarts."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "radiolack"
+
+    def engine(self, source: Source, **options) -> Engine:
+        engine = Engine(source, store=Store(self.directory), save_delay_s=0.01, **options)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def test_keeps_a_named_scan_with_its_channels_and_the_time_heard(self):
+        source = TuningSource({LOW_CHANNEL_HZ: 0.03, HIGH_CHANNEL_HZ: 0.03})
+        engine = self.engine(source)
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        engine.configure_scanner({"sweep_low_hz": SWEEP_HZ[0], "sweep_high_hz": SWEEP_HZ[1], "sweep_window_s": 0.25,
+                                  "listen_s": 2, "sweep_listen": True, "sweep_passes": 1})
+        engine.configure_scanner({"scan": "sweep", "name": " 2 m repeaters "})
+        [running] = engine.scans_state()["scans"]
+        self.assertEqual((running["name"], running["ended"], running["low_hz"], running["high_hz"],
+                          running["listen"], running["passes_set"]),
+                         ("2 m repeaters", None, SWEEP_HZ[0], SWEEP_HZ[1], True, 1))
+        state = await asyncio.wait_for(next_scanner(local, until=lambda message: message["scan"] is None), 30)
+        self.assertEqual(state["stopped"], "done")
+        for subscription in (local, remote):     # every client receives the kept scans
+            [scan] = of_type(waiting(subscription), "scans")[-1]["scans"]
+            self.assertEqual((scan["name"], scan["ended"], scan["passes"], scan["channels"]),
+                             ("2 m repeaters", "done", 1, 2))
+        engine.configure_scans({"get": scan["id"]}, remote)
+        [reply] = of_type(waiting(remote), "scan")
+        self.assertEqual([channel["frequency_hz"] for channel in reply["channels"]], [LOW_CHANNEL_HZ, HIGH_CHANNEL_HZ])
+        for channel in reply["channels"]:
+            self.assertGreaterEqual(channel["searches"], 1)
+            self.assertGreater(channel["open_s"], 0.5)      # heard for up to the longest listening time
+        self.assertEqual(of_type(waiting(local), "scan"), [])
+        # It is written to its file at its end.
+        saved = await self.saved(lambda content: content["scans"] and content["scans"][0]["ended"] == "done")
+        self.assertEqual(saved["scans"][0]["name"], "2 m repeaters")
+
+    async def test_rename_delete_clear_and_the_refusals(self):
+        engine = self.engine(TonesSource({37_500: 0.1}))
+        subscription = engine.subscribe()
+        engine.configure_scanner({"sweep_low_hz": FAKE_CENTRE_HZ - 90_000, "sweep_high_hz": FAKE_CENTRE_HZ + 90_000,
+                                  "sweep_window_s": 0.25})
+        engine.configure_scanner({"scan": "sweep"})
+        [running] = engine.scans_state()["scans"]
+        self.assertRegex(running["name"], r"^144\.910-145\.090 MHz, \d{4}-\d\d-\d\d \d\d:\d\d$")
+        await eventually(lambda: engine._kept.running is not None and engine._kept.running.channels)
+        engine.configure_scans({"rename": running["id"], "name": "Calling"}, subscription)
+        refused = ({}, {"get": 9}, {"delete": running["id"]}, {"rename": running["id"], "name": ""},
+                   {"rename": running["id"]}, {"clear_all": False}, {"clear_all": True, "get": 1}, {"forget": 1})
+        for changes in refused:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_scans(changes, subscription)
+        for changes in ({"scan": "memory", "name": "Bookmarks"}, {"scan": None, "name": "Stop"},
+                        {"scan": "sweep", "name": "x" * 61}, {"name": "Alone"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_scanner(changes)
+        engine.configure_scanner({"scan": "signals", "name": "Here"})       # the current window: a new kept scan
+        names = [(scan["name"], scan["ended"]) for scan in engine.scans_state()["scans"]]
+        self.assertEqual(names, [("Here", None), ("Calling", "stopped")])
+        engine.configure_scans({"clear_all": True}, subscription)
+        self.assertEqual([scan["name"] for scan in engine.scans_state()["scans"]], ["Here"])
+        engine.configure_scanner({"scan": None})
+        engine.configure_scans({"delete": engine.scans_state()["scans"][0]["id"]}, subscription)
+        self.assertEqual(engine.scans_state()["scans"], [])
+        self.assertEqual(of_type(waiting(subscription), "scans")[-1]["scans"], [])
+
+    async def test_the_simulated_band_is_never_kept(self):
+        engine = self.engine(SimulatedSource({37_500: 0.1}))
+        engine.configure_scanner({"scan": "signals"})
+        await asyncio.sleep(0.5)
+        engine.configure_scanner({"scan": None})
+        self.assertEqual(engine.scans_state()["scans"], [])
+
+    async def test_one_that_ran_at_close_comes_back_closed(self):
+        engine = Engine(TonesSource({37_500: 0.1}), store=Store(self.directory), save_delay_s=0.01)
+        task = asyncio.ensure_future(engine.run())
+        engine.configure_scanner({"scan": "signals", "name": "Before"})
+        await eventually(lambda: engine._kept.running is not None and engine._kept.running.channels)
+        engine.close()
+        await asyncio.wait_for(task, timeout=5)
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+        again = self.engine(FakeSource())
+        [scan] = again.scans_state()["scans"]
+        self.assertEqual((scan["name"], scan["ended"], scan["channels"]), ("Before", "closed", 1))
+
+    async def saved(self, check) -> dict:
+        """scans.json once ``check`` holds for its content."""
+        deadline = time.monotonic() + 5
+        while True:
+            path = self.directory / "scans.json"
+            if path.exists():
+                content = json.loads(path.read_text(encoding="utf-8"))
+                if check(content):
+                    return content
+            self.assertLess(time.monotonic(), deadline, "scans.json was not written")
+            await asyncio.sleep(0.02)
 
 
 class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):

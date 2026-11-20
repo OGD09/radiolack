@@ -43,7 +43,7 @@ const SETTING_TYPES = ['bool', 'choice', 'number'];
 const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
-const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'preferences',
+const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'scans', 'preferences',
   'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices'];
 const DEVICE_SEARCHES = ['never', 'searching', 'done', 'failed', 'unavailable'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
@@ -240,6 +240,43 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A range scan the engine keeps under its name, with what it found. Times
+ * are seconds since 1970, UTC.
+ * @typedef {object} KeptScan
+ * @property {number} id
+ * @property {string} name
+ * @property {number} startS
+ * @property {number | null} endS       null while it runs
+ * @property {number} lowHz            its range, from this frequency
+ * @property {number} highHz           to this one
+ * @property {boolean} listen          whether it stopped to listen
+ * @property {number | null} passesSet  null for endless
+ * @property {number} passes           the passes done
+ * @property {string | null} ended
+ *   why it ended: "stopped", "tuned", "source", "range", "detection", "done", "closed" or "interrupted"; null while
+ *   it runs
+ * @property {number} channels         how many channels it found
+ */
+
+/**
+ * A channel a kept scan found. Times are seconds since 1970, UTC.
+ * @typedef {object} KeptChannel
+ * @property {number} frequencyHz   as the lists show it
+ * @property {number} firstS
+ * @property {number} lastS
+ * @property {number} searches      how many searches found it
+ * @property {number} marginDb      its highest margin above the local noise
+ * @property {number} openS         how long the squelch stayed open there while the scan listened
+ */
+
+/**
+ * A kept scan with its channels, in frequency order.
+ * @typedef {object} KeptScanChannels
+ * @property {KeptScan} scan
+ * @property {KeptChannel[]} channels
+ */
+
+/**
  * An interface's own settings, by name, which the engine keeps for the next
  * interfaces: numbers, true or false, short texts or null.
  * @typedef {Record<string, number | boolean | string | null>} Preferences
@@ -425,8 +462,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
- * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'preferences'
- *   | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'} Command
+ * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'scans'
+ *   | 'preferences' | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'} Command
  */
 
 /**
@@ -557,6 +594,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  *   sent next, then when the list changes, at most about once a second: active signals first, strongest first
  * @property {(observations: Observation[]) => void} onObservations
  *   sent when this interface asks for them, or cleared some: the latest found first
+ * @property {(scans: KeptScan[]) => void} [onScans]
+ *   the kept scans, the latest first: sent next, then when they change, at most every 10 s while one runs
+ * @property {(scan: KeptScanChannels) => void} [onScan]  a kept scan's channels, when this interface asks
  * @property {(values: Preferences) => void} onPreferences
  *   sent next, once per connection: the latest saved for this computer's interfaces, or for this device
  * @property {(recording: RecordingState) => void} onRecording
@@ -976,6 +1016,59 @@ export function decodeObservations(message) {
       hours: c.hours.slice() });
   }
   return channels;
+}
+
+/**
+ * A kept scan in a scans or scan message, or null when malformed.
+ * @param {any} s
+ * @returns {KeptScan | null}
+ */
+function decodeKeptScan(s) {
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  const valid = s !== null && typeof s === 'object' && Number.isSafeInteger(s.id) && typeof s.name === 'string'
+    && finite(s.start_s) && (s.end_s === null || finite(s.end_s)) && finite(s.low_hz) && finite(s.high_hz)
+    && typeof s.listen === 'boolean' && (s.passes_set === null || Number.isSafeInteger(s.passes_set))
+    && Number.isSafeInteger(s.passes) && (s.ended === null || typeof s.ended === 'string');
+  if (!valid) return null;
+  return { id: s.id, name: s.name, startS: s.start_s, endS: s.end_s, lowHz: s.low_hz, highHz: s.high_hz,
+    listen: s.listen, passesSet: s.passes_set, passes: s.passes, ended: s.ended,
+    channels: Array.isArray(s.channels) ? s.channels.length : Number.isSafeInteger(s.channels) ? s.channels : 0 };
+}
+
+/**
+ * Decode a scans message: the kept scans, the latest first. Returns null
+ * when it holds no list, or a malformed scan.
+ * @param {any} message  a parsed JSON message of type "scans"
+ * @returns {KeptScan[] | null}
+ */
+export function decodeScans(message) {
+  if (!Array.isArray(message.scans)) return null;
+  const scans = message.scans.map(decodeKeptScan);
+  return scans.every((/** @type {KeptScan | null} */ s) => s !== null) ? /** @type {KeptScan[]} */ (scans) : null;
+}
+
+/**
+ * Decode a scan message: a kept scan with its channels. Returns null when
+ * the scan or one of its channels is malformed.
+ * @param {any} message  a parsed JSON message of type "scan"
+ * @returns {KeptScanChannels | null}
+ */
+export function decodeScan(message) {
+  const scan = decodeKeptScan(message);
+  if (!scan || !Array.isArray(message.channels)) return null;
+  /** @param {unknown} value */
+  const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+  /** @type {KeptChannel[]} */
+  const channels = [];
+  for (const c of message.channels) {
+    const valid = c !== null && typeof c === 'object' && finite(c.frequency_hz) && finite(c.first_s)
+      && finite(c.last_s) && Number.isSafeInteger(c.searches) && finite(c.margin_db) && finite(c.open_s);
+    if (!valid) return null;
+    channels.push({ frequencyHz: c.frequency_hz, firstS: c.first_s, lastS: c.last_s, searches: c.searches,
+      marginDb: c.margin_db, openS: c.open_s });
+  }
+  return { scan, channels };
 }
 
 /**
@@ -1437,13 +1530,15 @@ export class EngineStream {
    * or stop the scan that runs (null): every
    * interface then receives the scanner state, or this one an error, such as
    * when no ticked bookmark lies in the receiver's span, when the receiver
-   * does not tune, or when detection is off. Returns false, sending nothing,
+   * does not tune, or when detection is off. A range scan keeps `name`,
+   * or, without one, its range and start. Returns false, sending nothing,
    * when the stream is not open.
    * @param {'memory' | 'sweep' | 'signals' | null} scan
+   * @param {string} [name]
    * @returns {boolean}
    */
-  setScan(scan) {
-    return this.#send({ type: 'scanner', scan });
+  setScan(scan, name) {
+    return this.#send(name ? { type: 'scanner', scan, name } : { type: 'scanner', scan });
   }
 
   /**
@@ -1492,6 +1587,47 @@ export class EngineStream {
    */
   clearObservations() {
     return this.#send({ type: 'observations', clear_all: true });
+  }
+
+  /**
+   * Ask the engine for a kept scan's channels, which come to this interface
+   * only (`onScan`), or an error once deleted. Returns false, sending
+   * nothing, when the stream is not open.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  askScan(id) {
+    return this.#send({ type: 'scans', get: id });
+  }
+
+  /**
+   * Rename a kept scan: every interface then receives the kept scans
+   * (`onScans`), or this one an error. Returns false, sending nothing, when
+   * the stream is not open.
+   * @param {number} id
+   * @param {string} name
+   * @returns {boolean}
+   */
+  renameScan(id, name) {
+    return this.#send({ type: 'scans', rename: id, name });
+  }
+
+  /**
+   * Forget a kept scan, not the one that runs, for every interface, as
+   * `renameScan`.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  deleteScan(id) {
+    return this.#send({ type: 'scans', delete: id });
+  }
+
+  /**
+   * Forget every kept scan but the one that runs, as `renameScan`.
+   * @returns {boolean}
+   */
+  clearScans() {
+    return this.#send({ type: 'scans', clear_all: true });
   }
 
   /**
@@ -1820,6 +1956,12 @@ export class EngineStream {
     } else if (message.type === 'observations') {
       const observations = decodeObservations(message);
       if (observations) this.#handlers.onObservations(observations);
+    } else if (message.type === 'scans') {
+      const scans = decodeScans(message);
+      if (scans && this.#handlers.onScans) this.#handlers.onScans(scans);
+    } else if (message.type === 'scan') {
+      const scan = decodeScan(message);
+      if (scan && this.#handlers.onScan) this.#handlers.onScan(scan);
     } else if (message.type === 'preferences') {
       const values = decodePreferences(message);
       if (values) this.#handlers.onPreferences(values);
