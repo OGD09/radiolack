@@ -1979,6 +1979,10 @@ class BrowserTest(unittest.TestCase):
                 first.locator("#sw-window").press("ArrowRight")
                 for page in (first, second):
                     expect(page.locator("#sw-window-v")).to_have_text("0.75 s")
+                first.locator("#sw-thr").press("ArrowRight")    # the Signals tab's threshold, shown here too
+                for page in (first, second):
+                    expect(page.locator("#sw-thr-v")).to_have_text("13 dB")
+                    expect(page.locator("#pk-thr")).to_have_value("13")
                 first.locator("#sw-start").click()
                 for page in (first, second):     # 17 windows of 2.4 MHz, a quarter of the rate apart at most
                     expect(page.locator("#sw-state")).to_have_text(re.compile(r"^Pass 1, window ([2-9]|1\d) of 17$"))

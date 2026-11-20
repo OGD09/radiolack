@@ -1151,7 +1151,7 @@ The engine looks for signals in the spectrum it computes, whatever each
 interface shows, and every interface lists the same ones: the Scan menu's
 Signals tab gives each signal's frequency, how far it rises above the
 noise around it and when it was last found. A signal is found when it rises
-at least the threshold above that noise (12 dB by default, from 6 to 30 dB)
+at least the threshold above that noise (12 dB by default, from 6 to 50 dB)
 over a third of a second, twice in a row, away from the outer tenth of the
 span on each side and from the 3 kHz on each side of the centre, where a
 receiver's DC spike shows. The list runs by frequency, the lowest first,
@@ -1255,7 +1255,8 @@ The Sweep tab's sweep runs in the engine too, the same for every interface,
 with a receiver that tunes, such as an RTL-SDR: not with the simulated band.
 It steps the receiver across a range, 430 to 440 MHz by default, window
 after window, pass after pass, and detection searches each window as it
-does the span: the signals found there join the Signals list and the History.
+does the span, with the same threshold, which the Sweep tab shows too: the
+signals found there join the Signals list and the History.
 The windows lie a quarter of the sample rate apart at most, the first and
 the last a tenth of the rate inside the range, so that every frequency of
 the range lies in the part that detection searches of a window, even one at
