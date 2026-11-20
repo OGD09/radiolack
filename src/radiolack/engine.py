@@ -579,7 +579,8 @@ class Engine:
             raise ValueError("an engine needs a source, or sources to open one")
         self._reopen[self.source.kind] = self.source.reopen
         saved_source = self._receivers.get(self.source.settings_key, {}).get("source")
-        self._bookmarks = Bookmarks(store.load(BOOKMARKS_FILE).get("bookmarks", []) if store is not None else [])
+        saved_bookmarks = store.load(BOOKMARKS_FILE) if store is not None else {}
+        self._bookmarks = Bookmarks(saved_bookmarks.get("bookmarks", []), saved_bookmarks.get("categories", []))
         # Observations: what detection found, kept across restarts. Their file
         # is written at the next save once due: observations_save_s after its
         # latest write, or at once after a client cleared some.
@@ -814,12 +815,12 @@ class Engine:
 
     def bookmarks_state(self) -> dict[str, Any]:
         """The bookmarks message (docs/design/protocol.md)."""
-        return {"type": "bookmarks", "bookmarks": self._bookmarks.describe()}
+        return {"type": "bookmarks", "bookmarks": self._bookmarks.describe(), "categories": self._bookmarks.categories()}
 
     def edit_bookmarks(self, command: Mapping[str, object]) -> None:
-        """Add, change or remove a bookmark (bookmarks.py). Raises ValueError,
-        changing nothing, when refused; otherwise every client receives the
-        bookmarks."""
+        """Add, change or remove bookmarks, or their categories
+        (bookmarks.py). Raises ValueError, changing nothing, when refused;
+        otherwise every client receives the bookmarks."""
         self._bookmarks.apply(command)
         for subscription in self._clients:
             subscription.changed("bookmarks")
@@ -2692,7 +2693,7 @@ class Engine:
         settings["updates"] = {"check_at_start": self._check_at_start}
         chosen = self._chosen_recordings
         settings["recordings"] = {"folder": None if chosen is None else str(chosen)}
-        contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: {"bookmarks": self._bookmarks.stored()}}
+        contents = {SETTINGS_FILE: settings, BOOKMARKS_FILE: self._bookmarks.stored()}
         if self._remote is not None:
             contents[REMOTE_FILE] = self._remote.stored()
         if observations:
