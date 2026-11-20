@@ -157,6 +157,7 @@
             <p class="note">The Range tab scans these signals: "Current window" there, with "Stop to listen", tunes the VFO to each in turn.</p>
           </div>
           <div data-tab-panel="sweep" hidden>
+            <div class="field"><label for="sw-name">Name</label><input id="sw-name" type="text" maxlength="60" autocomplete="off" placeholder="Its range and start time" disabled></div>
             <div class="grid2">
               <div class="field"><label for="sw-from">From (MHz)</label><input id="sw-from" type="text" inputmode="decimal" autocomplete="off" disabled></div>
               <div class="field"><label for="sw-to">To (MHz)</label><input id="sw-to" type="text" inputmode="decimal" autocomplete="off" disabled></div>
@@ -176,6 +177,26 @@
             <p class="note" id="sw-note" role="status" hidden></p>
             <div class="row"><button type="button" class="btn primary" id="sw-start" disabled>Start</button><span class="note" id="sw-state"></span></div>
             <p class="note">Steps the receiver across the range, pass after pass; a range within the current window never moves it. The signals found above the threshold, the one the Signals tab sets, join Signals and the History. With "Stop to listen", the VFO goes to each signal of a window in turn, in the band plan's mode, and stays while the squelch is open, up to the time set. Tuning by hand stops it; Stop brings the receiver back, unless on a signal.</p>
+            <h3>Past scans</h3>
+            <p class="note" id="ks-note" role="status" hidden></p>
+            <div id="ks-list">
+              <table class="peaks scans">
+                <thead><tr><th>Scan</th><th>Channels</th></tr></thead>
+                <tbody id="ks-body"></tbody>
+              </table>
+              <div class="row"><span class="note" id="ks-summary"></span><button type="button" class="link" id="ks-clear-all" hidden>Clear all</button></div>
+            </div>
+            <div id="ks-detail" hidden>
+              <div class="row"><button type="button" class="link" id="ks-back">All scans</button></div>
+              <div class="row"><input id="ks-name" type="text" maxlength="60" autocomplete="off" aria-label="The scan's name"><button type="button" class="btn" id="ks-rename">Rename</button></div>
+              <p class="note" id="ks-info"></p>
+              <table class="peaks">
+                <thead><tr><th>Frequency</th><th>Found</th><th>Margin</th><th>Heard</th><th></th></tr></thead>
+                <tbody id="ks-channels"></tbody>
+              </table>
+              <div class="row"><button type="button" class="link" id="ks-delete">Delete</button></div>
+            </div>
+            <p class="note">Each scan is kept with the channels it found, apart from the simulated band's, until deleted: Delete and Clear all forget them for every interface.</p>
           </div>
           <div data-tab-panel="history" hidden>
             <p class="note" id="hist-note" role="status" hidden></p>

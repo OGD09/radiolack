@@ -122,8 +122,10 @@ The Scan menu's tabs become Signals, Range and History.
 
 - **Scanner state**: the sweep keeps its name and its fields, and gains
   the settings `sweep_listen` (true or false) and `sweep_passes` (1 to 99,
-  or null for endless), saved with the others, and `sweep.passes_set` and
-  `sweep.name` while it runs. While it listens, the `signals` object gives
+  or null for endless), saved with the others, and `sweep.passes_set`
+  while it runs; the running scan's name is the kept scans' (pull request
+  4: the `scans` state, where the running one has no end, rather than a
+  `sweep.name`). While it listens, the `signals` object gives
   its state and the signal tuned to, as the signals scan's does today.
   `stopped` gains `done`.
 - **Commands**: `{"type": "scanner", "scan": "sweep", "name": "..."}`

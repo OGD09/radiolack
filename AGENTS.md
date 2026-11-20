@@ -63,7 +63,10 @@ the history under the tag `v0.1.0`.
   stopped, unless on a signal or a bookmark; sends each signal found and each observed channel
   with the frequency it shows on, the band plan's channel or the 100 Hz;
   keeps the observations, the simulated band's excepted, and
-  sends them to the client that asks; records the VFO's audio, and an
+  sends them to the client that asks; keeps each range scan, the
+  simulated band's excepted, under the name given at its start, sends
+  the kept scans to every client and a kept scan's channels to the
+  client that asks, and renames and deletes them for any client; records the VFO's audio, and an
   RTL-SDR's raw I/Q, when a client asks, never on the simulated band,
   until a client stops it or a new audio rate (the audio), a new sample
   rate or another receiver (the I/Q), the disk or the WAV limit does,
@@ -95,8 +98,8 @@ the history under the tag `v0.1.0`.
   short; Radiolack sends nothing itself), `updates` (update check: apt run
   as the user, with Radiolack's APT source alone and none of the system's
   apt configuration, in a temporary folder; only for the Debian package's
-  Radiolack), `store` (settings, bookmarks, observations and remote access
-  files in
+  Radiolack), `store` (settings, bookmarks, observations, kept scans and
+  remote access files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
   only, unreadable files set aside), `bookmarks` (bookmarks and their checks),
   `scanners` (detection on the engine's FFTs, averaged over a third of a
@@ -114,7 +117,12 @@ the history under the tag `v0.1.0`.
   no mode, which the output says; `tests/test_bandplan.py` checks in Node
   that its modes agree with the interface's), `observations` (the channels
   where signals were found, for the History: how signals join a channel,
-  its counters, the limits and the checks of the saved file),
+  its counters, the limits and the checks of the saved file), `keptscans`
+  (the range scans kept under their names, range-scan.md, pull request 4:
+  each scan's channels within its range, on the lists' frequency, its
+  passes and ending, the squelch's open time while it listened, the
+  limits, names and checks of the saved file, a scan that ran read back as
+  interrupted),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO, or beyond a WFM
   channel), `dsp` (FIR design and overlap-save FFT filters that shift and

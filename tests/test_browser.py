@@ -38,7 +38,7 @@ from radiolack.server import LocalServer
 from radiolack.soapy import SoapySource
 from radiolack.soapysearch import LISTED_DRIVERS
 from radiolack.sources import Sources
-from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SETTINGS_FILE, Store, shown_path
+from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SCANS_FILE, SETTINGS_FILE, Store, shown_path
 from radiolack.synthetic import Emitter, Schedule, SyntheticBand
 from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port, stand_in_soapysdr
@@ -1892,6 +1892,7 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#sig-listen")).to_be_enabled()
                     expect(page.locator("#sig-listen-v")).to_have_text("10 s")
                     expect(page.locator("#sw-state")).to_have_text("Stopped")
+                    expect(page.locator("#ks-body")).to_have_text("No scan kept yet")
                 first.locator("#sw-start").click()
                 for page in (first, second):    # on a signal of the list, which marks it
                     expect(page.locator("#sw-state")).to_have_text(
@@ -1926,6 +1927,47 @@ class BrowserTest(unittest.TestCase):
                 first.locator("#pk-on").check()
                 expect(first.locator("#pk-note")).to_be_hidden()
                 expect(second.locator("#sw-note")).to_be_hidden()
+
+    def test_every_interface_lists_the_named_range_scans_kept(self):
+        # The simulated band is never kept: the fake's carrier, at 145.010 MHz
+        # on the air, lies within the receiver's current window around 145 MHz.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            url = self.serve(RtlSdrSource("carrier", program=FAKE_RTL_TCP), store=Store(directory))
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "scan")
+                    page.locator('#scan-tabs button[data-tab="sweep"]').click()
+                    expect(page.locator("#ks-body")).to_have_text("No scan kept yet")
+                    expect(page.locator("#ks-clear-all")).to_be_hidden()
+                first.locator("#sw-here").click()
+                first.locator("#sw-name").fill("Test scan")
+                first.locator("#sw-start").click()
+                expect(first.locator("#sw-name")).to_have_value("")     # for the next scan
+                for page in (first, second):
+                    expect(page.locator("#ks-body button[data-open]")).to_have_text(["Test scan"])
+                    expect(page.locator("#ks-body tr")).to_contain_text(re.compile(r"MHz \S running"))
+                    # The list follows the scan at most every 10 s.
+                    expect(page.locator("#ks-body td").nth(1)).not_to_have_text("0", timeout=3 * TIMEOUT_MS)
+                second.locator("#ks-body button[data-open]").click()
+                expect(second.locator("#ks-list")).to_be_hidden()
+                expect(second.locator("#ks-name")).to_have_value("Test scan")
+                expect(second.locator("#ks-channels button[data-tune]").first).to_have_text(re.compile(r"^145\.0(09|10)"))
+                expect(second.locator("#ks-delete")).to_be_hidden()     # the scan that runs stays
+                first.locator("#sw-start").click()
+                expect(second.locator("#ks-info")).to_contain_text(f"{DOT} Stopped")
+                second.locator("#ks-name").fill("Carrier")
+                second.locator("#ks-rename").click()
+                expect(first.locator("#ks-body button[data-open]")).to_have_text(["Carrier"])
+                self.assertEqual([scan["name"] for scan in Store(directory).load(SCANS_FILE)["scans"]], ["Carrier"])
+                second.locator("#ks-delete").click()
+                expect(second.locator("#ks-delete")).to_have_text("Confirm: delete")
+                second.locator("#ks-delete").click()
+                for page in (first, second):
+                    expect(page.locator("#ks-list")).to_be_visible()
+                    expect(page.locator("#ks-body")).to_have_text("No scan kept yet")
+                expect(second.locator("#ks-note")).to_be_hidden()
 
     def test_every_interface_follows_the_memory_scan_until_one_tunes_by_hand(self):
         for browser in BROWSERS:

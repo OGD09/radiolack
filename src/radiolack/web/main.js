@@ -448,6 +448,19 @@ const stream = new EngineStream({
     if (typeof historyArmed === 'number' && !list.some((c) => c.frequencyHz === historyArmed)) historyArmed = null;
     if (historyShown()) renderHistory();
   },
+  onScans: (list) => {
+    keptScans = list;
+    const open = openScanId === null ? undefined : list.find((s) => s.id === openScanId);
+    if (openScanId !== null && !open) closeScan();      // deleted, here or by another interface
+    else if (open && openScan && JSON.stringify(open) !== JSON.stringify(openScan.scan)) stream.askScan(open.id);
+    if (typeof scansArmed === 'number' && !list.some((s) => s.id === scansArmed)) scansArmed = null;
+    if (rangeShown()) renderScans();
+  },
+  onScan: (kept) => {
+    if (kept.scan.id !== openScanId) return;
+    openScan = kept;
+    if (rangeShown()) renderScans();
+  },
   onPreferences: applyPreferences,
   onRecording: (state) => {
     const status = recordingStatus();
@@ -536,6 +549,10 @@ const stream = new EngineStream({
     }
     if (command === 'observations') {
       setHistoryNote(`Refused: ${message}.`);
+      return;
+    }
+    if (command === 'scans') {
+      setScansNote(`Refused: ${message}.`);
       return;
     }
     if (command === 'preferences') {
@@ -1805,7 +1822,7 @@ const SWEEP_STOPPED = {
 };
 const swFrom = $('#sw-from'), swTo = $('#sw-to'), swWindow = $('#sw-window'), swWindowOut = $('#sw-window-v');
 const swStart = $('#sw-start'), swHere = $('#sw-here'), swPasses = $('#sw-passes'), swEndless = $('#sw-endless');
-const swListen = $('#sw-listen');
+const swListen = $('#sw-listen'), swName = $('#sw-name');
 const sigListen = $('#sig-listen'), sigListenOut = $('#sig-listen-v');
 const sigResume = $('#sig-resume'), sigResumeOut = $('#sig-resume-v');
 const sweepKnown = () => scanner !== null && scanner.sweep !== null && stream.scanners.includes('sweep');
@@ -1837,6 +1854,7 @@ function syncSweepSettings() {
   swEndless.disabled = !listening;
   swPasses.disabled = !listening || sweep.passes === null;
   swListen.disabled = !listening;
+  swName.disabled = !sweep || !scansKnown();
   sigListen.disabled = !listening || !sweep.listen;
   sigResume.disabled = !listening || !sweep.listen;
   if (listening) {
@@ -2020,6 +2038,171 @@ function clearHistory(what) {
   const sent = what === 'all' ? stream.clearObservations() : stream.clearObservation(what);
   setHistoryNote(sent ? '' : notConnected('nothing was cleared'));
 }
+
+// The engine keeps each range scan under its name, with the channels it
+// found (stream.js KeptScan), and sends the list to every interface when it
+// changes, at most every 10 s while a scan runs. The Range tab lists them,
+// the latest first; one opens with its channels, which the engine sends to
+// this interface alone when asked, and again as the scan goes on, with its
+// Rename and its Delete. Delete and Clear all wait for a second press of the
+// same button within SCANS_CONFIRM_MS: they forget for every interface.
+const SCANS_CONFIRM_MS = 5000;
+const SCAN_ENDINGS = {
+  stopped: 'Stopped', tuned: 'Stopped: tuned by hand', source: 'Stopped: another receiver was chosen',
+  range: 'Stopped: the receiver refused a window', detection: 'Stopped: detection was turned off',
+  done: 'Done: every pass set ran', closed: 'Ended with Radiolack', interrupted: 'Interrupted',
+};
+let keptScans = null;       // the engine's, the latest first, once received
+let openScanId = null;      // the kept scan whose channels show, or null for the list
+let openScan = null;        // its channels, once received
+let scansNote = '';         // what this interface's last request did, or why it did not happen
+let scansArmed = null;      // the Delete awaiting its second press: a scan's id, 'all', or null
+let scansArmTimer = 0;
+let scansHtml = '';         // the list's rows, as last written
+let scanChannelsHtml = '';  // the open scan's rows, as last written
+const scansKnown = () => stream.scanners.includes('scans');
+const rangeShown = () => openName === 'scan' && scanTab === 'sweep';
+const scanRange = (s) => `${fmtMHz(s.lowHz)}–${fmtMHz(s.highHz)} MHz`;
+function setScansNote(note) {
+  scansNote = note;
+  syncScansNote();
+}
+function syncScansNote() {
+  let note = scansNote;
+  if (!note && streamState === 'open' && !scansKnown()) {
+    note = 'The engine that runs keeps no scans: restart Radiolack after its update.';
+  }
+  const el = $('#ks-note');
+  if (el.textContent !== note) el.textContent = note;
+  el.hidden = !note;
+}
+// What a kept scan's line says under its name: its start, its range and, while it runs, that it does.
+function scanLine(s) {
+  return `${fmtDate(s.startS)} · ${scanRange(s)}${s.ended === null ? ' · running' : ''}`;
+}
+function renderScans() {
+  syncScansNote();
+  $('#ks-list').hidden = openScanId !== null;
+  $('#ks-detail').hidden = openScanId === null;
+  if (openScanId === null) renderScanList(); else renderScanDetail();
+}
+function renderScanList() {
+  const body = $('#ks-body'), refocus = focusedIn(body), list = keptScans || [];
+  const html = list.length
+    ? list.map((s) => `<tr><td><button type="button" class="freq-link" data-open="${s.id}">${escapeHtml(s.name)}</button>`
+      + `<div class="note">${escapeHtml(scanLine(s))}</div></td><td>${s.channels}</td></tr>`).join('')
+    : `<tr><td colspan="2" class="empty">${keptScans === null ? 'Not received yet' : 'No scan kept yet'}</td></tr>`;
+  if (html !== scansHtml) {
+    body.innerHTML = html;
+    scansHtml = html;
+    focusAgain(body, refocus);
+  }
+  const done = list.filter((s) => s.ended !== null).length;
+  const summary = list.length ? `${list.length} ${list.length === 1 ? 'scan' : 'scans'} kept.` : '';
+  const el = $('#ks-summary');
+  if (el.textContent !== summary) el.textContent = summary;
+  const all = $('#ks-clear-all');
+  all.hidden = !scansKnown() || done === 0;
+  const label = scansArmed === 'all' ? 'Confirm: clear all' : 'Clear all';
+  if (all.textContent !== label) all.textContent = label;
+}
+function renderScanDetail() {
+  const summary = (keptScans || []).find((s) => s.id === openScanId);
+  if (!summary) return;
+  const nameEl = $('#ks-name');
+  if (!typingIn.has(nameEl) && nameEl.value !== summary.name) nameEl.value = summary.name;
+  const passes = summary.passesSet === null ? `${summary.passes} ${summary.passes === 1 ? 'pass' : 'passes'}`
+    : `${summary.passes} of ${summary.passesSet} passes`;
+  const info = [`${fmtDate(summary.startS)}${summary.endS === null ? ', running' : ` to ${fmtDate(summary.endS)}`}`,
+    scanRange(summary), passes, summary.listen ? 'stopped to listen' : 'did not listen',
+    summary.ended === null ? '' : SCAN_ENDINGS[summary.ended] || 'Ended'].filter(Boolean).join(' · ');
+  const infoEl = $('#ks-info');
+  if (infoEl.textContent !== info) infoEl.textContent = info;
+  const body = $('#ks-channels'), refocus = focusedIn(body);
+  const channels = openScan ? openScan.channels : null;
+  const html = channels && channels.length
+    ? channels.map((c) => {
+      const f = c.frequencyHz;
+      const title = `Listen · first found ${fmtDate(c.firstS)}, last ${fmtDate(c.lastS)}`;
+      return `<tr><td><button type="button" class="freq-link" data-tune="${f}" title="${escapeHtml(title)}">${fmtMHz(f)}</button></td>`
+        + `<td>${c.searches}×</td><td>+${Math.round(c.marginDb)} dB</td>`
+        + `<td>${summary.listen ? fmtActive(c.openS) : ''}</td>`
+        + `<td class="acts"><button type="button" class="link" data-mark="${f}">Bookmark</button></td></tr>`;
+    }).join('')
+    : `<tr><td colspan="5" class="empty">${channels === null ? 'Not received yet' : 'No channel found'}</td></tr>`;
+  if (html !== scanChannelsHtml) {
+    body.innerHTML = html;
+    scanChannelsHtml = html;
+    focusAgain(body, refocus);
+  }
+  const del = $('#ks-delete');
+  del.hidden = summary.ended === null;      // the scan that runs is stopped first
+  const label = scansArmed === summary.id ? 'Confirm: delete' : 'Delete';
+  if (del.textContent !== label) del.textContent = label;
+}
+function openKeptScan(id) {
+  openScanId = id;
+  openScan = null;
+  scanChannelsHtml = '';
+  disarmScans();
+  typingIn.delete($('#ks-name'));
+  if (!stream.askScan(id)) setScansNote(notConnected('its channels did not come'));
+  renderScans();
+}
+function closeScan() {
+  openScanId = null;
+  openScan = null;
+  disarmScans();
+  if (rangeShown()) renderScans();
+}
+// A first press arms Delete or Clear all; a second one, within SCANS_CONFIRM_MS, sends it.
+function armScans(what) {
+  clearTimeout(scansArmTimer);
+  scansArmed = what;
+  scansArmTimer = setTimeout(disarmScans, SCANS_CONFIRM_MS);
+  renderScans();
+}
+function disarmScans() {
+  clearTimeout(scansArmTimer);
+  scansArmed = null;
+  if (rangeShown()) renderScans();
+}
+$('#ks-body').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b && b.dataset.open) openKeptScan(Number(b.dataset.open));
+});
+$('#ks-channels').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
+  else if (b.dataset.mark) {
+    const f = Number(b.dataset.mark), seg = segmentAt(f);
+    const name = addBookmark(f, planMode(modeAt(plan, f) ?? (seg ? seg.mode : null), S.mode));
+    setScansNote(name ? `${fmtMHz(f)} MHz added to the bookmarks as ${name}.` : notConnected('no bookmark was added'));
+  }
+});
+$('#ks-back').addEventListener('click', () => { setScansNote(''); closeScan(); });
+const ksName = $('#ks-name');
+ksName.addEventListener('input', () => typingIn.add(ksName));
+ksName.addEventListener('blur', () => { if (typingIn.delete(ksName) && rangeShown()) renderScans(); });
+function renameKeptScan() {
+  typingIn.delete(ksName);
+  const name = ksName.value.trim();
+  if (!name) { setScansNote('A scan needs a name.'); renderScans(); return; }
+  setScansNote(stream.renameScan(openScanId, name) ? '' : notConnected('the scan was not renamed'));
+}
+$('#ks-rename').addEventListener('click', renameKeptScan);
+ksName.addEventListener('keydown', (e) => { if (e.key === 'Enter') renameKeptScan(); });
+$('#ks-delete').addEventListener('click', () => {
+  if (scansArmed !== openScanId) { armScans(openScanId); return; }
+  disarmScans();
+  setScansNote(stream.deleteScan(openScanId) ? '' : notConnected('the scan was not deleted'));
+});
+$('#ks-clear-all').addEventListener('click', () => {
+  if (scansArmed !== 'all') { armScans('all'); return; }
+  disarmScans();
+  setScansNote(stream.clearScans() ? '' : notConnected('nothing was cleared'));
+});
 
 // ------------------------------------------------------------------ menu
 // Every menu behind one icon. The menu opens as a card under the readout,
@@ -2973,6 +3156,7 @@ function syncScanTabs() {
   for (const p of $$('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== scanTab;
   if (scanTab === 'signals') renderPeaks();
   if (scanTab === 'history') { renderHistory(); askHistory(); }
+  if (scanTab === 'sweep') renderScans();
 }
 for (const b of $$('#scan-tabs button')) b.addEventListener('click', () => { scanTab = b.dataset.tab; syncScanTabs(); });
 pkOn.addEventListener('change', () => sendScanner(() => stream.setScanner({ detection: pkOn.checked })));
@@ -3017,7 +3201,12 @@ for (const el of [swFrom, swTo]) {
 }
 swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow.value} s`; });
 swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
-swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
+swStart.addEventListener('click', () => {
+  const runs = sweepRuns(), name = swName.value.trim();
+  if (sendScanner(() => stream.setScan(runs ? null : 'sweep', runs || !scansKnown() ? undefined : name)) && !runs) {
+    swName.value = '';
+  }
+});
 swHere.addEventListener('click', () => {
   const here = currentWindow();
   if (here) sendScanner(() => stream.setScanner({ sweepLowHz: here[0], sweepHighHz: here[1] }));

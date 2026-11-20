@@ -22,7 +22,7 @@ preferences apart from this computer's.
 
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
-    "scanners": ["peaks", "memory", "history", "sweep", "signals"], "recording": ["audio", "iq"],
+    "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
     "measures": ["carrier", "driver_pll"], "spectra": ["fine"]}
    ```
 
@@ -39,7 +39,9 @@ preferences apart from this computer's.
    scanner state's `sweep_low_hz`, `sweep_high_hz`, `sweep_window_s`,
    `stopped_scan` and `sweep`, below), and `signals`, the range scan over
    the current window that a `scanner` message's `scan` value `signals`
-   starts (the scanner state's `listen_s` and `signals`, below).
+   starts (the scanner state's `listen_s` and `signals`, below), and
+   `scans`, which keeps each range scan under a name with the channels it
+   found (the kept scans, below).
    An engine older than the scanners sends no `scanners`: it runs none.
    `recording` lists what the engine records: `audio`, the audio of the
    VFO, and `iq`, the receiver's raw I/Q (the recording state and the
@@ -454,37 +456,66 @@ preferences apart from this computer's.
    starts at start and never runs on the simulated band; both may run at
    once.
 
-9. Then, when the engine opens SoapySDR devices (`soapy` among the source
-   state's `kinds`), the SoapySDR devices, a JSON text message, sent again
-   whenever it changes:
+9. Then the kept scans, a JSON text message, sent again whenever they
+   change: at once when a range scan starts or ends, or an interface
+   renames or deletes one, and at most every 10 s while the running one
+   finds channels, listens or ends a pass. The latest first, the running
+   one included:
 
    ```json
-   {"type": "devices", "search": "done", "detail": "",
-    "drivers": ["hackrf", "airspy", "airspyhf", "lime", "bladerf"],
-    "devices": [{"driver": "hackrf", "serial": "0001", "label": "HackRF One #0 0001", "in_use": true},
-                {"driver": "airspy", "serial": "0002", "label": "airspy 0002", "in_use": false}],
-    "chosen": true, "args": "driver=hackrf,serial=0001"}
+   {"type": "scans", "scans": [
+     {"id": 2, "name": "2 m repeaters", "start_s": 1795000000, "end_s": null, "low_hz": 145575000,
+      "high_hz": 145800000, "listen": true, "passes_set": 3, "passes": 1, "ended": null, "channels": 4}]}
    ```
 
    | Field | Meaning |
    | --- | --- |
-   | `search` | The search's state: `never` (none since the engine started), `searching`, `done`, `failed` (a driver's search failed; the others' findings are listed) or `unavailable` (the SoapySDR Python module is missing, and nothing was searched). |
-   | `detail` | Why, with `failed` and `unavailable`, a sentence for the user, such as `the SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr)` or `the airspy search failed: …`; otherwise empty. |
-   | `drivers` | The drivers that a search asks, in its order, each alone: never `rtlsdr`, whose receivers have the Receiver list's entries of their own. |
-   | `devices` | The SoapySDR device in use first, with `in_use` true, whether a search found it or not (an RTL-SDR opened by `driver=rtlsdr`, for instance), then those that the latest search found, at most 64. `driver` and `serial` name a device; `label` is its module's label, or its driver and serial. Nothing else of a module's listing is kept, such as a position on the bus. |
-   | `chosen` | Whether a SoapySDR device was ever chosen, so that the source message's `kind` `soapy` opens it again rather than being refused. |
-   | `args` | To this computer's interfaces only: the device arguments of the SoapySDR device in use, or null while another source is in use; always null for a remote client. |
+   | `id` | The kept scan's number, a whole number that the engine never gives twice while the scan is kept. |
+   | `name` | Its name: the one given when it started (the `scanner` message's `name`), or one given since, or else its range and start, as `430.000-440.000 MHz, 2026-11-20 14:05`; 60 characters at most, on one line. |
+   | `start_s`, `end_s` | When it started and ended, in Unix time, to the second; `end_s` is null while it runs. |
+   | `low_hz`, `high_hz` | Its range, in Hz: the sweep's, or the part of the span that detection searches for a scan over the current window. |
+   | `listen` | Whether it stopped to listen when it started. |
+   | `passes_set`, `passes` | The passes set when it started, null for endless, and those done. |
+   | `ended` | Why it ended: `stopped` (an interface stopped it, or started another scan), the scanner state's `stopped` reasons `tuned`, `source`, `range`, `detection` and `done`, `closed` (Radiolack stopped) or `interrupted` (it ran at the latest write before Radiolack started again, a power cut for instance; its `end_s` is its latest channel's); null while it runs. |
+   | `channels` | How many channels it found. |
 
-   The engine searches only when one of this computer's interfaces asks
-   (the `devices` message, below): never at start, never for a remote
-   client, never without a driver, one driver at a time and one search at a
-   time, in a thread of its own. The driver of the SoapySDR device in use is
-   not searched again, so that no search disturbs the device that streams:
-   that driver's devices stay as the previous search found them. A search
-   opens no stream, but each module's search talks to the devices plugged
-   in. The list lives in memory only.
+   The engine keeps each range scan that starts, but not on the simulated
+   band; one that a new receiver's settings start again goes on as the
+   same scan. It keeps at most 100 scans, the oldest leaving first, in
+   `scans.json`, written with each change sent at once, every 10 s while
+   one runs and when it stops.
 
-10. Then, to this computer's interfaces only, the storage state, a JSON text
+10. Then, when the engine opens SoapySDR devices (`soapy` among the source
+    state's `kinds`), the SoapySDR devices, a JSON text message, sent again
+    whenever it changes:
+
+    ```json
+    {"type": "devices", "search": "done", "detail": "",
+     "drivers": ["hackrf", "airspy", "airspyhf", "lime", "bladerf"],
+     "devices": [{"driver": "hackrf", "serial": "0001", "label": "HackRF One #0 0001", "in_use": true},
+                 {"driver": "airspy", "serial": "0002", "label": "airspy 0002", "in_use": false}],
+     "chosen": true, "args": "driver=hackrf,serial=0001"}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `search` | The search's state: `never` (none since the engine started), `searching`, `done`, `failed` (a driver's search failed; the others' findings are listed) or `unavailable` (the SoapySDR Python module is missing, and nothing was searched). |
+    | `detail` | Why, with `failed` and `unavailable`, a sentence for the user, such as `the SoapySDR Python module is not installed (on Debian and Ubuntu: python3-soapysdr)` or `the airspy search failed: …`; otherwise empty. |
+    | `drivers` | The drivers that a search asks, in its order, each alone: never `rtlsdr`, whose receivers have the Receiver list's entries of their own. |
+    | `devices` | The SoapySDR device in use first, with `in_use` true, whether a search found it or not (an RTL-SDR opened by `driver=rtlsdr`, for instance), then those that the latest search found, at most 64. `driver` and `serial` name a device; `label` is its module's label, or its driver and serial. Nothing else of a module's listing is kept, such as a position on the bus. |
+    | `chosen` | Whether a SoapySDR device was ever chosen, so that the source message's `kind` `soapy` opens it again rather than being refused. |
+    | `args` | To this computer's interfaces only: the device arguments of the SoapySDR device in use, or null while another source is in use; always null for a remote client. |
+
+    The engine searches only when one of this computer's interfaces asks
+    (the `devices` message, below): never at start, never for a remote
+    client, never without a driver, one driver at a time and one search at a
+    time, in a thread of its own. The driver of the SoapySDR device in use is
+    not searched again, so that no search disturbs the device that streams:
+    that driver's devices stay as the previous search found them. A search
+    opens no stream, but each module's search talks to the devices plugged
+    in. The list lives in memory only.
+
+11. Then, to this computer's interfaces only, the storage state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -497,7 +528,7 @@ preferences apart from this computer's.
     | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
     | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-11. Then, to this computer's interfaces only, the update state, a JSON text
+12. Then, to this computer's interfaces only, the update state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -512,7 +543,7 @@ preferences apart from this computer's.
     | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
     | `check_at_start` | Whether the engine checks when it starts. |
 
-12. Then, to this computer's interfaces only, remote access's state, a JSON
+13. Then, to this computer's interfaces only, remote access's state, a JSON
     text message, sent again whenever it changes:
 
     ```json
@@ -537,7 +568,7 @@ preferences apart from this computer's.
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
     | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
-13. Binary spectrum frames, about 30 per second while the source streams.
+14. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
     bin:
 
@@ -580,7 +611,7 @@ preferences apart from this computer's.
     the automatic one, which is NaN while the engine has no noise estimate
     (the VFO outside the span); the squelch then stays closed.
 
-14. Binary audio frames, about 30 per second, only to an interface that asked
+15. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -628,7 +659,7 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
     and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-15. Binary fine frames, about 10 per second, only to an interface that asked
+16. Binary fine frames, about 10 per second, only to an interface that asked
     for the fine spectrum (`fine` message): the spectrum of the VFO's
     channel before the demodulator, at a few hertz per bin. Each frame has
     the spectrum frames' 40-byte little-endian header, of another kind,
@@ -692,7 +723,7 @@ preferences apart from this computer's.
     2048 bins, each the highest of the four it groups, so that narrow lines
     stay visible.
 
-16. The observations, a JSON text message, to one interface only, when it
+17. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -724,7 +755,31 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-17. The recordings, a JSON text message, to one interface only, when it
+18. A kept scan with its channels, a JSON text message, to one interface
+    only, when it asks for it (`scans` message's `get`): the kept scan's
+    fields, as in the kept scans, with its channels, by frequency, in
+    place of their count.
+
+    ```json
+    {"type": "scan", "id": 2, "name": "2 m repeaters", "start_s": 1795000000, "end_s": null,
+     "low_hz": 145575000, "high_hz": 145800000, "listen": true, "passes_set": 3, "passes": 1, "ended": null,
+     "channels": [{"frequency_hz": 145600000, "first_s": 1795000012, "last_s": 1795000340, "searches": 9,
+                   "margin_db": 25.0, "open_s": 41.5}]}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `frequency_hz` | The channel, on the frequency that the signals found show it on (their `channel_hz`). A signal found within 1.5 kHz of a channel counts for it. |
+    | `first_s`, `last_s` | When a search first and last found it, in Unix time, to the second. |
+    | `searches` | How many searches found it. |
+    | `margin_db` | How far it rose above the local noise at most, in dB, to the tenth. |
+    | `open_s` | How long the squelch stayed open there while the scan listened to it, in seconds, to the tenth; 0 for a scan that did not listen. |
+
+    The engine records the signals found within the running scan's range,
+    the ignored frequencies never, and keeps at most 1000 channels in each
+    scan, the least recently found leaving first.
+
+19. The recordings, a JSON text message, to one interface only, when it
     asks for them or deleted one (`recordings` message): the latest 500
     recordings of the recordings folder, the newest first.
 
@@ -745,7 +800,7 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-18. A problem report, a JSON text message, to one interface of this
+20. A problem report, a JSON text message, to one interface of this
     computer only, when it asks for one (`report` message): what its user
     may share, or not, when Radiolack misbehaves (README.md, Problem
     reports).
@@ -760,7 +815,7 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-19. A carrier's measure, a JSON text message, to one interface only, when
+21. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
     channel, before the demodulator, and unblanked whether the noise
@@ -790,7 +845,7 @@ preferences apart from this computer's.
     and each receives it alone, with its own latest `id`; one that goes
     away stops waiting, and once none waits nothing more is measured.
 
-20. A driver's check, a JSON text message, to the interfaces that asked
+22. A driver's check, a JSON text message, to the interfaces that asked
     for it (`carrier` message with the action `identify`) only: which of
     the rtl-sdr driver's two computations an R820T's or R828D's PLL
     follows, or why none was named.
@@ -825,7 +880,7 @@ preferences apart from this computer's.
     receiver as it is back. An interface that goes away stops waiting;
     once none waits, the check stops.
 
-21. An error, to one interface only, when the engine refuses a message from
+23. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -835,17 +890,18 @@ preferences apart from this computer's.
 
 What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
-found, the recording state, the storage state, the update state and remote
-access's state, each when it changed (and the preferences at the start),
-then the observations, the recordings, the reports, the carrier's
+found, the recording state, the kept scans, the storage state, the update
+state and remote access's state, each when it changed (and the preferences
+at the start), then the observations, the kept scans' channels, the
+recordings, the reports, the carrier's
 measures, the driver's checks and errors, in the
 order of the messages they answer, then audio frames, then fine frames,
 then spectrum frames. A client that reads too slowly loses its oldest
 frames: the engine keeps the latest four spectrum frames, fifteen audio
 frames (half a second) and two fine frames (a fifth of a second) for it and
 never slows down for one client; it keeps its latest states, and up to
-eight observations, recordings, reports, carrier's measures, driver's
-checks and errors together. When
+eight observations, kept scans' channels, recordings, reports, carrier's
+measures, driver's checks and errors together. When
 Radiolack stops, the server closes the stream with code 1001 (going away).
 
 ## From the interface
@@ -944,6 +1000,7 @@ range scan (the sweep), the same for every interface:
 {"type": "scanner", "restore": true}
 {"type": "scanner", "scan": "memory"}
 {"type": "scanner", "scan": "sweep"}
+{"type": "scanner", "scan": "sweep", "name": "2 m repeaters"}
 {"type": "scanner", "scan": "signals"}
 {"type": "scanner", "scan": null}
 ```
@@ -961,10 +1018,11 @@ range scan (the sweep), the same for every interface:
 | `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
 | `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
 | `scan` | `memory` starts the memory scan, `sweep` the sweep with its saved settings, `signals` the sweep over the current window, listening, without end (above), unless it runs, stopping the scan that runs; null stops the scan that runs, if any. |
+| `name` | With `scan` value `sweep` or `signals` alone: the name the sweep that starts is kept under (the kept scans, above), 60 characters at most, on one line, with no control character; an empty one, or none, gives its range and start. |
 
 `detection`, `threshold_db`, `resume_s`, `listen_s`, `sweep_low_hz`,
 `sweep_high_hz`, `sweep_window_s`, `sweep_listen` and `sweep_passes` may come together; `ignore`, `restore` and `scan`
-come alone in their message. The engine refuses the whole message,
+come alone in their message, `scan` with `name` at most. The engine refuses the whole message,
 changing nothing, when it has no setting, an unknown or invalid one, a new
 frequency to ignore while 200 are ignored already, the memory scan to start
 while it would watch no bookmark (`memory.watched` is empty), the sweep
@@ -975,6 +1033,28 @@ not tune and a range wider than its span, or the sweep to start or
 a running sweep's new range when the receiver cannot tune to every window
 of the range (its `range_hz`). Otherwise every interface receives the
 scanner state, and the signals found at once if they changed.
+
+A `scans` message asks for a kept scan's channels, or renames or deletes
+kept scans for every interface:
+
+```json
+{"type": "scans", "get": 2}
+{"type": "scans", "rename": 2, "name": "2 m repeaters"}
+{"type": "scans", "delete": 2}
+{"type": "scans", "clear_all": true}
+```
+
+| Field | Value |
+| --- | --- |
+| `get` | A kept scan's `id`: the engine answers the sender alone with that scan and its channels. |
+| `rename` | A kept scan's `id`, with `name`, its new name: 60 characters at most, on one line, with no control character, and not empty. |
+| `delete` | A kept scan's `id`, not the running one's: it is forgotten. |
+| `clear_all` | `true`: every kept scan but the running one is forgotten. |
+
+`get`, `rename` with `name`, `delete` and `clear_all` come alone in their
+message. The engine refuses the whole message, changing nothing, when it
+has an unknown or invalid field, or names a scan it does not keep. After a
+rename or a deletion, every interface receives the kept scans.
 
 An `observations` message asks for the observations, or forgets some of
 them for every interface:
@@ -1149,7 +1229,7 @@ latest search did not find (search again), arguments that `--soapy` would
 refuse, which it says why, and opening a device while a search runs.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
-`observations`, `preferences`, `recording`, `recordings`, `carrier`,
+`scans`, `observations`, `preferences`, `recording`, `recordings`, `carrier`,
 `audio`, `fine` and `devices` messages, but neither `update` nor `remote` messages,
 nor a `source` message that names `address`, nor a `recording` message that names
 `folder`, nor a `devices` message that names `search` or `args`: the
@@ -1274,7 +1354,8 @@ and later.
   step is not positive. An interface older than the fine spectrum never
   asks for fine frames, and would ignore them as frames of another kind.
   It ignores a source state, demodulation settings, bookmarks, a
-  scanner state, a list of signals found, observations, a recording state,
+  scanner state, a list of signals found, observations, kept scans or a
+  kept scan's channels, a recording state,
   recordings, a storage state, an update state or a remote access state
   with a missing or malformed field, apart from the recording state's
   folders, which it reads as null, and leaves
@@ -1285,7 +1366,9 @@ and later.
   restart, and offers none of its settings; one whose hello does not list
   `memory` does the same for the memory scan, one whose hello does not
   list `history` for the History, asking for no observations, and one whose
-  hello does not list `sweep` for the range scan. An interface reads a
+  hello does not list `sweep` for the range scan, and one whose hello does
+  not list `scans` neither names a range scan nor lists the kept scans,
+  saying that Past scans need Radiolack to restart. An interface reads a
   scanner state without the sweep's fields, as an older engine's, as one
   without a range scan, one without `sweep_listen` or `listen_s` as one
   whose range scan neither listens nor counts its passes, and `scan` value
@@ -1545,6 +1628,12 @@ and later.
   An older interface's Scan the signals button starts that sweep, which it
   shows as a sweep that runs, its VFO following it, its Signals tab
   showing no scan.
+  The same day, the named scans (range-scan.md, pull request 4), without
+  a new version: the hello's `scans` scanner, the kept scans, a kept
+  scan's channels, the `scans` message and the `scanner` message's
+  `name`. An older interface ignores the kept scans and never asks for a
+  scan's channels; the scans it starts are kept under their range and
+  start.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

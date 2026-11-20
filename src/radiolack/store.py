@@ -33,6 +33,7 @@ FORMAT_VERSION = 1
 SETTINGS_FILE = "settings.json"
 BOOKMARKS_FILE = "bookmarks.json"
 OBSERVATIONS_FILE = "observations.json"
+SCANS_FILE = "scans.json"
 _MAX_FILE_BYTES = 4 * 1024 * 1024       # far more than Radiolack writes
 
 log = logging.getLogger(__name__)

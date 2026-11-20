@@ -84,7 +84,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
-SCANNERS = ("peaks", "memory", "history", "sweep", "signals")    # what the engine runs, as the hello lists it
+SCANNERS = ("peaks", "memory", "history", "sweep", "signals", "scans")     # what the engine runs, as the hello lists it
 SCANS = ("memory", "sweep", "signals")      # the scans, of which one runs at a time
 SCAN_NAMES = {"memory": "memory scan", "sweep": "range scan", "signals": "range scan"}     # as the output names them
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second

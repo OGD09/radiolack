@@ -1295,6 +1295,33 @@ window](#without-a-window)). Its range, time per window, passes,
 listening, longest listening time and resume time are the same for every
 interface and kept for the next start.
 
+Each range scan is kept, under the name typed in the Range tab's Name
+field when it starts (60 characters at most, on one line), or else under
+its range and start, as "430.000-440.000 MHz, 2026-11-20 14:05". A kept
+scan holds its start and end, its range, whether it stopped to listen, the
+passes set and done, and why it ended; and each channel it found within
+its range, on the frequency the Signals list shows it on: when it was
+first and last found, how many searches found it, its highest level above
+the noise and, when the scan listened, how long the squelch stayed open
+there. A signal found within 1.5 kHz of a channel counts for it. Nothing
+else is kept: no audio and no samples. The engine keeps 100 scans at most,
+the oldest leaving first, and 1000 channels in each, the least recently
+found leaving first; a scan on the simulated band is not kept.
+
+The Range tab's "Past scans" lists them, the latest first, the running
+one included, with their start, range and how many channels each found,
+for every interface, a paired device's included; while a scan runs, the
+list follows it at most every 10 s. A click on a scan opens its channels,
+by frequency: a click on a frequency tunes to it, its tooltip giving when
+it was first and last found, and Bookmark adds a bookmark there with the
+band plan's mode, as in the History. Rename gives the scan another name,
+and Delete forgets it, once it no longer runs; "Clear all", under the
+list, forgets every scan but the running one. Delete and Clear all
+forget for every interface, and each waits for a second press within 5 s.
+A scan that ran when Radiolack stopped ends there; one that ran when the
+computer lost power comes back as interrupted, at its latest channel
+found.
+
 The engine keeps the channels where it found signals for 90 days: for each
 one, when it was first and last heard, how many transmissions, how long it
 was active, how far it rose above the noise at most and how many
@@ -1435,6 +1462,10 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 - `observations.json` holds the channels of the History
   ([Scanners](#scanners)). It reaches the disk at most every 10 minutes, a
   few seconds after a Clear, and when Radiolack stops.
+- `scans.json` holds the kept range scans and their channels
+  ([Scanners](#scanners)). It reaches the disk when a scan starts or ends,
+  is renamed or deleted, every 10 s while a running scan finds channels or
+  listens, and when Radiolack stops.
 - `remote.json` holds what remote access keeps: its port, its access code,
   the paired devices, each with its own interface settings, and its local
   authority, but never whether it is on: it is off at each start, unless
@@ -1907,7 +1938,7 @@ its list, a change made in one interface showing in another, the bookmarks,
 their names and a click that tunes, the S-meter's squelch, the signals
 found, the memory scan, in the span and
 across windows, the range scan, over the current window and across
-windows, listening and its passes, the History, the recordings, their downloads and
+windows, listening and its passes, the named scans kept, the History, the recordings, their downloads and
 their folder, the view past the span and tuning outside it, and the saved
 interface settings. They
 launch browsers, so they run only when
@@ -2187,10 +2218,13 @@ src/radiolack/
                 them for the range scan and the lists of signals
   observations.py
                 the channels where signals were found, for the History
+  keptscans.py  the range scans kept under their names, with the channels
+                each found
   remote.py     remote access: access code, paired devices and their
                 interface settings, local authority and certificates,
                 addresses to listen on
-  store.py      settings, bookmarks, observations and remote access files
+  store.py      settings, bookmarks, observations, kept scans and remote
+                access files
   bookmarks.py  bookmarks and their checks
   preferences.py
                 the interfaces' own settings and their checks
