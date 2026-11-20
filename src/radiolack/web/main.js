@@ -21,6 +21,7 @@ import { automaticStep } from './tuning.js';
 import { PLAN_LIST_MAX, planRows } from './planlist.js';
 import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
+import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
@@ -1806,6 +1807,11 @@ function syncMem() {
   }
   const el = $('#mem-state');
   if (el.textContent !== text) el.textContent = text;
+  // Ticked bookmarks in several windows are watched in turn: the dock says what that misses.
+  const tour = memoryVisits() ? tourNote(memory.windows, source.rateHz) : '';
+  const tourEl = $('#mem-tour');
+  if (tourEl.textContent !== tour) tourEl.textContent = tour;
+  tourEl.hidden = !tour;
   if (scanMarksKey() !== scanMarksShown) renderBookmarks();
   syncMenuBadge();
 }
