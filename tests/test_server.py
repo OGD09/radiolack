@@ -37,10 +37,11 @@ RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
 SCANNER_STATE = {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
-                 "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
-                 "stopped_scan": None,
+                 "listen_s": 10.0, "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5,
+                 "scan": None, "stopped": None, "stopped_scan": None,
                  "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
-                 "sweep": {"windows": None, "window": None, "passes": None}}
+                 "sweep": {"windows": None, "window": None, "passes": None},
+                 "signals": {"state": None, "frequency_hz": None}}
 FILE_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -253,7 +254,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         async with self.connect(self.origin, compress=15) as ws:
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
-                              "scanners": ["peaks", "memory", "history", "sweep"], "recording": ["audio", "iq"],
+                              "scanners": ["peaks", "memory", "history", "sweep", "signals"], "recording": ["audio", "iq"],
                               "measures": ["carrier", "driver_pll"], "spectra": ["fine"]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
@@ -382,8 +383,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             else:
                 self.fail("nothing was recorded")
             [channel] = channels
-            self.assertEqual(sorted(channel), ["active_s", "first_s", "frequency_hz", "hours", "last_s",
-                                               "margin_db", "transmissions"])
+            self.assertEqual(sorted(channel), ["active_s", "channel_hz", "first_s", "frequency_hz", "hours",
+                                               "last_s", "margin_db", "transmissions"])
             await self.assert_no_text(other)
 
     async def test_preferences_are_kept_for_the_next_interfaces(self):
@@ -490,7 +491,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "scanner", "ignore": 145e6, "restore": true}': (
                 "scanner", "ignore, restore and scan come alone in their message"),
             '{"type": "scanner", "scan": "panorama"}': (
-                "scanner", 'a scan is "memory" or "sweep", or null to stop it'),
+                "scanner", 'a scan is "memory", "sweep" or "signals", or null to stop it'),
             '{"type": "scanner", "scan": "sweep"}': (
                 "scanner", "the sweep needs a receiver that tunes, such as an RTL-SDR"),
             '{"type": "scanner", "sweep_low_hz": 440e6}': (

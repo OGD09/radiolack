@@ -335,6 +335,7 @@ table.peaks th { text-align: left; font-weight: 500; font-size: 11px; color: var
 table.peaks td { padding: 3px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .freq-link { background: transparent; border: 0; padding: 0; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; border-radius: 3px; }
 table.peaks tr.active .freq-link { color: var(--ok); }
+table.peaks tr.listening .seen { color: var(--accent); }
 .acts { text-align: right; white-space: nowrap; }
 .empty { padding: 6px; font-size: 12px; color: var(--muted); }
 .keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }

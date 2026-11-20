@@ -148,12 +148,18 @@
             <label class="check"><input id="pk-on" type="checkbox"> Detection on</label>
             <div class="field"><label for="pk-thr">Threshold above noise <output id="pk-thr-v"></output></label><input id="pk-thr" type="range" min="6" max="30" step="1"></div>
             <label class="check"><input id="pk-marks" type="checkbox"> Mark on the spectrum</label>
+            <div class="row"><button type="button" class="btn primary" id="sig-start" disabled>Scan the signals</button><span class="note" id="sig-state"></span></div>
+            <div class="grid2">
+              <div class="field"><label for="sig-listen">Listen at most <output id="sig-listen-v"></output></label><input id="sig-listen" type="range" min="2" max="60" step="1" disabled></div>
+              <div class="field"><label for="sig-resume">Resume after silence <output id="sig-resume-v"></output></label><input id="sig-resume" type="range" min="0" max="8" step="0.5" disabled></div>
+            </div>
             <p class="note" id="pk-note" role="status" hidden></p>
             <table class="peaks">
               <thead><tr><th>Frequency</th><th>Margin</th><th>Last seen</th><th></th></tr></thead>
               <tbody id="pk-body"></tbody>
             </table>
             <p class="note"><span id="pk-excluded"></span> <button type="button" class="link" id="pk-restore" hidden>Restore</button></p>
+            <p class="note">The scan tunes the VFO to each active signal in turn, in the band plan's mode, and stays while the squelch is open; after the time set, it leaves for a signal that waits. Tuning by hand stops it.</p>
           </div>
           <div data-tab-panel="sweep" hidden>
             <div class="grid2">

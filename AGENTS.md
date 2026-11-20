@@ -52,10 +52,13 @@ the history under the tag `v0.1.0`.
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
-  bookmarks outside the span window after window, and the sweep, which
-  steps such a receiver across a range, one scan at a time, saving the
-  receiver's settings of its start and bringing the receiver back once
-  stopped;
+  bookmarks outside the span window after window, the sweep, which
+  steps such a receiver across a range, and the signals scan, which tunes
+  the VFO alone to the span's active signals in turn, in the band plan's
+  mode, one scan at a time, saving the receiver's settings of its start
+  and bringing the receiver back once stopped, the signals scan leaving
+  the VFO where it is; sends each signal found and each observed channel
+  with the frequency it shows on, the band plan's channel or the 100 Hz;
   keeps the observations, the simulated band's excepted, and
   sends them to the client that asks; records the VFO's audio, and an
   RTL-SDR's raw I/Q, when a client asks, never on the simulated band,
@@ -98,7 +101,14 @@ the history under the tag `v0.1.0`.
   ignored frequencies; the memory scan's watch of the ticked bookmarks'
   channels in the same FFTs, and its states; the windows that the ticked
   bookmarks take and the memory scan's visits; the sweep's windows across a
-  range and its progress), `observations` (the channels
+  range and its progress; the signals scan's turns among the active
+  signals, the one that waited longest first, and its states),
+  `bandplan` (the band plan as the engine reads it,
+  `web/bandplan-europe.json`, the file the interface loads: the mode the
+  History's Bookmark button gives a frequency, for the signals scan, and
+  the channel a signal shows on, for the lists; an unreadable plan gives
+  no mode, which the output says; `tests/test_bandplan.py` checks in Node
+  that its modes agree with the interface's), `observations` (the channels
   where signals were found, for the History: how signals join a channel,
   its counters, the limits and the checks of the saved file),
   `preferences` (the interfaces' preferences and their checks), `spectrum`

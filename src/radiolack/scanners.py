@@ -51,6 +51,15 @@ there the blocks of SWEEP_SEARCHES searches, so that a signal found in two
 of them is listed without the next window's help, then asks for the next
 window, pass after pass. A window whose samples do not come while others do
 is left after GIVE_UP_S.
+
+The signals scan listens to the active signals of the span, one after the
+other, with the VFO alone: ``SignalScan`` tunes to the active signal that
+waited longest, one never tuned to first, the lowest of them, then the one
+tuned to least recently; it checks that the squelch opens there, listens
+while it stays open and waits the resume time once it closes, as the memory
+scan does, but leaves a signal for another that waits once it listened
+there the longest listening time, so that a signal on the air all the time
+does not keep the others from their turn.
 """
 
 from __future__ import annotations
@@ -66,8 +75,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
-SCANNERS = ("peaks", "memory", "history", "sweep")   # what the engine runs, as the hello lists it
-SCANS = ("memory", "sweep")         # the scans, of which one runs at a time
+SCANNERS = ("peaks", "memory", "history", "sweep", "signals")    # what the engine runs, as the hello lists it
+SCANS = ("memory", "sweep", "signals")      # the scans, of which one runs at a time
+SCAN_NAMES = {"memory": "memory scan", "sweep": "sweep", "signals": "signals scan"}     # as the output names them
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency
@@ -98,6 +108,8 @@ WINDOW_RANGE_S = (0.25, 2.0)        # the sweep's time per window
 DEFAULT_WINDOW_S = 0.5
 DEFAULT_SWEEP_HZ = (430_000_000.0, 440_000_000.0)  # the 70 cm band
 GIVE_UP_S = 2.0                     # a window whose samples do not come within this long, while others do, is left
+LISTEN_RANGE_S = (2.0, 60.0)        # the signals scan's longest listening time
+DEFAULT_LISTEN_S = 10.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -260,6 +272,11 @@ class Signals:
             self._signals.sort(key=lambda signal: signal.last_s, reverse=True)
             del self._signals[MAX_SIGNALS:]
         return [dataclasses.replace(signal) for signal in found]
+
+    def active(self, now: float) -> list[tuple[float, float]]:
+        """The frequency and width of each signal found within ACTIVE_S of
+        ``now``, in no particular order."""
+        return [(signal.frequency_hz, signal.width_hz) for signal in self._signals if now - signal.last_s <= ACTIVE_S]
 
     def describe(self, now: float) -> list[dict[str, Any]]:
         """At most LISTED signals, as JSON values: the active ones first,
@@ -488,6 +505,81 @@ class MemoryScan:
     def _watch(self) -> None:
         self.state = "watching"
         self.bookmark_id = None
+
+
+class SignalScan:
+    """A signals scan's progress. ``state`` is "watching" the active
+    signals, "checking" that the squelch opens on the channel just tuned
+    to, "listening" while it stays open, or "waiting" for the resume time
+    since it closed; ``frequency_hz`` is the channel tuned to, None while
+    watching. Channels within MERGE_HZ of each other are one."""
+
+    def __init__(self) -> None:
+        self.state = "watching"
+        self.frequency_hz: float | None = None
+        self._until = 0.0               # the end of the check, or of the resume time
+        self._leave_s = math.inf        # from then on, a channel that waits takes the scan away
+        self._visits: dict[float, float] = {}   # channels tuned to, when last tuned to, the oldest first
+        self._held: dict[float, float] = {}     # channels whose squelch did not open, until when
+
+    def step(self, now: float, channels: Sequence[float], squelch_open: bool, resume_s: float,
+             listen_s: float) -> float | None:
+        """Move on with a block that ended at ``now``: ``channels`` are those
+        of the active signals, and ``squelch_open`` the squelch's state at
+        the block's end, on the channel tuned to. Once the scan listened
+        ``listen_s`` on a channel, listening or waiting, it leaves it for
+        another that waits. Returns the channel to tune to, or None."""
+        if self.state == "watching":
+            return self._tune(now, channels, listen_s)
+        if squelch_open:
+            self.state = "listening"
+        elif self.state == "checking":
+            if now >= self._until:
+                self._held = {channel: until for channel, until in self._held.items() if until > now}
+                if self.frequency_hz is not None:
+                    self._held[self.frequency_hz] = now + HOLD_S
+                self._watch()
+            return None
+        elif self.state == "listening":
+            self.state = "waiting"
+            self._until = now + resume_s
+        elif now >= self._until:
+            self._watch()
+            return None
+        return self._tune(now, channels, listen_s) if now >= self._leave_s else None
+
+    def leave(self) -> None:
+        """Leave the channel tuned to, if any, and watch the active signals
+        again: an interface ignores its frequency."""
+        self._watch()
+
+    def _tune(self, now: float, channels: Sequence[float], listen_s: float) -> float | None:
+        """Tune to the channel that waited longest, other than the one tuned
+        to, if one waits."""
+        tuned = self.frequency_hz
+        waiting = [channel for channel in channels
+                   if (tuned is None or abs(channel - tuned) > MERGE_HZ) and self._near(self._held, channel) <= now]
+        if not waiting:
+            return None
+        channel = min(waiting, key=lambda channel: (self._near(self._visits, channel), channel))
+        self._visits = {other: when for other, when in self._visits.items() if abs(other - channel) > MERGE_HZ}
+        self._visits[channel] = now
+        while len(self._visits) > MAX_SIGNALS:
+            del self._visits[next(iter(self._visits))]
+        self.state, self.frequency_hz = "checking", channel
+        self._until, self._leave_s = now + CHECK_S, now + listen_s
+        return channel
+
+    @staticmethod
+    def _near(times: dict[float, float], channel: float) -> float:
+        """The latest time ``times`` gives a channel within MERGE_HZ of
+        ``channel``, or minus infinity."""
+        return max((when for other, when in times.items() if abs(other - channel) <= MERGE_HZ), default=-math.inf)
+
+    def _watch(self) -> None:
+        self.state = "watching"
+        self.frequency_hz = None
+        self._leave_s = math.inf
 
 
 @dataclasses.dataclass(frozen=True)
@@ -732,6 +824,15 @@ def checked_resume(value: object) -> float:
     low, high = RESUME_RANGE_S
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
         raise ValueError(f"the resume time must be a number of seconds from {low:g} to {high:g}")
+    return float(value)
+
+
+def checked_listen(value: object) -> float:
+    """A signals scan's longest listening time an interface gave; raises
+    ValueError when it is not a number of seconds within LISTEN_RANGE_S."""
+    low, high = LISTEN_RANGE_S
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ValueError(f"the longest listening time must be a number of seconds from {low:g} to {high:g}")
     return float(value)
 
 

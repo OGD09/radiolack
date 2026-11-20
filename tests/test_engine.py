@@ -44,10 +44,11 @@ def scanner_state(**changes) -> dict:
     """The scanner state message: the defaults, without a scan or a ticked
     bookmark, with ``changes``."""
     return {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
-            "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None, "stopped": None,
-            "stopped_scan": None,
+            "listen_s": 10.0, "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None,
+            "stopped": None, "stopped_scan": None,
             "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
-            "sweep": {"windows": None, "window": None, "passes": None}, **changes}
+            "sweep": {"windows": None, "window": None, "passes": None},
+            "signals": {"state": None, "frequency_hz": None}, **changes}
 
 
 async def next_message(subscription: Subscription):
@@ -1337,22 +1338,25 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(found["frequency_hz"], FAKE_TONE_HZ, delta=FAKE_RATE_HZ / 8192)
             self.assertEqual((found["active"], found["age_s"]), (True, 0.0))
             self.assertGreater(found["margin_db"], 12.0)
+            # 5 kHz from the 2 m band's nearest 12.5 kHz channel: to the 100 Hz.
+            self.assertEqual(found["channel_hz"], round(found["frequency_hz"] / 100) * 100)
 
     async def test_scanner_changes_reach_every_client_and_are_checked(self):
         engine = self.engine(run=False)
         subscriptions = [engine.subscribe(), engine.subscribe(device="5f0c2a91")]
         for subscription in subscriptions:
             waiting(subscription)
-        engine.configure_scanner({"threshold_db": 20, "detection": True, "resume_s": 0})
+        engine.configure_scanner({"threshold_db": 20, "detection": True, "resume_s": 0, "listen_s": 30})
         engine.configure_scanner({"sweep_high_hz": 1300e6, "sweep_window_s": 2})
         engine.configure_scanner({"sweep_low_hz": 1240e6})
-        changed = scanner_state(threshold_db=20.0, resume_s=0.0, sweep_low_hz=1240e6, sweep_high_hz=1300e6,
-                                sweep_window_s=2.0)
+        changed = scanner_state(threshold_db=20.0, resume_s=0.0, listen_s=30.0, sweep_low_hz=1240e6,
+                                sweep_high_hz=1300e6, sweep_window_s=2.0)
         for subscription in subscriptions:
             self.assertEqual(waiting(subscription)[-1], changed)
         refused = ({}, {"threshold": 20}, {"detection": "on"}, {"detection": None}, {"threshold_db": 5},
                    {"threshold_db": 31}, {"threshold_db": "12"}, {"threshold_db": float("nan")},
                    {"resume_s": -0.5}, {"resume_s": 8.5}, {"resume_s": True}, {"resume_s": "2"},
+                   {"listen_s": 1}, {"listen_s": 61}, {"listen_s": None}, {"listen_s": "10"},
                    {"sweep_low_hz": 1300e6}, {"sweep_high_hz": 1200e6}, {"sweep_low_hz": 0},
                    {"sweep_high_hz": "1300 MHz"}, {"sweep_low_hz": None}, {"sweep_window_s": 0.2},
                    {"sweep_window_s": 2.5}, {"sweep_window_s": float("inf")}, {"sweep_window_s": False},
@@ -1360,6 +1364,7 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
                    {"ignore": 145e6, "restore": True}, {"ignore": 145e6, "detection": False},
                    {"ignore": "145 MHz"}, {"ignore": 0}, {"restore": False}, {"restore": 1},
                    {"scan": "panorama"}, {"scan": True}, {"scan": "memory", "resume_s": 2},
+                   {"scan": "signals", "listen_s": 10},
                    {"scan": "memory"},      # no ticked bookmark in the span
                    {"scan": "sweep"})       # a source that does not tune
         for changes in refused:
@@ -1429,7 +1434,7 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_scanner_settings_are_saved_with_the_others(self):
         engine = self.engine(run=False, store=Store(self.directory), save_delay_s=0.01)
-        engine.configure_scanner({"detection": False, "threshold_db": 18.5, "resume_s": 4.5})
+        engine.configure_scanner({"detection": False, "threshold_db": 18.5, "resume_s": 4.5, "listen_s": 25.5})
         engine.configure_scanner({"sweep_low_hz": 118e6, "sweep_high_hz": 137_000_000.4, "sweep_window_s": 1.25})
         engine.configure_scanner({"ignore": 145_500_000.4})
         engine.configure_scanner({"ignore": 144_800_000})
@@ -1437,22 +1442,23 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
         await engine.wait_closed()
         saved = json.loads((self.directory / SETTINGS_FILE).read_text(encoding="utf-8"))
         self.assertEqual(saved["scanner"], {"detection": False, "threshold_db": 18.5, "resume_s": 4.5,
-                                            "sweep_low_hz": 118e6, "sweep_high_hz": 137e6, "sweep_window_s": 1.25,
-                                            "ignored_hz": [144_800_000.0, 145_500_000.0]})
+                                            "listen_s": 25.5, "sweep_low_hz": 118e6, "sweep_high_hz": 137e6,
+                                            "sweep_window_s": 1.25, "ignored_hz": [144_800_000.0, 145_500_000.0]})
         again = self.engine(run=False, store=Store(self.directory))
         self.assertEqual(again.scanner_state(), scanner_state(
-            detection=False, threshold_db=18.5, resume_s=4.5, sweep_low_hz=118e6, sweep_high_hz=137e6,
-            sweep_window_s=1.25, ignored_hz=[144_800_000.0, 145_500_000.0]))
+            detection=False, threshold_db=18.5, resume_s=4.5, listen_s=25.5, sweep_low_hz=118e6,
+            sweep_high_hz=137e6, sweep_window_s=1.25, ignored_hz=[144_800_000.0, 145_500_000.0]))
 
     async def test_saved_scanner_settings_that_are_not_valid_keep_their_defaults(self):
         self.directory.mkdir()
         settings = self.directory / SETTINGS_FILE
         for saved, expected in (
-                ({"detection": "yes", "threshold_db": 99, "resume_s": -1, "sweep_low_hz": 440e6,
+                ({"detection": "yes", "threshold_db": 99, "resume_s": -1, "listen_s": 0, "sweep_low_hz": 440e6,
                   "sweep_high_hz": 430e6, "sweep_window_s": 0.1,
                   "ignored_hz": [145e6, "x", 0, 10 ** 400, 145e6 + 100, 144e6]},
                  (True, 12.0, [144e6, 145e6])),
-                ({"sweep_low_hz": 118e6, "sweep_window_s": True, "ignored_hz": {"145e6": True}}, (True, 12.0, [])),
+                ({"sweep_low_hz": 118e6, "sweep_window_s": True, "listen_s": "10", "ignored_hz": {"145e6": True}},
+                 (True, 12.0, [])),
                 ([1], (True, 12.0, [])),
                 ({"ignored_hz": [144e6 + n * 10_000 for n in range(250)]}, (True, 12.0, None))):
             with self.subTest(saved=saved):
@@ -1462,9 +1468,9 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
                 state = engine.scanner_state()
                 engine.close()
                 detection, threshold_db, ignored = expected
-                self.assertEqual((state["detection"], state["threshold_db"], state["resume_s"], state["sweep_low_hz"],
-                                  state["sweep_high_hz"], state["sweep_window_s"]),
-                                 (detection, threshold_db, 2.0, 430e6, 440e6, 0.5))
+                self.assertEqual((state["detection"], state["threshold_db"], state["resume_s"], state["listen_s"],
+                                  state["sweep_low_hz"], state["sweep_high_hz"], state["sweep_window_s"]),
+                                 (detection, threshold_db, 2.0, 10.0, 430e6, 440e6, 0.5))
                 if ignored is None:
                     self.assertEqual(state["ignored_hz"], [144e6 + n * 10_000 for n in range(200)])
                 else:
@@ -1656,6 +1662,163 @@ class MemoryScanTest(unittest.IsolatedAsyncioTestCase):
         reads = source.reads
         await asyncio.sleep(0.1)
         self.assertLessEqual(source.reads, reads + 1)
+
+
+CHANNEL_A_HZ = FAKE_CENTRE_HZ + 37_500      # 145.0375 MHz and 144.9375 MHz: 12.5 kHz channels of the 2 m band,
+CHANNEL_B_HZ = FAKE_CENTRE_HZ - 62_500      # where the band plan names NFM
+
+
+def scanning(state: str, frequency_hz: float | None = None):
+    """Whether a scanner state shows the signals scan in ``state``, on
+    ``frequency_hz`` when given."""
+    return lambda message: message["signals"]["state"] == state and (
+        frequency_hz is None or message["signals"]["frequency_hz"] == frequency_hz)
+
+
+class SignalsScanTest(unittest.IsolatedAsyncioTestCase):
+    """The signals scan in the engine: it tunes the VFO to the active
+    signals of the span in turn, on their channels, with the band plan's
+    mode, for every client, until stopped, and goes on without any client."""
+
+    def engine(self, source: Source | None = None, **options) -> Engine:
+        engine = Engine(source, **options)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def test_listens_to_each_active_signal_in_turn_for_every_client(self):
+        engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.03}))
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        engine.configure_demod({"bandwidth_hz": 12_500})
+        engine.configure_scanner({"listen_s": 2})
+        await next_peaks(local, until=lambda peaks: len(peaks) == 2)
+        engine.configure_scanner({"scan": "signals"})
+        # The lowest first, neither having had its turn; in NFM, as the
+        # band plan names, with the filter as it was.
+        for subscription in (local, remote):
+            state = await next_scanner(subscription, until=scanning("listening", CHANNEL_B_HZ))
+            self.assertEqual((state["scan"], state["stopped"]), ("signals", None))
+        demod = engine.demod_state()
+        self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]),
+                         (CHANNEL_B_HZ, "NFM", 12_500.0))
+        # Both stay on the air: once the longest listening time is over, the other.
+        started = time.monotonic()
+        await next_scanner(local, until=scanning("listening", CHANNEL_A_HZ))
+        self.assertGreaterEqual(time.monotonic() - started, 1.5)
+        self.assertEqual(engine.demod_state()["frequency_hz"], CHANNEL_A_HZ)
+        await next_scanner(local, until=scanning("listening", CHANNEL_B_HZ))
+        self.assertNotIn("scan", engine._contents()[SETTINGS_FILE]["scanner"])     # never saved
+
+    async def test_takes_the_band_plan_s_mode_with_its_filter_width(self):
+        source = TonesSource({-70_000: 0.1, 87_500: 0.1})
+        source.centre_hz = 144_450_000.0    # 144.380 MHz in the SSB part, 144.5375 MHz in the FM part
+        engine = self.engine(source)
+        subscription = engine.subscribe()
+        engine.configure_demod({"bandwidth_hz": 12_500})
+        engine.configure_scanner({"listen_s": 2})
+        await next_peaks(subscription, until=lambda peaks: len(peaks) == 2)
+        engine.configure_scanner({"scan": "signals"})
+        for frequency, mode, width in ((144_380_000, "USB", 2_700.0), (144_537_500, "NFM", 10_000.0)):
+            with self.subTest(frequency=frequency):
+                await next_scanner(subscription, until=scanning("listening", frequency))
+                demod = engine.demod_state()
+                self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]),
+                                 (frequency, mode, width))
+
+    async def test_leaves_a_signal_at_once_when_it_is_ignored(self):
+        engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.03}))
+        subscription = engine.subscribe()
+        await next_peaks(subscription, until=lambda peaks: len(peaks) == 2)
+        engine.configure_scanner({"scan": "signals"})
+        await next_scanner(subscription, until=scanning("listening", CHANNEL_B_HZ))
+        [ignored] = [peak["frequency_hz"] for peak in engine.peaks_state()["peaks"]
+                     if peak["channel_hz"] == CHANNEL_B_HZ]
+        engine.configure_scanner({"ignore": ignored})
+        self.assertEqual(engine.scanner_state()["signals"], {"state": "watching", "frequency_hz": None})
+        # Well before the longest listening time, 10 s.
+        await asyncio.wait_for(next_scanner(subscription, until=scanning("listening", CHANNEL_A_HZ)), timeout=3)
+
+    async def test_tuning_by_hand_detection_turned_off_or_another_source_stops_it_where_it_is(self):
+        source = TonesSource({37_500: 0.1})
+        engine = self.engine(sources=FakeSources(test=lambda: source))
+        subscription = engine.subscribe()
+        stops = (
+            (lambda: engine.configure_demod({"frequency_hz": CHANNEL_A_HZ + 5_000}), "tuned"),
+            (lambda: engine.configure({"centre_hz": FAKE_CENTRE_HZ + 1_000}), "tuned"),
+            (lambda: engine.configure_scanner({"detection": False}), "detection"),
+            (lambda: engine.configure({"kind": "other"}), "source"),
+        )
+        for stop, reason in stops:
+            with self.subTest(reason=reason):
+                engine.configure_scanner({"scan": "signals"})
+                await next_scanner(subscription, until=scanning("listening", CHANNEL_A_HZ))
+                engine.configure_demod({"mode": "AM"})      # the scan goes on
+                self.assertEqual(engine.scanner_state()["scan"], "signals")
+                vfo_hz = engine.demod_state()["frequency_hz"]
+                stop()
+                state = engine.scanner_state()
+                self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"], state["signals"]),
+                                 (None, reason, "signals", {"state": None, "frequency_hz": None}))
+                if reason == "detection":
+                    self.assertEqual(engine.demod_state()["frequency_hz"], vfo_hz)
+                    engine.configure_scanner({"detection": True})
+                elif reason == "tuned":
+                    engine.configure({"centre_hz": FAKE_CENTRE_HZ})
+
+    async def test_goes_on_without_any_client_and_saves_the_vfo_of_its_start(self):
+        source = TonesSource({37_500: 0.1})
+        engine = self.engine(source)
+        engine.configure_demod({"frequency_hz": FAKE_CENTRE_HZ + 10_000, "mode": "AM", "bandwidth_hz": 6_000})
+        subscription = engine.subscribe()
+        engine.configure_scanner({"scan": "signals"})
+        await next_scanner(subscription, until=scanning("listening", CHANNEL_A_HZ))
+        demod = engine.demod_state()
+        self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]),
+                         (CHANNEL_A_HZ, "NFM", 10_000.0))
+        saved = engine._contents()[SETTINGS_FILE]["receivers"]["test"]["demod"]
+        self.assertEqual((saved["frequency_hz"], saved["mode"], saved["bandwidth_hz"]),
+                         (FAKE_CENTRE_HZ + 10_000, "AM", 6_000.0))
+        engine.unsubscribe(subscription)
+        reads = source.reads
+        while source.reads < reads + 20:
+            await asyncio.sleep(0.01)
+        engine.configure_scanner({"scan": None})
+        self.assertEqual((engine.scanner_state()["scan"], engine.scanner_state()["stopped"]), (None, None))
+        # The VFO stays where the scan left it, and is saved there.
+        self.assertEqual(engine.demod_state()["frequency_hz"], CHANNEL_A_HZ)
+        saved = engine._contents()[SETTINGS_FILE]["receivers"]["test"]["demod"]
+        self.assertEqual((saved["frequency_hz"], saved["mode"]), (CHANNEL_A_HZ, "NFM"))
+        await asyncio.sleep(0.05)
+        reads = source.reads
+        await asyncio.sleep(0.1)
+        self.assertLessEqual(source.reads, reads + 1)
+
+    async def test_needs_detection_and_takes_the_place_of_another_scan(self):
+        engine = self.engine(TonesSource({37_500: 0.1}))
+        subscription = engine.subscribe()
+        engine.configure_scanner({"detection": False})
+        with self.assertRaisesRegex(ValueError, "the signals scan needs detection: turn it on first"):
+            engine.configure_scanner({"scan": "signals"})
+        self.assertEqual(engine.scanner_state()["scan"], None)
+        engine.configure_scanner({"detection": True})
+        engine.edit_bookmarks({"action": "add", "frequency_hz": CHANNEL_A_HZ, "name": "A", "mode": "NFM",
+                               "scan": True})
+        engine.configure_scanner({"scan": "memory"})
+        await next_scanner(subscription, until=in_state("listening"))
+        engine.configure_scanner({"scan": "signals"})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["memory"]["state"], state["signals"]["state"]),
+                         ("signals", None, None, "watching"))
+        await next_scanner(subscription, until=scanning("listening", CHANNEL_A_HZ))
+        engine.configure_scanner({"scan": "memory"})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["signals"]), ("memory", {"state": None, "frequency_hz": None}))
 
 
 STATION_HZ = 250_000.0      # WideSource's station, from its centre frequency
@@ -2302,6 +2465,16 @@ class GivenScanTest(unittest.IsolatedAsyncioTestCase):
         await eventually(lambda: heard(engine, on_air), timeout=30)
         self.assertEqual(engine.state()["status"], "streaming")
 
+    async def test_the_signals_scan_runs_without_any_client_and_fills_the_history(self):
+        on_air = HOME_HZ + 200_000
+        engine = self.engine(await self.rtl_tcp({on_air: 0.2}))
+        engine.start_given_scan("signals")
+        self.assertEqual(engine.scanner_state()["scan"], "signals")
+        await eventually(lambda: engine.scanner_state()["signals"]["state"] == "listening", timeout=30)
+        self.assertEqual(engine.state()["status"], "streaming")
+        self.assertAlmostEqual(engine.demod_state()["frequency_hz"], on_air, delta=100)
+        await eventually(lambda: heard(engine, on_air), timeout=30)
+
     async def test_one_that_cannot_start_says_why_and_the_engine_stays_idle(self):
         refusals = (
             ("memory", FakeSource, "no ticked bookmark lies within the receiver's reach"),
@@ -2309,8 +2482,10 @@ class GivenScanTest(unittest.IsolatedAsyncioTestCase):
             # Saved before the start: a range beyond the receiver's reach.
             ("sweep", lambda: TuningSource({}), "the receiver cannot tune to every window of the sweep's "
                                                 "range: it tunes from 24 to 1766 MHz"),
+            ("signals", FakeSource, "the signals scan needs detection: turn it on first"),
         )
-        Store(self.directory).save(SETTINGS_FILE, {"scanner": {"sweep_low_hz": 1_800e6, "sweep_high_hz": 1_810e6}})
+        Store(self.directory).save(SETTINGS_FILE, {"scanner": {"sweep_low_hz": 1_800e6, "sweep_high_hz": 1_810e6,
+                                                               "detection": False}})
         for scan, make_source, reason in refusals:
             with self.subTest(scan=scan, reason=reason):
                 source = make_source()
@@ -2341,7 +2516,8 @@ class GivenScanTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             engine.start_given_scan("sweep")
         for scan in ("history", "Memory", None):
-            with self.subTest(scan=scan), self.assertRaisesRegex(ValueError, '^a scan is "memory" or "sweep", not '):
+            with self.subTest(scan=scan), self.assertRaisesRegex(ValueError,
+                                                                 '^a scan is "memory", "sweep" or "signals", not '):
                 engine.start_given_scan(scan)
         state = engine.scanner_state()
         self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), ("memory", None, None))
@@ -2357,6 +2533,12 @@ def observations_of(subscription: Subscription) -> list[list[dict]]:
     """The channels of each observations message ready for a client, now."""
     return [message["channels"] for message in waiting(subscription)
             if isinstance(message, dict) and message["type"] == "observations"]
+
+
+def as_saved(channel: dict) -> dict:
+    """A channel of the observations as the file keeps it: without the
+    channel it shows on, which the band plan gives at each start."""
+    return {key: value for key, value in channel.items() if key != "channel_hz"}
 
 
 class ObservationsTest(unittest.IsolatedAsyncioTestCase):
@@ -2439,6 +2621,18 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(engine.peaks_state()["peaks"])     # found, all the same
                 engine.unsubscribe(subscription)
 
+    async def test_each_channel_shows_on_the_band_plan_s(self):
+        recent = time.time() - 60
+        self.write([{"frequency_hz": frequency, "first_s": recent, "last_s": recent, "transmissions": 1,
+                     "active_s": 1.0, "margin_db": 15.0, "hours": [1] + [0] * 23}
+                    for frequency in (144_301_249, 145_601_000, 145_603_000)])
+        engine = self.engine(run=False)
+        shown = {channel["frequency_hz"]: channel["channel_hz"] for channel in engine.observations_state()["channels"]}
+        # The SSB part to the 100 Hz; a 12.5 kHz channel within 1.5 kHz.
+        self.assertEqual(shown, {144_301_249: 144_301_200, 145_601_000: 145_600_000, 145_603_000: 145_603_000})
+        stored = engine._contents(observations=True)[OBSERVATIONS_FILE]["channels"]
+        self.assertEqual([sorted(channel) for channel in stored], [sorted(self.read()["channels"][0])] * 3)
+
     async def test_a_client_clears_a_channel_or_all_and_the_file_follows_at_once(self):
         recent = time.time() - 60
         self.write([{"frequency_hz": 145_500_000, "first_s": recent, "last_s": recent, "transmissions": 3,
@@ -2454,7 +2648,7 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
         [[remaining]] = observations_of(subscription)
         self.assertEqual(remaining["frequency_hz"], 433_500_000)
         deadline = time.monotonic() + 5
-        while (self.read() or {}).get("channels") != [remaining]:
+        while (self.read() or {}).get("channels") != [as_saved(remaining)]:
             self.assertLess(time.monotonic(), deadline, "the clear was not saved")
             await asyncio.sleep(0.01)
         engine.configure_observations({"clear": 145_501_000}, subscription)    # none left there: no change
@@ -2526,7 +2720,8 @@ class ObservationsTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(engine.wait_closed(), timeout=5)
         [saved] = self.read()["channels"]
         self.assertEqual(saved["frequency_hz"], channel["frequency_hz"])
-        self.assertEqual(self.engine(run=False).observations_state()["channels"], [saved])
+        [read] = self.engine(run=False).observations_state()["channels"]
+        self.assertEqual(as_saved(read), saved)
 
     async def test_an_unreadable_file_is_set_aside(self):
         self.directory.mkdir()
