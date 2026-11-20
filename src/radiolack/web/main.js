@@ -24,6 +24,8 @@ import { modeRateNote } from './rates.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
+import { CATEGORY_NAME_MAX, UNCATEGORIZED, bookmarkSections, checkedCategoryName, moveRequest, removeQuestion, sectionName,
+  sectionScanChange } from './categories.js';
 import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
   tunerNoteShown } from './calibration.js';
@@ -124,6 +126,7 @@ const antennaDialog = $('#antenna-dialog');
 const calibrateDialog = $('#calibrate-dialog');
 const reportDialog = $('#report-dialog');
 const legalDialog = $('#legal-dialog');
+const confirmDialog = $('#confirm-dialog');
 const coarseQuery = window.matchMedia('(pointer: coarse)');   // primary input is a finger
 const oneColumnQuery = window.matchMedia('(max-width: 600px)'); // the menu shows its list or a menu (style.css)
 
@@ -141,7 +144,9 @@ const S = {
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
-let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan }
+let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan, category }
+let categories = [];        // the engine's, by name: { id, name }
+let categoriesKnown = false;  // whether the engine that runs keeps categories
 let namingBookmark = null;  // { name, f, before }: the bookmark Add sent, until the engine's list brings it
 
 const fStart = () => S.fc - S.fs / 2;
@@ -421,8 +426,10 @@ const stream = new EngineStream({
     if (historyShown()) syncHistorySummary();
   },
   onDemod: applyDemod,
-  onBookmarks: (list) => {
-    bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan }));
+  onBookmarks: (list, categoryList) => {
+    bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan, category: b.category }));
+    categories = categoryList ?? [];
+    categoriesKnown = categoryList !== null;
     nameNewBookmark();
     bookmarksChanged();
   },
@@ -2226,7 +2233,11 @@ function openMenuCard() {
 }
 // A name being edited is kept when its menu goes: its field takes no more keys.
 function leaveMenu() {
-  if (openName === 'bookmarks' && editing) finishEdit(true, false);
+  if (openName !== 'bookmarks') return;
+  if (editing) finishEdit(true, false);
+  if (naming) finishNaming(true, false);
+  if (bookmarkDrag) endDrag();
+  if (selecting) setSelecting(false);
 }
 function showMenu(name) {
   if (openName !== name) leaveMenu();
@@ -2928,50 +2939,106 @@ function loadPlan() {
 // Bookmarks belong to the engine: changes go to it, and every interface
 // shows them once the engine sends them back. A click on a bookmark tunes
 // there with its mode, its box ticks it for the memory scan, and Edit turns
-// its row into fields for its name and its frequency and a Remove link;
-// leaving the row saves them, unless the frequency is not one: the row then
-// stays open with a note. A bookmark that Add makes opens so, its name
-// selected.
+// its row into fields for its name and its frequency, a Category choice and
+// a Remove link; leaving the row saves them, unless the frequency is not
+// one: the row then stays open with a note. A bookmark that Add makes opens
+// so, its name selected. With categories, the list shows the uncategorized
+// bookmarks, then each category's, under headings that fold, tick their
+// bookmarks for the scan, rename and remove the category
+// (docs/design/bookmark-categories.md).
 const BOOKMARK_NAME_MAX = 60;       // as the engine's bookmarks.py
 const BOOKMARK_FREQUENCY_NOTE = 'Not a frequency: type it in MHz, or with Hz, kHz, MHz or GHz, from 1 Hz to 100 GHz.';
 let editing = null;                 // { id, text, freq, invalid } while a bookmark is edited: its fields' texts
 let editRow = null;                 // its row: one that a new list replaced changes nothing
+let naming = null;                  // { id, text, reason, start } while a category is named: id null for a new one
+let nameRow = null;                 // its row, as editRow
+const folded = new Set();           // the folded sections' keys: this interface's own, never saved
+let selecting = false;              // the Select mode: the rows' boxes select the bookmarks to move
+const selected = new Set();         // the bookmarks selected, by id
+let bookmarkDrag = null;            // { ids, x, y, ghost, over } from a mouse press on a bookmark until its release
+let renderAfterDrag = false;        // a list that came while a bookmark was dragged
 const editingOf = (b) => ({ id: b.id, text: b.name, freq: formatFrequency(b.f), invalid: false });
+// A category choice's options, and the category an option names.
+const categoryOptions = (current) => [`<option value="none"${current === null ? ' selected' : ''}>${UNCATEGORIZED}</option>`,
+  ...categories.map((c) => `<option value="${c.id}"${c.id === current ? ' selected' : ''}>${escapeHtml(c.name)}</option>`)].join('');
+const optionCategory = (value) => (value === 'none' ? null : Number(value));
 function renderBookmarks() {
+  if (bookmarkDrag && bookmarkDrag.ghost) { renderAfterDrag = true; return; }     // the rows stay under the pointer until the drop
   if (editing && !bookmarks.some((b) => b.id === editing.id)) editing = null;     // removed meanwhile
+  if (naming && naming.id !== null && !categories.some((c) => c.id === naming.id)) naming = null;
+  for (const id of selected) if (!bookmarks.some((b) => b.id === id)) selected.delete(id);
   const list = $('#bm-list'), refocus = focusedIn(list);
   // The field that had the focus, or the name's: the new row's takes its place and its selection.
-  const oldField = editRow && (editRow.querySelector('input:focus') || editRow.querySelector('input[data-field="name"]'));
+  const active = document.activeElement;
+  const oldField = editRow && (editRow.contains(active) && active.dataset.field ? active : editRow.querySelector('input[data-field="name"]'));
+  const oldName = nameRow && nameRow.querySelector('input');
+  const nameHadFocus = oldName !== null && active === oldName;
   editRow = null;
+  nameRow = null;
   const q = $('#bm-filter').value.trim().toLowerCase();
   const edited = (b) => editing !== null && b.id === editing.id;
-  const items = bookmarks.filter((b) => edited(b) || !q || b.name.toLowerCase().includes(q) || formatFrequency(b.f).includes(q));
+  const sections = bookmarkSections(bookmarks, categories, q, folded, editing ? editing.id : null);
+  const grouped = categories.length > 0;
   // The ticked bookmarks that the memory scan leaves out say why.
   const known = memoryKnown(), watched = new Set(known ? scanner.memory.watched : []);
   const left = memoryVisits() ? 'out of reach · ' : 'outside the span · ';
   scanMarksShown = scanMarksKey();
-  list.innerHTML = items.length
-    ? items.map((b) => (edited(b)
-      ? `<li class="bm" data-editing><input type="text" data-field="name" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${formatFrequency(b.f)} MHz">`
-        + `<input type="text" data-field="freq" inputmode="decimal" title="In MHz, or with Hz, kHz, MHz or GHz" aria-label="Frequency of ${escapeHtml(b.name)}">`
-        + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button></li>`
-      : `<li class="bm"><input type="checkbox" data-scan="${b.id}"${b.scan ? ' checked' : ''} title="Scan this bookmark" aria-label="Scan ${escapeHtml(b.name)}">`
-        + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${formatFrequency(b.f)} MHz · ${b.mode}`)}">`
-        + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}${formatFrequency(b.f)}</span>`
-        + `<span class="tag">${escapeHtml(b.mode)}</span></button>`
-        + `<button type="button" class="link" data-edit="${b.id}" title="Rename, retune or remove" aria-label="Edit ${escapeHtml(b.name)}">Edit</button></li>`)).join('')
-    : '<li class="empty">No bookmarks</li>';
+  const namingField = (label) => `<li class="cat" data-naming><input type="text" data-field="cname" maxlength="${CATEGORY_NAME_MAX}" aria-label="${label}"></li>`;
+  const bookmarkRow = (b) => (edited(b)
+    ? `<li class="bm" data-editing><input type="text" data-field="name" maxlength="${BOOKMARK_NAME_MAX}" aria-label="Name of the bookmark at ${formatFrequency(b.f)} MHz">`
+      + `<input type="text" data-field="freq" inputmode="decimal" title="In MHz, or with Hz, kHz, MHz or GHz" aria-label="Frequency of ${escapeHtml(b.name)}">`
+      + `<button type="button" class="link" data-del="${b.id}" aria-label="Remove ${escapeHtml(b.name)}">Remove</button>`
+      + (grouped ? `<select data-field="category" aria-label="Category of ${escapeHtml(b.name)}">${categoryOptions(b.category)}</select>` : '')
+      + '</li>'
+    : `<li class="bm">${selecting
+      ? `<input type="checkbox" data-pick="${b.id}"${selected.has(b.id) ? ' checked' : ''} title="Select this bookmark" aria-label="Select ${escapeHtml(b.name)}">`
+      : `<input type="checkbox" data-scan="${b.id}"${b.scan ? ' checked' : ''} title="Scan this bookmark" aria-label="Scan ${escapeHtml(b.name)}">`}`
+      + `<button type="button" class="item" data-id="${b.id}" title="${escapeHtml(`${b.name} · ${formatFrequency(b.f)} MHz · ${b.mode}`)}">`
+      + `<span class="name">${escapeHtml(b.name)}</span><span class="num">${known && b.scan && !watched.has(b.id) ? left : ''}${formatFrequency(b.f)}</span>`
+      + `<span class="tag">${escapeHtml(b.mode)}</span></button>`
+      + (selecting ? '' : `<button type="button" class="link" data-edit="${b.id}" title="${grouped ? 'Rename, retune, move or remove' : 'Rename, retune or remove'}" aria-label="Edit ${escapeHtml(b.name)}">Edit</button>`)
+      + '</li>');
+  const heading = (s) => {
+    const name = escapeHtml(sectionName(s.category));
+    if (s.category !== null && naming && naming.id === s.category.id) return namingField(`New name of the category ${name}`);
+    const count = `${s.total} ${s.total === 1 ? 'bookmark' : 'bookmarks'}`;
+    return `<li class="cat" data-key="${s.key}">`
+      // In the Select mode the rows' boxes select: the heading's, which ticks for the scan, keeps its place unseen.
+      + (selecting ? '<input type="checkbox" class="unseen" disabled aria-hidden="true">'
+        : `<input type="checkbox" data-group="${s.key}"${s.ticked === 'all' ? ' checked' : ''}${s.ticked === 'empty' ? ' disabled' : ''}`
+          + ` title="Scan this category's bookmarks" aria-label="Scan the bookmarks of ${name}">`)
+      + `<button type="button" class="fold" data-fold="${s.key}" aria-expanded="${!s.folded}"${q ? ' disabled' : ''}`
+      + ` title="${s.folded ? 'Show' : 'Hide'} its bookmarks" aria-label="${name}, ${count}"><span class="name">${name}</span><span class="num">${s.total}</span></button>`
+      + (s.category === null || selecting ? ''
+        : `<button type="button" class="link" data-rename="${s.category.id}" aria-label="Rename ${name}">Rename</button>`
+          + `<button type="button" class="link" data-delcat="${s.category.id}" aria-label="Remove the category ${name}">Remove</button>`)
+      + '</li>';
+  };
+  let html = naming && naming.id === null ? namingField('Name of the new category') : '';
+  for (const s of sections) html += (grouped ? heading(s) : '') + s.bookmarks.map(bookmarkRow).join('');
+  list.innerHTML = html || '<li class="empty">No bookmarks</li>';
+  for (const box of list.querySelectorAll('input[data-group]')) {
+    box.indeterminate = sections.some((s) => s.key === box.dataset.group && s.ticked === 'some');     // the dash: some ticked
+  }
   const row = list.querySelector('li[data-editing]');
   let field = null;
   if (row) {
     editRow = row;
     const nameField = row.querySelector('input[data-field="name"]'), freqField = row.querySelector('input[data-field="freq"]');
+    const categoryField = row.querySelector('select[data-field="category"]');
     nameField.value = editing.text;
     freqField.value = editing.freq;
     if (editing.invalid) freqField.setAttribute('aria-invalid', 'true');
     nameField.addEventListener('input', () => { if (row === editRow) editing.text = nameField.value; });
     freqField.addEventListener('input', () => { if (row === editRow) editing.freq = freqField.value; });
-    for (const el of [nameField, freqField]) {
+    // The category changes at once; the row stays open for the other fields.
+    if (categoryField) {
+      categoryField.addEventListener('change', () => {
+        const id = editing.id;
+        if (row === editRow && !sendBookmark(() => stream.changeBookmark(id, { category: optionCategory(categoryField.value) }))) renderBookmarks();
+      });
+    }
+    for (const el of [nameField, freqField, categoryField].filter(Boolean)) {
       el.addEventListener('keydown', (e) => {
         e.stopPropagation();      // Escape cancels the changes, and leaves the menu open
         if (e.key === 'Enter') { e.preventDefault(); finishEdit(true, true); }
@@ -2979,16 +3046,47 @@ function renderBookmarks() {
       });
     }
     row.addEventListener('focusout', (e) => { if (row === editRow && !row.contains(e.relatedTarget)) finishEdit(true, false); });
-    field = oldField && oldField.dataset.field === 'freq' ? freqField : nameField;
+    const was = oldField ? oldField.dataset.field : 'name';
+    field = was === 'freq' ? freqField : was === 'category' && categoryField ? categoryField : nameField;
+  }
+  const categoryRow = list.querySelector('li[data-naming]');
+  let nameField = null;
+  if (categoryRow) {
+    nameRow = categoryRow;
+    nameField = categoryRow.querySelector('input');
+    nameField.value = naming.text;
+    if (naming.reason) nameField.setAttribute('aria-invalid', 'true');
+    nameField.addEventListener('input', () => {
+      if (categoryRow !== nameRow) return;
+      naming.text = nameField.value;
+      if (naming.reason) { naming.reason = ''; nameField.removeAttribute('aria-invalid'); }
+    });
+    nameField.addEventListener('keydown', (e) => {
+      e.stopPropagation();        // Escape leaves the name, and the menu open
+      if (e.key === 'Enter') { e.preventDefault(); finishNaming(true, true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finishNaming(false, true); }
+    });
+    nameField.addEventListener('focusout', () => { if (categoryRow === nameRow) finishNaming(true, false); });
   }
   // A row left open on a frequency that is not one leaves the focus where the user took it.
   const focusOutside = document.activeElement !== null && document.activeElement !== document.body && !list.contains(document.activeElement);
   const target = refocus && list.querySelector(refocus);
-  if (target) target.focus();
+  // A category's name field takes the focus when its naming starts, wherever
+  // the focus was (a pressed button keeps none in WebKit), and keeps it
+  // through the lists that come.
+  if (nameField && naming.start) {
+    nameField.focus();
+    nameField.select();
+  } else if (target) target.focus();
   else if (field && !(editing.invalid && focusOutside)) {
     field.focus();
-    if (oldField) field.setSelectionRange(oldField.selectionStart, oldField.selectionEnd); else field.select();
+    if (!oldField) field.select();
+    else if (field instanceof HTMLInputElement && oldField instanceof HTMLInputElement) field.setSelectionRange(oldField.selectionStart, oldField.selectionEnd);
+  } else if (nameField && nameHadFocus) {
+    nameField.focus();
+    nameField.setSelectionRange(oldName.selectionStart, oldName.selectionEnd);
   }
+  if (naming) naming.start = false;
 }
 // The new name, unless empty or unchanged, and the new frequency, unless
 // unchanged, go to the engine. A frequency that is not one keeps the row open,
@@ -3026,7 +3124,8 @@ function finishEdit(save, keyboard) {
 function focusedIn(list) {
   const el = document.activeElement;
   if (!el || !list.contains(el)) return null;
-  const name = ['id', 'scan', 'edit', 'del', 'get', 'forget', 'tune', 'ignore', 'mark', 'clear'].find((n) => el.dataset[n]);
+  const name = ['id', 'scan', 'edit', 'del', 'pick', 'group', 'fold', 'rename', 'delcat', 'get', 'forget', 'tune', 'ignore', 'mark', 'clear']
+    .find((n) => el.dataset[n]);
   return name ? `[data-${name}="${el.dataset[name]}"]` : null;
 }
 function focusAgain(list, selector) {
@@ -3081,7 +3180,7 @@ function syncBookmarkNote() {
   el.textContent = bookmarkNote;
   el.hidden = !bookmarkNote;
 }
-function bookmarksChanged() { renderBookmarks(); renderMarks(); syncMem(); }
+function bookmarksChanged() { renderBookmarks(); syncCategoryControls(); renderMarks(); syncMem(); }
 // A new bookmark is named "Bookmark" and the first number no other one
 // uses: the name, once sent, or null.
 // A bookmark on a known frequency or a channel takes its name, else the first free "Bookmark n".
@@ -3122,24 +3221,37 @@ $('#bm-add').addEventListener('click', () => {
   const name = addBookmark(f, S.mode);
   namingBookmark = name ? { name, f, before } : null;
 });
-// While a bookmark is edited, pressing a button or a box of the list leaves
-// the focus where it is: leaving the row would save the name and rebuild the
-// list under the pointer, and the click would be lost.
+// While a bookmark or a category's name is edited, pressing a button or a
+// box of the list leaves the focus where it is: leaving the field would save
+// it and rebuild the list under the pointer, and the click would be lost.
 $('#bm-list').addEventListener('mousedown', (e) => {
-  if (editing && e.target.closest('button, input[type="checkbox"]')) e.preventDefault();
+  if ((editing || naming) && e.target.closest('button, input[type="checkbox"]')) e.preventDefault();
 });
 $('#bm-list').addEventListener('change', (e) => {
-  const box = e.target.closest('input[data-scan]');
-  const b = box && bookmarks.find((x) => String(x.id) === box.dataset.scan);
+  const box = e.target.closest('input[type="checkbox"]');
+  if (!box) return;
+  if (box.dataset.pick) {
+    if (box.checked) selected.add(Number(box.dataset.pick)); else selected.delete(Number(box.dataset.pick));
+    syncSelectBar();
+    return;
+  }
+  // A category's box ticks its bookmarks, or unticks them all when all are.
+  if (box.dataset.group) {
+    const change = sectionScanChange(bookmarks, categories, box.dataset.group);
+    if (!change || !change.ids.length || !sendBookmark(() => stream.changeBookmarks(change.ids, { scan: change.scan }))) renderBookmarks();
+    return;
+  }
+  const b = box.dataset.scan && bookmarks.find((x) => String(x.id) === box.dataset.scan);
   // Not sent: the box shows the bookmark's setting again.
   if (b && !sendBookmark(() => stream.changeBookmark(b.id, { scan: box.checked }))) renderBookmarks();
 });
 $('#bm-list').addEventListener('click', (e) => {
   const button = e.target.closest('button');
-  const id = button && (button.dataset.id || button.dataset.edit || button.dataset.del);
-  const b = id && bookmarks.find((x) => String(x.id) === id);
-  if (!b) return;
-  if (button.dataset.del) {
+  if (!button) return;
+  const data = button.dataset;
+  if (data.del) {
+    const b = bookmarks.find((x) => String(x.id) === data.del);
+    if (!b) return;
     editing = null;             // the changes go with the bookmark
     renderBookmarks();
     sendBookmark(() => stream.removeBookmark(b.id));
@@ -3147,8 +3259,233 @@ $('#bm-list').addEventListener('click', (e) => {
     return;
   }
   if (editing && !finishEdit(true, false)) return;     // the frequency typed is not one: its row stays open
-  if (button.dataset.id) tuneAnywhere(b.f, { mode: b.mode });
+  if (naming && !finishNaming(true, false)) return;
+  if (data.fold) {
+    if (folded.has(data.fold)) folded.delete(data.fold); else folded.add(data.fold);
+    renderBookmarks();
+    return;
+  }
+  const category = categories.find((c) => String(c.id) === (data.rename || data.delcat));
+  if (category && data.rename) {
+    naming = { id: category.id, text: category.name, reason: '', start: true };
+    renderBookmarks();
+    return;
+  }
+  if (category) {
+    askConfirm(removeQuestion(bookmarks, category), () => sendBookmark(() => stream.removeCategory(category.id)), $('#bm-new-category'));
+    return;
+  }
+  const b = bookmarks.find((x) => String(x.id) === (data.id || data.edit));
+  if (!b) return;
+  if (data.id) tuneAnywhere(b.f, { mode: b.mode });
   else { editing = editingOf(b); renderBookmarks(); }
+});
+
+// A category's name, new or renamed, goes to the engine unless empty or
+// unchanged. A name that cannot be one keeps its field open with the reason,
+// from the keyboard: false; left otherwise, the field closes with it.
+// Finished from the keyboard, the focus returns to New category or Rename.
+function finishNaming(save, keyboard) {
+  const n = naming;
+  if (!n) return true;
+  let reason = '';
+  if (save && n.text.trim()) {
+    const checked = checkedCategoryName(n.text, categories, n.id);
+    const old = categories.find((c) => c.id === n.id);
+    if ('reason' in checked) reason = checked.reason;
+    else if (n.id === null) sendBookmark(() => stream.addCategory(checked.name));
+    else if (old && checked.name !== old.name) sendBookmark(() => stream.renameCategory(old.id, checked.name));
+  }
+  if (reason && keyboard) {
+    n.reason = reason;
+    if (nameRow) nameRow.querySelector('input').setAttribute('aria-invalid', 'true');
+    bookmarkNote = reason;
+    syncBookmarkNote();
+    return false;
+  }
+  naming = null;
+  if (reason || (n.reason && bookmarkNote === n.reason)) {
+    bookmarkNote = reason;
+    syncBookmarkNote();
+  }
+  renderBookmarks();
+  if (keyboard) ($(`#bm-list [data-rename="${n.id}"]`) || $('#bm-new-category')).focus();
+  return true;
+}
+$('#bm-new-category').addEventListener('click', () => {
+  if (editing && !finishEdit(true, false)) return;
+  if (naming) finishNaming(true, false);
+  naming = { id: null, text: '', reason: '', start: true };
+  renderBookmarks();
+});
+
+// The Select mode: the rows' boxes select bookmarks, and the bar moves them
+// into the category chosen, choosing and pressing Move being the
+// confirmation. It needs a category, and ends with the menu.
+function setSelecting(on) {
+  if (on && editing && !finishEdit(true, false)) return;
+  if (on && naming) finishNaming(true, false);
+  selecting = on;
+  selected.clear();
+  renderBookmarks();
+  syncCategoryControls();
+}
+let moveOptionsKey = '';
+function syncSelectBar() {
+  $('#bm-select-bar').hidden = !selecting;
+  if (!selecting) return;
+  $('#bm-selected').textContent = `${selected.size} selected`;
+  const choice = $('#bm-move-to'), key = JSON.stringify(categories);
+  if (key !== moveOptionsKey) {
+    const value = choice.value;
+    moveOptionsKey = key;
+    choice.innerHTML = categoryOptions(null);
+    if ([...choice.options].some((o) => o.value === value)) choice.value = value;
+  }
+  $('#bm-move').disabled = selected.size === 0;
+}
+// New category needs an engine that keeps categories; Select, a category to move to.
+function syncCategoryControls() {
+  if (selecting && !categories.length) {
+    selecting = false;
+    selected.clear();
+    renderBookmarks();
+  }
+  const newCategory = $('#bm-new-category');
+  newCategory.disabled = !categoriesKnown;
+  newCategory.title = categoriesKnown ? '' : 'The engine that runs keeps no categories: restart Radiolack after its update.';
+  const select = $('#bm-select');
+  select.disabled = !categories.length && !selecting;
+  select.setAttribute('aria-pressed', String(selecting));
+  select.title = categories.length ? 'Select bookmarks to move them' : 'Make a category first';
+  syncSelectBar();
+}
+$('#bm-select').addEventListener('click', () => setSelecting(!selecting));
+$('#bm-select-done').addEventListener('click', (e) => {
+  setSelecting(false);
+  if (e.detail === 0) $('#bm-select').focus();
+});
+$('#bm-move').addEventListener('click', () => {
+  const target = optionCategory($('#bm-move-to').value);
+  const request = moveRequest(bookmarks, categories, [...selected], target);
+  if (!request) {
+    bookmarkNote = 'The selected bookmarks are already there.';
+    syncBookmarkNote();
+    return;
+  }
+  if (!sendBookmark(() => stream.changeBookmarks(request.ids, { category: target }))) return;
+  selected.clear();
+  renderBookmarks();
+  syncSelectBar();
+});
+
+// Dragged with a mouse a few pixels, a bookmark's row, or the selection it
+// belongs to in the Select mode, follows the pointer; dropped on a
+// category's heading, or Uncategorized's, a dialog asks to move it there.
+// A press released without dragging is the click that tunes.
+const DRAG_START_PX = 5;
+let dragEnded = false;      // the click that follows a drop is not one on the bookmark
+$('#bm-list').addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'mouse' || e.button !== 0 || !categories.length || editing || naming) return;
+  const item = e.target.closest('button.item[data-id]');
+  if (!item) return;
+  const id = Number(item.dataset.id);
+  bookmarkDrag = { ids: selecting && selected.has(id) ? [...selected] : [id], x: e.clientX, y: e.clientY, ghost: null, over: null };
+});
+window.addEventListener('pointermove', (e) => {
+  if (!bookmarkDrag) return;
+  if (!bookmarkDrag.ghost) {
+    if (Math.hypot(e.clientX - bookmarkDrag.x, e.clientY - bookmarkDrag.y) < DRAG_START_PX) return;
+    const first = bookmarks.find((b) => b.id === bookmarkDrag.ids[0]);
+    if (!first) { bookmarkDrag = null; return; }
+    bookmarkDrag.ghost = document.createElement('div');
+    bookmarkDrag.ghost.className = 'bm-ghost';
+    bookmarkDrag.ghost.textContent = bookmarkDrag.ids.length === 1 ? first.name : `${bookmarkDrag.ids.length} bookmarks`;
+    document.body.append(bookmarkDrag.ghost);
+    document.body.classList.add('dragging');
+    for (const id of bookmarkDrag.ids) {
+      const row = $(`#bm-list button.item[data-id="${id}"]`);
+      if (row) row.closest('li').classList.add('dragged');
+    }
+  }
+  bookmarkDrag.ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 8}px)`;
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  const over = under && under.closest('#bm-list li.cat[data-key]');
+  if (over !== bookmarkDrag.over) {
+    if (bookmarkDrag.over) bookmarkDrag.over.classList.remove('drop');
+    if (over) over.classList.add('drop');
+    bookmarkDrag.over = over;
+  }
+});
+window.addEventListener('pointerup', () => {
+  if (!bookmarkDrag) return;
+  const { ids, ghost, over } = bookmarkDrag;
+  endDrag();
+  if (!ghost) return;     // a click
+  dragEnded = true;
+  setTimeout(() => { dragEnded = false; }, 0);
+  if (!over) return;
+  const target = optionCategory(over.dataset.key);
+  const request = moveRequest(bookmarks, categories, ids, target);
+  if (!request) return;     // dropped on its own category
+  askConfirm(request.question, () => {
+    if (!sendBookmark(() => stream.changeBookmarks(request.ids, { category: target })) || !selecting) return;
+    for (const id of request.ids) selected.delete(id);
+    renderBookmarks();
+    syncSelectBar();
+  }, null);
+}, true);
+window.addEventListener('click', (e) => {
+  if (dragEnded) { e.stopPropagation(); e.preventDefault(); }
+}, true);
+window.addEventListener('pointercancel', () => { if (bookmarkDrag) endDrag(); }, true);
+window.addEventListener('blur', () => { if (bookmarkDrag) endDrag(); });
+function endDrag() {
+  const d = bookmarkDrag;
+  bookmarkDrag = null;
+  if (d.ghost) {
+    d.ghost.remove();
+    document.body.classList.remove('dragging');
+    for (const row of $$('#bm-list li.dragged')) row.classList.remove('dragged');
+  }
+  if (d.over) d.over.classList.remove('drop');
+  if (renderAfterDrag) {
+    renderAfterDrag = false;
+    renderBookmarks();
+  }
+}
+
+// A question with Confirm and Cancel: Confirm does what it asks. Answered
+// from the keyboard, the focus returns to the control given, or to Add.
+let confirmAction = null, confirmReturn = null, confirmKeyboard = false, confirmBackdrop = false;
+function askConfirm(question, action, returnTo) {
+  $('#confirm-text').textContent = question;
+  confirmAction = action;
+  confirmReturn = returnTo;
+  confirmKeyboard = false;
+  confirmDialog.showModal();
+}
+$('#confirm-ok').addEventListener('click', (e) => {
+  const action = confirmAction;
+  confirmKeyboard = e.detail === 0;
+  confirmDialog.close();
+  if (action) action();
+});
+$('#confirm-cancel').addEventListener('click', (e) => {
+  confirmKeyboard = e.detail === 0;
+  confirmDialog.close();
+});
+confirmDialog.addEventListener('cancel', () => { confirmKeyboard = true; });     // Escape
+confirmDialog.addEventListener('pointerdown', (e) => { confirmBackdrop = e.target === confirmDialog; });
+confirmDialog.addEventListener('click', (e) => {
+  if (confirmBackdrop && e.target === confirmDialog && e.detail < 2) confirmDialog.close();
+  confirmBackdrop = false;
+});
+confirmDialog.addEventListener('close', () => {
+  const back = confirmReturn;
+  confirmAction = null;
+  confirmReturn = null;
+  if (confirmKeyboard && !menuEl.hidden) (back && back.isConnected && !back.disabled ? back : $('#bm-add')).focus();
 });
 
 // Scanners
@@ -4231,7 +4568,7 @@ bindStepButton($('#tune-up'), 1);
 window.addEventListener('keydown', (e) => {
   poke();
   // A dialog keeps its keys: Escape closes it alone, and nothing tunes behind it.
-  if (antennaDialog.open || calibrateDialog.open || reportDialog.open || legalDialog.open) return;
+  if (antennaDialog.open || calibrateDialog.open || reportDialog.open || legalDialog.open || confirmDialog.open) return;
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
     else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }
@@ -4324,6 +4661,7 @@ syncSource();
 syncDisplay();
 loadPlan();
 renderBookmarks();
+syncCategoryControls();
 syncScanTabs();
 syncScanner();
 syncUpdate();

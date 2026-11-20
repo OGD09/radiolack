@@ -1495,6 +1495,25 @@ its name selected, ready to type over: Enter or leaving the row keeps the
 new name, and Escape the one it was given, Bookmark 1 or the next free
 number. The spectrum's context menu adds one anywhere.
 
+Bookmarks sort into categories, one level deep. "New category" opens a
+field for its name, up to 40 characters and unlike any other category's,
+whatever the case: Enter keeps it and Escape leaves it. Once a category
+exists, the list shows the uncategorized bookmarks first, under
+Uncategorized, then each category by name, each under a heading that
+shows how many bookmarks it holds and hides or shows them on a click;
+what each interface hides is its own, and not saved. The heading's box
+ticks all its bookmarks for the memory scan, or unticks them all when all
+are ticked, and shows a dash when some are. Rename opens the name as
+New category does, and Remove asks to confirm; its bookmarks then become
+uncategorized. A bookmark moves in three ways: dragged with the mouse onto
+a category's heading, or Uncategorized's, which asks "Move … to …?" with
+Confirm and Cancel; by the Category choice that Edit opens beside its name
+and frequency, which moves it at once; or in the Select mode, where each
+row's box selects a bookmark, and the bar under the toolbar moves the
+selected ones to the category chosen when Move is pressed. Done ends the
+Select mode. The filter keeps the headings where a bookmark matches, and
+shows all the bookmarks of a category whose name matches.
+
 Settings > Storage says where the files are and what went wrong with them;
 the status line adds "changes not saved" while some changes do not reach
 the disk. Each file is written whole, through a temporary file, so that a

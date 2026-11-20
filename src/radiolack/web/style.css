@@ -105,8 +105,8 @@ html, body {
   width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1;
   stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
 }
-/* The lengths themselves, the calibration, the problem report and the legal notice, in modal dialogs dressed as the menu. */
-#antenna-dialog, #calibrate-dialog, #report-dialog, #legal-dialog {
+/* The lengths themselves, the calibration, the problem report, the legal notice and the questions that ask to confirm, in modal dialogs dressed as the menu. */
+#antenna-dialog, #calibrate-dialog, #report-dialog, #legal-dialog, #confirm-dialog {
   width: 320px; max-width: calc(100% - 32px); padding: 0; color: var(--text); background: var(--panel);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   font-size: 12.5px; user-select: text; -webkit-user-select: text;
@@ -114,13 +114,15 @@ html, body {
 #calibrate-dialog { width: 400px; }
 #report-dialog, #legal-dialog { width: 560px; }
 /* No custom properties: older engines do not pass them to ::backdrop. */
-#antenna-dialog::backdrop, #calibrate-dialog::backdrop, #report-dialog::backdrop, #legal-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }
+#antenna-dialog::backdrop, #calibrate-dialog::backdrop, #report-dialog::backdrop, #legal-dialog::backdrop, #confirm-dialog::backdrop { background: rgba(5, 7, 10, 0.55); }
 /* Fills the dialog: a press on the dialog itself is on the backdrop. */
 #antenna-dialog .dialog-body, #calibrate-dialog .dialog-body, #report-dialog .dialog-body,
-#legal-dialog .dialog-body { padding: 10px 14px 12px; }
+#legal-dialog .dialog-body, #confirm-dialog .dialog-body { padding: 10px 14px 12px; }
 #antenna-dialog h2, #calibrate-dialog h2, #report-dialog h2, #legal-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
 /* The legal notice scrolls under its title, which keeps the close button in sight. */
 #legal-dialog[open] { display: flex; flex-direction: column; max-height: calc(100% - 32px); }
+#confirm-text { margin: 4px 0 12px; font-size: 13px; overflow-wrap: anywhere; }
+#confirm-dialog .actions { justify-content: flex-end; margin-bottom: 0; }
 #legal-dialog .dialog-body { display: flex; flex-direction: column; min-height: 0; }
 .legal-text {
   min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -14px -12px; padding: 0 14px 12px;
@@ -303,6 +305,34 @@ input:disabled, select:disabled { opacity: 0.45; }
 .list li.bm[data-editing] { padding: 2px 0 2px 6px; }
 .list li.bm[data-editing] > input { flex: 1; min-width: 0; }
 .list li.bm[data-editing] > input[data-field="freq"] { flex: 0 1 8.5em; font-variant-numeric: tabular-nums; }
+.list li.bm[data-editing] { flex-wrap: wrap; }
+.list li.bm[data-editing] > select { flex: 1 1 100%; margin-right: 4px; }
+/* A category's heading: its box for the memory scan, its name and count, which fold it, Rename and Remove; or, while named, its field. */
+.list li.cat { display: flex; align-items: center; gap: 4px; margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--line); border-radius: 5px; }
+.list li.cat:first-child { margin-top: 0; border-top: 0; }
+.list li.cat > input[type="checkbox"] { flex: none; margin: 0 2px 0 6px; accent-color: var(--accent); cursor: pointer; }
+.list li.cat > .link { flex: none; }
+.list li.cat > input.unseen { visibility: hidden; }
+.list li.cat[data-naming] { padding: 2px 0 2px 6px; }
+.list li.cat[data-naming] > input { flex: 1; min-width: 0; }
+.fold { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; padding: 5px 6px; border-radius: 5px; cursor: pointer; }
+.fold > .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold > .num { font-weight: 400; }
+.fold::before { content: ""; flex: none; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--muted); transition: transform 0.15s; }
+.fold[aria-expanded="false"]::before { transform: rotate(-90deg); }
+.fold:disabled { cursor: default; }
+/* Dragging bookmarks: the rows dragged fade, the heading under the pointer lights up, a label follows it. */
+.list li.cat.drop { background: rgba(89, 167, 255, 0.16); }
+.list li.bm.dragged { opacity: 0.45; }
+.bm-ghost {
+  position: fixed; left: 0; top: 0; z-index: 100; pointer-events: none; max-width: 240px; padding: 3px 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+body.dragging, body.dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.btn[aria-pressed="true"] { border-color: rgba(89, 167, 255, 0.55); background: rgba(89, 167, 255, 0.12); }
+#bm-select-bar > .note { margin: 0; white-space: nowrap; }
+#bm-move-to { flex: 1; min-width: 0; }
 input[aria-invalid="true"] { border-color: var(--warn); }
 .list li.group { padding: 8px 6px 2px; font-size: 11px; color: var(--muted); }
 .num { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -411,7 +441,7 @@ table.peaks tr.listening .seen { color: var(--accent); }
   select, input[type="text"], input[type="number"], input[type="search"] { min-height: 40px; font-size: 16px; }
   input[type="range"] { height: 32px; }
   .check { min-height: 36px; }
-  .check input, .list li.bm > input[type="checkbox"] { width: 20px; height: 20px; }
+  .check input, .list li.bm > input[type="checkbox"], .list li.cat > input[type="checkbox"] { width: 20px; height: 20px; }
   .segmented button { min-height: 36px; }
   .list .item { min-height: 40px; }
   .btn, .link { min-height: 36px; }
