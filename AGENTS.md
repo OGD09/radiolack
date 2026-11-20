@@ -251,6 +251,8 @@ the history under the tag `v0.1.0`.
   channels, what the band strip draws of them and what a press there lands
   on), `planlist.js` (the Bookmarks menu's band plan list: the view, or the
   filter across the plan, at most 200 rows), `rates.js` (what a mode needs of the sample rate),
+  `memorytour.js` (what the Bookmarks menu says of the memory scan's tour
+  across several windows),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
   `correction.js` (the frequency correction's field), `calibration.js`
@@ -266,7 +268,7 @@ the history under the tag `v0.1.0`.
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
   `history.js` in Node, `tests/test_devices.py` `devices.js` and the
   devices state's decoding, `tests/test_categories.py` `categories.js`
-  and the bookmarks message's decoding, and `tests/test_advanced.py` `advanced.js`,
+  and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`, and `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, skipped
   where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).

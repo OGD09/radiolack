@@ -1195,7 +1195,10 @@ visit leaves the bookmarks unwatched for about 0.75 s, the 0.4 s the
 receiver takes to settle and the noise's 0.33 s, and a bookmark is watched
 only while the scan is on its window: with N windows, a transmission
 shorter than about 1.75 × N − 1 s may be missed, 2.5 s with two windows
-and 6 s with four. While every ticked bookmark within the receiver's reach
+and 6 s with four. Under the scan's button, the menu says so whenever the ticked
+bookmarks take several windows: how many, how long a tour takes, the
+shortest transmission it cannot miss, and the width that bookmarks must
+fit within to take one window, which the scan watches without a break. While every ticked bookmark within the receiver's reach
 lies in the span, the scan never tunes the receiver. The spectrum and the
 waterfall show each window, and the VFO stays inside it, as with the
 sweep. The list marks the ticked bookmarks beyond the receiver's reach,
