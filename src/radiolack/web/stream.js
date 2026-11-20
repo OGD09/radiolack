@@ -129,6 +129,15 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} name
  * @property {string} mode
  * @property {boolean} scan     the memory scan stops here
+ * @property {number | null} category  its category's id, or null: uncategorized
+ */
+
+/**
+ * A category that bookmarks are sorted into, one level deep. Its id lasts
+ * as long as the engine runs.
+ * @typedef {object} BookmarkCategory
+ * @property {number} id
+ * @property {string} name
  */
 
 /**
@@ -138,6 +147,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} [name]
  * @property {string} [mode]
  * @property {boolean} [scan]
+ * @property {number | null} [category]  a category's id, or null
  */
 
 /**
@@ -588,7 +598,9 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  *   about ten a second while this interface asks for the fine spectrum
  * @property {(source: SourceState) => void} onSource  sent first, then at every change
  * @property {(demod: DemodState) => void} onDemod     sent next, then at every change this interface has not overtaken
- * @property {(bookmarks: Bookmark[]) => void} onBookmarks  sent next, then at every change, in frequency order
+ * @property {(bookmarks: Bookmark[], categories: BookmarkCategory[] | null) => void} onBookmarks
+ *   sent next, then at every change: the bookmarks in frequency order, and
+ *   their categories by name, or null from an engine without categories
  * @property {(scanner: ScannerState) => void} onScanner    sent next, then at every change
  * @property {(peaks: Peak[]) => void} onPeaks
  *   sent next, then when the list changes, at most about once a second: active signals first, strongest first
@@ -844,23 +856,38 @@ export function decodeSource(message) {
 }
 
 /**
- * Decode a bookmarks message. Returns null when an entry is missing a field
- * or holds a malformed one.
+ * Decode a bookmarks message: the bookmarks, and their categories, or null
+ * for an engine without categories, whose bookmarks are uncategorized.
+ * Returns null when an entry is missing a field or holds a malformed one.
  * @param {any} message  a parsed JSON message of type "bookmarks"
- * @returns {Bookmark[] | null}
+ * @returns {{ bookmarks: Bookmark[], categories: BookmarkCategory[] | null } | null}
  */
 export function decodeBookmarks(message) {
   if (!Array.isArray(message.bookmarks)) return null;
+  /** @type {BookmarkCategory[] | null} */
+  let categories = null;
+  if (message.categories !== undefined) {
+    if (!Array.isArray(message.categories)) return null;
+    categories = [];
+    for (const c of message.categories) {
+      if (c === null || typeof c !== 'object' || !Number.isSafeInteger(c.id) || c.id <= 0 || typeof c.name !== 'string') return null;
+      categories.push({ id: c.id, name: c.name });
+    }
+  }
+  /** @param {unknown} value */
+  const category = (value) => value === null || (Number.isSafeInteger(value) && /** @type {number} */ (value) > 0);
   /** @type {Bookmark[]} */
   const bookmarks = [];
   for (const b of message.bookmarks) {
     const valid = b !== null && typeof b === 'object' && Number.isSafeInteger(b.id) && b.id > 0
       && typeof b.frequency_hz === 'number' && Number.isFinite(b.frequency_hz)
-      && typeof b.name === 'string' && typeof b.mode === 'string' && typeof b.scan === 'boolean';
+      && typeof b.name === 'string' && typeof b.mode === 'string' && typeof b.scan === 'boolean'
+      && (categories === null ? b.category === undefined || category(b.category) : category(b.category));
     if (!valid) return null;
-    bookmarks.push({ id: b.id, frequencyHz: b.frequency_hz, name: b.name, mode: b.mode, scan: b.scan });
+    bookmarks.push({ id: b.id, frequencyHz: b.frequency_hz, name: b.name, mode: b.mode, scan: b.scan,
+      category: categories === null ? null : b.category });
   }
-  return bookmarks;
+  return { bookmarks, categories };
 }
 
 /**
@@ -1303,12 +1330,13 @@ export function decodeDevices(message) {
  * @param {BookmarkFields} fields
  */
 function bookmarkFields(fields) {
-  /** @type {Record<string, string | number | boolean>} */
+  /** @type {Record<string, string | number | boolean | null>} */
   const message = {};
   if (fields.frequencyHz !== undefined) message.frequency_hz = fields.frequencyHz;
   if (fields.name !== undefined) message.name = fields.name;
   if (fields.mode !== undefined) message.mode = fields.mode;
   if (fields.scan !== undefined) message.scan = fields.scan;
+  if (fields.category !== undefined) message.category = fields.category;
   return message;
 }
 
@@ -1500,6 +1528,46 @@ export class EngineStream {
    */
   removeBookmark(id) {
     return this.#send({ type: 'bookmark', action: 'remove', id });
+  }
+
+  /**
+   * Ask the engine to set the category, the scan or both of several
+   * bookmarks at once, as `addBookmark`.
+   * @param {number[]} ids
+   * @param {{ category?: number | null, scan?: boolean }} changes
+   * @returns {boolean}
+   */
+  changeBookmarks(ids, changes) {
+    return this.#send({ type: 'bookmark', action: 'change', ids, ...bookmarkFields(changes) });
+  }
+
+  /**
+   * Ask the engine to make a category, as `addBookmark`.
+   * @param {string} name
+   * @returns {boolean}
+   */
+  addCategory(name) {
+    return this.#send({ type: 'bookmark', action: 'add_category', name });
+  }
+
+  /**
+   * Ask the engine to rename a category, as `addBookmark`.
+   * @param {number} id
+   * @param {string} name
+   * @returns {boolean}
+   */
+  renameCategory(id, name) {
+    return this.#send({ type: 'bookmark', action: 'rename_category', id, name });
+  }
+
+  /**
+   * Ask the engine to remove a category, its bookmarks becoming
+   * uncategorized, as `addBookmark`.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  removeCategory(id) {
+    return this.#send({ type: 'bookmark', action: 'remove_category', id });
   }
 
   /**
@@ -1945,8 +2013,8 @@ export class EngineStream {
       const demod = decodeDemod(message);
       if (demod && demod.acknowledged >= this.#awaitedId) this.#handlers.onDemod(demod);
     } else if (message.type === 'bookmarks') {
-      const bookmarks = decodeBookmarks(message);
-      if (bookmarks) this.#handlers.onBookmarks(bookmarks);
+      const decoded = decodeBookmarks(message);
+      if (decoded) this.#handlers.onBookmarks(decoded.bookmarks, decoded.categories);
     } else if (message.type === 'scanner') {
       const scanner = decodeScanner(message);
       if (scanner) this.#handlers.onScanner(scanner);

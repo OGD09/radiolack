@@ -1643,6 +1643,106 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#bm-note")).to_be_hidden()
                 expect(second.locator("#bm-list .item .num")).to_have_text(["145.500"])
 
+    def test_bookmarks_are_sorted_into_categories(self):
+        # Every interface makes, renames and removes categories, and moves
+        # bookmarks: dragged with the mouse onto a heading, after Confirm;
+        # by Edit's Category; several at once in the Select mode. A
+        # category's box ticks its bookmarks for the memory scan; folding is
+        # each interface's own.
+        headings, counts = "#bm-list li.cat .fold .name", "#bm-list li.cat .fold .num"
+        for browser in BROWSERS:
+            directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+            Store(directory).save(BOOKMARKS_FILE, {"bookmarks": [
+                {"frequency_hz": 144_300_000, "name": "SSB calling", "mode": "USB", "scan": False},
+                {"frequency_hz": 145_500_000, "name": "FM calling", "mode": "NFM", "scan": False},
+                {"frequency_hz": 145_600_000, "name": "Repeater", "mode": "NFM", "scan": True}],
+                "categories": [{"name": "Repeaters", "bookmarks": [2]}]})
+            url = self.serve(store=Store(directory))    # the simulated band
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    self.open_menu(page, "bookmarks")
+                    expect(page.locator(headings)).to_have_text(["Uncategorized", "Repeaters"])
+                    expect(page.locator(counts)).to_have_text(["2", "1"])
+                first.locator("#bm-new-category").click()
+                field = first.locator('#bm-list input[data-field="cname"]')
+                expect(field).to_be_focused()
+                field.fill("Calling")
+                field.press("Enter")
+                for page in (first, second):
+                    expect(page.locator(headings)).to_have_text(["Uncategorized", "Calling", "Repeaters"])
+                expect(first.locator("#bm-new-category")).to_be_focused()
+                first.locator("#bm-new-category").click()
+                field.fill("repeaters")
+                field.press("Enter")        # another category's name: the field stays, with the reason
+                expect(field).to_have_attribute("aria-invalid", "true")
+                expect(first.locator("#bm-note")).to_have_text("A category is already named repeaters.")
+                field.press("Escape")
+                expect(field).to_have_count(0)
+                expect(first.locator("#bm-note")).to_be_hidden()
+
+                dragged = first.locator("#bm-list button.item", has_text="FM calling")
+                calling = first.locator("#bm-list li.cat[data-key]", has_text="Calling")
+                dragged.drag_to(calling)
+                expect(first.locator("#confirm-dialog")).to_be_visible()
+                expect(first.locator("#confirm-text")).to_have_text('Move "FM calling" to "Calling"?')
+                first.locator("#confirm-cancel").click()
+                expect(first.locator("#confirm-dialog")).to_be_hidden()
+                expect(second.locator(counts)).to_have_text(["2", "0", "1"])
+                expect(first.locator("#freq")).to_have_attribute("aria-valuenow", "145600000")     # a drag does not tune
+                dragged.drag_to(calling)
+                first.locator("#confirm-ok").click()
+                for page in (first, second):
+                    expect(page.locator(counts)).to_have_text(["1", "1", "1"])
+
+                box = first.get_by_role("checkbox", name="Scan the bookmarks of Calling", exact=True)
+                expect(box).not_to_be_checked()
+                box.check()
+                expect(second.locator('#bm-list input[aria-label="Scan FM calling"]')).to_be_checked()
+                expect(first.locator('#bm-list input[aria-label="Scan the bookmarks of Repeaters"]')).to_be_checked()
+
+                first.get_by_role("button", name="Edit SSB calling", exact=True).click()
+                first.locator('#bm-list select[data-field="category"]').select_option(label="Repeaters")
+                for page in (first, second):
+                    expect(page.locator(counts)).to_have_text(["0", "1", "2"])
+                expect(first.locator("#bm-list li[data-editing]")).to_have_count(1)      # the row stays open
+                first.locator(BOOKMARK_NAME).press("Escape")
+
+                first.locator("#bm-select").click()
+                expect(first.locator("#bm-select")).to_have_attribute("aria-pressed", "true")
+                expect(first.locator("#bm-list button[data-edit]")).to_have_count(0)
+                first.get_by_role("checkbox", name="Select SSB calling", exact=True).check()
+                first.get_by_role("checkbox", name="Select Repeater", exact=True).check()
+                expect(first.locator("#bm-selected")).to_have_text("2 selected")
+                first.locator("#bm-move-to").select_option(label="Calling")
+                first.locator("#bm-move").click()
+                for page in (first, second):
+                    expect(page.locator(counts)).to_have_text(["0", "3", "0"])
+                expect(first.locator("#bm-selected")).to_have_text("0 selected")
+                first.locator("#bm-select-done").click()
+                expect(first.locator("#bm-select-bar")).to_be_hidden()
+
+                first.get_by_role("button", name="Calling, 3 bookmarks", exact=True).click()     # folds it here only
+                expect(first.locator("#bm-list .item")).to_have_count(0)
+                expect(second.locator("#bm-list .item")).to_have_count(3)
+                first.get_by_role("button", name="Calling, 3 bookmarks", exact=True).click()
+                expect(first.locator("#bm-list .item")).to_have_count(3)
+
+                first.get_by_role("button", name="Rename Calling", exact=True).click()
+                expect(field).to_have_value("Calling")
+                field.fill("Local")
+                field.press("Enter")
+                for page in (first, second):
+                    expect(page.locator(headings)).to_have_text(["Uncategorized", "Local", "Repeaters"])
+                first.get_by_role("button", name="Remove the category Local", exact=True).click()
+                expect(first.locator("#confirm-text")).to_have_text(
+                    'Remove the category "Local"? Its 3 bookmarks become uncategorized.')
+                first.locator("#confirm-ok").click()
+                for page in (first, second):
+                    expect(page.locator(headings)).to_have_text(["Uncategorized", "Repeaters"])
+                    expect(page.locator(counts)).to_have_text(["3", "0"])
+                    expect(page.locator("#bm-list .item .name")).to_have_text(["SSB calling", "FM calling", "Repeater"])
+                expect(first.locator("#bm-note")).to_be_hidden()
+
     def test_the_s_meter_sets_the_squelch_with_the_wheel_a_click_or_a_tap(self):
         # A notch of the wheel moves the threshold 1 dB, up raising it, and a
         # click or a tap on the bar sets it at that point of the meter's

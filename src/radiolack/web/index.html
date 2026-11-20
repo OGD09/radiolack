@@ -123,6 +123,8 @@
       <section data-menu="bookmarks" hidden>
         <div class="menu-scroll">
           <div class="row"><input id="bm-filter" type="search" placeholder="Filter" aria-label="Filter the bookmarks and the band plan"><button type="button" class="btn" id="bm-add">Add current frequency</button></div>
+          <div class="row"><button type="button" class="btn" id="bm-new-category">New category</button><button type="button" class="btn" id="bm-select" aria-pressed="false">Select</button></div>
+          <div class="row" id="bm-select-bar" hidden><span class="note" id="bm-selected" role="status"></span><select id="bm-move-to" aria-label="Category to move the selected bookmarks to"></select><button type="button" class="btn" id="bm-move">Move</button><button type="button" class="btn" id="bm-select-done">Done</button></div>
           <p class="note" id="bm-note" role="status" hidden></p>
           <ul class="list" id="bm-list"></ul>
           <h3>Band plan</h3>
@@ -498,6 +500,13 @@
       <p class="note" id="report-about">Read the report first: its warnings may name files, folders, frequencies or addresses. On GitHub, describe the problem above it, then submit the issue.</p>
       <textarea id="report-text" readonly spellcheck="false" aria-label="Report"></textarea>
       <div class="row"><a class="btn primary" id="report-issue" href="#" target="_blank" rel="noopener noreferrer">Open a GitHub issue</a><button type="button" class="btn" id="report-copy">Copy</button><span class="note" id="report-msg" role="status"></span></div>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-text">
+    <div class="dialog-body">
+      <p id="confirm-text"></p>
+      <div class="row actions"><button type="button" class="btn" id="confirm-cancel">Cancel</button><button type="button" class="btn primary" id="confirm-ok">Confirm</button></div>
     </div>
   </dialog>
 

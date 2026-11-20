@@ -243,7 +243,10 @@ the history under the tag `v0.1.0`.
   (the Receiver menu's converter, and the view that follows its change), `tunerpll.js` (the
   Receiver menu's rtl-sdr driver, the centre in use, and the grid's point
   a retune takes to keep the VFO's channel clear of the centre), `tuning.js` (the
-  Automatic step), `channels.js` (the band plan's channels and known
+  Automatic step), `categories.js` (the Bookmarks menu's categories: the
+  list's sections, a category's box, the questions that moving bookmarks
+  and removing a category ask, and a category's name's check),
+  `channels.js` (the band plan's channels and known
   frequencies: what the VFO is on, the Automatic step along a set's
   channels, what the band strip draws of them and what a press there lands
   on), `planlist.js` (the Bookmarks menu's band plan list: the view, or the
@@ -262,7 +265,8 @@ the history under the tag `v0.1.0`.
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
   `history.js` in Node, `tests/test_devices.py` `devices.js` and the
-  devices state's decoding, and `tests/test_advanced.py` `advanced.js`,
+  devices state's decoding, `tests/test_categories.py` `categories.js`
+  and the bookmarks message's decoding, and `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, skipped
   where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
