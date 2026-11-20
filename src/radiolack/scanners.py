@@ -53,7 +53,7 @@ window, pass after pass. A window whose samples do not come while others do
 is left after GIVE_UP_S. With listening on (the range scan,
 docs/design/range-scan.md), once a window's searches end the sweep takes
 the signals active there as the window's queue and listens to each in turn
-as the signals scan does, then goes on to the next window: a signal of the
+(``SignalScan``), then goes on to the next window: a signal of the
 queue is left after the longest listening time, whether another of the
 queue waits or not, so that one on the air all the time does not hold the
 sweep, and a signal tuned to in one window waits for the next pass in the
@@ -61,8 +61,8 @@ windows that overlap it. A range that lies within the part of the receiver's spa
 detection searches takes that one window (``range_window``), at the
 receiver's centre frequency. After the passes set, the sweep is done.
 
-The signals scan listens to the active signals of the span, one after the
-other, with the VFO alone: ``SignalScan`` tunes to the active signal that
+A window's listening goes from one active signal to the next with the VFO
+alone: ``SignalScan`` tunes to the active signal that
 waited longest, one never tuned to first, the lowest of them, then the one
 tuned to least recently; it checks that the squelch opens there, listens
 while it stays open and waits the resume time once it closes, as the memory
@@ -86,7 +86,7 @@ from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
 SCANNERS = ("peaks", "memory", "history", "sweep", "signals")    # what the engine runs, as the hello lists it
 SCANS = ("memory", "sweep", "signals")      # the scans, of which one runs at a time
-SCAN_NAMES = {"memory": "memory scan", "sweep": "sweep", "signals": "signals scan"}     # as the output names them
+SCAN_NAMES = {"memory": "memory scan", "sweep": "range scan", "signals": "range scan"}     # as the output names them
 DETECTION_BLOCKS = 10               # blocks averaged for each search: 1/3 s at 30 blocks a second
 USABLE_FRACTION = 0.4               # bins kept on each side of the centre, as a fraction of the rate
 DC_GAP_HZ = 3_000.0                 # left out on each side of the centre frequency
@@ -117,7 +117,7 @@ WINDOW_RANGE_S = (0.25, 2.0)        # the sweep's time per window
 DEFAULT_WINDOW_S = 0.5
 DEFAULT_SWEEP_HZ = (430_000_000.0, 440_000_000.0)  # the 70 cm band
 GIVE_UP_S = 2.0                     # a window whose samples do not come within this long, while others do, is left
-LISTEN_RANGE_S = (2.0, 60.0)        # the signals scan's longest listening time
+LISTEN_RANGE_S = (2.0, 60.0)        # the range scan's longest listening time on a signal
 DEFAULT_LISTEN_S = 10.0
 PASSES_RANGE = (1, 99)              # the sweep's passes, when not endless
 
@@ -518,7 +518,7 @@ class MemoryScan:
 
 
 class SignalScan:
-    """A signals scan's progress. ``state`` is "watching" the active
+    """A range scan's listening in a window. ``state`` is "watching" the active
     signals, "checking" that the squelch opens on the channel just tuned
     to, "listening" while it stays open, or "waiting" for the resume time
     since it closed; ``frequency_hz`` is the channel tuned to, None while
@@ -785,7 +785,7 @@ class Sweep:
     one asked of the receiver, and ``passes`` the passes done. Each window
     reads ``search_blocks`` blocks for each of its SWEEP_SEARCHES searches,
     from the first block whose samples come from it. With ``listen``, a
-    window's searches are followed by ``listening``, the signals scan of
+    window's searches are followed by ``listening``, the listening of
     the window's queue, until each signal of the queue was tuned to, the
     one that waited longest first, across windows and passes; a signal
     tuned to in one window is not queued again in the next windows of the
@@ -805,7 +805,7 @@ class Sweep:
         self.window = 0
         self.passes = 0
         self.done = False
-        # The signals scan of each window's queue, which keeps across windows
+        # The listening of each window's queue, which keeps across windows
         # and passes when each channel was last tuned to; ``listening`` while
         # it listens in a window.
         self._scan = SignalScan()
@@ -916,7 +916,7 @@ def checked_resume(value: object) -> float:
 
 
 def checked_listen(value: object) -> float:
-    """A signals scan's longest listening time an interface gave; raises
+    """A range scan's longest listening time an interface gave; raises
     ValueError when it is not a number of seconds within LISTEN_RANGE_S."""
     low, high = LISTEN_RANGE_S
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:

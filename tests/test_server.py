@@ -493,7 +493,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "scanner", "scan": "panorama"}': (
                 "scanner", 'a scan is "memory", "sweep" or "signals", or null to stop it'),
             '{"type": "scanner", "scan": "sweep"}': (
-                "scanner", "the sweep needs a receiver that tunes, such as an RTL-SDR"),
+                "scanner", "a range wider than the current window needs a receiver that tunes, such as an RTL-SDR"),
             '{"type": "scanner", "sweep_low_hz": 440e6}': (
                 "scanner", "the sweep's lowest frequency must lie below its highest"),
             '{"type": "scanner", "scan": "memory"}': (
@@ -656,7 +656,7 @@ class StartScanTest(unittest.IsolatedAsyncioTestCase):
         server.start()
         with self.assertRaises(ValueError) as raised:
             await asyncio.to_thread(server.start_scan, "sweep")
-        self.assertEqual(str(raised.exception), "the sweep needs a receiver that tunes, such as an RTL-SDR")
+        self.assertEqual(str(raised.exception), "a range wider than the current window needs a receiver that tunes, such as an RTL-SDR")
         state = await self.scanner_state(server)
         self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "start", "sweep"))
 

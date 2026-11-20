@@ -432,7 +432,7 @@ const stream = new EngineStream({
     // that runs, which an interface made.
     const changed = scanner === null || scannerSettings(scanner) !== scannerSettings(state);
     scanner = state;
-    if (!changed) { syncMem(); syncSweep(); syncSignalScan(); return; }
+    if (!changed) { syncMem(); syncSweep(); return; }
     scannerNote = '';
     syncScanner();
   },
@@ -1276,8 +1276,7 @@ function showTunePreview(at, f) {
       range = spanAround(retuneCentre(target, {}));
       tip = 'Click: tune here';
       if (memoryRuns()) tip += ' · stops the memory scan';
-      else if (sweepRuns()) tip += ' · stops the sweep';
-      else if (signalsRun()) tip += ' · stops the signals scan';
+      else if (sweepRuns()) tip += ' · stops the range scan';
     }
   }
   showPreviewSpan(range);
@@ -1361,8 +1360,7 @@ function updateStatus() {
     text = 'Connecting to the engine…';
   }
   if (streamState === 'open' && memoryRuns()) text += ' · memory scan';
-  if (streamState === 'open' && sweepRuns()) text += ' · sweep';
-  if (streamState === 'open' && signalsRun()) text += ' · signals scan';
+  if (streamState === 'open' && sweepRuns()) text += ' · range scan';
   if (streamState === 'open') text += recordingStatus();
   shownRateNote = streamState === 'open' ? modeRateNote(S.mode, S.fs) : '';
   if (shownRateNote) text = `${shownRateNote} · ${text}`;
@@ -1615,7 +1613,7 @@ function applyDemod(state) {
 // nearest its channel, within the 1.5 kHz in which the engine takes two
 // detections for one signal.
 const SAME_SIGNAL_HZ = 1500;
-let listenedPeak = null;            // the signal whose row says that the signals scan is on it
+let listenedPeak = null;            // the signal whose row says that the range scan is on it
 let listenedShownHz = null;         // listenedHz() as the rows show it
 // The engine sends the list when it changes: the time since each inactive signal was found counts on here.
 const peakSeen = (p, now) => (p === listenedPeak ? 'listening' : p.active ? 'active'
@@ -1662,7 +1660,7 @@ function updatePeakAges() {
   });
 }
 const pkOn = $('#pk-on');
-// The detection threshold shows in the Signals tab and in the Sweep tab: one
+// The detection threshold shows in the Signals tab and in the Range tab: one
 // setting, the engine's, which both sliders show and either changes.
 const thresholds = [[$('#pk-thr'), $('#pk-thr-v')], [$('#sw-thr'), $('#sw-thr-v')]];
 function showThreshold(db) {
@@ -1673,7 +1671,7 @@ function showThreshold(db) {
 }
 // What interfaces change in the scanner state: the settings and the scan that runs.
 const scannerSettings = (s) => JSON.stringify([s.detection, s.thresholdDb, s.ignoredHz, s.resumeS, s.listenS, s.scan,
-  s.sweep && [s.sweep.lowHz, s.sweep.highHz, s.sweep.windowS]]);
+  s.sweep && [s.sweep.lowHz, s.sweep.highHz, s.sweep.windowS, s.sweep.listen, s.sweep.passes]]);
 // The scanners' controls show the engine's settings once it sent them, and
 // stay off with an engine that lacks the scanner.
 function syncScanner() {
@@ -1692,31 +1690,20 @@ function syncScanner() {
     memResume.value = String(scanner.resumeS);
     memResumeOut.textContent = `${scanner.resumeS} s`;
   }
-  // The signals scan's resume time is the memory scan's.
-  sigListen.disabled = !signalsKnown();
-  sigResume.disabled = !signalsKnown();
-  if (signalsKnown()) {
-    sigListen.value = String(scanner.listenS);
-    sigListenOut.textContent = `${scanner.listenS} s`;
-    sigResume.value = String(scanner.resumeS);
-    sigResumeOut.textContent = `${scanner.resumeS} s`;
-  }
   syncSweepSettings();
   syncScannerNote();
   if (signalsShown()) renderPeaks();
   if (historyShown()) { syncHistorySummary(); syncHistoryNote(); }
   syncMem();
   syncSweep();
-  syncSignalScan();
   updateStatus();       // it names the scan that runs
 }
-// The latest refusal shows in every scan's place, Signals, Sweep and the
+// The latest refusal shows in every scan's place, Signals, Range and the
 // Bookmarks menu's dock; each tells when the engine that runs lacks its
-// scanners, the first it lacks: Signals both detection and the signals scan.
+// scanners, the first it lacks.
 const SCANNER_NOTES = [
-  ['#pk-note', [['peaks', 'The engine that runs does not find signals: restart Radiolack after its update.'],
-    ['signals', 'The engine that runs does not scan the signals: restart Radiolack after its update.']]],
-  ['#sw-note', [['sweep', 'The engine that runs does not sweep: restart Radiolack after its update.']]],
+  ['#pk-note', [['peaks', 'The engine that runs does not find signals: restart Radiolack after its update.']]],
+  ['#sw-note', [['sweep', 'The engine that runs does not scan ranges: restart Radiolack after its update.']]],
   ['#mem-note', [['memory', 'The engine that runs does not scan the bookmarks: restart Radiolack after its update.']]],
 ];
 function syncScannerNote() {
@@ -1760,7 +1747,7 @@ function stoppedText(reasons, scan) {
   return (about === scan && reasons[scanner.stopped]) || 'Stopped';
 }
 // While another scan runs, what starting `scan` with `start` does: it stops it.
-const SCAN_NAMES = { memory: 'The memory scan', sweep: 'The sweep', signals: 'The signals scan' };
+const SCAN_NAMES = { memory: 'The memory scan', sweep: 'The range scan', signals: 'The range scan' };
 function otherScanText(scan, start) {
   const other = scanner.scan !== null && scanner.scan !== scan ? SCAN_NAMES[scanner.scan] : undefined;
   return other ? `${other} runs: ${start} stops it.` : '';
@@ -1788,7 +1775,7 @@ function syncMem() {
       : `Watching ${watched} ${watched === 1 ? 'bookmark' : 'bookmarks'}`;
     if (memory.windows > 1 && memory.window !== null) text += `, window ${memory.window + 1} of ${memory.windows}`;
   } else if (known) {
-    // While the sweep runs, the span is the one it brings the receiver back to.
+    // While the range scan runs, the span is the one it brings the receiver back to.
     if (watched) text = otherScanText('memory', 'scanning') || stoppedText(MEM_STOPPED, 'memory');
     else if (!bookmarks.some((b) => b.scan)) text = 'Tick the bookmarks to scan.';
     else text = memoryVisits() ? "No ticked bookmark lies within the receiver's reach." : 'No ticked bookmark lies in the span.';
@@ -1799,84 +1786,107 @@ function syncMem() {
   syncMenuBadge();
 }
 
-// The engine's sweep steps a receiver that tunes across a range, window after
-// window, the same for every interface: this interface sets the range and
-// the time per window, starts and stops it, and shows where it stands. A new
-// range starts a running sweep again from its first window.
+// The engine's range scan (the protocol's sweep) steps a receiver that tunes
+// across a range, window after window, or searches the current window alone
+// for a range within it, the same for every interface, and may stop to
+// listen to each signal it finds, tuning the VFO alone, in the band plan's
+// mode: this interface sets its range, time per window, passes and
+// listening, the longest listening time and the resume time, the memory
+// scan's, starts and stops it, and shows where it stands; Signals' list
+// says which signal it is on. A new range starts a running scan again from
+// its first window.
 const SWEEP_STOPPED = {
   tuned: 'Stopped: the receiver was tuned by hand.',
   source: 'Stopped: another receiver was chosen.',
   range: 'Stopped: the receiver did not tune to a window of the range.',
-  start: 'Did not start with Radiolack: the receiver could not tune to the range.',
+  detection: 'Stopped: detection was turned off.',
+  done: 'Done: every pass set ran.',
+  start: 'Did not start with Radiolack: the receiver could not tune to the range, or detection was off.',
 };
 const swFrom = $('#sw-from'), swTo = $('#sw-to'), swWindow = $('#sw-window'), swWindowOut = $('#sw-window-v');
-const swStart = $('#sw-start');
+const swStart = $('#sw-start'), swHere = $('#sw-here'), swPasses = $('#sw-passes'), swEndless = $('#sw-endless');
+const swListen = $('#sw-listen');
+const sigListen = $('#sig-listen'), sigListenOut = $('#sig-listen-v');
+const sigResume = $('#sig-resume'), sigResumeOut = $('#sig-resume-v');
 const sweepKnown = () => scanner !== null && scanner.sweep !== null && stream.scanners.includes('sweep');
-const sweepRuns = () => sweepKnown() && scanner.scan === 'sweep';
+const sweepRuns = () => sweepKnown() && (scanner.scan === 'sweep' || scanner.scan === 'signals');
+// Whether the engine listens and counts passes: an older one does neither.
+const listeningKnown = () => sweepKnown() && scanner.sweep.listen !== null && scanner.listenS !== null;
 const sourceTunes = () => source !== null && source.settable.includes('centre_hz');
+// The part of the receiver's span that detection searches, as "Current
+// window" sets the range: its centre plus or minus 0.4 times the rate,
+// within it to the kHz.
+function currentWindow() {
+  if (!source) return null;
+  const half = 0.4 * source.rateHz;
+  return [Math.ceil((source.centreHz - half) / 1000) * 1000, Math.floor((source.centreHz + half) / 1000) * 1000];
+}
+// Whether the range lies within that part of the span: the scan then never tunes the receiver.
+function rangeHere() {
+  const here = currentWindow(), sweep = sweepKnown() ? scanner.sweep : null;
+  if (!here || !sweep) return false;
+  const half = 0.4 * source.rateHz;
+  return source.centreHz - half <= sweep.lowHz && sweep.highHz <= source.centreHz + half;
+}
+const DEFAULT_PASSES = 3;   // what the passes field offers once Endless is unticked
 // The range's fields show the engine's range, except while the user types in
-// them (typingIn).
+// them (typingIn); the passes field keeps its number while Endless is ticked.
 function syncSweepSettings() {
-  const sweep = sweepKnown() ? scanner.sweep : null;
+  const sweep = sweepKnown() ? scanner.sweep : null, listening = listeningKnown();
   for (const el of [swFrom, swTo, swWindow]) el.disabled = !sweep;
+  swEndless.disabled = !listening;
+  swPasses.disabled = !listening || sweep.passes === null;
+  swListen.disabled = !listening;
+  sigListen.disabled = !listening || !sweep.listen;
+  sigResume.disabled = !listening || !sweep.listen;
+  if (listening) {
+    swEndless.checked = sweep.passes === null;
+    if (sweep.passes !== null && !typingIn.has(swPasses)) swPasses.value = String(sweep.passes);
+    else if (swPasses.value === '') swPasses.value = String(DEFAULT_PASSES);
+    swListen.checked = sweep.listen;
+    sigListen.value = String(scanner.listenS);
+    sigListenOut.textContent = `${scanner.listenS} s`;
+    sigResume.value = String(scanner.resumeS);
+    sigResumeOut.textContent = `${scanner.resumeS} s`;
+  }
   if (!sweep) return;
   if (!typingIn.has(swFrom)) swFrom.value = formatFrequency(sweep.lowHz);
   if (!typingIn.has(swTo)) swTo.value = formatFrequency(sweep.highHz);
   swWindow.value = String(sweep.windowS);
   swWindowOut.textContent = `${sweep.windowS} s`;
 }
+// The channel the range scan is on; null while it watches, searches or does not run.
+const listenedHz = () => (sweepRuns() && scanner.signals ? scanner.signals.frequencyHz : null);
+// What the range scan's state says: the pass, the window and the signal it is on.
+function sweepProgress(sweep) {
+  if (sweep.windows === null) return 'Scanning';
+  let text = `Pass ${sweep.passesDone + 1}`;
+  if (sweep.passesSet !== null) text += ` of ${sweep.passesSet}`;
+  if (sweep.windows > 1) text += `, window ${sweep.window + 1} of ${sweep.windows}`;
+  const signals = scanner.signals;
+  if (signals && MEM_STATES[signals.state] && signals.frequencyHz !== null) {
+    text += `, ${MEM_STATES[signals.state].toLowerCase()} ${fmtMHz(signals.frequencyHz)} MHz`;
+  }
+  return text;
+}
 function syncSweep() {
   const known = sweepKnown(), runs = sweepRuns(), sweep = known ? scanner.sweep : null;
-  // The sweep's progress calls this several times a second: an unchanged text is not rewritten.
+  const listens = known && sweep.listen === true;
+  // The scan's progress calls this several times a second: an unchanged text is not rewritten.
   const label = runs ? 'Stop' : 'Start';
   if (swStart.textContent !== label) swStart.textContent = label;
-  swStart.disabled = !known || (!runs && !sourceTunes());
+  const tunes = sourceTunes() || rangeHere();
+  swStart.disabled = !known || (!runs && (!tunes || (listens && !scanner.detection)));
+  const hereOff = !known || source === null || scanner.scan !== null;
+  if (swHere.disabled !== hereOff) swHere.disabled = hereOff;
   let text = '';
-  if (runs) {
-    text = sweep.windows === null ? 'Sweeping'
-      : `Pass ${sweep.passes + 1}, window ${sweep.window + 1} of ${sweep.windows}`;
-  } else if (known) {
-    if (!sourceTunes()) text = 'The source in use does not tune.';
+  if (runs) text = sweepProgress(sweep);
+  else if (known) {
+    if (!tunes) text = 'The source in use does not tune: choose a range within the current window.';
+    else if (listens && !scanner.detection) text = 'Turn detection on to stop and listen.';
     else text = otherScanText('sweep', 'Start') || stoppedText(SWEEP_STOPPED, 'sweep');
   }
   const el = $('#sw-state');
-  if (el.textContent !== text) el.textContent = text;
-  syncMenuBadge();
-}
-// The engine's signals scan tunes the VFO to the active signals of the span
-// in turn, the receiver staying where it is, the same for every interface:
-// this interface starts and stops it, sets its longest listening time and
-// its resume time, the memory scan's (syncScanner), and shows where it
-// stands, in Signals, whose list says which signal it is on.
-const SIGNALS_STOPPED = {
-  tuned: 'Stopped: the receiver was tuned by hand.',
-  source: 'Stopped: another receiver was chosen.',
-  detection: 'Stopped: detection was turned off.',
-  start: 'Did not start with Radiolack: detection was off.',
-};
-const sigStart = $('#sig-start'), sigListen = $('#sig-listen'), sigListenOut = $('#sig-listen-v');
-const sigResume = $('#sig-resume'), sigResumeOut = $('#sig-resume-v');
-const signalsKnown = () => scanner !== null && scanner.signals !== null && scanner.listenS !== null
-  && stream.scanners.includes('signals');
-const signalsRun = () => signalsKnown() && scanner.scan === 'signals';
-// The channel the signals scan is on; null while it watches or does not run.
-const listenedHz = () => (signalsRun() ? scanner.signals.frequencyHz : null);
-function syncSignalScan() {
-  const known = signalsKnown(), runs = signalsRun();
-  // The scan's progress calls this several times a second: an unchanged text is not rewritten.
-  const label = runs ? 'Stop the scan' : 'Scan the signals';
-  if (sigStart.textContent !== label) sigStart.textContent = label;
-  sigStart.disabled = !known || (!runs && !scanner.detection);
-  let text = '';
-  if (runs) {
-    const { state, frequencyHz } = scanner.signals;
-    text = MEM_STATES[state] && frequencyHz !== null ? `${MEM_STATES[state]}: ${fmtMHz(frequencyHz)} MHz`
-      : 'Watching the active signals';
-  } else if (known) {
-    text = scanner.detection ? otherScanText('signals', 'scanning') || stoppedText(SIGNALS_STOPPED, 'signals')
-      : 'Turn detection on to scan the signals.';
-  }
-  const el = $('#sig-state');
   if (el.textContent !== text) el.textContent = text;
   if (listenedHz() !== listenedShownHz && signalsShown()) renderPeaks();
   syncMenuBadge();
@@ -2076,7 +2086,7 @@ function closeMenu(keyboard = false) {
 function toggleMenu(name) { if (openName === name) closeMenu(true); else showMenu(name); }
 // The dot on the menu's icon: red while a recording runs, green while a scan does.
 function syncMenuBadge() {
-  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns() || signalsRun();
+  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns();
   if (menuButton.classList.contains('recording') !== recordingNow) menuButton.classList.toggle('recording', recordingNow);
   if (menuButton.classList.contains('scanning') !== scanningNow) menuButton.classList.toggle('scanning', scanningNow);
 }
@@ -3008,7 +3018,24 @@ for (const el of [swFrom, swTo]) {
 swWindow.addEventListener('input', () => { swWindowOut.textContent = `${swWindow.value} s`; });
 swWindow.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepWindowS: Number(swWindow.value) })));
 swStart.addEventListener('click', () => sendScanner(() => stream.setScan(sweepRuns() ? null : 'sweep')));
-sigStart.addEventListener('click', () => sendScanner(() => stream.setScan(signalsRun() ? null : 'signals')));
+swHere.addEventListener('click', () => {
+  const here = currentWindow();
+  if (here) sendScanner(() => stream.setScanner({ sweepLowHz: here[0], sweepHighHz: here[1] }));
+});
+// A number of passes outside 1 to 99, or not whole, goes back to the engine's.
+function sendPasses() {
+  const n = Number(swPasses.value);
+  if (swPasses.value.trim() === '' || !Number.isInteger(n) || n < 1 || n > 99) { syncSweepSettings(); return; }
+  sendScanner(() => stream.setScanner({ sweepPasses: n }));
+}
+swPasses.addEventListener('input', () => typingIn.add(swPasses));
+swPasses.addEventListener('change', () => { typingIn.delete(swPasses); sendPasses(); });
+swPasses.addEventListener('blur', () => { if (typingIn.delete(swPasses)) syncSweepSettings(); });
+swEndless.addEventListener('change', () => {
+  if (swEndless.checked) sendScanner(() => stream.setScanner({ sweepPasses: null }));
+  else sendPasses();
+});
+swListen.addEventListener('change', () => sendScanner(() => stream.setScanner({ sweepListen: swListen.checked })));
 sigListen.addEventListener('input', () => { sigListenOut.textContent = `${sigListen.value} s`; });
 sigListen.addEventListener('change', () => sendScanner(() => stream.setScanner({ listenS: Number(sigListen.value) })));
 sigResume.addEventListener('input', () => { sigResumeOut.textContent = `${sigResume.value} s`; });

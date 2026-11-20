@@ -244,7 +244,8 @@ class ScanOptionTest(unittest.TestCase):
     def test_says_why_a_scan_cannot_start_and_runs_on(self):
         # The simulated band, the first time: it does not tune, and no bookmark is ticked.
         for scan, message in (
-                ("sweep", "the sweep cannot start: the sweep needs a receiver that tunes, such as an RTL-SDR"),
+                ("sweep", "the range scan cannot start: a range wider than the current window needs a receiver that "
+                          "tunes, such as an RTL-SDR"),
                 ("memory", "the memory scan cannot start: no ticked bookmark lies within the receiver's reach")):
             with self.subTest(scan=scan), own_settings():
                 code, out, err = run_main("--ui", "none", "--scan", scan)
@@ -256,8 +257,8 @@ class ScanOptionTest(unittest.TestCase):
             settings.parent.mkdir()
             settings.write_text(json.dumps({"version": 1, "scanner": {"detection": False}}), encoding="utf-8")
             code, out, err = run_main("--ui", "none", "--scan", "signals")
-        self.assertEqual((code, err), (0, "radiolack: the signals scan cannot start: the signals scan needs "
-                                          "detection: turn it on first\n"))
+        self.assertEqual((code, err), (0, "radiolack: the range scan cannot start: the range scan stops to "
+                                          "listen only while detection is on: turn it on first\n"))
         self.assertRegex(out, URL_LINE)
 
     def test_starts_the_signals_scan_on_the_simulated_band(self):
