@@ -44,10 +44,10 @@ def scanner_state(**changes) -> dict:
     """The scanner state message: the defaults, without a scan or a ticked
     bookmark, with ``changes``."""
     return {"type": "scanner", "detection": True, "threshold_db": 12.0, "ignored_hz": [], "resume_s": 2.0,
-            "listen_s": 10.0, "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5, "scan": None,
-            "stopped": None, "stopped_scan": None,
+            "listen_s": 10.0, "sweep_low_hz": 430e6, "sweep_high_hz": 440e6, "sweep_window_s": 0.5,
+            "sweep_listen": False, "sweep_passes": None, "scan": None, "stopped": None, "stopped_scan": None,
             "memory": {"watched": [], "windows": 0, "window": None, "state": None, "bookmark_id": None},
-            "sweep": {"windows": None, "window": None, "passes": None},
+            "sweep": {"windows": None, "window": None, "passes": None, "passes_set": None},
             "signals": {"state": None, "frequency_hz": None}, **changes}
 
 
@@ -1360,6 +1360,8 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
                    {"sweep_low_hz": 1300e6}, {"sweep_high_hz": 1200e6}, {"sweep_low_hz": 0},
                    {"sweep_high_hz": "1300 MHz"}, {"sweep_low_hz": None}, {"sweep_window_s": 0.2},
                    {"sweep_window_s": 2.5}, {"sweep_window_s": float("inf")}, {"sweep_window_s": False},
+                   {"sweep_listen": 1}, {"sweep_listen": None}, {"sweep_passes": 0}, {"sweep_passes": 100},
+                   {"sweep_passes": 2.5}, {"sweep_passes": True}, {"sweep_passes": "3"},
                    {"sweep_low_hz": 1250e6, "threshold_db": 60},
                    {"ignore": 145e6, "restore": True}, {"ignore": 145e6, "detection": False},
                    {"ignore": "145 MHz"}, {"ignore": 0}, {"restore": False}, {"restore": 1},
@@ -1435,7 +1437,8 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_the_scanner_settings_are_saved_with_the_others(self):
         engine = self.engine(run=False, store=Store(self.directory), save_delay_s=0.01)
         engine.configure_scanner({"detection": False, "threshold_db": 18.5, "resume_s": 4.5, "listen_s": 25.5})
-        engine.configure_scanner({"sweep_low_hz": 118e6, "sweep_high_hz": 137_000_000.4, "sweep_window_s": 1.25})
+        engine.configure_scanner({"sweep_low_hz": 118e6, "sweep_high_hz": 137_000_000.4, "sweep_window_s": 1.25,
+                                  "sweep_listen": True, "sweep_passes": 3.0})
         engine.configure_scanner({"ignore": 145_500_000.4})
         engine.configure_scanner({"ignore": 144_800_000})
         engine.close()
@@ -1443,21 +1446,24 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
         saved = json.loads((self.directory / SETTINGS_FILE).read_text(encoding="utf-8"))
         self.assertEqual(saved["scanner"], {"detection": False, "threshold_db": 18.5, "resume_s": 4.5,
                                             "listen_s": 25.5, "sweep_low_hz": 118e6, "sweep_high_hz": 137e6,
-                                            "sweep_window_s": 1.25, "ignored_hz": [144_800_000.0, 145_500_000.0]})
+                                            "sweep_window_s": 1.25, "sweep_listen": True, "sweep_passes": 3,
+                                            "ignored_hz": [144_800_000.0, 145_500_000.0]})
         again = self.engine(run=False, store=Store(self.directory))
         self.assertEqual(again.scanner_state(), scanner_state(
             detection=False, threshold_db=18.5, resume_s=4.5, listen_s=25.5, sweep_low_hz=118e6,
-            sweep_high_hz=137e6, sweep_window_s=1.25, ignored_hz=[144_800_000.0, 145_500_000.0]))
+            sweep_high_hz=137e6, sweep_window_s=1.25, sweep_listen=True, sweep_passes=3,
+            ignored_hz=[144_800_000.0, 145_500_000.0]))
 
     async def test_saved_scanner_settings_that_are_not_valid_keep_their_defaults(self):
         self.directory.mkdir()
         settings = self.directory / SETTINGS_FILE
         for saved, expected in (
                 ({"detection": "yes", "threshold_db": 99, "resume_s": -1, "listen_s": 0, "sweep_low_hz": 440e6,
-                  "sweep_high_hz": 430e6, "sweep_window_s": 0.1,
+                  "sweep_high_hz": 430e6, "sweep_window_s": 0.1, "sweep_listen": "yes", "sweep_passes": 0,
                   "ignored_hz": [145e6, "x", 0, 10 ** 400, 145e6 + 100, 144e6]},
                  (True, 12.0, [144e6, 145e6])),
-                ({"sweep_low_hz": 118e6, "sweep_window_s": True, "listen_s": "10", "ignored_hz": {"145e6": True}},
+                ({"sweep_low_hz": 118e6, "sweep_window_s": True, "listen_s": "10", "sweep_passes": 2.5,
+                  "ignored_hz": {"145e6": True}},
                  (True, 12.0, [])),
                 ([1], (True, 12.0, [])),
                 ({"ignored_hz": [144e6 + n * 10_000 for n in range(250)]}, (True, 12.0, None))):
@@ -1469,8 +1475,9 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
                 engine.close()
                 detection, threshold_db, ignored = expected
                 self.assertEqual((state["detection"], state["threshold_db"], state["resume_s"], state["listen_s"],
-                                  state["sweep_low_hz"], state["sweep_high_hz"], state["sweep_window_s"]),
-                                 (detection, threshold_db, 2.0, 10.0, 430e6, 440e6, 0.5))
+                                  state["sweep_low_hz"], state["sweep_high_hz"], state["sweep_window_s"],
+                                  state["sweep_listen"], state["sweep_passes"]),
+                                 (detection, threshold_db, 2.0, 10.0, 430e6, 440e6, 0.5, False, None))
                 if ignored is None:
                     self.assertEqual(state["ignored_hz"], [144e6 + n * 10_000 for n in range(200)])
                 else:
@@ -1988,7 +1995,7 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
         engine.configure_scanner({"scan": "sweep"})
         state = engine.scanner_state()
         self.assertEqual((state["scan"], state["stopped"], state["sweep"]),
-                         ("sweep", None, {"windows": 4, "window": 0, "passes": 0}))
+                         ("sweep", None, {"windows": 4, "window": 0, "passes": 0, "passes_set": None}))
         self.assertEqual(source.centre_hz, SWEEP_WINDOWS.centre(0))
         for subscription in (local, remote):
             await next_scanner(subscription, until=lambda message: message["sweep"]["passes"] >= 1)
@@ -2002,7 +2009,7 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
         engine.configure_scanner({"scan": None})
         state = engine.scanner_state()
         self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"], state["sweep"]),
-                         (None, None, None, {"windows": None, "window": None, "passes": None}))
+                         (None, None, None, {"windows": None, "window": None, "passes": None, "passes_set": None}))
         self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (HOME_HZ, HOME_VFO_HZ))
 
     async def test_tuning_by_hand_or_another_source_stops_it_where_it_is(self):
@@ -2069,7 +2076,8 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
         await next_scanner(subscription, until=at_window(2))
         engine.configure_scanner({"sweep_low_hz": 433e6, "sweep_high_hz": 434e6, "sweep_window_s": 2})
         windows = sweep_windows(433e6, 434e6, FAKE_RATE_HZ)
-        self.assertEqual(engine.scanner_state()["sweep"], {"windows": windows.count, "window": 0, "passes": 0})
+        self.assertEqual(engine.scanner_state()["sweep"], {"windows": windows.count, "window": 0, "passes": 0,
+                                                             "passes_set": None})
         self.assertEqual((source.centre_hz, engine._sweep.search_blocks), (windows.centre(0), 30))
         engine.configure_scanner({"scan": None})
         self.assertEqual(source.centre_hz, HOME_HZ)
@@ -2128,6 +2136,117 @@ class SweepTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(engine._windows, windows)
         engine.configure_demod({"frequency_hz": source.centre_hz + 10_000})     # it stays in the window
         self.assertEqual(engine._windows, (SWEEP_WINDOWS.centre(2),))
+
+
+LOW_CHANNEL_HZ = 145_037_500.0      # 12.5 kHz channels of the 2 m band, where the band plan names NFM:
+HIGH_CHANNEL_HZ = 145_162_500.0     # the first in the sweep's first two windows, the second in its last three
+
+
+class ListeningSweepTest(unittest.IsolatedAsyncioTestCase):
+    """The sweep that listens (the range scan, docs/design/range-scan.md):
+    in each window, once its searches end, it listens to the window's
+    active signals in turn as the signals scan does, then goes on; a range
+    within the span never tunes the receiver; the passes set end it; Stop
+    leaves it on the signal it listens to."""
+
+    def engine(self, source: Source | None = None, **options) -> Engine:
+        engine = Engine(source, **options)
+        task = asyncio.ensure_future(engine.run())
+
+        async def stop():
+            engine.close()
+            await asyncio.wait_for(task, timeout=5)
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+        self.addAsyncCleanup(stop)
+        return engine
+
+    def sweeping(self, source: Source, **settings) -> Engine:
+        engine = self.engine(source)
+        engine.configure_scanner({"sweep_low_hz": SWEEP_HZ[0], "sweep_high_hz": SWEEP_HZ[1],
+                                  "sweep_window_s": 0.25, "listen_s": 2, **settings})
+        engine.configure_demod({"frequency_hz": HOME_VFO_HZ})
+        return engine
+
+    async def test_listens_in_each_window_once_a_pass_and_stays_on_the_signal_once_stopped(self):
+        source = TuningSource({LOW_CHANNEL_HZ: 0.03, HIGH_CHANNEL_HZ: 0.03})
+        engine = self.sweeping(source, sweep_listen=True)
+        local, remote = engine.subscribe(), engine.subscribe(device="5f0c2a91")
+        engine.configure_scanner({"scan": "sweep"})
+        for subscription in (local, remote):
+            state = await next_scanner(subscription, until=scanning("listening", LOW_CHANNEL_HZ))
+            self.assertEqual((state["scan"], state["sweep"]["window"]), ("sweep", 0))
+        demod = engine.demod_state()
+        self.assertEqual((demod["frequency_hz"], demod["mode"], source.centre_hz),
+                         (LOW_CHANNEL_HZ, "NFM", SWEEP_WINDOWS.centre(0)))
+        # Both carriers stay on the air: each is left after the longest
+        # listening time, and the low one, heard in the first window, is not
+        # listened to again in the second, which holds both.
+        heard = []
+        while HIGH_CHANNEL_HZ not in heard:
+            state = await asyncio.wait_for(next_scanner(local, until=scanning("checking")), 10)
+            heard.append(state["signals"]["frequency_hz"])
+        self.assertEqual(heard, [HIGH_CHANNEL_HZ])
+        self.assertEqual(state["sweep"]["window"], 1)
+        await next_scanner(local, until=scanning("listening", HIGH_CHANNEL_HZ))
+        window = source.centre_hz
+        engine.configure_scanner({"scan": None})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["signals"]), (None, None,
+                                                                              {"state": None, "frequency_hz": None}))
+        self.assertEqual((source.centre_hz, engine.demod_state()["frequency_hz"]), (window, HIGH_CHANNEL_HZ))
+
+    async def test_the_passes_set_stop_it_and_bring_the_receiver_back(self):
+        source = TuningSource({})
+        engine = self.sweeping(source, sweep_passes=1)
+        subscription = engine.subscribe()
+        engine.configure_scanner({"scan": "sweep"})
+        self.assertEqual(engine.scanner_state()["sweep"]["passes_set"], 1)
+        state = await asyncio.wait_for(next_scanner(subscription, until=lambda message: message["scan"] is None), 10)
+        self.assertEqual((state["stopped"], state["stopped_scan"]), ("done", "sweep"))
+        self.assertEqual(source.tuned, [SWEEP_WINDOWS.centre(index) for index in range(4)] + [HOME_HZ])
+        self.assertEqual(engine.demod_state()["frequency_hz"], HOME_VFO_HZ)
+
+    async def test_a_range_within_the_span_never_tunes_the_receiver(self):
+        engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.03}))      # a source that does not tune
+        subscription = engine.subscribe()
+        vfo_hz = FAKE_CENTRE_HZ + 10_000
+        engine.configure_demod({"frequency_hz": vfo_hz})
+        engine.configure_scanner({"sweep_low_hz": FAKE_CENTRE_HZ - 90_000, "sweep_high_hz": FAKE_CENTRE_HZ + 90_000,
+                                  "sweep_window_s": 0.25, "listen_s": 2})
+        engine.configure_scanner({"scan": "sweep"})       # without listening, pass after pass
+        state = await next_scanner(subscription, until=lambda message: message["sweep"]["passes"] == 2)
+        self.assertEqual(state["sweep"]["windows"], 1)
+        engine.configure_scanner({"scan": None})          # not on a signal: the VFO comes back
+        self.assertEqual(engine.demod_state()["frequency_hz"], vfo_hz)
+        engine.configure_scanner({"sweep_listen": True})
+        engine.configure_scanner({"scan": "sweep"})
+        for channel in (CHANNEL_B_HZ, CHANNEL_A_HZ, CHANNEL_B_HZ):
+            await asyncio.wait_for(next_scanner(subscription, until=scanning("listening", channel)), 10)
+        self.assertEqual(engine.scanner_state()["sweep"]["window"], 0)
+
+    async def test_detection_turned_off_stops_it_and_an_ignored_signal_is_left(self):
+        engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.03}))
+        subscription = engine.subscribe()
+        engine.configure_scanner({"sweep_low_hz": FAKE_CENTRE_HZ - 90_000, "sweep_high_hz": FAKE_CENTRE_HZ + 90_000,
+                                  "sweep_window_s": 0.25, "sweep_listen": True})
+        engine.configure_scanner({"scan": "sweep"})
+        await next_scanner(subscription, until=scanning("listening", CHANNEL_B_HZ))
+        [ignored] = [peak["frequency_hz"] for peak in engine.peaks_state()["peaks"]
+                     if peak["channel_hz"] == CHANNEL_B_HZ]
+        engine.configure_scanner({"ignore": ignored})
+        self.assertEqual(engine.scanner_state()["signals"], {"state": "watching", "frequency_hz": None})
+        await asyncio.wait_for(next_scanner(subscription, until=scanning("listening", CHANNEL_A_HZ)), timeout=3)
+        engine.configure_scanner({"detection": False})
+        state = engine.scanner_state()
+        self.assertEqual((state["scan"], state["stopped"], state["stopped_scan"]), (None, "detection", "sweep"))
+        with self.assertRaisesRegex(ValueError, "listens only while detection is on"):
+            engine.configure_scanner({"scan": "sweep"})
+        engine.configure_scanner({"sweep_listen": False})
+        engine.configure_scanner({"scan": "sweep"})       # a sweep that does not listen runs without detection
+        with self.assertRaisesRegex(ValueError, "listens only while detection is on"):
+            engine.configure_scanner({"sweep_listen": True})
+        self.assertEqual((engine.scanner_state()["scan"], engine.scanner_state()["sweep_listen"]), ("sweep", False))
 
 
 class RtlTcpSweepTest(unittest.IsolatedAsyncioTestCase):

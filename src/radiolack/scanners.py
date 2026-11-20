@@ -50,7 +50,16 @@ escape the sweep and the memory scan alike.
 there the blocks of SWEEP_SEARCHES searches, so that a signal found in two
 of them is listed without the next window's help, then asks for the next
 window, pass after pass. A window whose samples do not come while others do
-is left after GIVE_UP_S.
+is left after GIVE_UP_S. With listening on (the range scan,
+docs/design/range-scan.md), once a window's searches end the sweep takes
+the signals active there as the window's queue and listens to each in turn
+as the signals scan does, then goes on to the next window: a signal of the
+queue is left after the longest listening time, whether another of the
+queue waits or not, so that one on the air all the time does not hold the
+sweep, and a signal tuned to in one window waits for the next pass in the
+windows that overlap it. A range that lies within the part of the receiver's span that
+detection searches takes that one window (``range_window``), at the
+receiver's centre frequency. After the passes set, the sweep is done.
 
 The signals scan listens to the active signals of the span, one after the
 other, with the VFO alone: ``SignalScan`` tunes to the active signal that
@@ -110,6 +119,7 @@ DEFAULT_SWEEP_HZ = (430_000_000.0, 440_000_000.0)  # the 70 cm band
 GIVE_UP_S = 2.0                     # a window whose samples do not come within this long, while others do, is left
 LISTEN_RANGE_S = (2.0, 60.0)        # the signals scan's longest listening time
 DEFAULT_LISTEN_S = 10.0
+PASSES_RANGE = (1, 99)              # the sweep's passes, when not endless
 
 
 @dataclasses.dataclass(frozen=True)
@@ -553,6 +563,11 @@ class SignalScan:
         again: an interface ignores its frequency."""
         self._watch()
 
+    def due(self, now: float) -> bool:
+        """Whether the scan listened its longest listening time on the
+        channel tuned to, by ``now``; never while watching."""
+        return now >= self._leave_s
+
     def _tune(self, now: float, channels: Sequence[float], listen_s: float) -> float | None:
         """Tune to the channel that waited longest, other than the one tuned
         to, if one waits."""
@@ -755,14 +770,33 @@ def search_blocks(window_s: float, frame_rate: float) -> int:
     return max(1, round(window_s * frame_rate / SWEEP_SEARCHES))
 
 
+def range_window(low_hz: float, high_hz: float, centre_hz: float, rate_hz: float) -> SweepWindows | None:
+    """The one window of a range that lies within the part of a span centred
+    on ``centre_hz`` at ``rate_hz`` that detection searches: the span itself,
+    which the receiver need not leave; None for a wider range."""
+    reach = USABLE_FRACTION * rate_hz
+    if centre_hz - reach <= low_hz and high_hz <= centre_hz + reach:
+        return SweepWindows(centre_hz, 0.0, 1)
+    return None
+
+
 class Sweep:
     """A sweep's progress through its ``windows``: ``window``, from 0, is the
     one asked of the receiver, and ``passes`` the passes done. Each window
     reads ``search_blocks`` blocks for each of its SWEEP_SEARCHES searches,
-    from the first block whose samples come from it."""
+    from the first block whose samples come from it. With ``listen``, a
+    window's searches are followed by ``listening``, the signals scan of
+    the window's queue, until each signal of the queue was tuned to, the
+    one that waited longest first, across windows and passes; a signal
+    tuned to in one window is not queued again in the next windows of the
+    pass, which overlap.
+    ``passes_set`` passes, or endless when None, make the sweep ``done``."""
 
-    def __init__(self, windows: SweepWindows, search_blocks: int, now: float) -> None:
+    def __init__(self, windows: SweepWindows, search_blocks: int, now: float, listen: bool = False,
+                 passes_set: int | None = None) -> None:
         self.search_blocks = search_blocks
+        self.listen = listen
+        self.passes_set = passes_set
         self.restart(windows, now)
 
     def restart(self, windows: SweepWindows, now: float) -> None:
@@ -770,6 +804,14 @@ class Sweep:
         self.windows = windows
         self.window = 0
         self.passes = 0
+        self.done = False
+        # The signals scan of each window's queue, which keeps across windows
+        # and passes when each channel was last tuned to; ``listening`` while
+        # it listens in a window.
+        self._scan = SignalScan()
+        self.listening: SignalScan | None = None
+        self._queue: list[float] = []   # the window's channels still to tune to
+        self._heard: list[float] = []   # the channels tuned to in this pass, which windows overlap
         self._read = 0          # blocks of the window read so far
         self._asked_s = now     # when the window was asked for
 
@@ -778,24 +820,70 @@ class Sweep:
         """The centre frequency of the window asked of the receiver."""
         return self.windows.centre(self.window)
 
-    def step(self, now: float, centre_hz: float) -> float | None:
-        """Move on with a block read at ``centre_hz`` and handled at ``now``.
-        Returns the centre frequency of the next window, to ask of the
-        receiver, once this window's blocks have been read, or once GIVE_UP_S
-        passed since it was asked for without its samples while others came;
-        None otherwise."""
-        if centre_hz == self.centre_hz:
+    def step(self, now: float, centre_hz: float, channels: Sequence[float] = ()) -> float | None:
+        """Move on with a block read at ``centre_hz`` and handled at ``now``,
+        ``channels`` being those of the window's active signals. Returns the
+        centre frequency of the next window, to ask of the receiver, once
+        this window's blocks have been read, or once GIVE_UP_S passed since
+        it was asked for without its samples while others came; None
+        otherwise, and while it listens. With ``listen``, the end of the
+        window's searches starts ``listening`` instead, ``channels`` being
+        its queue, and ``listen_step`` moves it on from there."""
+        if self.listening is not None:
+            return None
+        if abs(centre_hz - self.centre_hz) <= 0.5:
             self._read += 1
             if self._read < SWEEP_SEARCHES * self.search_blocks:
                 return None
+            if self.listen:
+                self._scan.leave()      # from where the previous window left it
+                self.listening = self._scan
+                self._queue = [channel for channel in channels
+                               if all(abs(channel - heard) > MERGE_HZ for heard in self._heard)]
+                return None
         elif now - self._asked_s < GIVE_UP_S:
             return None
+        return self._next(now)
+
+    def listen_step(self, now: float, channels: Sequence[float], squelch_open: bool, resume_s: float,
+                    listen_s: float) -> tuple[float | None, float | None]:
+        """Move the listening on with a block that ended at ``now``:
+        ``channels`` are those of the window's active signals, and
+        ``squelch_open`` the squelch's state at the block's end. Returns the
+        centre frequency of the next window once every channel of the queue
+        was tuned to, or is no longer active, and the scan has left the
+        last, and the channel to tune the VFO to; None for either
+        otherwise. Listening turned off leaves the window at once."""
+        scan = self.listening
+        if scan is None:
+            return None, None
+        waiting = [channel for channel in channels
+                   if any(abs(channel - queued) <= MERGE_HZ for queued in self._queue)]
+        if self.listen:
+            target = scan.step(now, waiting, squelch_open, resume_s, listen_s)
+            if target is not None:
+                self._queue = [queued for queued in self._queue if abs(queued - target) > MERGE_HZ]
+                self._heard.append(target)
+                return None, target
+            if waiting or (scan.state != "watching" and not scan.due(now)):
+                return None, None
+        self.listening = None
+        self._queue = []
+        return self._next(now), None
+
+    def _next(self, now: float) -> float | None:
+        """Ask for the next window, the first after the last; once the
+        passes set are done, the sweep is ``done`` and asks for none."""
         self.window += 1
+        self._read = 0
+        self._asked_s = now
         if self.window == self.windows.count:
             self.window = 0
             self.passes += 1
-        self._read = 0
-        self._asked_s = now
+            self._heard = []
+            if self.passes_set is not None and self.passes >= self.passes_set:
+                self.done = True
+                return None
         return self.centre_hz
 
 
@@ -843,6 +931,19 @@ def checked_window(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
         raise ValueError(f"the time per window must be a number of seconds from {low:g} to {high:g}")
     return float(value)
+
+
+def checked_passes(value: object) -> int | None:
+    """A sweep's passes an interface gave, a whole number within
+    PASSES_RANGE, or None for endless; raises ValueError otherwise."""
+    if value is None:
+        return None
+    low, high = PASSES_RANGE
+    # NaN fails the comparison; a float must be whole.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
+            or value != int(value):
+        raise ValueError(f"the passes must be a whole number from {low} to {high}, or null for endless")
+    return int(value)
 
 
 def checked_sweep_range(low_hz: object, high_hz: object) -> tuple[float, float]:
