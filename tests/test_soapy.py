@@ -924,6 +924,10 @@ class TapTest(SourceCase):
         await self.samples(source)
         while self.soapy.opened[0].streams[0].reads <= 32:
             await self.samples(source)
+        # A read that finds samples waiting returns without yielding, so the
+        # samples kept after the overflow may still wait for the event loop:
+        # stopping the tap now would drop them.
+        await eventually(lambda: sum(not entry[3] for entry in handed) >= 2)
         source.tap(None)
         count = len(handed)
         await self.samples(source)
