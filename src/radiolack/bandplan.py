@@ -3,7 +3,7 @@ the channel it shows a signal on.
 
 The interface reads the same file (format in docs/design/band-plan.md) in
 bandplan.js and channels.js, for all that it shows. The engine reads what
-its signals scan and its lists of signals need: each range's mode and
+its range scan and its lists of signals need: each range's mode and
 step, a band without segments being one range, a band with segments one
 range per segment, the parts that its segments leave out taking the
 band's; the channel sets, with their channels and modes; and the known

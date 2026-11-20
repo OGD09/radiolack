@@ -62,7 +62,7 @@ BROWSERS = chosen_browsers(os.environ.get("RADIOLACK_BROWSERS", ""))
 TIMEOUT_MS = 10_000     # enough for the first frames on a slow runner
 MENU_BUTTON = "#menu-button"
 # The classes that show a dot on the menu's icon: red while a recording runs,
-# green while the memory scan or the sweep does.
+# green while the memory scan or the range scan does.
 RECORDING = re.compile(r"(^|\s)recording(\s|$)")
 SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
 # The menus, in the order of the keys 1 to 8, with their titles (index.html).
@@ -1866,37 +1866,66 @@ class BrowserTest(unittest.TestCase):
                 expect(page.locator("#pk-excluded")).to_have_text("1 ignored frequency.")
                 expect(page.locator(f'#pk-body button[data-tune="{frequency}"]')).to_have_count(0)
 
-    def test_every_interface_follows_the_signals_scan_until_one_tunes_by_hand(self):
+    def test_every_interface_follows_the_range_scan_over_the_current_window(self):
         url = self.serve()      # the simulated band, whose beacons are always on the air
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
                     self.open_menu(page, "scan")     # on its Signals tab
                     expect(page.locator("#pk-body button[data-tune]").first).to_be_visible()
-                    expect(page.locator("#sig-state")).to_have_text("Stopped")
-                    expect(page.locator("#sig-listen-v")).to_have_text("10 s")
+                    page.locator('#scan-tabs button[data-tab="sweep"]').click()
+                    # The simulated band does not tune: only a range within the current window scans.
+                    expect(page.locator("#sw-state")).to_have_text(
+                        "The source in use does not tune: choose a range within the current window.")
+                    expect(page.locator("#sw-start")).to_be_disabled()
+                    expect(page.locator("#sw-endless")).to_be_checked()
+                    expect(page.locator("#sw-passes")).to_be_disabled()
+                    expect(page.locator("#sw-listen")).not_to_be_checked()
+                    expect(page.locator("#sig-listen")).to_be_disabled()
                     expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
-                first.locator("#sig-start").click()
+                first.locator("#sw-here").click()    # 145 MHz plus or minus 0.4 times 2.4 MS/s
+                first.locator("#sw-listen").check()
+                for page in (first, second):
+                    expect(page.locator("#sw-from")).to_have_value("144.040")
+                    expect(page.locator("#sw-to")).to_have_value("145.960")
+                    expect(page.locator("#sw-listen")).to_be_checked()
+                    expect(page.locator("#sig-listen")).to_be_enabled()
+                    expect(page.locator("#sig-listen-v")).to_have_text("10 s")
+                    expect(page.locator("#sw-state")).to_have_text("Stopped")
+                first.locator("#sw-start").click()
                 for page in (first, second):    # on a signal of the list, which marks it
-                    expect(page.locator("#sig-state")).to_have_text(
-                        re.compile(r"^(Checking|Listening|Waiting): \d+\.\d{4} MHz$"))
-                    expect(page.locator("#pk-body tr.listening")).to_have_count(1)
-                    expect(page.locator("#sig-start")).to_have_text("Stop the scan")
+                    expect(page.locator("#sw-state")).to_have_text(
+                        re.compile(r"^Pass \d+, (checking|listening|waiting) \d+\.\d{4} MHz$"))
+                    expect(page.locator("#sw-start")).to_have_text("Stop")
+                    expect(page.locator("#sw-here")).to_be_disabled()
                     expect(page.locator(MENU_BUTTON)).to_have_class(SCANNING)     # the icon's dot, green
-                    expect(page.locator("#status")).to_contain_text(f"{DOT} signals scan")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} range scan")
+                    page.locator('#scan-tabs button[data-tab="signals"]').click()
+                    expect(page.locator("#pk-body tr.listening")).to_have_count(1)
                 second.keyboard.press("ArrowRight")     # one step up: tuning by hand stops the scan
                 for page in (first, second):
-                    expect(page.locator("#sig-state")).to_have_text("Stopped: the receiver was tuned by hand.")
-                    expect(page.locator("#sig-start")).to_have_text("Scan the signals")
                     expect(page.locator("#pk-body tr.listening")).to_have_count(0)
+                    page.locator('#scan-tabs button[data-tab="sweep"]').click()
+                    expect(page.locator("#sw-state")).to_have_text("Stopped: the receiver was tuned by hand.")
+                    expect(page.locator("#sw-start")).to_have_text("Start")
                     expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
-                    expect(page.locator("#status")).not_to_contain_text("signals scan")
-                first.locator("#pk-on").uncheck()       # the scan needs detection
+                    expect(page.locator("#status")).not_to_contain_text("range scan")
+                first.locator("#sw-endless").uncheck()      # three passes, then it stops by itself
                 for page in (first, second):
-                    expect(page.locator("#sig-state")).to_have_text("Turn detection on to scan the signals.")
-                    expect(page.locator("#sig-start")).to_be_disabled()
+                    expect(page.locator("#sw-passes")).to_have_value("3")
+                    expect(page.locator("#sw-passes")).to_be_enabled()
+                first.locator("#sw-listen").uncheck()
+                first.locator("#sw-start").click()
+                for page in (first, second):
+                    expect(page.locator("#sw-state")).to_have_text("Done: every pass set ran.")
+                first.locator("#sw-listen").check()
+                first.locator('#scan-tabs button[data-tab="signals"]').click()
+                first.locator("#pk-on").uncheck()       # listening needs detection
+                expect(second.locator("#sw-state")).to_have_text("Turn detection on to stop and listen.")
+                expect(second.locator("#sw-start")).to_be_disabled()
                 first.locator("#pk-on").check()
                 expect(first.locator("#pk-note")).to_be_hidden()
+                expect(second.locator("#sw-note")).to_be_hidden()
 
     def test_every_interface_follows_the_memory_scan_until_one_tunes_by_hand(self):
         for browser in BROWSERS:
@@ -1988,13 +2017,13 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#sw-state")).to_have_text(re.compile(r"^Pass 1, window ([2-9]|1\d) of 17$"))
                     expect(page.locator("#sw-start")).to_have_text("Stop")
                     expect(page.locator(MENU_BUTTON)).to_have_class(SCANNING)
-                    expect(page.locator("#status")).to_contain_text(f"{DOT} sweep")
+                    expect(page.locator("#status")).to_contain_text(f"{DOT} range scan")
                 second.locator("#sw-start").click()
                 for page in (first, second):
                     expect(page.locator("#sw-state")).to_have_text("Stopped")
                     expect(page.locator("#sw-start")).to_have_text("Start")
                     expect(page.locator(MENU_BUTTON)).not_to_have_class(SCANNING)
-                    expect(page.locator("#status")).not_to_contain_text("sweep")
+                    expect(page.locator("#status")).not_to_contain_text("range scan")
                     expect(page.locator("#src-center")).to_have_value(home)     # the receiver came back
                 expect(first.locator("#sw-note")).to_be_hidden()
 

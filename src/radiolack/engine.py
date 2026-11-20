@@ -42,9 +42,13 @@ time: the memory scan, which tunes the VFO to the ticked bookmarks of the
 span as they become active, and with a receiver that tunes visits those
 outside the span too, window after window; with a receiver that tunes, the
 sweep, which steps the receiver across a range in windows and brings it
-back, with the VFO, once a client stops it; or the signals scan, which
-tunes the VFO alone to the active signals of the span in turn, in the band
-plan's mode, and leaves it where it is once stopped. A memory scan that
+back, with the VFO, once a client stops it, unless it stops on a signal it
+listens to: the range scan (docs/design/range-scan.md), which may stop to
+listen to the active signals of each window in turn with the VFO alone, in
+the band plan's mode, may stop by itself after a number of passes, and
+never tunes the receiver for a range within the part of the span that
+detection searches; "signals", which an older page sends, starts it over
+that part of the span, stopping to listen. A memory scan that
 stops while it watches, once it moved the receiver, brings them back too. A scan keeps the engine reading without
 any client, until a client stops it, tunes by hand or chooses another
 source. Whether it runs is never saved: while a scan runs, the receiver's
@@ -163,6 +167,7 @@ SAVE_DELAY_S = 1.0      # changes are saved this long after the first of a burst
 OBSERVATIONS_SAVE_S = 600.0     # the observations are written at most this often, and when the engine stops
 UNRECORDED_KINDS = ("synthetic",)   # sources neither observed nor recorded: the simulated band
 PEAKS_INTERVAL_S = 1.0  # the signals found go to the clients at most this often
+LISTEN_NEEDS_DETECTION = "the range scan stops to listen only while detection is on: turn it on first"
 SCANNER_SETTINGS = ("detection", "threshold_db", "resume_s", "listen_s", "sweep_low_hz", "sweep_high_hz",
                     "sweep_window_s", "sweep_listen", "sweep_passes", "ignore", "restore", "scan")
 OBSERVATIONS_FIELDS = ("clear", "clear_all")
@@ -581,13 +586,14 @@ class Engine:
         self._observations_timer: asyncio.TimerHandle | None = None
         # Scanners: detection's settings, the signals found and the ignored
         # frequencies; the band plan, which gives the channels they show on
-        # and the modes the signals scan takes; the memory scan's resume
-        # time, which the signals scan takes too, the bookmarks it watches,
-        # the windows they take and the channels of the span; the sweep's
-        # range, time per window, listening and passes; the longest
-        # listening time, the signals scan's and the listening sweep's; the
-        # scan, while one runs, and the receiver's centre frequency and the
-        # VFO's settings at its start.
+        # and the modes the range scan takes; the memory scan's resume
+        # time, which the range scan takes too, the bookmarks it watches,
+        # the windows they take and the channels of the span; the range
+        # scan's (the sweep's) range, time per window, listening and passes;
+        # its longest listening time; the scan, while one runs, whether the
+        # range scan runs over the current window that "signals" gave it,
+        # and the receiver's centre frequency and the VFO's settings at its
+        # start.
         self._detector = Detector()         # used by one block at a time, like the demodulator
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
@@ -607,7 +613,7 @@ class Engine:
         self._memory: MemoryScan | None = None
         self._tour: MemoryTour | None = None        # the memory scan's windows, while it runs
         self._sweep: Sweep | None = None
-        self._signal_scan: SignalScan | None = None
+        self._sweep_here = False    # the range scan runs over the current window, as "signals" started it
         self._signal_tuned = (0.0, 0.0)    # the frequency and width of the signal a scan tuned to last
         self._home: tuple[float, DemodSettings] | None = None   # at the start of the scan that runs
         # Which scan stopped by itself last, or could not start as given at
@@ -838,19 +844,20 @@ class Engine:
 
     def configure_scanner(self, changes: Mapping[str, object]) -> None:
         """Change detection's settings, ``detection`` (true or false) and
-        ``threshold_db``, the memory scan's and the signals scan's
-        ``resume_s``, the signals scan's and the listening sweep's
-        ``listen_s``, and the sweep's range, ``sweep_low_hz`` to
+        ``threshold_db``, the memory scan's and the range scan's
+        ``resume_s``, the range scan's ``listen_s``, and its range,
+        ``sweep_low_hz`` to
         ``sweep_high_hz``, time per window, ``sweep_window_s``, listening,
         ``sweep_listen``, and passes, ``sweep_passes``; or, each alone in its
         message, ``ignore`` a frequency, ``restore`` (true) every ignored
-        one, or start a scan (``scan``: "memory", "sweep" or "signals") or
-        stop the one that runs (``scan``: None). A new range starts a
-        running sweep again from its first window, and its listening and
-        passes apply at once, a pass that ends from then on counting
-        against the passes set; detection turned off stops the signals scan
-        and a listening sweep, and an ignored frequency takes them away
-        from the signal there. Raises
+        one, or start a scan (``scan``: "memory", "sweep", the range scan,
+        or "signals", the range scan over the current window, stopping to
+        listen) or stop the one that runs (``scan``: None). A new range
+        starts a running range scan again from its first window, and its
+        listening and passes, when given, apply at once, a pass that ends
+        from then on counting against the passes set; detection turned off
+        stops a range scan that listens, and an ignored frequency takes it
+        away from the signal there. Raises
         ValueError, changing nothing, when one is refused; otherwise every
         client receives the scanner state, and the signals found once they
         changed."""
@@ -893,23 +900,32 @@ class Engine:
             passes = checked_passes(changes["sweep_passes"]) if "sweep_passes" in changes else self._sweep_passes
             sweep = self._sweep
             if sweep is not None and changes.get("sweep_listen") is True and not detection:
-                raise ValueError("the sweep listens only while detection is on: turn it on first")
+                raise ValueError(LISTEN_NEEDS_DETECTION)
             moved = sweep is not None and (low_hz, high_hz) != (self._sweep_low_hz, self._sweep_high_hz)
             windows = self._sweep_windows(low_hz, high_hz) if moved else None
             self._detection, self._threshold_db, self._resume_s = detection, threshold_db, resume_s
             self._listen_s = listen_s
             self._sweep_low_hz, self._sweep_high_hz, self._sweep_window_s = low_hz, high_hz, window_s
             self._sweep_listen, self._sweep_passes = listen, passes
+            if sweep is not None:
+                # Given alone: a range scan over the current window listens whatever the saved switch says.
+                if "sweep_listen" in changes:
+                    sweep.listen = listen
+                if "sweep_passes" in changes:
+                    sweep.passes_set = passes
             if not detection:
                 self._signals.clear()
-                if self._signal_scan is not None or (sweep is not None and listen):
+                if sweep is not None and sweep.listen:
                     self._stop_scan("detection")
             if sweep is not None and sweep is self._sweep:
                 sweep.search_blocks = search_blocks(window_s, self._frame_rate)
-                sweep.listen, sweep.passes_set = listen, passes
                 if windows is not None:
+                    if self._sweep_here:    # from now on, the range scan of the saved settings
+                        sweep.listen, sweep.passes_set = listen, passes
+                        self._sweep_here = False
                     sweep.restart(windows, time.monotonic())
-                    self._tune_scan(sweep.centre_hz)
+                    if sweep.centre_hz != self._span()[0]:      # a range within the span stays there
+                        self._tune_scan(sweep.centre_hz)
         self._scanner_changed()
         self._settings_changed()
         if self._signals.changed(time.monotonic()):
@@ -927,7 +943,7 @@ class Engine:
             self.configure_scanner({"scan": scan})
         except ValueError:
             if not self._scanning():
-                self._stopped = (scan, "start")
+                self._stopped = ("sweep" if scan == "signals" else scan, "start")     # the range scan
                 self._scanner_changed()
             raise
 
@@ -1393,8 +1409,6 @@ class Engine:
                         self._record(found)
                 if self._memory is not None and source is self.source:
                     self._step_memory(channels, levels, meter.open, capture[0])
-                if self._signal_scan is not None and source is self.source:
-                    self._step_signals(meter.open, label)
                 if sweep is not None and sweep is self._sweep and source is self.source:
                     self._step_sweep(sweep, capture[0], meter.open, label)
         except Exception:
@@ -1952,25 +1966,26 @@ class Engine:
             log.error("a request from an interface failed", exc_info=request.exception())
 
     def _start_scan(self, scan: object) -> None:
-        """Start a scan, "memory", "sweep" or "signals", unless it runs,
-        stopping the one that runs, or stop the scan that runs (None).
-        Raises ValueError, changing nothing, for another scan, for the
-        memory scan when no ticked bookmark lies within the receiver's
-        reach, from the span it is in or comes back to, for the sweep when
-        the receiver cannot tune to every window of its range, or when it
-        would listen while detection is off, and for the signals scan while
-        detection is off."""
+        """Start a scan, "memory", "sweep", the range scan with its saved
+        settings, or "signals", the range scan over the current window,
+        stopping to listen, unless it runs, stopping the one that runs, or
+        stop the scan that runs (None). Raises ValueError, changing nothing,
+        for another scan, for the memory scan when no ticked bookmark lies
+        within the receiver's reach, from the span it is in or comes back
+        to, and for the range scan when the receiver cannot tune to every
+        window of its range, or when it would listen while detection is
+        off."""
         if scan is None:
             self._stop_scan(None)
         elif scan == "memory":
             if self._memory is None:
                 self._start_memory()
         elif scan == "sweep":
-            if self._sweep is None:
-                self._start_sweep()
+            if self._sweep is None or self._sweep_here:
+                self._start_sweep(here=False)
         elif scan == "signals":
-            if self._signal_scan is None:
-                self._start_signals()
+            if self._sweep is None or not self._sweep_here:
+                self._start_sweep(here=True)
         else:
             raise ValueError('a scan is "memory", "sweep" or "signals", or null to stop it')
 
@@ -1978,7 +1993,7 @@ class Engine:
         if not self._memory_ids:    # from the span a sweep brings the receiver back to
             raise ValueError("no ticked bookmark lies within the receiver's reach")
         self._end_driver_check(STOPPED)     # which brings the receiver back too
-        self._stop_scan(None)       # the sweep, which brings the receiver back, or the signals scan
+        self._stop_scan(None)       # the range scan, which brings the receiver back unless on a signal
         centre_hz = self._span()[0]
         self._memory = MemoryScan()
         self._home = (centre_hz, self._demod)
@@ -1988,31 +2003,29 @@ class Engine:
         if self._memory is not None:    # unless the sweep came back where none lies within reach
             self._tour = MemoryTour(self._windows, centre_hz, time.monotonic())
 
-    def _start_sweep(self) -> None:
-        if self._sweep_listen and not self._detection:
-            raise ValueError("the sweep listens only while detection is on: turn it on first")
-        self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)     # refused, it changes nothing
+    def _start_sweep(self, here: bool) -> None:
+        """Start the range scan: with its saved settings, or ``here``, over
+        the part of the current span that detection searches, stopping to
+        listen, without end, the saved settings left as they are."""
+        listen, passes = (True, None) if here else (self._sweep_listen, self._sweep_passes)
+        if listen and not self._detection:
+            raise ValueError(LISTEN_NEEDS_DETECTION)
+        if not here:
+            self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)     # refused, it changes nothing
         self._end_driver_check(STOPPED)     # which brings the receiver back
-        self._stop_scan(None)       # the memory scan, which brings the receiver back, or the signals scan
+        self._stop_scan(None)       # the memory scan or the range scan, which bring the receiver back
         # From the span the receiver came back to.
-        windows = self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)
+        centre_hz = self._span()[0]
+        windows = (SweepWindows(centre_hz, 0.0, 1) if here
+                   else self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz))
         self._sweep = Sweep(windows, search_blocks(self._sweep_window_s, self._frame_rate), time.monotonic(),
-                            self._sweep_listen, self._sweep_passes)
-        self._home = (self._span()[0], self._demod)
+                            listen, passes)
+        self._sweep_here = here
+        self._home = (centre_hz, self._demod)
         self._stopped = None
         self._wanted.set()          # the scan goes on without any client
         if self._sweep.centre_hz != self._span()[0]:    # a range within the span stays there
             self._tune_scan(self._sweep.centre_hz)
-
-    def _start_signals(self) -> None:
-        if not self._detection:
-            raise ValueError("the signals scan needs detection: turn it on first")
-        self._end_driver_check(STOPPED)     # which brings the receiver back
-        self._stop_scan(None)       # the memory scan or the sweep, which brings the receiver back
-        self._signal_scan = SignalScan()
-        self._home = (self._span()[0], self._demod)
-        self._stopped = None
-        self._wanted.set()          # the scan goes on without any client
 
     def _sweep_windows(self, low_hz: float, high_hz: float) -> SweepWindows:
         """The sweep's windows from ``low_hz`` to ``high_hz`` at the receiver's
@@ -2026,11 +2039,11 @@ class Engine:
         if one is not None:
             return one
         if "centre_hz" not in described["settable"]:
-            raise ValueError("the sweep needs a receiver that tunes, such as an RTL-SDR")
+            raise ValueError("a range wider than the current window needs a receiver that tunes, such as an RTL-SDR")
         windows = sweep_windows(low_hz, high_hz, described["sample_rate_hz"])
         low, high = described["range_hz"]
         if windows.centre(0) < low or windows.centre(windows.count - 1) > high:
-            raise ValueError("the receiver cannot tune to every window of the sweep's range: "
+            raise ValueError("the receiver cannot tune to every window of the range scan's range: "
                              f"it tunes from {low / 1e6:g} to {high / 1e6:g} MHz")
         return windows
 
@@ -2049,8 +2062,8 @@ class Engine:
         ``label``, the centre in use and the rate, labels; ``squelch_open``
         tells whether the squelch was open at the block's end. Once a
         window is done, the receiver goes to the next one, unless the sweep
-        listens there first to the window's active signals, as the signals
-        scan does; once the passes set are done, it stops."""
+        listens there first to the window's active signals; once the passes
+        set are done, it stops."""
         now = time.monotonic()
         signals = self._span_signals(label, now)
         listening = sweep.listening
@@ -2070,24 +2083,6 @@ class Engine:
         listening = sweep.listening
         if (sweep.window, sweep.passes,
                 None if listening is None else (listening.state, listening.frequency_hz)) != before:
-            self._scanner_changed()
-
-    def _step_signals(self, squelch_open: bool, label: tuple[float, float]) -> None:
-        """Move the signals scan on with a block that ``label``, the centre
-        in use and the rate, labels: the active signals of the part of that
-        span that detection searches, each on the channel that the list of
-        signals shows it on, are where it may go; ``squelch_open`` tells
-        whether the squelch was open at the block's end."""
-        scan = self._signal_scan
-        if scan is None:
-            return
-        now = time.monotonic()
-        signals = self._span_signals(label, now)
-        before = (scan.state, scan.frequency_hz)
-        target = scan.step(now, list(signals), squelch_open, self._resume_s, self._listen_s)
-        if target is not None:
-            self._tune_signal(target, signals)
-        if (scan.state, scan.frequency_hz) != before:
             self._scanner_changed()
 
     def _span_signals(self, label: tuple[float, float], now: float) -> dict[int, tuple[float, float]]:
@@ -2117,19 +2112,15 @@ class Engine:
         self._demod_changed()
 
     def _listening(self) -> SignalScan | None:
-        """The listening of the scan that runs: the signals scan's, or the
-        sweep's while it listens in a window; None otherwise."""
-        if self._signal_scan is not None:
-            return self._signal_scan
+        """The range scan's listening while it listens in a window; None
+        otherwise."""
         return None if self._sweep is None else self._sweep.listening
 
     def _running_scan(self) -> str | None:
-        """The scan that runs, "memory", "sweep" or "signals", or None."""
+        """The scan that runs, "memory" or "sweep", the range scan, or None."""
         if self._memory is not None:
             return "memory"
-        if self._sweep is not None:
-            return "sweep"
-        return None if self._signal_scan is None else "signals"
+        return None if self._sweep is None else "sweep"
 
     def _scanning(self) -> bool:
         return self._running_scan() is not None
@@ -2144,10 +2135,9 @@ class Engine:
         "source", "bookmarks", "range", "detection" or "done", or None when
         a client asked. Unless tuned by hand or left for another source, the
         receiver and the VFO come back where the scan found them: after a
-        sweep, unless it stays on a signal it listens to, and after a memory
-        scan that moved the receiver, unless it stays on a channel; the
-        signals scan, which never moves the receiver, leaves the VFO where
-        it is. Without any client, the engine stops reading. The
+        range scan, unless it stays on a signal it listens to, and after a
+        memory scan that moved the receiver, unless it stays on a channel.
+        Without any client, the engine stops reading. The
         output tells of a stop for want of bookmarks, as ``_tune_scan`` does
         of a refused window: no interface may be open to show it."""
         scan = self._running_scan()
@@ -2156,7 +2146,8 @@ class Engine:
         home, memory, tour, sweep = self._home, self._memory, self._tour, self._sweep
         if reason == "bookmarks":
             log.warning("the memory scan stopped: no ticked bookmark lies within the receiver's reach any more")
-        self._memory = self._tour = self._sweep = self._signal_scan = self._home = None
+        self._memory = self._tour = self._sweep = self._home = None
+        self._sweep_here = False
         self._stopped = None if reason is None else (scan, reason)
         if home is not None:
             back = ((sweep is not None and (sweep.listening is None or sweep.listening.frequency_hz is None))
@@ -2437,7 +2428,7 @@ class Engine:
             return
         # A scan started before, such as --scan's, which the receiver's
         # first opening follows at once, starts again from these settings.
-        scan = self._running_scan()
+        scan = "signals" if self._sweep_here else self._running_scan()
         self._stop_scan(None)
         self._restore_source(saved.get("source"))
         self._restore_demod(saved.get("demod"))

@@ -8,7 +8,7 @@ radiolack \- receive\-only SDR receiver with band plans
 [\fB\-\-ui\fR \fIwindow\fR|\fIbrowser\fR|\fInone\fR]
 [\fB\-\-port\fR \fIPORT\fR]
 [\fB\-\-remote\fR [\fIPORT\fR]]
-[\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR]
+[\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR|\fIsignals\fR]
 [\fB\-\-bias\-tee\fR]
 [\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR] |
 \fB\-\-soapy\fR \fIARGS\fR]
@@ -112,14 +112,17 @@ Without a window, Settings stays on 127.0.0.1: reach it through an SSH
 tunnel whose two ends use the port given to \fB\-\-port\fR.
 .TP
 \fB\-\-scan\fR \fImemory\fR|\fIsweep\fR|\fIsignals\fR
-Start the memory scan, the sweep or the signals scan at start, with its
-saved settings, as the Start button of an interface does: the scan goes on
+Start a scan at start: \fImemory\fR, the memory scan, or \fIsweep\fR, the
+range scan, with its saved settings, as the Start button of an interface
+does, or \fIsignals\fR, the range scan over the current window, stopping to
+listen to each signal, its saved settings left as they are: the scan goes on
 without any interface, and the signals it finds fill the History, so that
 after a power cut or an upgrade Radiolack goes on scanning.
 The receiver then opens at start.
 When the scan cannot start, for instance the memory scan without a ticked
-bookmark within the receiver's reach, the sweep with a source that does
-not tune, or the signals scan with detection turned off, Radiolack says
+bookmark within the receiver's reach, the range scan of a range wider
+than the current window with a source that does not tune, or a range scan
+that stops to listen with detection turned off, Radiolack says
 why, in its output and in its interface, and runs on without it.
 Without this option, no scan runs at start.
 .TP

@@ -94,8 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scan", choices=SCANS,
-        help="start the memory scan, the sweep or the signals scan at start, with its saved settings, which "
-             "goes on without any interface; when it cannot start, say why and run on without it",
+        help="start a scan at start, which goes on without any interface: memory, the memory scan, or sweep, "
+             "the range scan, with their saved settings, or signals, the range scan over the current window, "
+             "stopping to listen; when it cannot start, say why and run on without it",
     )
     parser.add_argument(
         "--bias-tee", action="store_true",
