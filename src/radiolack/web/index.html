@@ -477,9 +477,21 @@
     </div>
   </dialog>
 
-  <dialog id="calibrate-dialog" aria-labelledby="calibrate-title" aria-describedby="calibrate-about">
+  <dialog id="calibrate-dialog" aria-labelledby="calibrate-title" aria-describedby="calibrate-run-about">
     <div class="dialog-body">
       <div class="dialog-head"><h2 id="calibrate-title">Calibrate</h2><button type="button" class="close" aria-label="Close the calibration">×</button></div>
+      <h3>On the stations</h3>
+      <p class="note" id="calibrate-run-about">Radiolack tunes to each standard-frequency station within reach, measures its carrier and proposes the correction they agree on; the receiver and the VFO then come back. Which stations come in depends on the hour.</p>
+      <div class="row"><button type="button" class="btn" id="calibrate-run" disabled>Calibrate on the stations</button></div>
+      <p class="note" id="calibrate-run-status" role="status"></p>
+      <table class="peaks" id="calibrate-stations" hidden>
+        <thead><tr><th>Station (MHz)</th><th>Carrier</th><th>Margin</th><th>Correction (ppm)</th></tr></thead>
+        <tbody id="calibrate-stations-body"></tbody>
+      </table>
+      <dl class="lengths"><dt>Proposed correction</dt><dd id="calibrate-proposal"></dd></dl>
+      <p class="note" id="calibrate-run-note" role="status"></p>
+      <div class="row"><button type="button" class="btn primary" id="calibrate-run-apply" disabled>Apply the proposal</button></div>
+      <h3>On a known carrier</h3>
       <p class="note" id="calibrate-about">Tune the VFO onto a steady carrier whose frequency you know, in AM or CW: Radiolack measures the strongest line within the filter, which in NFM or SSB may not be the carrier.</p>
       <div class="field"><span class="label">Carrier measured</span><p id="calibrate-measured" role="status"></p></div>
       <div class="field" id="calibrate-driver-field" hidden><span class="label">rtl-sdr driver</span><p id="calibrate-driver" role="status"></p></div>

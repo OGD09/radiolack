@@ -53,7 +53,8 @@ the history under the tag `v0.1.0`.
   then back whatever ends the check, and saves what it found; runs the
   automatic calibration for any client, on demand only, tuning the
   receiver and the VFO to each standard-frequency station within reach
-  and back, whatever ends it, and sends every client its state; keeps the
+  and back, whatever ends it, and sends every client its state, the
+  latest forgotten with another receiver; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
@@ -265,9 +266,10 @@ the history under the tag `v0.1.0`.
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
   `correction.js` (the frequency correction's field), `calibration.js`
-  (the Calibrate dialog: the correction from a carrier measured and its
-  true frequency, with its derivation, the driver's check and what the
-  dialog shows), `devices.js` (the Receiver menu's SoapySDR devices:
+  (the Calibrate dialog: the calibration on the stations, its stations'
+  table, its proposal and why none; the correction from a carrier
+  measured and its true frequency, with its derivation, the driver's
+  check and what the dialog shows), `devices.js` (the Receiver menu's SoapySDR devices:
   the list, Search again and the arguments field, this computer's alone
   for the last two, and when the first search is asked) and `advanced.js`
   (a SoapySDR device's antenna sockets and Advanced section: a slider per
@@ -277,7 +279,9 @@ the history under the tag `v0.1.0`.
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
   `history.js` in Node, `tests/test_devices.py` `devices.js` and the
   devices state's decoding, `tests/test_categories.py` `categories.js`
-  and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`, and `tests/test_advanced.py` `advanced.js`,
+  and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
+  `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
+  the stations and the calibration state's decoding, and `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, skipped
   where Node is missing. `bandplan-europe.json`
   is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).

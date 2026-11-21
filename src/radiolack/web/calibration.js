@@ -1,8 +1,12 @@
 /*
- * Calibration on a known signal: the Receiver menu's Calibrate dialog. The
- * engine measures the carrier at the VFO (carrier.py); the user types its
- * true frequency, and the dialog shows the frequency correction that brings
- * the carrier there, beside the one in use, to apply as any change of the
+ * The Receiver menu's Calibrate dialog. On the stations: the engine's
+ * automatic calibration (calibration.py) tunes to each standard-frequency
+ * station within reach and proposes the correction they agree on, which the
+ * dialog shows with what it measured at each, for every interface, as the
+ * receiver is shared. On a known carrier: the engine measures the carrier
+ * at the VFO (carrier.py); the user types its true frequency, and the
+ * dialog shows the frequency correction that brings the carrier there,
+ * beside the one in use. Either is applied as any change of the
  * correction. On an R820T or R828D, the dialog first has the engine check
  * which computation the rtl-sdr driver follows on that carrier
  * (pllcheck.py), so that the correction it offers comes from a carrier
@@ -133,6 +137,17 @@ export const DRIVER_CHECK_REASONS = {
   both: 'The carrier followed both computations.',
   stopped: 'The receiver or the VFO changed during the check.',
 };
+
+/**
+ * Why a driver check answered with ``reason`` is asked again at the next
+ * carrier measured rather than shown: the receiver or the VFO changed
+ * during it, or the calibration on the stations ran.
+ * @param {string | null} reason
+ * @returns {boolean}
+ */
+export function driverCheckAgain(reason) {
+  return reason === 'stopped' || reason === 'calibration';
+}
 
 /**
  * The dialog's check of the rtl-sdr driver: "idle" while it asks for none;
@@ -278,4 +293,147 @@ export function calibrationView({ measure, trueText, source, vfoHz, holding = fa
     }
   }
   return view;
+}
+
+/**
+ * Why the calibration on the stations proposes nothing, for the user.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const RUN_REASONS = {
+  none: 'No station was received: try again at another hour, as propagation allows, or check the antenna.',
+  weak: 'One station alone was received, less than 30 dB above the noise: too weak to rely on. Try again at '
+    + 'another hour.',
+  disagree: 'The stations received do not agree within 0.3 ppm: try again at another hour.',
+  range: 'The stations agree on a correction beyond the -100 to 100 ppm a receiver takes: check the antenna.',
+};
+
+/**
+ * Why the calibration on the stations ended before its last station, for
+ * the user; "done" and "stopped" say how many stations it measured.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const RUN_ENDINGS = {
+  tuned: 'Stopped: the receiver or the VFO was changed.',
+  source: 'Stopped: another receiver was chosen.',
+  scan: 'Stopped: a scan started.',
+  recording: 'Stopped: a recording started.',
+};
+
+/**
+ * Why a station gave no carrier, for the stations' table.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const STATION_REASONS = {
+  silent: 'nothing received',
+  no_signal: 'no carrier',
+  several: 'two lines',
+  unstable: 'unsteady',
+  refused: 'not tuned',
+};
+
+/**
+ * A station's row in the dialog's table.
+ * @typedef {object} StationRow
+ * @property {string} station  its frequency, in MHz
+ * @property {string} carrier  the carrier's offset from the station, why there is none, "Measuring…" or ""
+ * @property {string} margin   "38 dB", or ""
+ * @property {string} ppm      the correction it implies, or ""
+ * @property {boolean} apart   received, but not among the stations the proposal comes from
+ */
+
+/**
+ * What the dialog shows of the calibration on the stations.
+ * @typedef {object} RunView
+ * @property {string} button      "Calibrate on the stations", or "Stop" while it runs
+ * @property {boolean} enabled    the button sends
+ * @property {string} status      its progress, or how it ended, or ""
+ * @property {StationRow[]} rows  one per station, empty before the first calibration
+ * @property {string} proposal    the correction proposed, or "—"
+ * @property {string} note        why it cannot start, why it proposes nothing, or what to know of the proposal
+ * @property {number | null} apply  the correction Apply sends; null: Apply is disabled
+ */
+
+/**
+ * The calibration on the stations, from the engine's ``state``, null until
+ * it comes, for ``source``; ``recording`` while an audio or I/Q recording
+ * runs, which keeps it from starting.
+ * @param {object} context
+ * @param {import('./stream.js').CalibrationState | null} context.state
+ * @param {import('./stream.js').SourceState} context.source
+ * @param {string[]} context.measures  what the engine measures, as its hello listed it
+ * @param {boolean} context.open       the stream is open
+ * @param {boolean} context.recording
+ * @returns {RunView}
+ */
+export function runView({ state, source, measures, open, recording }) {
+  const running = state !== null && state.running;
+  /** @type {RunView} */
+  const view = { button: running ? 'Stop' : 'Calibrate on the stations', enabled: open, status: '', rows: [],
+    proposal: '—', note: '', apply: null };
+  if (!running) {
+    if (!measures.includes('calibration')) view.note = 'Calibrating on the stations needs Radiolack to restart.';
+    else if (!source.settable.includes('centre_hz')) {
+      view.note = 'Calibrating on the stations needs a receiver that tunes.';
+    } else if (source.converter && source.converter !== 'none') {
+      view.note = 'A converter is set: its oscillator would pass for the crystal\'s error. Calibrate on a known '
+        + 'carrier, or set the converter to None first.';
+    } else if (recording) view.note = 'A recording runs: stop it before calibrating on the stations.';
+    if (view.note) view.enabled = false;
+  }
+  if (state === null) return view;
+  const { stations, results } = state;
+  view.rows = stations.map((frequencyHz, index) => stationRow(frequencyHz, results[index] ?? null,
+    running && index === results.length, state.proposal !== null));
+  const received = results.filter((result) => result.ppm !== null).length;
+  if (running) {
+    view.status = `Station ${Math.min(results.length + 1, stations.length)} of ${stations.length}: the receiver `
+      + 'and the VFO come back at the end.';
+  } else if (state.ended === 'done') {
+    view.status = `Done: ${received} of ${stations.length} stations received.`;
+  } else if (state.ended === 'stopped') {
+    view.status = `Stopped after ${results.length} of ${stations.length} stations: ${received} received.`;
+  } else if (state.ended !== null) {
+    view.status = Object.hasOwn(RUN_ENDINGS, state.ended) ? RUN_ENDINGS[state.ended] : 'Stopped.';
+  }
+  if (view.note) return view;
+  if (state.proposal !== null) {
+    const { ppm, stations: agreeing } = state.proposal;
+    view.proposal = `${ppmText(ppm)} ppm`;
+    if (ppm === source.ppm) {
+      view.note = 'This is the correction in use: nothing to change.';
+    } else {
+      view.apply = ppm;
+      view.note = agreeing === 1
+        ? 'From one station alone, though well above the noise: confirm it with a second calibration if you can.'
+        : `${agreeing} stations agree on it.`;
+    }
+  } else if (state.reason !== null) {
+    view.note = Object.hasOwn(RUN_REASONS, state.reason) ? RUN_REASONS[state.reason] : 'Nothing is proposed.';
+  }
+  return view;
+}
+
+/**
+ * @param {number} frequencyHz
+ * @param {import('./stream.js').CalibrationResult | null} result  null: not measured yet
+ * @param {boolean} measuring  the station being measured
+ * @param {boolean} proposed   a proposal came, from the stations that agree
+ * @returns {StationRow}
+ */
+function stationRow(frequencyHz, result, measuring, proposed) {
+  /** @type {StationRow} */
+  const row = { station: formatFrequency(frequencyHz), carrier: measuring ? 'Measuring…' : '', margin: '', ppm: '',
+    apart: false };
+  if (result === null) return row;
+  row.margin = result.marginDb === null ? '' : `${result.marginDb.toFixed(0)} dB`;
+  if (result.carrierHz === null || result.ppm === null) {
+    row.carrier = result.reason !== null && Object.hasOwn(STATION_REASONS, result.reason)
+      ? STATION_REASONS[result.reason] : 'not measured';
+    return row;
+  }
+  const offset = result.carrierHz - frequencyHz;
+  row.carrier = `${offset < 0 ? '−' : '+'}${Math.abs(offset).toFixed(1)} Hz`;
+  row.ppm = ppmText(result.ppm);
+  row.apart = proposed && !result.agrees;
+  return row;
 }

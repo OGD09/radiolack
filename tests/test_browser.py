@@ -2616,6 +2616,48 @@ class BrowserTest(unittest.TestCase):
                 expect(dialog).to_be_hidden()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_a_calibration_on_the_stations_proposes_a_correction_for_every_interface(self):
+        # The fake serves a carrier on every standard-frequency station
+        # through a crystal 4.27 ppm slow; at 240 kS/s, direct sampling
+        # reaches ten of them.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource("references", program=FAKE_RTL_TCP, sample_rate_hz=240_000.0, settle_s=0.1))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                first.locator("#src-hf").select_option("q")
+                expect(second.locator("#src-hf")).to_have_value("q")
+                vfo = first.locator("#freq").get_attribute("aria-valuenow")
+                first.locator("#src-calibrate").click()
+                run, status = first.locator("#calibrate-run"), first.locator("#calibrate-run-status")
+                expect(run).to_have_text("Calibrate on the stations")
+                expect(first.locator("#calibrate-proposal")).to_have_text("—")
+                run.click()
+                expect(run).to_have_text("Stop")
+                expect(status).to_contain_text(re.compile(r"^Station \d+ of 10: "))
+                expect(first.locator("#calibrate-measured")).to_have_text(
+                    "Measured once the calibration on the stations ends.")
+                expect(second.locator("#src-calibrate-note")).to_have_text(
+                    "Calibrating on the stations: the receiver and the VFO move until it ends.")
+                expect(status).to_have_text(re.compile(r"^Done: \d+ of 10 stations received\.$"), timeout=120_000)
+                expect(run).to_have_text("Calibrate on the stations")
+                expect(first.locator("#calibrate-stations-body tr")).to_have_count(10)
+                expect(first.locator("#freq")).to_have_attribute("aria-valuenow", vfo)      # the VFO came back
+                expect(second.locator("#src-calibrate-note")).to_have_text("")
+                proposal = re.compile(r"^-4\.(2[2-9]|3[0-2])")
+                expect(first.locator("#calibrate-proposal")).to_have_text(proposal)
+                expect(first.locator("#calibrate-run-note")).to_have_text(re.compile(r"^\d+ stations agree on it\.$"))
+                first.locator("#calibrate-run-apply").click()
+                for page in (first, second):
+                    expect(page.locator("#src-ppm")).to_have_value(proposal)
+                expect(first.locator("#calibrate-run-note")).to_have_text(
+                    "This is the correction in use: nothing to change.")
+                expect(first.locator("#calibrate-run-apply")).to_be_disabled()
+                expect(first.locator("#calibrate-cancel")).to_have_text("Close")
+                first.locator("#calibrate-cancel").click()
+                expect(first.locator("#calibrate-dialog")).to_be_hidden()
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_antenna_power_turns_on_with_a_second_press_and_off_with_one(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))

@@ -139,6 +139,9 @@ html, body {
   color: var(--text); background: var(--control); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
 }
 #calibrate-measured { margin: 2px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+#calibrate-dialog h3 { margin: 14px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+/* A station received whose correction is not among those the proposal comes from. */
+table.peaks tr.apart td { color: var(--muted); }
 .dialog-sub { margin: 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .lengths { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 6px 12px; margin: 12px 0; }
 .lengths dt { color: var(--muted); }

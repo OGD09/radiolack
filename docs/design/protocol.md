@@ -529,7 +529,9 @@ preferences apart from this computer's.
 11. Then the calibration state, a JSON text message, sent again whenever
     it changes: as the automatic calibration starts, at each station
     measured and as it ends. The calibration that runs, or the latest
-    since Radiolack started, which another replaces as it starts:
+    since Radiolack started, which another replaces as it starts; another
+    receiver forgets the latest, unless it ended it (`source`), as its
+    proposal was for the receiver before:
 
     ```json
     {"type": "calibration", "running": false, "stations": [2500000, 5000000, 10000000],
@@ -1492,6 +1494,20 @@ and later.
   calibration go on with the computation set. Closing the dialog during a
   check ignores its answer, but the check runs to its end and saves what
   it found.
+- The Calibrate dialog's calibration on the stations, when the hello lists
+  `calibration`: its button sends `start`, or `stop` while one runs,
+  whichever interface started it, and shows the calibration state as it
+  comes, whether or not this interface started it: each station's carrier
+  offset, margin and correction, the proposal, flagged when one station
+  alone gives it, and why none otherwise. Apply sends the proposal as a
+  `ppm` change of the source, offered unless it is the correction in use.
+  The button does not offer `start` behind a converter, while a recording
+  runs, or on a source whose `settable` lacks `centre_hz`; the engine
+  refuses those anyway. While one runs, the Receiver menu says so beside
+  Calibrate, the dialog's carrier's measure shows that it waits, and the
+  true frequency no longer follows the VFO; a driver's check refused with
+  `calibration` is asked again at the next carrier measured, as one
+  `stopped`. Closing the dialog leaves the calibration running.
 - The interface asks for the observations when its History shows, then
   every 30 s while it shows and its page is visible.
 - An interface whose hello does not list `audio` in its `recording`, as an
@@ -1752,6 +1768,10 @@ and later.
   check refused with `calibration` as a failed check. A newer interface
   reads a hello without `calibration`, an older engine's, as one without
   the automatic calibration.
+  The same day, with pull request 2, the engine forgets the latest
+  calibration when another receiver is chosen, unless that ended it,
+  without a new version: an interface then receives the state of no
+  calibration, as before the first.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

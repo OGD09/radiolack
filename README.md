@@ -701,10 +701,46 @@ says more; the Debian package installs none of them.
 
 ### Calibration
 
-The Receiver menu's Calibrate finds the correction from a carrier whose
-frequency you know. Radiolack measures the strongest line within the VFO's
-filter to a tenth of a hertz, over two seconds, which the display, at
-293 Hz per bin at 2.4 MS/s, could never show.
+The Receiver menu's Calibrate finds the frequency correction on the
+standard-frequency stations, by itself, or on a carrier whose frequency you
+know. Either way Radiolack measures the strongest line near the frequency
+to a tenth of a hertz, over two seconds, which the display, at 293 Hz per
+bin at 2.4 MS/s, could never show.
+
+On the stations, once the receiver has warmed up for a quarter of an
+hour, "Calibrate on the stations" tunes the receiver to each
+standard-frequency and time-signal station of the band plan within its
+reach, twelve at most, lowest first, the VFO on the station in AM, and
+measures its carrier within 200 ppm of the station, 2 kHz at most; then the
+receiver and the VFO come back where they were. A run takes a few seconds
+per station, for every interface, and goes on when the dialog closes; the
+Receiver menu says while it runs, and Stop ends it. The table shows, for
+each station, how far its carrier lies from the station's frequency, how
+far it stands above the noise, and the correction it implies, or why it
+gave none. "Proposed correction" is the median of the corrections that
+agree within 0.3 ppm, from two stations at least, or from one alone, the
+only one received, standing 30 dB or more above the noise, which the
+dialog flags; stations outside that group show greyed. "Apply the
+proposal" sends it as a change in the Receiver menu would. Otherwise it
+says why it proposes nothing: no station received, one too weak, stations
+that disagree, or a correction beyond -100 to 100 ppm. A run stopped with
+Stop proposes from the stations it measured; one ended by a change of the
+receiver's settings, other than its gains, antenna and DC spike, or of the
+VFO, by a scan or a recording, proposes nothing; choosing another receiver
+forgets the latest proposal.
+
+The stations lie on shortwave and below: set the shortwave input first
+([Shortwave](#shortwave)). In direct sampling at 2.4 MS/s the receiver
+reaches the stations from 2.5 MHz up; a lower sample rate reaches lower,
+though a V3 in direct sampling does not reach the long-wave stations,
+below 500 kHz. Which stations come in depends on
+the hour and the season; some days none does: try again at another hour,
+or check the antenna. The run does not start while a recording runs, nor
+behind a converter, whose oscillator would pass for the crystal's error,
+nor on a receiver that does not tune; it stops a scan, as tuning by hand
+does. While it runs, the measure on a known carrier waits for its end.
+
+On a known carrier:
 
 1. Let the receiver warm up for a quarter of an hour.
 2. Tune the VFO onto a steady carrier whose frequency you know, in AM or

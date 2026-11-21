@@ -118,24 +118,26 @@ class RunCase(unittest.IsolatedAsyncioTestCase):
 
     async def start(self, references: list[int] | None = None, *, crystal_ppb: int = 0,
                     carriers: dict[float, float] | None = None, rate_hz: float = 240_000.0,
-                    **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
+                    sources: "KindOpener | None" = None, **settings) -> tuple[Engine, Subscription, FakeRtlTcp]:
         """An engine reading the fake rtl_tcp, which serves ``carriers``, by
         default on every standard-frequency station, on 145 MHz with its
         VFO on 145.1 MHz in NFM, shortwave by direct sampling; with
-        ``references``, the band plan's stations are those."""
+        ``references``, the band plan's stations are those; with
+        ``sources``, it also switches to their kind."""
         fake = FakeRtlTcp(carriers=reference_carriers() if carriers is None else carriers, crystal_ppb=crystal_ppb,
                           chunk_bytes=16_384, interval_s=0.004)
         await fake.__aenter__()
         self.addAsyncCleanup(fake.__aexit__, None, None, None)
-        engine = self.engine(RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1), references)
+        engine = self.engine(RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1), references,
+                             sources=sources)
         subscription = engine.subscribe()
         engine.configure({"hf_input": "q", "centre_hz": 145_000_000, **settings})
         engine.configure_demod({"frequency_hz": 145_100_000, "mode": "NFM", "bandwidth_hz": 12_000})
         await eventually(lambda: engine.state()["status"] == "streaming")
         return engine, subscription, fake
 
-    def engine(self, source, references: list[int] | None = None) -> Engine:
-        engine = Engine(source, recordings=self.folder)
+    def engine(self, source, references: list[int] | None = None, *, sources: "KindOpener | None" = None) -> Engine:
+        engine = Engine(source, sources=sources, recordings=self.folder)
         if references is not None:
             engine._plan = BandPlan(references=references)
         task = asyncio.ensure_future(engine.run())
@@ -370,6 +372,37 @@ class StopTest(RunCase):
             engine.configure({"kind": "synthetic"})
         self.assertEqual(engine.calibration_state()["ended"], "source")
         self.assert_home(engine)
+
+    async def test_another_receiver_forgets_the_proposal_made_for_the_one_before(self):
+        kinds = KindOpener()
+        engine, subscription, fake = await self.start([10_000_000], sources=kinds)
+        kinds.port = fake.port
+        engine.calibrate({"action": "start"})
+        self.assertIsNotNone((await self.ended(engine))["proposal"])
+        waiting(subscription)
+        engine.configure({"kind": "test"})
+        idle = {"type": "calibration", "running": False, "stations": [], "results": [], "proposal": None,
+                "reason": None, "ended": None}
+        self.assertEqual(engine.calibration_state(), idle)
+        self.assertIn(idle, waiting(subscription))
+        # A run that the switch ended stays, to say so.
+        engine.configure({"kind": "rtl_tcp"})
+        engine.calibrate({"action": "start"})
+        engine.configure({"kind": "test"})
+        self.assertEqual(engine.calibration_state()["ended"], "source")
+
+
+class KindOpener:
+    """Opens the fake rtl_tcp's source again, or a FakeSource, by kind."""
+
+    kinds = ("rtl_tcp", "test")
+
+    port = 0        # the fake rtl_tcp's
+
+    def open(self, reopen):
+        if reopen.get("kind") == "test":
+            return FakeSource()
+        return RtlTcpSource(LOOPBACK, self.port, sample_rate_hz=240_000.0, settle_s=0.1)
 
 
 def waiting(subscription: Subscription) -> list:

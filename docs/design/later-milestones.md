@@ -1311,6 +1311,13 @@ stations that the band plan marks `reference`.
   what it measured; one stopped by a change, a scan, a recording or
   another receiver proposes nothing. While it runs, a carrier's measure
   waits and a driver's check is refused.
+- **Fixed with pull request 2**: the dialog's section "On the stations"
+  above the measure on a known carrier, with its button, a table of the
+  stations (the carrier's offset, its margin and the correction, those
+  outside the proposal's group greyed), the proposal and "Apply the
+  proposal"; the run goes on when the dialog closes, and the Receiver
+  menu says while it runs. Choosing another receiver forgets the latest
+  calibration, whose proposal was for the receiver before.
 
 ### Pull requests
 
