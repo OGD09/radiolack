@@ -45,14 +45,14 @@ CHANNEL_SPACINGS = {5_000, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
 PLAN_URL = "loadBandPlan(`bandplan-${id}.json`, MODE_ORDER)"
 
 
-def plan_path():
-    """The file of the band plan in use unless the user chose another."""
-    return WEB_DIR / f"bandplan-{bandplan.DEFAULT_PLAN}.json"
+def plan_path(plan: str = bandplan.DEFAULT_PLAN) -> Path:
+    """A band plan's file, the one in use unless the user chose another by default."""
+    return WEB_DIR / f"bandplan-{plan}.json"
 
 
-def load_plan() -> dict:
-    """Read the band plan in use unless the user chose another."""
-    return json.loads(plan_path().read_text(encoding="utf-8"))
+def load_plan(plan: str = bandplan.DEFAULT_PLAN) -> dict:
+    """Read a band plan's file, the one in use unless the user chose another by default."""
+    return json.loads(plan_path(plan).read_text(encoding="utf-8"))
 
 
 def band_at(bands: list, hz: int) -> dict | None:
@@ -60,10 +60,16 @@ def band_at(bands: list, hz: int) -> dict | None:
     return next((band for band in bands if band["from"] <= hz < band["to"]), None)
 
 
-class BandPlanTest(unittest.TestCase):
+class PlanFileChecks:
+    """The structure that every band plan's file keeps: a subclass per plan
+    of bandplan.PLANS names it in plan_id."""
+
+    plan_id = ""
+
     @classmethod
     def setUpClass(cls):
-        cls.plan = load_plan()
+        cls.path = plan_path(cls.plan_id)
+        cls.plan = load_plan(cls.plan_id)
         cls.bands = cls.plan["bands"]
         cls.entries = [entry for band in cls.bands for entry in (band, *band.get("segments", ()))]
 
@@ -99,13 +105,13 @@ class BandPlanTest(unittest.TestCase):
     def test_one_entry_per_line(self):
         # Bands and segments are written one per line, which keeps a change's
         # diff to the entries it touches.
-        for line in plan_path().read_text(encoding="utf-8").splitlines():
+        for line in self.path.read_text(encoding="utf-8").splitlines():
             with self.subTest(line=line):
                 self.assertLessEqual(line.count('"from"'), 1)
                 self.assertLessEqual(line.count('"f"'), 1)
 
     def test_the_file_stays_small(self):
-        self.assertLessEqual(plan_path().stat().st_size, LARGEST_FILE)
+        self.assertLessEqual(self.path.stat().st_size, LARGEST_FILE)
 
     def test_segments_stay_in_order_inside_their_band(self):
         for band in self.bands:
@@ -252,6 +258,100 @@ class BandPlanTest(unittest.TestCase):
         self.assertLessEqual(len(name), LONGEST_NAME)
 
 
+class EuropePlanTest(PlanFileChecks, unittest.TestCase):
+    plan_id = "europe"
+
+
+class FrancePlanTest(PlanFileChecks, unittest.TestCase):
+    plan_id = "france"
+
+
+# Where France's national table (TNRBF) differs from Europe's plan, as
+# docs/design/band-plan.md lists it: the French plan is Europe's elsewhere.
+FRANCE_DIFFERS_HZ = (
+    (1_606_500, 1_625_000), (1_850_000, 2_000_000), (5_900_000, 5_950_000), (9_400_000, 9_500_000),
+    (11_600_000, 11_650_000), (12_050_000, 12_100_000), (13_360_000, 13_410_000), (13_570_000, 13_600_000),
+    (13_800_000, 13_870_000), (15_600_000, 15_800_000), (17_480_000, 17_550_000), (18_900_000, 19_020_000),
+    (47_000_000, 50_000_000), (52_000_000, 74_800_000), (138_000_000, 144_000_000),
+    (160_600_000, 161_962_500), (174_000_000, 242_950_000), (380_000_000, 399_900_000),
+    (694_000_000, 862_000_000), (870_000_000, 874_400_000), (915_000_000, 919_400_000), (1_900_000_000, 1_920_000_000),
+    (2_010_000_000, 2_025_000_000), (2_200_000_000, 2_300_000_000), (3_400_000_000, 4_200_000_000),
+    (8_400_000_000, 8_500_000_000),
+)
+
+
+class FrancePlanDiffersTest(unittest.TestCase):
+    """The French plan: Europe's, but where the TNRBF differs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.europe, cls.france = load_plan("europe"), load_plan("france")
+
+    @staticmethod
+    def entry_at(plan: dict, hz: int) -> tuple:
+        """What the band strip names at a frequency: the band, its segment, and their mode and step,
+        then the band's edges."""
+        band = band_at(plan["bands"], hz)
+        segment = next((s for s in band.get("segments", ()) if s["from"] <= hz < s["to"]), {})
+        return (band["name"], band["type"], band.get("mode"), band.get("step"),
+                segment.get("name"), segment.get("type"), segment.get("mode"), segment.get("step"),
+                band["from"], band["to"])
+
+    def names_at(self, hz: int) -> tuple:
+        """The French plan's band and segment names at a frequency."""
+        entry = self.entry_at(self.france, hz)
+        return entry[0], entry[4]
+
+    def test_the_french_plan_is_europe_s_outside_the_differences(self):
+        edges = set()
+        for plan in (self.europe, self.france):
+            for band in plan["bands"]:
+                for entry in (band, *band.get("segments", ())):
+                    edges.update((entry["from"], entry["to"] - 1, (entry["from"] + entry["to"]) // 2))
+        outside = sorted(f for f in edges if 0 <= f < HIGHEST_HZ
+                         and not any(low <= f < high for low, high in FRANCE_DIFFERS_HZ))
+        differ = [f for f in outside if self.entry_at(self.europe, f) != self.entry_at(self.france, f)]
+        self.assertEqual(differ, [])
+        self.assertGreater(len(outside), 900)
+        inside = [low for low, _ in FRANCE_DIFFERS_HZ]
+        self.assertTrue(all(self.entry_at(self.europe, f) != self.entry_at(self.france, f) for f in inside))
+        self.assertEqual(self.france["channels"][:6], self.europe["channels"][:6])
+        self.assertEqual(self.france["channels"][7:], self.europe["channels"][7:])
+        self.assertEqual([spot for spot in self.europe["spots"] if spot not in self.france["spots"]],
+                         [spot for spot in self.europe["spots"]
+                          if 69_900_000 <= spot["f"] < 70_500_000 or 3_400_000_000 <= spot["f"] < 3_410_000_000])
+        self.assertEqual([spot for spot in self.france["spots"] if spot not in self.europe["spots"]], [])
+
+    def test_france_s_amateur_bands(self):
+        names = self.names_at
+        self.assertEqual(names(1_845_000), ("160 m amateur", "All modes"))
+        self.assertEqual(names(1_900_000), ("160 m amateur", "All modes, outside France"))
+        self.assertEqual(names(70_200_000), ("Mobile", None))                       # no 4 m band
+        self.assertEqual(names(3_405_000_000), ("Mobile networks (3.5 GHz)", None))  # no 9 cm band
+        for hz in (5_355_000, 50_150_000, 144_300_000, 435_000_000, 1_296_200_000, 2_320_200_000,
+                   5_760_000_000, 10_368_200_000):
+            with self.subTest(hz=hz):
+                self.assertEqual(band_at(self.france["bands"], hz), band_at(self.europe["bands"], hz))
+
+    def test_france_s_own_ranges(self):
+        dab = next(cs for cs in self.france["channels"] if cs["name"] == "DAB (Band III)")
+        self.assertEqual((dab["to"], dab["list"][-1]["n"]), (225_000_000, "12A"))     # Band III ends at 225 MHz
+        self.assertEqual(self.names_at(227_360_000), ("Military (UHF)", None))
+        self.assertEqual(self.names_at(5_920_000), ("49 m broadcast", "Outside France"))
+        self.assertEqual(self.names_at(6_000_000), ("49 m broadcast", None))
+        for hz in (381_000_000, 391_000_000, 700_000_000, 734_000_000, 755_000_000, 790_500_000):
+            with self.subTest(hz=hz):
+                self.assertEqual(self.names_at(hz), ("Emergency services (PPDR)", None))
+        self.assertEqual(self.entry_at(self.france, 385_000_000)[:4], self.entry_at(self.europe, 370_000_000)[:4])
+        self.assertEqual(self.france["wfm_deemphasis_us"], 50)
+
+
+class EveryPlanTest(unittest.TestCase):
+    def test_every_plan_offered_is_checked(self):
+        self.assertEqual(sorted(checks.plan_id for checks in PlanFileChecks.__subclasses__()),
+                         sorted(bandplan.PLANS))
+
+
 NODE = shutil.which("node")
 
 # The mode the interface's History gives each frequency of its first
@@ -313,7 +413,8 @@ class EnginePlanTest(unittest.TestCase):
         self.assertEqual(files, sorted(f"bandplan-{plan}.json" for plan in bandplan.PLANS))
         self.assertIn(bandplan.DEFAULT_PLAN, bandplan.PLANS)
         self.assertEqual(bandplan.plan_path(bandplan.DEFAULT_PLAN), plan_path())
-        self.assertEqual(bandplan.plan_choices(), [{"id": "europe", "name": "Europe (ITU Region 1)"}])
+        self.assertEqual(bandplan.plan_choices(), [{"id": "europe", "name": "Europe (ITU Region 1)"},
+                                                   {"id": "france", "name": "France (metropolitan)"}])
         for plan in bandplan.PLANS:
             self.assertEqual(bandplan.checked_plan(plan), plan)
         for value in ("", "europa", "../europe", None, 1, ["europe"]):
@@ -436,7 +537,7 @@ class EnginePlanTest(unittest.TestCase):
                     self.assertIsNone(plan.mode_at(145_600_000))
                     self.assertEqual(plan.channel(145_600_049, 10_000), 145_600_000)
                     self.assertEqual(plan.wfm_deemphasis_s, WFM_DEEMPHASIS_S)
-                    self.assertEqual(choices, [{"id": "europe", "name": "europe"}])
+                    self.assertEqual(choices, [{"id": "europe", "name": "europe"}, {"id": "france", "name": "france"}])
 
     @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
     def test_the_interface_decodes_the_plan_in_use_and_the_plans_offered(self):
@@ -450,7 +551,12 @@ class EnginePlanTest(unittest.TestCase):
 
     @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
     def test_the_engine_gives_the_modes_that_the_interface_gives(self):
-        data = load_plan()
+        for plan_id in bandplan.PLANS:
+            with self.subTest(plan=plan_id):
+                self.assert_same_modes(plan_id)
+
+    def assert_same_modes(self, plan_id):
+        data = load_plan(plan_id)
         frequencies = set()
         for entry in [entry for band in data["bands"] for entry in (band, *band.get("segments", ()))]:
             frequencies.update((entry["from"], entry["to"] - 1, (entry["from"] + entry["to"]) // 2))
@@ -463,7 +569,7 @@ class EnginePlanTest(unittest.TestCase):
                 frequencies.update(channel + offset for offset in (-half - 1, -half, 0, half, half + 1))
         frequencies = sorted(f for f in frequencies if f >= 0)
         done = subprocess.run([NODE, "--input-type=module", "-e", INTERFACE_MODES_SCRIPT, json.dumps(frequencies),
-                               plan_path().as_uri()], capture_output=True, text=True, timeout=60, check=True)
+                               plan_path(plan_id).as_uri()], capture_output=True, text=True, timeout=60, check=True)
         interface = json.loads(done.stdout)
         engine = [plan.mode_at(f) for f in frequencies]
         differ = [(f, mine, theirs) for f, mine, theirs in zip(frequencies, engine, interface) if mine != theirs]

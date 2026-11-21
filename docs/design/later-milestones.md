@@ -1400,8 +1400,19 @@ saved and shared, Europe's unless chosen otherwise, among the plans that
 plan message and the `band_plan` message; the interface loads the plan
 that the engine names, which Bookmarks > Plan chooses; and WFM's
 de-emphasis read from the plan, `wfm_deemphasis_us`, 50 in Europe's.
-With Europe's plan alone, the choice stays greyed out. Pull requests 2 to
-4, the other plans, are to come.
+With Europe's plan alone, the choice stays greyed out.
+
+The same day, pull request 4, France, is built before 2 and 3, as the
+owner chose. The national table's licence was read first: the ANFR
+publishes the table, the annex of the Prime Minister's order, on its site
+alone, whose terms allow it reproduced only whole and unchanged; French
+law on public information (the CRPA, articles L321-1 to L322-1) lets it be
+reused with its source and date, its meaning kept. The owner chose to take
+its facts alone, as the plan takes the Radio Regulations' (scoping.md,
+2026-11-21): France's plan is Europe's, changed where the table's Region 1
+columns differ, every name Radiolack's own, the table named with its
+edition and address (band-plan.md, France). Pull requests 2 and 3, the
+Americas and Asia-Pacific, are to come.
 
 ## 5. Several receivers at once
 

@@ -24,7 +24,7 @@ preferences apart from this computer's.
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
     "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
     "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"],
-    "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"}]}
+    "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"}, {"id": "france", "name": "France (metropolitan)"}]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -1808,8 +1808,8 @@ and later.
   The same day, the choice of band plan (later-milestones.md, section 4,
   pull request 1), without a new version: the hello's `band_plans`, the
   band plan message and the `band_plan` message. An older interface
-  ignores them and loads Europe's plan, which the engine offers alone so
-  far. A newer interface reads a hello without `band_plans`, an older
+  ignores them and loads Europe's plan, whichever plan the engine uses
+  (France's since pull request 4 of that section). A newer interface reads a hello without `band_plans`, an older
   engine's, as one that uses Europe's plan.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and

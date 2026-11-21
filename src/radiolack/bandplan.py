@@ -39,7 +39,7 @@ from .demod import MODES, WFM_DEEMPHASIS_S
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).with_name("web")      # where the interface loads them from too
-PLANS = ("europe",)             # the band plans, each in WEB_DIR / f"bandplan-{ID}.json"
+PLANS = ("europe", "france")     # the band plans, each in WEB_DIR / f"bandplan-{ID}.json"
 DEFAULT_PLAN = "europe"         # the plan in use unless the user chose another
 PLAN_FORMAT = 2
 DEEMPHASIS_US = (50, 75)        # the WFM de-emphasis that a plan may name, in µs

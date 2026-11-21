@@ -1,8 +1,10 @@
 # Band plan
 
 The colour strip under the spectrum names what each frequency range is used
-for. Its data is `src/radiolack/web/bandplan-europe.json`, the one band plan
-so far: the engine's `band_plan` setting names the plan in use, which the
+for. Its data is `src/radiolack/web/bandplan-europe.json`, Europe's plan, or
+`bandplan-france.json`, France's ([France](#france), below): the engine's
+`band_plan` setting names the plan in use, Europe's unless chosen
+otherwise, which the
 Bookmarks menu chooses, among those that `bandplan.PLANS` lists, each in
 `web/bandplan-ID.json` ([`later-milestones.md`](later-milestones.md),
 section 4). The interface loads the plan that the engine names through
@@ -19,9 +21,10 @@ carry.
 - 0 Hz to 10.5 GHz, without gaps: "Not allocated" below 8.3 kHz, where the
   ITU table starts, and up to 10.5 GHz, which keeps the 3 cm amateur band
   whole with its satellite segment.
-- Europe only: ITU Region 1 as the CEPT applies it. National plans, France's
-  included, and the other regions belong to a later milestone
-  ([`later-milestones.md`](later-milestones.md)).
+- Europe: ITU Region 1 as the CEPT applies it; France's plan is Europe's
+  changed where France's national table differs ([France](#france)). The
+  other regions belong to a later milestone
+  ([`later-milestones.md`](later-milestones.md), section 4).
 - 252 bands and 130 segments in pull request 11 of
   [`coverage-and-precision.md`](coverage-and-precision.md), and 16 channel
   sets (680 channels) and 141 known frequencies in pull request 12.
@@ -328,6 +331,170 @@ Could not be checked by the reviewer either: whether the HF standard
 frequencies are on the air and heard in Europe; the IMO's use of 490 kHz;
 the modes, which the sources give only for 121.5, 123.1 MHz and 2182 kHz;
 the Vienna conference's changes beyond its minutes.
+
+## France
+
+`bandplan-france.json`, "France (metropolitan)", is Europe's plan changed
+where France's national table differs in a way a listener sees
+([`later-milestones.md`](later-milestones.md), section 4, pull request 4).
+
+### Source
+
+| Source | Edition | Used for |
+| --- | --- | --- |
+| ANFR, Tableau national de répartition des bandes de fréquences (TNRBF), annex to the Prime Minister's order of 18 April 2025, https://www.anfr.fr/gestion-des-frequences-sites/tnrbf/ | Consolidated after the modification of 26 May 2026 (Journal officiel of 27 May 2026), corrected rendition of 14 August 2026 | The services allocated in France and their users (affectataires), the Region 1 columns, sheets 1a to 70a, with their French notes and annexes 7 and 8 |
+
+Read on 2026-11-21. The ANFR publishes the table on its site alone, whose
+terms allow its information reproduced only whole and unchanged; French law
+on public information (the CRPA, articles L321-1 to L322-1) lets it be
+reused with its source and the date of its update, its meaning kept. As the
+owner chose on 2026-11-21 ([`scoping.md`](scoping.md)), the plan takes the
+table's facts alone, edges and the services allocated, as it takes the
+Radio Regulations': every name is Radiolack's, and the table is named above
+with its edition and address, never reproduced. Radiolack's plan is not the
+table and the ANFR has no part in it.
+
+### How the French plan is written
+
+- Europe's bands, segments, channel sets and known frequencies, with their
+  sources and names, wherever the table's Region 1 columns agree with them.
+- Where France allocates another service than the one Europe's plan names,
+  the range takes France's edges and is named after France's use, as the
+  table's services and users give it: the name the plan already gives the
+  same allocation nearby ("Military (UHF)" at 383.5 to 399.9 MHz, "Land
+  mobile" at 160.975 to 161.475 MHz, with their mode and step), "Military
+  mobile" for mobile allocated to defence alone, "Emergency services
+  (PPDR)" for the Ministry of the Interior's mobile, a French note's
+  designated use where one names it (railway radio at 1900 to 1910 MHz,
+  F73a; government drones at 1910 to 1920 MHz, F74).
+- Where France allocates no amateur service, there is no amateur band: 4 m
+  (69.9 to 70.5 MHz) and 9 cm (3400 to 3410 MHz) go, with their segments
+  and known frequencies, into the bands around them.
+- Below 30 MHz, where signals cross borders, the part of a band that France
+  does not allocate to the band's use, and that Europe's plan gives it, is a
+  segment of the band named "Outside France" ("All modes, outside France"
+  on 160 m), keeping the band's mode and step: the table gives France's own
+  stations their place, not what is heard there. Above 30 MHz, the table's
+  use takes the range.
+
+### Where France differs
+
+From the table's Region 1 columns, sheet by sheet:
+
+- 1606.5 to 1625 kHz (sheet 5a): maritime and land mobile, no fixed service.
+- 160 m (6a): amateur from 1810 to 1850 kHz; 1850 to 2000 kHz is fixed and
+  mobile in France, a segment "All modes, outside France".
+- The broadcasting bands of footnote 5.134, which France does not list for
+  broadcasting, segments "Outside France" (13a to 20a): 5900 to 5950 kHz,
+  9400 to 9500 kHz, 11600 to 11650 and 12050 to 12100 kHz, 13570 to 13600
+  and 13800 to 13870 kHz, 15600 to 15800 kHz, 17480 to 17550 kHz, and 15 m
+  broadcast whole (18900 to 19020 kHz).
+- 13.36 to 13.41 MHz (17a): radio astronomy alone, no fixed service.
+- 47 to 50 and 52 to 68 MHz (25a): broadcasting primary (Band I), land
+  mobile secondary.
+- 4 m (26a): no amateur allocation; 68 to 74.8 MHz is one "Mobile" band.
+- 138 to 144 MHz (29a): aeronautical mobile (off-route) for defence alone,
+  no land mobile.
+- 160.975 to 161.475 MHz (32a): land mobile, as below 160.6 MHz, between
+  the coast stations' maritime parts; no maritime channel lies there.
+- Band III (35a): broadcasting up to 225 MHz, so the DAB set ends with
+  block 12A; 225 to 240 MHz is defence's fixed and mobile, joined to the
+  military UHF band up to 242.95 MHz.
+- 380 to 399.9 MHz (36a): the Ministry of the Interior's mobile in 380 to
+  383.5 and 390 to 393.5 MHz, defence's in the rest, as below 380 MHz.
+- The 700 MHz band (42a, 43a, F45g): the Ministry of the Interior's
+  blocks for its emergency networks, 698 to 703, 733 to 736, 753 to 758
+  and 788 to 791 MHz; the 800 MHz band from 791 MHz.
+- 870 to 874 MHz and 915 to 916.1 MHz (43a, 44a): defence's mobile; the
+  short-range devices of annex 7 in 874 to 874.4 and 916.1 to 919.4 MHz.
+- 1900 to 1920 MHz (54a): railway radio (F73a), then government drones
+  (F74).
+- 2010 to 2025 MHz (55a): mobile, which annex 8 gives temporary video links.
+- 2290 to 2300 MHz (56a): mobile, defence telemetry and video links, no
+  space operation.
+- 9 cm (60a): no amateur allocation; mobile networks from 3400 MHz (F88a).
+- 3.8 to 4.2 GHz (60a): local wideband networks (F89a) beside the
+  satellite downlinks.
+- 8.4 to 8.5 GHz (68a): fixed, no space research in Region 1.
+
+`tests/test_bandplan.py` checks that the French plan is Europe's outside
+these ranges, and the amateur bands that stay.
+
+### Found, and kept
+
+- France's amateur bands that keep Europe's edges: 2200 m, 630 m, 80 m,
+  60 m (5351.5 to 5366.5 kHz, note F10a), 40 m to 10 m, 6 m (secondary,
+  F21b), 2 m, 70 cm (secondary up to 434 MHz, primary above, the
+  satellite service in 435 to 438 MHz alone), 23 cm, 13 cm, 6 cm and 3 cm.
+  Their segments stay the IARU Region 1 plans'. The table's limits on
+  power and sharing are not shown.
+- 162.0375 to 162.05 MHz: France's maritime allocation ends at 162.05 MHz,
+  12.5 kHz above Europe's AIS band; too narrow for a range of its own.
+- The short-range devices at 862 to 870 MHz, the wireless microphones at
+  1785 to 1805 MHz and the vehicle communications at 5.875 GHz, which the
+  table allows through its annexes 7 and 8 inside other allocations.
+- The table's French edges inside bands whose use does not change (869.2
+  to 880, 1785 to 1880, 2310 and 2400 MHz, 5875, 6425 MHz).
+- Band III up to 225 MHz, the allocation's edge, where note F38b keeps
+  broadcasting below 224.792 MHz; the last DAB block ends at 224.704 MHz.
+- Wi-Fi (6 GHz) from 5935 MHz, Europe's edge, where annex 7 starts it at
+  5945 MHz.
+- "Band I broadcast, land mobile": land mobile is secondary there, kept in
+  the name as the one use a listener may meet.
+- 1785 to 1800 MHz, defence's mobile, keeps Europe's wireless microphones,
+  which annexes 7 and 8 allow there.
+- Narrow French uses of annexes 7 and 8 (cordless phones at 26 and 41 MHz,
+  model control, paging at 26 MHz, sound reporting channels, video links at
+  2050 to 2110 MHz), as Europe's plan leaves out such uses.
+- 23 cm: note F53b limits amateur use of 1258 to 1300 MHz from 27 June
+  2028, under conditions the table does not give; nothing changes before.
+- CB (26.96 to 27.41 MHz), which the table does not name: its box is fixed
+  and mobile with the low-power devices' annex, which nothing in it
+  contradicts.
+
+### What could not be checked
+
+- 47 to 68 MHz: the table's service column gives land mobile as secondary,
+  while footnote 5.164, which it applies in France, makes it primary; the
+  plan follows the column.
+- A cell's status goes with its first user, as the table's chapter 8
+  reads; the range at 160.975 to 161.475 MHz rests on that reading.
+- The ARCEP's decision on the amateur service's conditions of use, and the
+  REF's band plan, were not read: the amateur bands follow the table and
+  the IARU Region 1 plans.
+- Annexes 7 and 8: their edges were read, not their conditions.
+- Whether 694 to 698 and 736 to 753 MHz, the ARCEP's mobile where annex 7
+  names wireless microphones, carry mobile networks: they keep Europe's
+  name.
+- CB's edges and channels: the table does not name CB.
+- Whether a service allocated is in use (Band I broadcasting): the table
+  gives allocations and users, not use.
+
+### Second reading
+
+On 2026-11-21, a reviewer who had not seen the author's notes read the
+French file against the table, given only the two plans' files, the
+writing rules above and the table, and compared the files by script.
+
+Checked: the 45 differences from Europe's plan then (37 ranges, the DAB
+set, 7 known frequencies), edge by edge; every Region 1 row of sheets 1a
+to 70a against the file; every amateur band from 2200 m to 3 cm and its
+satellite segments; the file's structure, names and size; no operator,
+broadcaster, call sign or place, and nothing of the table's wording. No
+edge was found wrong.
+
+Found, and corrected:
+
+- The 700 MHz band's blocks for the Ministry of the Interior (F45g), shown
+  as mobile networks: now "Emergency services (PPDR)", as at 380 MHz.
+- 383.5 to 390 and 393.5 to 399.9 MHz were "Military mobile", without a
+  mode, beside the same allocation named "Military (UHF)" below 380 MHz:
+  now "Military (UHF)", in AM with its step.
+- 160.975 to 161.475 MHz was "Fixed and mobile", beside the same
+  allocation named "Land mobile" below 160.6 MHz: now "Land mobile".
+
+Found, and kept: the points listed under "Found, and kept" above, from
+Band III's edge to 23 cm's date.
 
 ## File format (version 2)
 
