@@ -44,7 +44,7 @@ const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'scans', 'preferences',
-  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices'];
+  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices', 'calibration'];
 const DEVICE_SEARCHES = ['never', 'searching', 'done', 'failed', 'unavailable'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
@@ -418,6 +418,29 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * What the automatic calibration measured at a station.
+ * @typedef {object} CalibrationResult
+ * @property {number} frequencyHz        the station's
+ * @property {number | null} carrierHz   the carrier on the air, to the tenth of a hertz; null: see `reason`
+ * @property {number | null} marginDb    as in the carrier's measure
+ * @property {number | null} ppm         the correction that brings the carrier to the station; null without one
+ * @property {boolean} agrees            among those the proposal comes from
+ * @property {string | null} reason      null with a carrier; the carrier's measure's reasons, or "refused"
+ */
+
+/**
+ * The automatic calibration, which the engine sends every interface: the
+ * one that runs, or the latest.
+ * @typedef {object} CalibrationState
+ * @property {boolean} running
+ * @property {number[]} stations             in Hz, in the order measured; empty before the first
+ * @property {CalibrationResult[]} results   in the order of `stations`, so far
+ * @property {{ppm: number, stations: number} | null} proposal  once it ended with "done" or "stopped"
+ * @property {string | null} reason          why it proposes nothing: "none", "weak", "disagree" or "range"
+ * @property {string | null} ended           why it ended, such as "done" or "stopped"; null while it runs
+ */
+
+/**
  * A device paired with remote access.
  * @typedef {object} RemoteDevice
  * @property {string} id            names it in forget requests
@@ -473,7 +496,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 
 /**
  * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'scans'
- *   | 'preferences' | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'} Command
+ *   | 'preferences' | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'
+ *   | 'calibration'} Command
  */
 
 /**
@@ -623,6 +647,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
  * @property {(check: DriverCheck) => void} onDriverCheck   sent when this interface asks for one
+ * @property {(calibration: CalibrationState) => void} [onCalibration]
+ *   sent after the kept scans by an engine that lists `calibration` among its measures, then at every change
  * @property {(message: string, command: Command | null) => void} onError
  *   why the engine refused a command from this interface, and which kind of command
  * @property {(state: StreamState) => void} onState
@@ -1267,6 +1293,43 @@ export function decodeDriverCheck(message) {
 }
 
 /**
+ * Decode a calibration state message. Returns null when a field is missing
+ * or malformed: a carrier comes with a correction and without a reason, a
+ * reason without either.
+ * @param {any} message  a parsed JSON message of type "calibration"
+ * @returns {CalibrationState | null}
+ */
+export function decodeCalibration(message) {
+  /** @param {unknown} value */
+  const numberOrNull = (value) => value === null || (typeof value === 'number' && Number.isFinite(value));
+  /** @param {unknown} value */
+  const textOrNull = (value) => value === null || typeof value === 'string';
+  /** @param {any} r */
+  const result = (r) => r !== null && typeof r === 'object' && Number.isSafeInteger(r.frequency_hz)
+    && numberOrNull(r.carrier_hz) && numberOrNull(r.margin_db) && numberOrNull(r.ppm)
+    && typeof r.agrees === 'boolean' && textOrNull(r.reason)
+    && (r.carrier_hz === null) === (r.reason !== null) && (r.carrier_hz === null) === (r.ppm === null);
+  const m = message, p = m.proposal;
+  const proposal = p === null || (p !== null && typeof p === 'object' && typeof p.ppm === 'number'
+    && Number.isFinite(p.ppm) && Number.isSafeInteger(p.stations) && p.stations >= 1);
+  const valid = typeof m.running === 'boolean' && Array.isArray(m.stations)
+    && m.stations.every((/** @type {unknown} */ f) => Number.isSafeInteger(f)) && Array.isArray(m.results)
+    && m.results.every(result) && proposal && textOrNull(m.reason) && textOrNull(m.ended);
+  if (!valid) return null;
+  return {
+    running: m.running,
+    stations: m.stations.slice(),
+    results: m.results.map((/** @type {any} */ r) => ({
+      frequencyHz: r.frequency_hz, carrierHz: r.carrier_hz, marginDb: r.margin_db, ppm: r.ppm, agrees: r.agrees,
+      reason: r.reason,
+    })),
+    proposal: p === null ? null : { ppm: p.ppm, stations: p.stations },
+    reason: m.reason,
+    ended: m.ended,
+  };
+}
+
+/**
  * Decode a remote access message. Returns null when a field is missing or
  * malformed.
  * @param {any} message  a parsed JSON message of type "remote"
@@ -1824,6 +1887,19 @@ export class EngineStream {
   }
 
   /**
+   * Start the automatic calibration, or stop the one that runs, for every
+   * interface (`onCalibration`); a refusal comes as an error. Returns
+   * false, sending nothing, when the stream is not open or the engine's
+   * hello does not list `calibration` among its measures.
+   * @param {'start' | 'stop'} action
+   * @returns {boolean}
+   */
+  calibrate(action) {
+    if (!this.#measures.includes('calibration')) return false;
+    return this.#send({ type: 'calibration', action });
+  }
+
+  /**
    * Turn remote access on or off: this computer's interfaces receive its
    * state as it changes, which says why it could not turn on. Returns false,
    * sending nothing, when the stream is not open.
@@ -2057,6 +2133,9 @@ export class EngineStream {
     } else if (message.type === 'devices') {
       const devices = decodeDevices(message);
       if (devices && this.#handlers.onDevices) this.#handlers.onDevices(devices);
+    } else if (message.type === 'calibration') {
+      const calibration = decodeCalibration(message);
+      if (calibration && this.#handlers.onCalibration) this.#handlers.onCalibration(calibration);
     } else if (message.type === 'driver_pll') {
       const check = decodeDriverCheck(message);
       if (check) this.#handlers.onDriverCheck(check);

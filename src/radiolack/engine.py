@@ -1937,6 +1937,16 @@ class Engine:
         if self._idle():
             self._wanted.clear()
 
+    def _forget_calibration(self, back: bool = True) -> None:
+        """Another receiver: the calibration that runs ends with ``source``,
+        bringing the receiver back with ``back``, and stays, to say so; an
+        earlier one goes, as its proposal was for the receiver before."""
+        if self._running_calibration() is not None:
+            self._end_calibration("source", back=back)
+        elif self._calibration is not None and self._calibration.ended != "source":
+            self._calibration = None
+            self._calibration_changed()
+
     def _check_peaks(self) -> None:
         """Tell the clients of the signals found once the list changed, such
         as when a signal is no longer active."""
@@ -2657,7 +2667,7 @@ class Engine:
         old = self.source
         # Saved before the scan or the calibration stops: those of its start.
         self._receivers[old.settings_key] = self._receiver_settings()
-        self._end_calibration("source", back=False)
+        self._forget_calibration(back=False)
         self._stop_scan("source")
         self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
         if new.kind in UNRECORDED_KINDS:
@@ -2771,9 +2781,9 @@ class Engine:
         self._reopen[self.source.kind] = self.source.reopen
         saved = self._receivers.get(self._settings_key)
         log.info("the %s source reads %s", self.source.kind, self._settings_key)
+        self._forget_calibration()
         if not isinstance(saved, dict):
             return
-        self._end_calibration("source")
         # A scan started before, such as --scan's, which the receiver's
         # first opening follows at once, starts again from these settings.
         scan = "signals" if self._sweep_here else self._running_scan()

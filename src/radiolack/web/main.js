@@ -28,8 +28,8 @@ import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
 import { CATEGORY_NAME_MAX, UNCATEGORIZED, bookmarkSections, checkedCategoryName, moveRequest, removeQuestion, sectionName,
   sectionScanChange } from './categories.js';
 import { ppmText, typedPpm } from './correction.js';
-import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckText, driverCheckWanted, startingTrueText,
-  tunerNoteShown } from './calibration.js';
+import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckAgain, driverCheckText, driverCheckWanted,
+  runView, startingTrueText, tunerNoteShown } from './calibration.js';
 import { axisDecimals, bandsInView, beyondReachNote, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
 
 // ------------------------------------------------------------------ helpers
@@ -321,6 +321,8 @@ let bookmarkNote = '';      // why this interface's last bookmark change did not
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
 let scannerNote = '';       // why this interface's last scanner change did not happen
 let recording = null;       // the engine's recordings (stream.js RecordingState), once received
+let calibration = null;     // the engine's calibration on the stations (stream.js CalibrationState), once received
+const calibrationRuns = () => calibration !== null && calibration.running;
 let storage = null;         // where the engine saves the settings (stream.js StorageState), once received
 let update = null;          // what the engine's update check found (stream.js UpdateState), once received
 let updateNote = '';        // why this interface's last update request did not reach the engine
@@ -475,6 +477,7 @@ const stream = new EngineStream({
     if (recording && recording.folder !== state.folder) folderNote = '';     // another folder took the refused one's place
     recording = state;
     syncRecording();
+    renderCalibration();      // a recording keeps the calibration on the stations from starting
     if (recordingStatus() !== status) updateStatus();
     // A file that came or went, or another folder: the list changed.
     if (recordShown() && recordingKeyNow() !== recordingsKey) askRecordings();
@@ -501,6 +504,12 @@ const stream = new EngineStream({
     remoteNote = '';
     syncRemote();
     updateStatus();
+  },
+  onCalibration: (state) => {
+    calibration = state;
+    runError = '';            // a run that started or ended, from any interface, says more than a refusal before
+    syncSource();             // the Receiver menu says while it runs
+    syncCalibration();        // the true frequency follows the VFO again once it ends
   },
   onDevices: (state) => {
     devices = state;
@@ -531,8 +540,8 @@ const stream = new EngineStream({
   },
   onDriverCheck: (check) => {
     if (!calibrateDialog.open || check.id !== driverCheckId) return;
-    // Stopped by a change meanwhile: checked again on the next carrier measured.
-    driverCheck = check.reason === 'stopped' ? { state: 'due', answer: null } : { state: 'done', answer: check };
+    // Stopped by a change or the calibration on the stations: checked again on the next carrier measured.
+    driverCheck = driverCheckAgain(check.reason) ? { state: 'due', answer: null } : { state: 'done', answer: check };
     // No measure asked before the check's end computes a correction.
     carrierMeasure = null;
     askCarrier();
@@ -595,6 +604,11 @@ const stream = new EngineStream({
       renderCalibration();
       return;
     }
+    if (command === 'calibration') {
+      runError = `Refused: ${message}.`;
+      renderCalibration();
+      return;
+    }
     if (command === 'devices') {
       sourceError = message;    // shown under the Receiver list, as the source's refusals
       syncSource();
@@ -602,7 +616,8 @@ const stream = new EngineStream({
     }
     // A correction applied from the calibration may be refused too.
     if (command === 'source' && calibrateDialog.open) {
-      carrierError = `Refused: ${message}.`;
+      if (appliedFrom === 'stations') runError = `Refused: ${message}.`;
+      else carrierError = `Refused: ${message}.`;
       renderCalibration();
     }
     sourceError = message;
@@ -636,6 +651,7 @@ const stream = new EngineStream({
     updateStatus();
     if (state === 'open' && historyShown()) askHistory();
     if (state === 'open') {
+      calibration = null;   // the engine sends its own next, if it calibrates
       carrierKey = '';      // a new connection: the measure is asked again
       // The engine stopped the check of a stream that dropped: it runs again.
       if (driverCheck.state === 'running') driverCheck = { state: 'due', answer: null };
@@ -2425,7 +2441,8 @@ function syncSource() {
   ppmEl.disabled = !settable.has('ppm');
   const calibrate = calibrateEntry(source, stream.measures, streamState === 'open');
   $('#src-calibrate').disabled = !calibrate.enabled;
-  $('#src-calibrate-note').textContent = calibrate.note;
+  $('#src-calibrate-note').textContent = calibrate.note || (calibrationRuns()
+    ? 'Calibrating on the stations: the receiver and the VFO move until it ends.' : '');
   const driver = driverPllView(source);
   $('#src-driver-field').hidden = !driver.shown;
   const driverEl = $('#src-driver');
@@ -4346,7 +4363,12 @@ antennaEl.addEventListener('click', () => {
   syncAntenna();
 });
 
-// The Receiver menu's Calibrate dialog (calibration.js): while it is open,
+// The Receiver menu's Calibrate dialog (calibration.js). On the stations:
+// the engine's calibration, which any interface starts or stops and every
+// interface follows, shown with what it measured at each station and the
+// correction it proposes, which Apply the proposal sends as any change of
+// the correction; the run goes on when the dialog closes. On a known
+// carrier: while the dialog is open,
 // the engine measures the carrier at the VFO, asked again as each measure
 // comes, every MEASURE_EVERY_MS at most; the user types the carrier's true
 // frequency, and Apply sends the correction that brings the carrier there,
@@ -4356,7 +4378,8 @@ antennaEl.addEventListener('click', () => {
 // change computes a correction. On an R820T or R828D, the first steady
 // carrier measured also has the engine identify the rtl-sdr driver, once
 // per opening: the correction waits for its answer, and the measures asked
-// after it.
+// after it. While the calibration on the stations runs, the engine's
+// measure waits for its end, and the true frequency stays as it is.
 const CARRIER_LOST_MS = 10000;  // an answer lost with a dropped stream is asked again after this
 const calibrateButton = $('#src-calibrate');
 const openCalibrateDialog = bindDialog(calibrateDialog, calibrateButton);
@@ -4368,6 +4391,9 @@ let carrierError = '';          // why the engine refused a request or a correct
 let carrierKey = '';            // the settings the measure depends on: another asks again
 let trueTyped = false;          // the user typed the true frequency: it no longer follows the VFO
 let calibrationApplied = false; // a correction went: Cancel reads Close
+let runError = '';              // why the engine refused to start or stop the run, or its proposal; or ''
+let appliedFrom = '';           // the latest correction applied: 'stations' or 'carrier'
+let runRowsKey = '';            // the stations' table as last drawn
 let driverCheckId = 0;          // the latest driver check's id
 /** @type {import('./calibration.js').DriverCheckState} */
 let driverCheck = { state: 'idle', answer: null };
@@ -4404,7 +4430,7 @@ function syncCalibration() {
     carrierMeasure = null;
     askCarrier();
   }
-  if (!trueTyped) setValue($('#calibrate-true'), startingTrueText(S.vfo));
+  if (!trueTyped && !calibrationRuns()) setValue($('#calibrate-true'), startingTrueText(S.vfo));
   renderCalibration();
 }
 // Writes only what changed.
@@ -4413,8 +4439,13 @@ function setText(el, text) { if (el.textContent !== text) el.textContent = text;
 function renderCalibration() {
   if (!calibrateDialog.open || !source) return;
   const entry = calibrateEntry(source, stream.measures, streamState === 'open');
+  renderRun(entry);
   const view = calibrationView({ measure: carrierMeasure, trueText: $('#calibrate-true').value, source, vfoHz: S.vfo,
     holding: driverCheckHolds() });
+  if (calibrationRuns()) {
+    view.measured = 'Measured once the calibration on the stations ends.';
+    view.apply = null;
+  }
   setText($('#calibrate-measured'), streamState === 'open' ? view.measured : notConnected('nothing is measured'));
   $('#calibrate-driver-field').hidden = !driverPllView(source).shown;
   setText($('#calibrate-driver'), driverCheckText(driverCheck, source));
@@ -4426,10 +4457,59 @@ function renderCalibration() {
   $('#calibrate-tuner').hidden = !tunerNoteShown(source);
   setText($('#calibrate-cancel'), calibrationApplied ? 'Close' : 'Cancel');
 }
+// The calibration on the stations: its button, its table, its proposal.
+function currentRunView() {
+  return runView({ state: calibration, source, measures: stream.measures, open: streamState === 'open',
+    recording: recordingRuns() || iqRuns() });
+}
+function renderRun(entry) {
+  const run = currentRunView();
+  const runButton = $('#calibrate-run');
+  setText(runButton, run.button);
+  runButton.disabled = !run.enabled || (!calibrationRuns() && !entry.enabled);
+  setText($('#calibrate-run-status'), run.status);
+  const key = JSON.stringify(run.rows);
+  if (key !== runRowsKey) {
+    runRowsKey = key;
+    $('#calibrate-stations').hidden = run.rows.length === 0;
+    $('#calibrate-stations-body').replaceChildren(...run.rows.map((row) => {
+      const tr = document.createElement('tr');
+      tr.classList.toggle('apart', row.apart);
+      for (const text of [row.station, row.carrier, row.margin, row.ppm]) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        tr.append(td);
+      }
+      return tr;
+    }));
+  }
+  setText($('#calibrate-proposal'), run.proposal);
+  setText($('#calibrate-run-note'), runError || run.note);
+  $('#calibrate-run-apply').disabled = !entry.enabled || run.apply === null;
+}
+$('#calibrate-run').addEventListener('click', () => {
+  const action = calibrationRuns() ? 'stop' : 'start';
+  runError = stream.calibrate(action) ? '' : notConnected(`the calibration did not ${action}`);
+  renderCalibration();
+});
+$('#calibrate-run-apply').addEventListener('click', () => {
+  const run = currentRunView();
+  if (run.apply === null) return;
+  if (!stream.sendSource({ ppm: run.apply })) {
+    runError = notConnected('no correction was applied');
+  } else {
+    calibrationApplied = true;
+    appliedFrom = 'stations';
+    runError = carrierError = '';
+    carrierMeasure = null;
+    askCarrier();               // measured with the new correction
+  }
+  renderCalibration();
+});
 calibrateButton.addEventListener('click', () => {
   if (!calibrateEntry(source, stream.measures, streamState === 'open').enabled) return;
   trueTyped = calibrationApplied = false;
-  carrierError = carrierKey = '';
+  carrierError = carrierKey = runError = appliedFrom = '';
   carrierMeasure = null;
   driverCheck = { state: 'idle', answer: null };      // every calibration checks the driver again
   setValue($('#calibrate-true'), startingTrueText(S.vfo));
@@ -4458,7 +4538,8 @@ $('#calibrate-apply').addEventListener('click', () => {
     // The carrier moves by the change, a few kilohertz on the tuner: the VFO follows it, in its mode.
     if (trueHz !== S.vfo) stream.sendDemod({ frequencyHz: trueHz });
     calibrationApplied = true;
-    carrierError = '';
+    appliedFrom = 'carrier';
+    carrierError = runError = '';
     carrierMeasure = null;
     askCarrier();               // after the change, on the stream: measured with the new correction
   }
