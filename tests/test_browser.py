@@ -2659,6 +2659,9 @@ class BrowserTest(unittest.TestCase):
                     "This is the correction in use: nothing to change.")
                 expect(first.locator("#calibrate-run-apply")).to_be_disabled()
                 expect(first.locator("#calibrate-cancel")).to_have_text("Close")
+                # The carrier is measured again after the change: once its answer has come, nothing in the
+                # dialog moves under the click.
+                expect(first.locator("#calibrate-measured")).to_contain_text("No steady carrier stands out")
                 first.locator("#calibrate-cancel").click()
                 expect(first.locator("#calibrate-dialog")).to_be_hidden()
 
