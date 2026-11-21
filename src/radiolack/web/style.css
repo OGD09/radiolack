@@ -138,7 +138,9 @@ html, body {
   font: 11px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
   color: var(--text); background: var(--control); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
 }
-#calibrate-measured { margin: 2px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+/* Three lines kept for the carrier measured, its usual texts at most (4.2em: the body's line height, 1.4): the
+   buttons below stay put as "Measuring..." and the answers replace one another. */
+#calibrate-measured { margin: 2px 0 0; min-height: 4.2em; font-size: 13px; font-variant-numeric: tabular-nums; }
 #calibrate-dialog h3 { margin: 14px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 /* A station received whose correction is not among those the proposal comes from. */
 table.peaks tr.apart td { color: var(--muted); }
