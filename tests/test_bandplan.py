@@ -457,6 +457,46 @@ SMALL_PLAN = {
 }
 
 
+class AsiaPacificPlanTest(PlanFileChecks, unittest.TestCase):
+    plan_id = "asia-pacific"
+    # TF.768's stations of Region 3: 40 and 60 kHz, 2.5, 5, 10 and 15 MHz.
+    references_hz = {40_000, 60_000, 2_500_000, 5_000_000, 10_000_000, 15_000_000}
+
+    def names_at(self, hz: int) -> tuple:
+        """The band's and the segment's names at a frequency."""
+        band = band_at(self.bands, hz)
+        segment = next((s for s in band.get("segments", ()) if s["from"] <= hz < s["to"]), {})
+        return band["name"], segment.get("name")
+
+    def test_the_references_are_region_3_s_alone(self):
+        references = {spot["f"] for spot in self.plan["spots"] if spot.get("reference")}
+        self.assertEqual(references, self.references_hz)
+
+    def test_region_3_s_own_allocations(self):
+        names = self.names_at
+        self.assertEqual(names(1_900_000), ("160 m amateur", "All modes"))         # 1800-2000 kHz
+        self.assertEqual(names(3_850_000), ("80 m amateur", "CW, phone and digital"))   # 3500-3900 kHz
+        self.assertEqual(names(3_920_000), ("75 m broadcast", None))
+        self.assertEqual(names(7_150_000), ("40 m amateur", "All modes"))          # 7000-7200 kHz
+        self.assertEqual(names(7_250_000), ("41 m broadcast", None))
+        self.assertEqual(names(1_000_000), ("Medium wave broadcast", None))
+        self.assertEqual(names(53_000_000), ("6 m amateur", "All modes, wide band"))   # 50-54 MHz
+        self.assertEqual(names(147_000_000), ("2 m amateur", "All modes"))         # 144-148 MHz
+        self.assertEqual(names(3_350_000_000), ("9 cm amateur", "Radio astronomy (protected)"))
+        self.assertEqual(names(5_840_000_000), ("5 cm amateur", "Satellite downlinks"))
+        self.assertIsNone(band_at(self.bands, 5_900_000_000).get("short"))         # no amateur band above 5850 MHz
+        self.assertIsNone(band_at(self.bands, 223_000_000).get("short"))           # no 1.25 m band
+        self.assertIsNone(band_at(self.bands, 915_000_000).get("short"))           # no 33 cm band
+        self.assertIsNone(band_at(self.bands, 70_200_000).get("segments"))         # no 4 m band
+
+    def test_region_3_s_channels_and_steps(self):
+        self.assertEqual([channel_set["name"] for channel_set in self.plan["channels"]], ["Maritime VHF"])
+        self.assertIn(self.plan["channels"][0], load_plan("europe")["channels"])
+        self.assertEqual(band_at(self.bands, 98_100_000)["step"], 50_000)
+        self.assertEqual(band_at(self.bands, 124_500_000)["step"], 25_000)
+        self.assertEqual(band_at(self.bands, 1_000_000)["step"], 9_000)
+
+
 class EnginePlanTest(unittest.TestCase):
     """What the engine reads of the band plan."""
 
@@ -468,14 +508,15 @@ class EnginePlanTest(unittest.TestCase):
         self.assertEqual(bandplan.plan_path(bandplan.DEFAULT_PLAN), plan_path())
         self.assertEqual(bandplan.plan_choices(), [{"id": "europe", "name": "Europe (ITU Region 1)"},
                                                    {"id": "france", "name": "France (metropolitan)"},
-                                                   {"id": "americas", "name": "Americas (ITU Region 2)"}])
+                                                   {"id": "americas", "name": "Americas (ITU Region 2)"},
+                                                   {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}])
         for plan in bandplan.PLANS:
             self.assertEqual(bandplan.checked_plan(plan), plan)
         for value in ("", "europa", "../europe", None, 1, ["europe"]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 bandplan.checked_plan(value)
         with self.assertRaises(ValueError):
-            bandplan.load_plan("asia-pacific")
+            bandplan.load_plan("antarctica")
 
     def test_the_engine_reads_the_plan_in_use_unless_another_is_chosen(self):
         plan = bandplan.default_plan()
@@ -495,6 +536,14 @@ class EnginePlanTest(unittest.TestCase):
         self.assertEqual(plan.mode_at(98_100_000), "WFM")
         self.assertEqual(plan.channel(98_102_000, 150_000), 98_100_000)     # an FM station on its channel
         self.assertEqual(plan.mode_at(162_550_000), "NFM")                  # weather radio
+        self.assertEqual(plan.mode_at(156_800_000), "NFM")
+
+    def test_the_asia_pacific_plan_gives_wfm_its_50_us(self):
+        plan = bandplan.load_plan("asia-pacific")
+        self.assertEqual(plan.name, "Asia-Pacific (ITU Region 3)")
+        self.assertAlmostEqual(plan.wfm_deemphasis_s, 50e-6)
+        self.assertEqual(plan.mode_at(87_300_000), "WFM")                   # Region 3's FM from 87 MHz
+        self.assertEqual(plan.mode_at(124_500_000), "AM")
         self.assertEqual(plan.mode_at(156_800_000), "NFM")
 
     def test_a_plan_names_itself_and_its_wfm_de_emphasis(self):

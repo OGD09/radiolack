@@ -259,7 +259,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                               "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"],
                               "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"},
                                              {"id": "france", "name": "France (metropolitan)"},
-                                             {"id": "americas", "name": "Americas (ITU Region 2)"}]})
+                                             {"id": "americas", "name": "Americas (ITU Region 2)"},
+                                             {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
