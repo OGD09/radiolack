@@ -50,7 +50,10 @@ the history under the tag `v0.1.0`.
   alone; checks
   the rtl-sdr driver's computation on that carrier for the interfaces that
   ask, moving an R820T's or R828D's centre off its grid for a few points,
-  then back whatever ends the check, and saves what it found; keeps the
+  then back whatever ends the check, and saves what it found; runs the
+  automatic calibration for any client, on demand only, tuning the
+  receiver and the VFO to each standard-frequency station within reach
+  and back, whatever ends it, and sends every client its state; keeps the
   interfaces' preferences, this computer's
   and each paired device's; runs the memory scan, which tunes the VFO for
   every client and, with a receiver that tunes, visits the ticked
@@ -114,7 +117,8 @@ the history under the tag `v0.1.0`.
   `bandplan` (the band plan as the engine reads it,
   `web/bandplan-europe.json`, the file the interface loads: the mode the
   History's Bookmark button gives a frequency, for the range scan, and
-  the channel a signal shows on, for the lists; an unreadable plan gives
+  the channel a signal shows on, for the lists, and the standard-frequency
+  stations, for the automatic calibration; an unreadable plan gives
   no mode, which the output says; `tests/test_bandplan.py` checks in Node
   that its modes agree with the interface's), `observations` (the channels
   where signals were found, for the History: how signals join a channel,
@@ -166,6 +170,11 @@ the history under the tag `v0.1.0`.
   and commits and keeps the notice that `packaging/copyright` repeats; the
   tuner's IF for the sample rate, and the grid where the error is the same
   at every centre frequency),
+  `calibration` (the automatic calibration, later-milestones.md, section
+  3: the band plan's standard-frequency stations within reach, twelve at
+  most, lowest first, where the receiver tunes for each, the window where
+  the carrier is sought, the correction a carrier implies and the
+  proposal, apart from the engine),
   `correction` (the frequency correction in hundredths of ppm: its checks,
   the whole part a receiver takes itself and the frequency to ask for the
   rest), `carrier` (the measure of a carrier in the VFO's channel, before
@@ -342,7 +351,10 @@ the history under the tag `v0.1.0`.
   and `rtl_sdr` declare devices shaped as their modules declare them, and
   whose `events` log the order of settings written and closes.
   The fake rtl_tcp's optional tuner error takes `radiolack.r82xx`'s
-  computations, as `tools/measure_pll.py` does.
+  computations, as `tools/measure_pll.py` does; the fake rtl_tcp
+  program's `references` device serves a carrier on every
+  standard-frequency station through a crystal that is off, for the
+  automatic calibration (`tests/test_calibration.py`).
 - `tools/`: development tools, run from a checkout and never installed:
   the Debian package and pip take `src/radiolack` alone.
   `measure_pll.py` (coverage-and-precision.md, pull requests 13 and 14a)
