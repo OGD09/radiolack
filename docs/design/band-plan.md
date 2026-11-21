@@ -1,8 +1,9 @@
 # Band plan
 
 The colour strip under the spectrum names what each frequency range is used
-for. Its data is `src/radiolack/web/bandplan-europe.json`, Europe's plan, or
-`bandplan-france.json`, France's ([France](#france), below): the engine's
+for. Its data is `src/radiolack/web/bandplan-europe.json`, Europe's plan,
+`bandplan-france.json`, France's ([France](#france), below), or
+`bandplan-americas.json`, the Americas' ([Americas](#americas), below): the engine's
 `band_plan` setting names the plan in use, Europe's unless chosen
 otherwise, which the
 Bookmarks menu chooses, among those that `bandplan.PLANS` lists, each in
@@ -23,8 +24,9 @@ carry.
   whole with its satellite segment.
 - Europe: ITU Region 1 as the CEPT applies it; France's plan is Europe's
   changed where France's national table differs ([France](#france)). The
-  other regions belong to a later milestone
-  ([`later-milestones.md`](later-milestones.md), section 4).
+  Americas: ITU Region 2 ([Americas](#americas)). Region 3 belongs to a
+  later pull request of [`later-milestones.md`](later-milestones.md),
+  section 4.
 - 252 bands and 130 segments in pull request 11 of
   [`coverage-and-precision.md`](coverage-and-precision.md), and 16 channel
   sets (680 channels) and 141 known frequencies in pull request 12.
@@ -496,6 +498,150 @@ Found, and corrected:
 Found, and kept: the points listed under "Found, and kept" above, from
 Band III's edge to 23 cm's date.
 
+## Americas
+
+`bandplan-americas.json`, "Americas (ITU Region 2)", is the plan of ITU
+Region 2: North, Central and South America and the Caribbean
+([`later-milestones.md`](later-milestones.md), section 4, pull request 2).
+Its broadcast FM has 75 µs of de-emphasis (`wfm_deemphasis_us`), which the
+engine gives WFM while the plan is in use.
+
+### Sources
+
+Read on 2026-11-21, in the edition current that day.
+
+| Source | Edition | Used for |
+| --- | --- | --- |
+| ITU Radio Regulations, Volume 1, Article 5 (Table of Frequency Allocations, Region 2 column, and its footnotes), https://www.itu.int/pub/R-REG-RR-2024 | Edition of 2024 (WRC-23), in force from 1 January 2025 | Every band's edges and allocation from 8.3 kHz to 10.5 GHz, the amateur allocations of Region 2, and the edges that footnotes give (5.138 and 5.150, ISM; 5.226, maritime VHF; 5.328AA, ADS-B) |
+| ITU Radio Regulations, Volume 2, Appendices 15 and 18 | Edition of 2024 | The distress and safety frequencies and the maritime VHF channels, worldwide, as in Europe's plan |
+| IARU Region 2 Band Plan, https://www.iaru-r2.org/wp-content/uploads/2020/02/IARU-Region-2-Band-plan.pdf (the same file as https://www.iaru.org/wp-content/uploads/2020/10/IARU-Region-2-Band-plan.pdf) | Revised September 2020, the edition the IARU Region 2 site published on 2026-11-21 | The segments of the amateur bands from 2200 m to 3 cm, their channel spacings and their centres of activity and calling frequencies |
+| Recommendation ITU-R TF.768, and its attachment of station characteristics, https://www.itu.int/oth/R0A08000007/en | TF.768-7; the attachment updated 6 March 2026 | The time signals and standard frequencies of the stations in Region 2: 60 kHz, 2.5, 5, 10, 15, 20 and 25 MHz, and 3330, 7850 and 14670 kHz |
+| United States, Code of Federal Regulations, Title 47 (eCFR, https://www.ecfr.gov/): sections 73.14 and 73.201 (AM and FM broadcast), 87.173 (aviation frequencies), 95.963 (CB), 95.563 and 95.1763 (FRS and GMRS), 95.2763 (MURS) | Current on 2026-11-21 | National: medium wave's 10 kHz channels from 540 kHz, FM broadcast's 100 channels of 200 kHz numbered 201 to 300, the airband's 25 kHz spacing, and the CB, FRS and GMRS channels and MURS frequencies |
+| NOAA Weather Radio, https://www.weather.gov/nwr/ | Read on 2026-11-21 | National: the seven weather broadcast frequencies, 162.400 to 162.550 MHz |
+
+The Radio Regulations and TF.768 are free downloads of the ITU; the IARU
+plan is published for amateurs to use; Title 47 and NOAA's pages are works
+of the United States government, in the public domain. Only frequencies
+and facts are taken from them: every name is written for Radiolack, and
+nothing comes from another program's band plan.
+
+The IARU Region 2 General Assembly of 2025 revised the band plan, but no
+new edition was published on 2026-11-21: the revisions went to the member
+societies' reflector, which is not public. The plan follows the September
+2020 edition, to be read again once a newer one is published.
+
+### How the plan of the Americas is written
+
+- By the rules of Europe's plan ([How the plan is written](#how-the-plan-is-written)),
+  with Region 2's column of Article 5 in place of the ECA: a band is named
+  by its allocation or its main use in Region 2, and adjacent allocations
+  of the same use are one band.
+- The amateur bands are Region 2's allocations, secondary ones included:
+  160 m from 1800 to 2000 kHz, 80 m to 4000 kHz, 40 m to 7300 kHz, 6 m
+  from 50 to 54 MHz, 2 m to 148 MHz, 1.25 m (220 to 225 MHz), 70 cm (430 to
+  440 MHz), 33 cm (902 to 928 MHz, with ISM), 23 cm, 13 cm, 9 cm (3300 to
+  3500 MHz), 5 cm (5650 to 5925 MHz) and 3 cm. Region 2 has no 4 m band.
+  Their segments follow the IARU Region 2 plan, merged into a few per band;
+  a segment the plan ends at its last channel runs to the next one.
+- The IARU plan's steps: 10 kHz for the FM segments of 10 m and 6 m and
+  the Internet gateways of 6 m, 2 m and 1.25 m, 20 kHz for 6 m's radio
+  control and 1.25 m's repeaters, 12.5 kHz for 33 cm's repeaters and
+  25 kHz for 23 cm's. The IARU Region 2 plan gives 2 m's and 70 cm's
+  repeaters no channel spacing, so their segments have no step.
+- The steps outside the amateur bands come from national rules, the United
+  States' (below): 10 kHz on medium wave, 100 kHz for FM broadcast, whose
+  200 kHz channels lie on the odd 100 kHz, and 25 kHz on the airband. The
+  HF broadcasting bands keep Europe's 5 kHz, which no source read gives.
+- Channel sets: CB (40 channels, the same table as Europe's), FM broadcast
+  (channels 201 to 300, 88.1 to 107.9 MHz), maritime VHF (Appendix 18,
+  as in Europe's plan) and FRS and GMRS (22 channels; FRS shares them all
+  with GMRS).
+- Known frequencies: Region 2's time signals and standard frequencies,
+  marked `reference` for the automatic calibration; the worldwide ones of
+  Europe's plan (distress and safety, aeronautical emergency, radio
+  astronomy lines, Galileo's carriers); the IARU Region 2 plan's centres of
+  activity and calling frequencies; MURS's five frequencies and the seven
+  weather radio frequencies.
+
+### National sources
+
+No regional document numbers CB, FRS, GMRS or MURS, places the weather
+radio frequencies, or gives broadcast and airband spacings for the whole
+of Region 2. The plan takes them from the United States' rules, the one
+national source read, and says so here: they are national, as the
+licence-free services and their channels differ from one country to the
+next. Canada's rules were not read (its weather radio page did not
+answer).
+
+### Left out
+
+- National allocations of the amateur service beyond Region 2's table,
+  such as 420 to 430 and 440 to 450 MHz for 70 cm: those ranges show their
+  regional allocation, fixed and mobile.
+- National channel plans: the 60 m channels, the 2 m and 70 cm repeater
+  pairs, the television channels' numbers (the North American numbering
+  was not read), the maritime VHF channels with an A suffix, the GMRS
+  repeater pairs, mobile networks' and land mobile's national blocks.
+- The IARU plan's local options and ATV carriers below 430 MHz.
+- The station names of the time signals: a time signal is named after its
+  frequency.
+
+### What could not be checked
+
+- The IARU Region 2 plan's revisions of 2025 (above).
+- The typing errors of the September 2020 edition, read as meant: 10 m's
+  repeater outputs written 29620 to 26690 kHz (29690), 2 m's last channel
+  written 144.970 MHz (146.970), and 6 m's repeater offset written in Hz
+  (kHz).
+- Whether the steps that come from the United States' rules hold across
+  the region.
+
+### Second reading
+
+On 2026-11-21, a reviewer who had not seen the author's notes read the
+file against the sources above, given only the file, the writing rules
+and the documents, and checked its structure by script.
+
+Checked: every band edge from 8.3 kHz to 10.5 GHz against Region 2's
+column of Article 5, and the edges that footnotes give; every amateur
+segment and centre of activity from 2200 m to 3 cm against the IARU
+Region 2 plan; CB, FM broadcast, FRS and GMRS and MURS against Title 47,
+medium wave's and the airband's steps; the `reference` frequencies against
+TF.768's Region 2 stations, and no other frequency marked; the file's
+structure, names and size. No edge, channel or reference was found wrong.
+
+Found, and corrected:
+
+- The Internet gateways of 2 m (145.000 to 145.100 MHz) and 1.25 m
+  (223.700 to 223.750 MHz) had no step, where the IARU plan gives 10 kHz
+  channels, as on 6 m: now 10 kHz.
+- 6 m's radio control (50.800 to 51.000 MHz) had no step, where the plan
+  gives 20 kHz channels: now 20 kHz.
+- 2 m's 144.900 to 145.000 MHz left out the plan's weak signal use: now
+  "FM, digital voice, weak signal".
+- The APRS frequency that the plan protects in part of the region was
+  named after that part: now "APRS (protected)", without a place.
+
+Found, and kept:
+
+- FM broadcast's 100 kHz step, inside the FM broadcast set: the Automatic
+  step takes the set's 200 kHz, and the range's step gives the signals
+  found their channel, on the odd 100 kHz.
+- "FRS and GMRS": the set holds the 22 frequencies that FRS shares with
+  GMRS, the GMRS simplex channels among them; GMRS's repeater inputs at
+  467.550 to 467.725 MHz are left out (above).
+- 6 m's repeater segments end where the IARU plan ends them, 51.480 and
+  51.980 MHz, as the plan does not say whether those are the last
+  channels.
+- Maritime VHF's edges come from footnote 5.226, and the AIS band ends at
+  162.0375 MHz as in the table, as in Europe's plan.
+- 3700 to 3800 MHz stays "Satellite downlinks": footnote 5.435B's mobile
+  networks are national.
+- 70 cm is 430 to 440 MHz, Article 5's allocation, where the IARU plan
+  runs from 420 to 450 MHz (above).
+- The naval VLF stations of TF.768, which send no plain carrier, are not
+  known frequencies, as in Europe's plan.
+
 ## File format (version 2)
 
 A JSON object, written with one band, segment, channel set or known
@@ -570,4 +716,4 @@ least 12 px on screen, and the whole band as one block of its type's colour
 below that. The shortwave broadcast bands have no short name: theirs would
 read like the amateur bands' (`15 m`).
 
-Plans for other regions will be other files in the same format.
+Plans for other regions are other files in the same format.
