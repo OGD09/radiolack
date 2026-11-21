@@ -47,6 +47,7 @@ from typing import Any
 from aiohttp import WSCloseCode, WSMsgType, web
 
 from . import __version__
+from .bandplan import plan_choices
 from .engine import (LOCAL_DEVICE_FIELDS, LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener,
                      Subscription, UpdateChecker)
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
@@ -70,8 +71,9 @@ _REMOTE_START_TIMEOUT_S = 30.0  # the first turn-on also makes the local authori
 _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stream
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
-_COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "scanner", "observations", "scans", "preferences",
-             "recording", "recordings", "update", "remote", "report", "carrier", "calibration", "devices")
+_COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "band_plan", "scanner", "observations", "scans",
+             "preferences", "recording", "recordings", "update", "remote", "report", "carrier", "calibration",
+             "devices")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS, "devices": LOCAL_DEVICE_FIELDS}
@@ -246,7 +248,7 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
         await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "version": __version__,
                             "remote": device is not None, "scanners": list(SCANNERS),
                             "recording": list(RECORDING_KINDS), "measures": list(MEASURES),
-                            "spectra": list(SPECTRA)})
+                            "spectra": list(SPECTRA), "band_plans": plan_choices()})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -315,6 +317,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.configure_demod(changes, subscription, change_id)
         elif kind == "bookmark":
             engine.edit_bookmarks(changes)
+        elif kind == "band_plan":
+            engine.configure_band_plan(changes)
         elif kind == "scanner":
             engine.configure_scanner(changes)
         elif kind == "observations":

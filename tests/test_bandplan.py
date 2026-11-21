@@ -1,7 +1,7 @@
-"""Checks of the band plan the interface shows (format in docs/design/band-plan.md),
-and of what the engine reads of it (bandplan.py): the modes it gives, which
-Node.js checks against the interface's where it is installed, and the
-channels its signals show on."""
+"""Checks of the band plans the interface shows (format in docs/design/band-plan.md),
+and of what the engine reads of them (bandplan.py): the plans it offers,
+the modes one gives, which Node.js checks against the interface's where it
+is installed, the channels its signals show on and its WFM de-emphasis."""
 
 import json
 import re
@@ -14,6 +14,7 @@ from unittest import mock
 
 from radiolack import bandplan
 from radiolack.bandplan import BandPlan, plan_mode
+from radiolack.demod import WFM_DEEMPHASIS_S
 from radiolack.server import WEB_DIR
 
 # The modes the band plan may name: the interface's (MODES in main.js), but SAM,
@@ -40,16 +41,17 @@ SPOT_TOLERANCE_HZ = 50          # a frequency within this of a spot is on it (ch
 # set's spacing takes its place where the set gives one (CB, PMR446, maritime
 # VHF). Elsewhere the Automatic step follows the zoom (tuning.js).
 CHANNEL_SPACINGS = {5_000, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
-BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
+# The file of the band plan that the engine names, as main.js loads it.
+PLAN_URL = "loadBandPlan(`bandplan-${id}.json`, MODE_ORDER)"
 
 
 def plan_path():
-    """The band plan file that main.js loads."""
-    return WEB_DIR / BAND_PLAN_URL.search((WEB_DIR / "main.js").read_text(encoding="utf-8")).group(1)
+    """The file of the band plan in use unless the user chose another."""
+    return WEB_DIR / f"bandplan-{bandplan.DEFAULT_PLAN}.json"
 
 
 def load_plan() -> dict:
-    """Read the band plan file that main.js loads."""
+    """Read the band plan in use unless the user chose another."""
     return json.loads(plan_path().read_text(encoding="utf-8"))
 
 
@@ -66,9 +68,11 @@ class BandPlanTest(unittest.TestCase):
         cls.entries = [entry for band in cls.bands for entry in (band, *band.get("segments", ()))]
 
     def test_header(self):
-        self.assertEqual(set(self.plan), {"format", "name", "types", "bands", "channels", "spots"})
+        self.assertEqual(set(self.plan), {"format", "name", "wfm_deemphasis_us", "types", "bands", "channels",
+                                          "spots"})
         self.assertEqual(self.plan["format"], 2)
         self.assertTrue(self.plan["name"].strip())
+        self.assertEqual(self.plan["wfm_deemphasis_us"], 50)      # Europe's broadcast FM
         for name, colour in self.plan["types"].items():
             with self.subTest(type=name):
                 self.assertRegex(name, r"^[a-z][a-z-]*$")
@@ -263,10 +267,21 @@ const modes = JSON.parse(process.argv[1]).map((f) => modeAt(plan, f) ?? rangeAt(
 console.log(JSON.stringify(modes));
 """
 
+# What stream.js decodes of the band plan message and of the hello's band plans.
+DECODE_SCRIPT = """
+const s = await import(process.argv[1]);
+console.log(JSON.stringify({
+  plans: [{ type: 'band_plan', plan: 'europe' }, {}, { plan: '' }, { plan: 2 }].map(s.decodeBandPlan),
+  offered: s.decodeBandPlans([{ id: 'europe', name: 'Europe (ITU Region 1)' }, { id: '', name: 'x' },
+    { id: 'test' }, null, 'europe', { id: 'test', name: 'Test', extra: true }]),
+  older: [undefined, 'europe', {}].map(s.decodeBandPlans),
+}));
+"""
+
 # A small plan: a band whose segments leave parts out, a band with a step,
 # a channel set and spots.
 SMALL_PLAN = {
-    "format": 2, "name": "Test", "types": {"amateur": "#123456"},
+    "format": 2, "name": "Test", "wfm_deemphasis_us": 75, "types": {"amateur": "#123456"},
     "bands": [
         {"from": 100_000_000, "to": 101_000_000, "name": "Band", "type": "amateur", "mode": "NFM", "step": 12_500,
          "segments": [
@@ -292,14 +307,40 @@ SMALL_PLAN = {
 class EnginePlanTest(unittest.TestCase):
     """What the engine reads of the band plan."""
 
-    def test_the_engine_reads_the_plan_that_main_js_loads(self):
-        self.assertEqual(bandplan.PLAN_PATH, plan_path())
+    def test_the_engine_offers_the_plans_that_main_js_loads(self):
+        self.assertIn(PLAN_URL, (WEB_DIR / "main.js").read_text(encoding="utf-8"))
+        files = sorted(path.name for path in WEB_DIR.glob("bandplan-*.json"))
+        self.assertEqual(files, sorted(f"bandplan-{plan}.json" for plan in bandplan.PLANS))
+        self.assertIn(bandplan.DEFAULT_PLAN, bandplan.PLANS)
+        self.assertEqual(bandplan.plan_path(bandplan.DEFAULT_PLAN), plan_path())
+        self.assertEqual(bandplan.plan_choices(), [{"id": "europe", "name": "Europe (ITU Region 1)"}])
+        for plan in bandplan.PLANS:
+            self.assertEqual(bandplan.checked_plan(plan), plan)
+        for value in ("", "europa", "../europe", None, 1, ["europe"]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                bandplan.checked_plan(value)
+        with self.assertRaises(ValueError):
+            bandplan.load_plan("americas")
+
+    def test_the_engine_reads_the_plan_in_use_unless_another_is_chosen(self):
         plan = bandplan.default_plan()
+        self.assertIs(plan, bandplan.load_plan("europe"))
+        self.assertEqual(plan.name, "Europe (ITU Region 1)")
+        self.assertAlmostEqual(plan.wfm_deemphasis_s, 50e-6)
         self.assertEqual(plan.range_at(145_600_000).mode, "NFM")
         self.assertEqual(plan.range_at(144_300_000).mode, "USB")
         self.assertEqual(plan.mode_at(156_800_000), "NFM")      # maritime VHF's channel 16
         self.assertEqual(plan.mode_at(98_100_000), "WFM")
         self.assertEqual(plan.mode_at(124_500_000), "AM")
+
+    def test_a_plan_names_itself_and_its_wfm_de_emphasis(self):
+        plan = BandPlan.parse(SMALL_PLAN)
+        self.assertEqual(plan.name, "Test")
+        self.assertAlmostEqual(plan.wfm_deemphasis_s, 75e-6)
+        self.assertAlmostEqual(BandPlan.parse({**SMALL_PLAN, "wfm_deemphasis_us": 50}).wfm_deemphasis_s, 50e-6)
+        empty = BandPlan()
+        self.assertEqual(empty.name, "")
+        self.assertEqual(empty.wfm_deemphasis_s, WFM_DEEMPHASIS_S)
 
     def test_ranges_take_their_own_mode_and_step_and_gaps_the_band_s(self):
         plan = BandPlan.parse(SMALL_PLAN)
@@ -365,7 +406,10 @@ class EnginePlanTest(unittest.TestCase):
                 item[last] = value
             return data
 
-        for data in ([], {**SMALL_PLAN, "format": 1}, changed(bands="none"), changed(bands__0__mode="FM"),
+        without = {key: value for key, value in SMALL_PLAN.items() if key != "wfm_deemphasis_us"}
+        for data in ([], {**SMALL_PLAN, "format": 1}, without, {**SMALL_PLAN, "wfm_deemphasis_us": 60},
+                     {**SMALL_PLAN, "wfm_deemphasis_us": "50"}, {**SMALL_PLAN, "wfm_deemphasis_us": True},
+                     {**SMALL_PLAN, "name": " "}, changed(bands="none"), changed(bands__0__mode="FM"),
                      changed(bands__1__from=99_000_000), changed(bands__0__segments__1__from=100_150_000),
                      changed(bands__0__step=0), changed(bands__0__to=100_000_000),
                      changed(channels__0__count=0), changed(channels__0__first=155_000_000),
@@ -377,18 +421,32 @@ class EnginePlanTest(unittest.TestCase):
 
     def test_an_unreadable_plan_gives_no_mode_and_no_channel(self):
         with tempfile.TemporaryDirectory() as folder:
-            broken = Path(folder) / "bandplan.json"
-            broken.write_text("{", encoding="utf-8")
-            for path in (broken, Path(folder) / "missing.json"):
-                with self.subTest(path=path.name), mock.patch.object(bandplan, "PLAN_PATH", path):
-                    bandplan.default_plan.cache_clear()
+            broken = Path(folder) / "broken"
+            broken.mkdir()
+            (broken / "bandplan-europe.json").write_text("{", encoding="utf-8")
+            for web in (broken, Path(folder) / "missing"):
+                with self.subTest(folder=web.name), mock.patch.object(bandplan, "WEB_DIR", web):
+                    bandplan.load_plan.cache_clear()
                     try:
                         with self.assertLogs("radiolack.bandplan", "WARNING"):
                             plan = bandplan.default_plan()
+                        choices = bandplan.plan_choices()
                     finally:
-                        bandplan.default_plan.cache_clear()
+                        bandplan.load_plan.cache_clear()
                     self.assertIsNone(plan.mode_at(145_600_000))
                     self.assertEqual(plan.channel(145_600_049, 10_000), 145_600_000)
+                    self.assertEqual(plan.wfm_deemphasis_s, WFM_DEEMPHASIS_S)
+                    self.assertEqual(choices, [{"id": "europe", "name": "europe"}])
+
+    @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
+    def test_the_interface_decodes_the_plan_in_use_and_the_plans_offered(self):
+        done = subprocess.run([NODE, "--input-type=module", "-e", DECODE_SCRIPT, (WEB_DIR / "stream.js").as_uri()],
+                              capture_output=True, text=True, timeout=60, check=True)
+        found = json.loads(done.stdout)
+        self.assertEqual(found["plans"], ["europe", None, None, None])
+        self.assertEqual(found["offered"], [{"id": "europe", "name": "Europe (ITU Region 1)"},
+                                            {"id": "test", "name": "Test"}])
+        self.assertEqual(found["older"], [[], [], []])
 
     @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
     def test_the_engine_gives_the_modes_that_the_interface_gives(self):

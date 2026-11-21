@@ -51,13 +51,14 @@ def noise(seconds: float, level_db: float) -> np.ndarray:
 
 
 def run(samples: np.ndarray, settings: DemodSettings, noise_density: float | None = None,
-        demodulator: Demodulator | None = None, rate: float = RATE, block: int = BLOCK):
-    """The meters and audio blocks (as fractions of full scale) of ``samples``."""
+        demodulator: Demodulator | None = None, rate: float = RATE, block: int = BLOCK, **options):
+    """The meters and audio blocks (as fractions of full scale) of ``samples``;
+    ``options`` go to each call of ``Demodulator.process``."""
     demodulator = demodulator if demodulator is not None else Demodulator()
     meters, sound = [], []
     for start in range(0, len(samples), block):
         meter, pcm = demodulator.process(samples[start:start + block], CENTRE, rate, settings,
-                                         noise_density, True)
+                                         noise_density, True, **options)
         meters.append(meter)
         sound.append(pcm.astype(np.float64) / 32767)
     return meters, sound
@@ -95,9 +96,10 @@ WFM = DemodSettings(frequency_hz=CENTRE + OFFSET, mode="WFM", bandwidth_hz=180_0
                     squelch_db=-160.0)
 
 
-def deemphasis(frequency_hz: float) -> float:
-    """WFM's de-emphasis, 50 us with unit gain at the lowest frequencies."""
-    return 1 / math.sqrt(1 + (2 * math.pi * 50e-6 * frequency_hz) ** 2)
+def deemphasis(frequency_hz: float, time_constant_s: float = 50e-6) -> float:
+    """WFM's de-emphasis, 50 us unless said otherwise, with unit gain at the
+    lowest frequencies."""
+    return 1 / math.sqrt(1 + (2 * math.pi * time_constant_s * frequency_hz) ** 2)
 
 
 class NfmTest(unittest.TestCase):
@@ -208,6 +210,15 @@ class WfmTest(unittest.TestCase):
                                0.5 * deemphasis(1_000.0), delta=0.005)   # 37.5 kHz of 75 kHz
         self.assertAlmostEqual(meters[-1].level_db, -40.0, delta=0.05)
         self.assertTrue(all(meter.open for meter in meters))
+
+    def test_takes_the_de_emphasis_it_is_given_and_follows_its_change(self):
+        signal = fm(1.0, -40.0, [(10_000.0, 30_000.0)]) + noise(1.0, -60.0)
+        demodulator = Demodulator()
+        for time_constant_s in (75e-6, 50e-6):
+            with self.subTest(time_constant_s=time_constant_s):
+                _, sound = run(signal, WFM, demodulator=demodulator, wfm_deemphasis_s=time_constant_s)
+                self.assertAlmostEqual(tone_amplitude(np.concatenate(sound)[8_000:], 10_000.0, WFM_AUDIO_RATE),
+                                       0.4 * deemphasis(10_000.0, time_constant_s), delta=0.005)
 
     def test_keeps_broadcast_audio_and_leaves_out_the_stereo_pilot(self):
         signal = fm(1.0, -40.0, [(10_000.0, 30_000.0), (19_000.0, 6_750.0)]) + noise(1.0, -60.0)

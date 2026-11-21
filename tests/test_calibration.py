@@ -69,7 +69,7 @@ class RulesTest(unittest.TestCase):
                          (60_000, 77_500, 162_000, 2_500_000, 4_996_000, 5_000_000, 9_996_000, 10_000_000,
                           14_996_000, 15_000_000, 20_000_000, 25_000_000))
         with self.assertRaisesRegex(ValueError, "reference must be true or absent"):
-            BandPlan.parse({"format": 2, "bands": [], "channels": [],
+            BandPlan.parse({"format": 2, "name": "Test", "wfm_deemphasis_us": 50, "bands": [], "channels": [],
                             "spots": [{"f": 1, "name": "A", "reference": False}]})
 
     def test_a_carrier_shown_low_implies_a_positive_correction(self):

@@ -68,7 +68,8 @@ import numpy as np
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
-from radiolack.demod import CHANNEL_RATE_HZ, MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator, audio_taps  # noqa: E402
+from radiolack.demod import (CHANNEL_RATE_HZ, MODE_BANDWIDTHS_HZ, WFM_DEEMPHASIS_S,  # noqa: E402
+                            DemodSettings, Demodulator, audio_taps)
 from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
 from radiolack.fine import FineSpectrum, encode_fine  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
@@ -173,8 +174,10 @@ class ToolDemodulator(Demodulator):
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool,
                 tap: Callable[[np.ndarray], None] | None = None,
-                front_tap: Callable[[np.ndarray], None] | None = None) -> tuple[Any, np.ndarray | None]:
-        meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap, front_tap)
+                front_tap: Callable[[np.ndarray], None] | None = None,
+                wfm_deemphasis_s: float = WFM_DEEMPHASIS_S) -> tuple[Any, np.ndarray | None]:
+        meter, pcm = super().process(samples, centre_hz, rate_hz, settings, noise_density, audio, tap, front_tap,
+                                     wfm_deemphasis_s)
         self.activity.blanked += self._blanker is not None and self._blanker.impulses > 0
         self.activity.blocks += 1
         self.activity.locked += bool(meter.sam_locked)

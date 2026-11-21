@@ -1392,6 +1392,17 @@ what they know of their bands.
 - A regional plan is coarser than a national one, and neither is a legal
   reference.
 
+### Where the milestone stands
+
+On 2026-11-21, pull request 1 is built: the engine's `band_plan` setting,
+saved and shared, Europe's unless chosen otherwise, among the plans that
+`bandplan.PLANS` lists, which the hello's `band_plans` names; the band
+plan message and the `band_plan` message; the interface loads the plan
+that the engine names, which Bookmarks > Plan chooses; and WFM's
+de-emphasis read from the plan, `wfm_deemphasis_us`, 50 in Europe's.
+With Europe's plan alone, the choice stays greyed out. Pull requests 2 to
+4, the other plans, are to come.
+
 ## 5. Several receivers at once
 
 Goal: one Radiolack with more than one receiver, such as the V3 watching

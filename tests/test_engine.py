@@ -21,8 +21,8 @@ import numpy as np
 
 from radiolack.carrier import CarrierMeasure
 from radiolack.converter import Conversion
-from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES
-from radiolack import __version__, r82xx, recordings
+from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES, Demodulator
+from radiolack import __version__, bandplan, r82xx, recordings
 from radiolack.engine import Engine, Source, Subscription
 from radiolack.recordings import meta_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
@@ -37,8 +37,8 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 # What a new client gets first; a remote client, without the last two.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "calibration",
-          "storage", "update")
+STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "scans",
+          "calibration", "storage", "update")
 
 # The calibration state before any calibration ran.
 CALIBRATION_IDLE = {"type": "calibration", "running": False, "stations": [], "results": [], "proposal": None,
@@ -195,6 +195,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "modes": list(MODES), "audio_modes": list(MODES), "acknowledged": 0,
         })
         self.assertEqual(subscription.get_nowait(), {"type": "bookmarks", "bookmarks": [], "categories": []})
+        self.assertEqual(subscription.get_nowait(), {"type": "band_plan", "plan": "europe"})
         self.assertEqual(subscription.get_nowait(), scanner_state())
         self.assertEqual(subscription.get_nowait(), {"type": "peaks", "peaks": []})
         self.assertEqual(subscription.get_nowait(), {"type": "preferences", "values": {}})
@@ -1225,6 +1226,105 @@ class UpdateTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(updates.cancelled)
         engine.check_updates()      # closed: nothing starts
         self.assertEqual(updates.checks, 1)
+
+
+class BandPlanTest(unittest.IsolatedAsyncioTestCase):
+    """The band plan in use: Europe's unless chosen otherwise, shared by every
+    client and saved, with a second plan, ``test``, beside Europe's, whose
+    WFM de-emphasis is 75 us and whose 2 m band takes 25 kHz channels."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = Store(Path(temporary.name) / "radiolack")
+        web = Path(temporary.name) / "web"
+        web.mkdir()
+        (web / "bandplan-europe.json").write_bytes(bandplan.plan_path("europe").read_bytes())
+        (web / "bandplan-test.json").write_text(json.dumps({
+            "format": 2, "name": "Test plan", "wfm_deemphasis_us": 75, "types": {"amateur": "#123456"},
+            "bands": [{"from": 144_000_000, "to": 146_000_000, "name": "2 m", "type": "amateur", "mode": "NFM",
+                       "step": 25_000}],
+            "channels": [], "spots": []}), encoding="utf-8")
+        for patch in (mock.patch.object(bandplan, "WEB_DIR", web),
+                      mock.patch.object(bandplan, "PLANS", ("europe", "test"))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        bandplan.load_plan.cache_clear()
+        self.addCleanup(bandplan.load_plan.cache_clear)
+
+    def engine(self) -> Engine:
+        engine = Engine(FakeSource(), store=self.store, save_delay_s=0.01)
+        self.addAsyncCleanup(self.stop, engine)
+        return engine
+
+    @staticmethod
+    async def stop(engine: Engine) -> None:
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+    async def test_a_new_plan_reaches_every_client_and_is_saved(self):
+        engine = self.engine()
+        self.assertEqual((engine.band_plan_state(), engine._plan.wfm_deemphasis_s),
+                         ({"type": "band_plan", "plan": "europe"}, 50e-6))
+        self.assertEqual(engine._plan.channel(145_013_000, 600), 145_012_500)     # Europe's 12.5 kHz channel
+        subscriptions = [engine.subscribe() for _ in range(2)]
+        for subscription in subscriptions:
+            waiting(subscription)
+        engine.configure_band_plan({"plan": "test"})
+        for subscription in subscriptions:
+            # The signals found show on the new plan's channels.
+            self.assertEqual([message["type"] for message in waiting(subscription)], ["band_plan", "peaks"])
+        self.assertEqual(engine.band_plan_state(), {"type": "band_plan", "plan": "test"})
+        self.assertEqual((engine._plan.name, engine._plan.wfm_deemphasis_s), ("Test plan", 75e-6))
+        self.assertEqual(engine._plan.channel(145_013_000, 600), 145_013_000)     # 12 kHz off its channels
+        engine.configure_band_plan({"plan": "test"})     # the plan in use: nothing changes
+        self.assertEqual(waiting(subscriptions[0]), [])
+        deadline = time.monotonic() + 5
+        while self.store.load(SETTINGS_FILE).get("band_plan") != "test":
+            self.assertLess(time.monotonic(), deadline, "the plan was not saved")
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.engine().band_plan_state()["plan"], "test")
+
+    async def test_the_demodulator_takes_the_plan_s_wfm_de_emphasis(self):
+        engine = self.engine()
+        given: list[float] = []
+        process = Demodulator.process
+
+        def spy(demodulator, *args, **kwargs):
+            given.append(args[8])       # after the taps, the de-emphasis
+            return process(demodulator, *args, **kwargs)
+
+        with mock.patch.object(Demodulator, "process", spy):
+            task = asyncio.ensure_future(engine.run())
+            self.addAsyncCleanup(asyncio.gather, task, return_exceptions=True)
+            engine.subscribe()
+            deadline = time.monotonic() + 5
+            while not given:
+                self.assertLess(time.monotonic(), deadline, "no block was processed")
+                await asyncio.sleep(0.01)
+            engine.configure_band_plan({"plan": "test"})
+            given.clear()
+            while len(given) < 3:
+                self.assertLess(time.monotonic(), deadline, "too few blocks were processed")
+                await asyncio.sleep(0.01)
+        self.assertEqual(given[-1], 75e-6)
+
+    async def test_refused_changes_change_nothing(self):
+        engine = self.engine()
+        subscription = engine.subscribe()
+        waiting(subscription)
+        for changes in ({}, {"plan": "mars"}, {"plan": None}, {"plan": "test", "region": 2}, {"region": "test"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                engine.configure_band_plan(changes)
+        self.assertEqual((engine.band_plan_state()["plan"], waiting(subscription)), ("europe", []))
+
+    async def test_a_saved_plan_that_is_not_offered_gives_europe_s(self):
+        for saved in ("mars", 3, ["test"]):
+            with self.subTest(saved=saved):
+                self.store.save(SETTINGS_FILE, {"band_plan": saved})
+                with self.assertLogs("radiolack.engine", "WARNING"):
+                    engine = self.engine()
+                self.assertEqual(engine.band_plan_state()["plan"], "europe")
 
 
 class RemoteClientTest(unittest.IsolatedAsyncioTestCase):

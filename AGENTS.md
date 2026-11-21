@@ -115,12 +115,15 @@ the history under the tag `v0.1.0`.
   across a range, the one window of a range within the span, its passes
   and progress, and its turns among a window's active signals, the one
   that waited longest first, and their states),
-  `bandplan` (the band plan as the engine reads it,
-  `web/bandplan-europe.json`, the file the interface loads: the mode the
+  `bandplan` (the band plans as the engine reads them, `PLANS`, each in
+  `web/bandplan-ID.json`, the file the interface loads once the engine
+  names it, Europe's alone so far, the engine's `band_plan` setting
+  choosing the one in use: the mode the
   History's Bookmark button gives a frequency, for the range scan, and
-  the channel a signal shows on, for the lists, and the standard-frequency
-  stations, for the automatic calibration; an unreadable plan gives
-  no mode, which the output says; `tests/test_bandplan.py` checks in Node
+  the channel a signal shows on, for the lists, the standard-frequency
+  stations, for the automatic calibration, and WFM's de-emphasis,
+  `wfm_deemphasis_us`; an unreadable plan gives
+  no mode and Europe's 50 µs, which the output says; `tests/test_bandplan.py` checks in Node
   that its modes agree with the interface's), `observations` (the channels
   where signals were found, for the History: how signals join a channel,
   its counters, the limits and the checks of the saved file), `keptscans`
@@ -284,7 +287,7 @@ the history under the tag `v0.1.0`.
   the stations and the calibration state's decoding, and `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, skipped
   where Node is missing. `bandplan-europe.json`
-  is the band plan data ([docs/design/band-plan.md](docs/design/band-plan.md)).
+  is the band plan data, the only plan so far ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`
   and the icons. `favicon.svg` and `apple-touch-icon.png` (the iPhone's
@@ -606,7 +609,7 @@ the history under the tag `v0.1.0`.
 - Keep the server compatible with aiohttp 3.8 (Debian 12) and the latest
   release (CI).
 - The band plan is a detailed guide, not a legal reference: keep
-  `bandplan-europe.json` generic (no operators, broadcasters, call signs,
+  `bandplan-*.json` generic (no operators, broadcasters, call signs,
   places or local data), sourced from the primary documents that
   docs/design/band-plan.md names, every edge and name from a document read,
   names written for Radiolack and nothing copied from another program's

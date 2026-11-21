@@ -1,6 +1,7 @@
 {
   "format": 2,
   "name": "Europe (ITU Region 1)",
+  "wfm_deemphasis_us": 50,
   "types": {
     "amateur": "#7d8b99",
     "amateur-cw": "#6b8afd",

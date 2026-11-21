@@ -19,6 +19,7 @@ from unittest import mock
 import aiohttp
 
 from radiolack import __version__, report
+from radiolack.bandplan import PLANS
 from radiolack.recordings import meta_name, wav_header
 from radiolack.rtltcp import RtlSdrSource, RtlTcpSource
 from radiolack.server import LOOPBACK_HOST, PROTOCOL_VERSION, WEB_DIR, InterfaceUnreadable, LocalServer
@@ -31,8 +32,8 @@ from radiolack.updates import UpdateResult
 from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "calibration",
-          "storage", "update", "remote")
+STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "scans",
+          "calibration", "storage", "update", "remote")
 RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
 # The scanner state of an engine without a scan or a ticked bookmark, with the default settings.
@@ -49,8 +50,6 @@ FILE_TYPES = {
     ".svg": "image/svg+xml; charset=utf-8",
     ".png": "image/png",
 }
-# The band plan file main.js loads.
-BAND_PLAN_URL = re.compile(r"^const BAND_PLAN_URL = '([a-z0-9-]+\.json)';$", re.MULTILINE)
 # The audio worklet audio.js loads.
 WORKLET_URL = re.compile(r"^const WORKLET_URL = '([a-z0-9-]+\.js)';$", re.MULTILINE)
 # Static imports and re-exports of the interface's own modules.
@@ -153,14 +152,16 @@ class LocalServerTest(unittest.TestCase):
             pending.extend(spec[2:] for spec in MODULE_IMPORT.findall(body.decode("utf-8")))
         self.assertIn("stream.js", seen)
 
-    def test_serves_the_band_plan_the_interface_loads(self):
-        name = BAND_PLAN_URL.search(get(self.server, "/main.js")[2].decode("utf-8")).group(1)
-        status, headers, body = get(self.server, f"/{name}")
-        self.assertEqual(status, 200)
-        self.assertEqual(headers["Content-Type"], FILE_TYPES[".json"])
-        self.assertEqual(headers["Cache-Control"], "no-store")
-        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
-        self.assertEqual(json.loads(body)["format"], 2)
+    def test_serves_the_band_plans_the_interface_loads(self):
+        self.assertIn("`bandplan-${id}.json`", get(self.server, "/main.js")[2].decode("utf-8"))
+        for plan in PLANS:
+            with self.subTest(plan=plan):
+                status, headers, body = get(self.server, f"/bandplan-{plan}.json")
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Content-Type"], FILE_TYPES[".json"])
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+                self.assertEqual(json.loads(body)["format"], 2)
 
     def test_serves_the_audio_worklet_the_interface_loads(self):
         name = WORKLET_URL.search(get(self.server, "/audio.js")[2].decode("utf-8")).group(1)
@@ -255,7 +256,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "hello", "protocol": 6, "version": __version__, "remote": False,
                               "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
-                              "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"]})
+                              "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"],
+                              "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"}]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -263,6 +265,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             settings = await ws.receive_json(timeout=5)
             self.assertEqual((settings["type"], settings["mode"], settings["acknowledged"]), ("demod", "NFM", 0))
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "bookmarks", "bookmarks": [], "categories": []})
+            self.assertEqual(await ws.receive_json(timeout=5), {"type": "band_plan", "plan": "europe"})
             self.assertEqual(await ws.receive_json(timeout=5),
                              SCANNER_STATE)
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "peaks", "peaks": []})
@@ -402,7 +405,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                 "type": "error", "command": "preferences", "message": "the preferences must be a JSON object"})
             await self.assert_no_text(other)
         async with self.connect(self.origin) as later:
-            for kind in ("hello", "source", "demod", "bookmarks", "scanner", "peaks"):
+            for kind in ("hello", "source", "demod", "bookmarks", "band_plan", "scanner", "peaks"):
                 self.assertEqual((await later.receive_json(timeout=5))["type"], kind)
             self.assertEqual(await later.receive_json(timeout=5), {"type": "preferences", "values": values})
 
@@ -521,6 +524,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             '{"type": "carrier", "action": "measure", "id": -1}': (
                 "carrier", "a request id must be a whole number from 1"),
             '{"type": "calibration"}': ("calibration", "a calibration message takes the action start or stop"),
+            '{"type": "band_plan"}': ("band_plan", "unknown band plan: None"),
+            '{"type": "band_plan", "plan": "mars"}': ("band_plan", "unknown band plan: mars"),
+            '{"type": "band_plan", "plan": "europe", "region": 1}': ("band_plan", "unknown band plan field: region"),
             '{"type": "calibration", "action": "start"}': (
                 "calibration", "this receiver has no frequency correction to calibrate"),
         }

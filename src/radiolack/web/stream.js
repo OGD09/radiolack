@@ -133,6 +133,14 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * A band plan that the engine offers: its name in the protocol, `id`, which
+ * names its file, `bandplan-ID.json`, and the name it gives itself.
+ * @typedef {object} BandPlanChoice
+ * @property {string} id
+ * @property {string} name
+ */
+
+/**
  * A category that bookmarks are sorted into, one level deep. Its id lasts
  * as long as the engine runs.
  * @typedef {object} BookmarkCategory
@@ -625,6 +633,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(bookmarks: Bookmark[], categories: BookmarkCategory[] | null) => void} onBookmarks
  *   sent next, then at every change: the bookmarks in frequency order, and
  *   their categories by name, or null from an engine without categories
+ * @property {(plan: string) => void} [onBandPlan]
+ *   the band plan in use, one of `bandPlans`: sent next, then at every change
  * @property {(scanner: ScannerState) => void} onScanner    sent next, then at every change
  * @property {(peaks: Peak[]) => void} onPeaks
  *   sent next, then when the list changes, at most about once a second: active signals first, strongest first
@@ -914,6 +924,27 @@ export function decodeBookmarks(message) {
       category: categories === null ? null : b.category });
   }
   return { bookmarks, categories };
+}
+
+/**
+ * Decode a band plan message: the plan in use, or null for a malformed one.
+ * @param {any} message  a parsed JSON message of type "band_plan"
+ * @returns {string | null}
+ */
+export function decodeBandPlan(message) {
+  return typeof message.plan === 'string' && message.plan ? message.plan : null;
+}
+
+/**
+ * The band plans that a hello lists, leaving out malformed entries: none
+ * from an engine older than the choice of plan.
+ * @param {unknown} list  the hello's `band_plans`
+ * @returns {BandPlanChoice[]}
+ */
+export function decodeBandPlans(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter((entry) => entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id
+    && typeof entry.name === 'string' && entry.name).map((entry) => ({ id: entry.id, name: entry.name }));
 }
 
 /**
@@ -1429,6 +1460,8 @@ export class EngineStream {
   #measures = [];         // what the engine measures, as its last hello listed it
   /** @type {string[]} */
   #spectra = [];          // the spectra the engine sends when asked, as its last hello listed them
+  /** @type {BandPlanChoice[]} */
+  #bandPlans = [];        // the band plans the engine offers, as its last hello listed them
   #remoteOff = false;     // the computer turned remote access off: retrying until it is on again
   #retryMs = RETRY_FIRST_MS;
   #timer = 0;
@@ -1500,6 +1533,15 @@ export class EngineStream {
     return this.#spectra.slice();
   }
 
+  /**
+   * The band plans the engine offers, as its last hello listed them: none
+   * from an engine older than the choice of plan, which uses Europe's.
+   * @returns {BandPlanChoice[]}
+   */
+  get bandPlans() {
+    return this.#bandPlans.map((choice) => ({ ...choice }));
+  }
+
   /** Connect, unless already connected or connecting. */
   start() {
     if (this.#running) return;
@@ -1561,6 +1603,18 @@ export class EngineStream {
     this.#lastChangeId += 1;
     this.#awaitedId = this.#lastChangeId;
     return true;
+  }
+
+  /**
+   * Ask the engine to use another band plan, one of `bandPlans`, for every
+   * interface (`onBandPlan`). Returns false, sending nothing, when the
+   * stream is not open or the engine does not offer that plan.
+   * @param {string} plan
+   * @returns {boolean}
+   */
+  setBandPlan(plan) {
+    if (!this.#bandPlans.some((choice) => choice.id === plan)) return false;
+    return this.#send({ type: 'band_plan', plan });
   }
 
   /**
@@ -2091,6 +2145,9 @@ export class EngineStream {
     } else if (message.type === 'bookmarks') {
       const decoded = decodeBookmarks(message);
       if (decoded) this.#handlers.onBookmarks(decoded.bookmarks, decoded.categories);
+    } else if (message.type === 'band_plan') {
+      const plan = decodeBandPlan(message);
+      if (plan && this.#handlers.onBandPlan) this.#handlers.onBandPlan(plan);
     } else if (message.type === 'scanner') {
       const scanner = decodeScanner(message);
       if (scanner) this.#handlers.onScanner(scanner);
@@ -2165,6 +2222,7 @@ export class EngineStream {
     this.#recordings = names(message.recording);
     this.#measures = names(message.measures);
     this.#spectra = names(message.spectra);
+    this.#bandPlans = decodeBandPlans(message.band_plans);
     this.#remoteOff = false;
     this.#retryMs = RETRY_FIRST_MS;
     if (this.#audio) socket.send(JSON.stringify({ type: 'audio', on: true }));
