@@ -541,6 +541,9 @@ class Engine:
         self._fine_sequence = 0
         # The centre asked and the rate of the last block, and its centre in use and rate.
         self._capture: tuple[tuple[float, float], tuple[float, float]] | None = None
+        # The span asked when a client last tuned the VFO: its samples leave the VFO where the
+        # client set it, even outside it (protocol.md, the demodulation state's frequency_hz).
+        self._vfo_set_in: tuple[float, float] | None = None
         self._closing: set[asyncio.Future] = set()  # sources switched away from, until they release their receiver
         # What each client receives first, in this order, then again whenever
         # it changes; remote clients, none of LOCAL_STATES.
@@ -833,6 +836,7 @@ class Engine:
                 demod = self._demod.changed(changes)
         if demod.frequency_hz != self._demod.frequency_hz:
             self._stop_scan("tuned")
+            self._vfo_set_in = self._span()
         self._demod = demod
         self._demod_changed()
 
@@ -1531,7 +1535,8 @@ class Engine:
                 label = (source.exact_centre_hz, source.sample_rate_hz)
                 if (capture, label) != self._capture:
                     self._capture = (capture, label)
-                    self._keep_vfo_in(*label)
+                    if capture != self._vfo_set_in:
+                        self._keep_vfo_in(*label)
                     self._watch_bookmarks()     # in case the source retuned by itself, as when it connects
                 audio = self._audio is not None or any(subscription.audio for subscription in self._clients)
                 threshold_db = self._threshold_db if self._detection else None
@@ -2793,7 +2798,7 @@ class Engine:
         self._demod = DemodSettings(
             frequency_hz=float(round(described["centre_hz"] + described["sample_rate_hz"] / 4)))
         self._restore_demod(saved.get("demod"))
-        self._capture = None
+        self._capture = self._vfo_set_in = None
         self.source.on_change = self._source_changed
 
     def _identified(self) -> None:

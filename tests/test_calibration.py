@@ -291,6 +291,22 @@ class StopTest(RunCase):
         self.assertEqual(engine.calibration_state()["ended"], "tuned")
         self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["mode"]), (145_050_000, "NFM"))
 
+    async def test_a_vfo_tuned_by_hand_outside_the_span_stays_there_once_the_receiver_is_back(self):
+        # A press on the spectrum while it shows a station's window: the VFO set there, outside
+        # the span the receiver comes back to, reads nothing but stays, rather than move to an
+        # edge that nobody chose once that span's samples come.
+        engine, _, _ = await self.start([10_000_000])
+        engine.calibrate({"action": "start"})
+        await eventually(lambda: engine._capture is not None and engine._capture[0][0] != 145_000_000, 30)
+        engine.configure_demod({"frequency_hz": 9_990_000})
+        self.assertEqual(engine.calibration_state()["ended"], "tuned")
+        await eventually(lambda: engine._capture[0] == (145_000_000, 240_000), 30)
+        self.assertEqual(engine.demod_state()["frequency_hz"], 9_990_000)
+        # A span that changes afterwards still brings a VFO left outside it to its nearest edge.
+        engine.configure({"centre_hz": 9_700_000})
+        await eventually(lambda: engine._capture[0] == (9_700_000, 240_000), 30)
+        self.assertEqual(engine.demod_state()["frequency_hz"], 9_700_000 + 120_000)
+
     async def test_the_gain_leaves_it_running(self):
         engine, _, _ = await self.start([10_000_000])
         engine.calibrate({"action": "start"})

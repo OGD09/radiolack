@@ -138,7 +138,7 @@ preferences apart from this computer's.
 
    | Field | Meaning |
    | --- | --- |
-   | `frequency_hz` | The VFO, a whole number of Hz. It starts a quarter of the span above the centre frequency. When the span changes, a VFO left outside it moves to its nearest edge; a VFO set outside the span reads nothing and stays silent. |
+   | `frequency_hz` | The VFO, a whole number of Hz. It starts a quarter of the span above the centre frequency. When the span changes, a VFO left outside it moves to its nearest edge once that span's samples come; a VFO that an interface sets outside the span asked at that moment reads nothing and stays silent, and stays there when that span's samples come, as after an automatic calibration that its change ended. |
    | `mode` | One of `modes`. |
    | `bandwidth_hz` | Width of the channel filter: centred on the VFO for NFM, AM, SAM, CW and WFM, above it for USB, below it for LSB. SAM takes AM's widths. |
    | `squelch_db` | The squelch threshold set by hand, in dBFS of channel power. |
