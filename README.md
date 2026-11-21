@@ -1940,8 +1940,13 @@ Bookmarks > Plan names the band plan in use and chooses another, for every
 interface at once, as the bookmarks are; Radiolack remembers it. The plan
 gives the strip, the modes and steps, the channels that the signals found
 show on, the stations of the automatic calibration and WFM's de-emphasis.
-Europe's is the only one so far: the choice stays greyed out until others
-come.
+Two plans so far: Europe (ITU Region 1), used unless another is chosen,
+and France (metropolitan), which is Europe's changed where France's
+national table of frequency allocations differs: no 4 m or 9 cm amateur
+band, 160 m up to 1850 kHz, Band III up to 225 MHz, and a few utility
+ranges. Below 30 MHz, where signals cross borders, the parts of a band
+that France does not allocate but its neighbours use stay, as segments
+named "outside France".
 
 The Bookmarks menu lists the ranges in view, each with the known
 frequencies inside it; a click on a range frames it, and a click on a known
@@ -1950,10 +1955,11 @@ plan's ranges, channel sets and known frequencies, and a click on a set
 frames it. The list holds at most 200 rows: zoom in or refine the filter
 for the others. Display > "Band plan" hides the strip.
 
-The plan is a detailed guide for Europe (ITU Region 1), not a legal
-reference: it is written by hand from the ITU Radio Regulations, the CEPT's
-European table and the IARU Region 1 band plans, and read a second time
-against them. National tables differ and are the reference, and local law may
+The plan is a detailed guide, not a legal reference: Europe's is written by
+hand from the ITU Radio Regulations, the CEPT's European table and the IARU
+Region 1 band plans, France's from Europe's and the ANFR's national table
+(TNRBF), and each is read a second time against its sources. National tables
+differ and are the reference, and local law may
 forbid listening to some services or disclosing what they carry. Its format,
 its sources with their editions, and what could not be checked are in
 [docs/design/band-plan.md](docs/design/band-plan.md).

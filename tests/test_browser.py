@@ -1368,12 +1368,33 @@ class BrowserTest(unittest.TestCase):
                 expect(band).to_have_attribute("title", re.compile(rf"^2 m amateur {DOT} .* {DOT} drag: spectrum height$"))
                 expect(meta).to_have_text(re.compile(rf"^2 m amateur {DOT} ATV talkback {DOT} step "))   # the line still names it
 
+    def test_plan_changes_the_band_plan_on_every_interface(self):
+        # Bookmarks > Plan chooses the engine's plan: France's, chosen on one
+        # interface, shows on both, with its own ranges and without 4 m.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                    self.open_menu(page, "bookmarks")
+                names = second.locator("#plan-list .item .name")
+                second.locator("#bm-filter").fill("4 m amateur")
+                expect(names.first).to_contain_text("4 m amateur (some countries)")
+                first.locator("#bm-plan").select_option("france")
+                expect(second.locator("#bm-plan")).to_have_value("france")
+                expect(names).to_have_count(0)
+                second.locator("#bm-filter").fill("All modes, outside France")
+                expect(names).to_have_text([f"160 m amateur {DOT} All modes, outside France"])
+                first.locator("#bm-plan").select_option("europe")         # as the next browser expects it
+                expect(second.locator("#bm-plan")).to_have_value("europe")
+                expect(names).to_have_count(0)
+
     def test_the_band_plan_list_follows_the_view_and_the_filter(self):
         # Under the bookmarks, the band plan lists the ranges in view with the
         # known frequencies inside them, at most 200 rows; filtered, the
         # ranges, channel sets and known frequencies of the whole plan. A set
         # frames itself, a known frequency tunes there. Plan names the plan
-        # in use, greyed out while the engine offers one alone.
+        # in use among those the engine offers.
         url = self.serve()      # the simulated band, the VFO on 145.6 MHz
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
@@ -1382,8 +1403,8 @@ class BrowserTest(unittest.TestCase):
                 self.open_menu(page, "bookmarks")
                 choice = page.locator("#bm-plan")
                 expect(choice).to_have_value("europe")
-                expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)"])
-                expect(choice).to_be_disabled()
+                expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)", "France (metropolitan)"])
+                expect(choice).to_be_enabled()
                 expect(plan.locator(".item.sub .name", has_text="APRS")).to_have_count(1)
                 page.keyboard.press("Escape")
                 for _ in range(4):                  # 474 kHz around the VFO: 144.8 MHz out of view
