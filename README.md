@@ -2413,7 +2413,7 @@ does not encourage or endorse any unlawful use.
 **Guidance, not a reference.** The band plan, the modes and steps it
 suggests, the antenna lengths and every other piece of guidance in
 Radiolack are simplified, and may be incomplete, outdated or wrong where
-you are: the band plan follows a simplified European table. They are not
+you are: the band plan follows a simplified regional table. They are not
 legal references. The frequency allocation tables, licence conditions and
 regulations of your country, and its radio authority, are.
 
