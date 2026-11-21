@@ -1059,10 +1059,10 @@ times as far; a typed frequency, a bookmark and a digit do not.
 
 WFM plays broadcast FM in mono, through a filter 180 kHz wide by default,
 from 50 to 250 kHz. Its audio has the de-emphasis of the band plan in use,
-50 µs in Europe ([Band plan](#band-plan)), and runs
+50 µs in Europe and 75 µs in the Americas ([Band plan](#band-plan)), and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
 the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
-WFM, so tuning into 87.5 to 108 MHz selects it, with Radio > "Mode and step
+WFM, so tuning into 87.5 to 108 MHz (88 to 108 MHz in the Americas) selects it, with Radio > "Mode and step
 from the band plan". Where the plan gives AM, SAM counts as AM: tuning
 there in SAM keeps SAM.
 
@@ -1908,7 +1908,7 @@ The strip under the spectrum shows what each range is used for, from 0 Hz to
 10.5 GHz: broadcasting, aviation, shipping, mobile networks, satellites,
 short-range devices, radar, amateur bands and more, with nothing allocated
 below 8.3 kHz. Inside the amateur bands, from 2200 m to 3 cm, it follows
-the IARU Region 1 band plans, a few segments per band. Hovering the strip names a
+the IARU band plans of its region, a few segments per band. Hovering the strip names a
 range and its edges, and clicking it zooms to the range. Zoomed out, where a
 band's ranges would be too narrow to read, the band shows as one block of
 its colour, named in full, by a short name or not at all as room allows,
@@ -1918,15 +1918,16 @@ SAM staying where the plan gives AM.
 The Automatic tuning step takes the channel spacing of the ranges that have
 channels ([Demodulation and audio](#demodulation-and-audio)).
 
-The plan also numbers channels and names known frequencies. Its channel
-sets are those that a regulation or the IARU Region 1 plans number across
-Europe: CB, PMR446, maritime VHF, the amateur FM and repeater channels of
+The plan also numbers channels and names known frequencies. Europe's
+channel sets are those that a regulation or the IARU Region 1 plans number
+across Europe: CB, PMR446, maritime VHF, the amateur FM and repeater channels of
 10 m, 6 m, 2 m, 70 cm and 23 cm, the DAB blocks of Band III, the UHF
-television channels and DECT. Its known frequencies are the distress and
+television channels and DECT. The Americas' are CB, FM broadcast, maritime
+VHF, and FRS and GMRS. The known frequencies are the distress and
 safety frequencies, the time signals and standard frequencies, the radio
 astronomy lines, Galileo's carriers and the amateur centres of activity and
-calling frequencies. No broadcaster, operator, local repeater or national
-plan is named. Zoomed in, the strip draws a set's channels as ticks along
+calling frequencies, and in the Americas MURS and the weather radio
+frequencies. No broadcaster, operator or local repeater is named. Zoomed in, the strip draws a set's channels as ticks along
 its lower edge once they lie 6 px apart, with their numbers once they lie
 28 px apart, and each known frequency as a small mark along its upper edge,
 with its name where it fits; the ranges' names come first, then the known
@@ -1943,8 +1944,11 @@ Bookmarks > Plan names the band plan in use and chooses another, for every
 interface at once, as the bookmarks are; Radiolack remembers it. The plan
 gives the strip, the modes and steps, the channels that the signals found
 show on, the stations of the automatic calibration and WFM's de-emphasis.
-Two plans so far: Europe (ITU Region 1), used unless another is chosen,
-and France (metropolitan), which is Europe's changed where France's
+Three plans so far: Europe (ITU Region 1), used unless another is chosen;
+the Americas (ITU Region 2), whose FM broadcast has 75 µs of de-emphasis,
+with the IARU Region 2 band plan in the amateur bands, 1.25 m and 33 cm
+among them, and medium wave by 10 kHz; and France (metropolitan), which is
+Europe's changed where France's
 national table of frequency allocations differs: no 4 m or 9 cm amateur
 band, 160 m up to 1850 kHz, Band III up to 225 MHz, and a few utility
 ranges. Below 30 MHz, where signals cross borders, the parts of a band
@@ -1961,7 +1965,10 @@ for the others. Display > "Band plan" hides the strip.
 The plan is a detailed guide, not a legal reference: Europe's is written by
 hand from the ITU Radio Regulations, the CEPT's European table and the IARU
 Region 1 band plans, France's from Europe's and the ANFR's national table
-(TNRBF), and each is read a second time against its sources. National tables
+(TNRBF), the Americas' from the Radio Regulations' Region 2 column and the
+IARU Region 2 band plan, with its channel sets and some steps from the
+United States' rules, which are national; each is read a second time
+against its sources. National tables
 differ and are the reference, and local law may
 forbid listening to some services or disclosing what they carry. Its format,
 its sources with their editions, and what could not be checked are in
@@ -2406,7 +2413,7 @@ does not encourage or endorse any unlawful use.
 **Guidance, not a reference.** The band plan, the modes and steps it
 suggests, the antenna lengths and every other piece of guidance in
 Radiolack are simplified, and may be incomplete, outdated or wrong where
-you are: the band plan follows a simplified European table. They are not
+you are: the band plan follows a simplified regional table. They are not
 legal references. The frequency allocation tables, licence conditions and
 regulations of your country, and its radio authority, are.
 

@@ -1411,8 +1411,16 @@ reused with its source and date, its meaning kept. The owner chose to take
 its facts alone, as the plan takes the Radio Regulations' (scoping.md,
 2026-11-21): France's plan is Europe's, changed where the table's Region 1
 columns differ, every name Radiolack's own, the table named with its
-edition and address (band-plan.md, France). Pull requests 2 and 3, the
-Americas and Asia-Pacific, are to come.
+edition and address (band-plan.md, France).
+
+The same day, pull request 2, the Americas, is built: Region 2's column of
+Article 5 and the IARU Region 2 band plan of September 2020, the newest
+published (its 2025 revisions were not), WFM's de-emphasis 75 µs, and
+Region 2's time signals and standard frequencies for the automatic
+calibration. No regional document numbers CB, FRS, GMRS or MURS or gives
+broadcast and airband spacings for the region: those come from the United
+States' rules, national, and band-plan.md says so (Americas). Pull
+request 3, Asia-Pacific, is to come.
 
 ## 5. Several receivers at once
 

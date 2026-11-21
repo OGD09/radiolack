@@ -37,10 +37,12 @@ MOST_SPOTS = 400
 SPOT_TOLERANCE_HZ = 50          # a frequency within this of a spot is on it (channels.js)
 # A step is a range's channel spacing, never a default: broadcast's 9 and
 # 5 kHz, the airband's 25 kHz / 3, the 10 m and 6 m FM channels' 10 kHz, the
-# 12.5 and 25 kHz channels, and FM broadcast's and the VOR's 50 kHz. A channel
-# set's spacing takes its place where the set gives one (CB, PMR446, maritime
-# VHF). Elsewhere the Automatic step follows the zoom (tuning.js).
-CHANNEL_SPACINGS = {5_000, 25_000 / 3, 9_000, 10_000, 12_500, 25_000, 50_000}
+# 12.5 and 25 kHz channels, and FM broadcast's and the VOR's 50 kHz; in the
+# Americas, the 1.25 m repeaters' 20 kHz and FM broadcast's 100 kHz, which
+# reaches its 200 kHz channels on the odd 100 kHz. A channel set's spacing
+# takes its place where the set gives one (CB, PMR446, maritime VHF).
+# Elsewhere the Automatic step follows the zoom (tuning.js).
+CHANNEL_SPACINGS = {5_000, 25_000 / 3, 9_000, 10_000, 12_500, 20_000, 25_000, 50_000, 100_000}
 # The file of the band plan that the engine names, as main.js loads it.
 PLAN_URL = "loadBandPlan(`bandplan-${id}.json`, MODE_ORDER)"
 
@@ -65,6 +67,8 @@ class PlanFileChecks:
     of bandplan.PLANS names it in plan_id."""
 
     plan_id = ""
+    deemphasis_us = 50          # the plan's broadcast FM
+    references_hz = {77_500, 10_000_000}     # standard frequencies the plan must mark
 
     @classmethod
     def setUpClass(cls):
@@ -78,7 +82,7 @@ class PlanFileChecks:
                                           "spots"})
         self.assertEqual(self.plan["format"], 2)
         self.assertTrue(self.plan["name"].strip())
-        self.assertEqual(self.plan["wfm_deemphasis_us"], 50)      # Europe's broadcast FM
+        self.assertEqual(self.plan["wfm_deemphasis_us"], self.deemphasis_us)
         for name, colour in self.plan["types"].items():
             with self.subTest(type=name):
                 self.assertRegex(name, r"^[a-z][a-z-]*$")
@@ -250,7 +254,7 @@ class PlanFileChecks:
 
     def test_the_standard_frequencies_are_references(self):
         references = {spot["f"] for spot in self.plan["spots"] if spot.get("reference")}
-        self.assertLessEqual({77_500, 10_000_000}, references)
+        self.assertLessEqual(self.references_hz, references)
 
     def assert_name(self, name):
         self.assertIs(type(name), str)
@@ -264,6 +268,55 @@ class EuropePlanTest(PlanFileChecks, unittest.TestCase):
 
 class FrancePlanTest(PlanFileChecks, unittest.TestCase):
     plan_id = "france"
+
+
+class AmericasPlanTest(PlanFileChecks, unittest.TestCase):
+    plan_id = "americas"
+    deemphasis_us = 75
+    # TF.768's stations of Region 2: 60 kHz, 2.5 to 25 MHz, and 3330, 7850 and 14670 kHz.
+    references_hz = {60_000, 2_500_000, 3_330_000, 5_000_000, 7_850_000, 10_000_000, 14_670_000, 15_000_000,
+                     20_000_000, 25_000_000}
+
+    def names_at(self, hz: int) -> tuple:
+        """The band's and the segment's names at a frequency."""
+        band = band_at(self.bands, hz)
+        segment = next((s for s in band.get("segments", ()) if s["from"] <= hz < s["to"]), {})
+        return band["name"], segment.get("name")
+
+    def test_the_references_are_region_2_s_alone(self):
+        references = {spot["f"] for spot in self.plan["spots"] if spot.get("reference")}
+        self.assertEqual(references, self.references_hz)
+
+    def test_region_2_s_own_allocations(self):
+        names = self.names_at
+        self.assertEqual(names(1_900_000), ("160 m amateur", "All modes"))         # 1800-2000 kHz
+        self.assertEqual(names(3_900_000), ("80 m amateur", "All modes"))          # 3500-4000 kHz
+        self.assertEqual(names(7_250_000), ("40 m amateur", "All modes"))          # 7000-7300 kHz
+        self.assertEqual(names(7_350_000), ("41 m broadcast", None))               # 7300-7400 kHz
+        self.assertEqual(names(1_650_000), ("Medium wave broadcast", None))        # up to 1705 kHz
+        self.assertEqual(names(53_000_000), ("6 m amateur", "All modes"))          # 50-54 MHz
+        self.assertEqual(names(147_000_000), ("2 m amateur", "Repeater inputs"))   # 144-148 MHz
+        self.assertEqual(names(223_000_000), ("1.25 m amateur", "Repeater inputs"))
+        self.assertEqual(names(915_000_000), ("33 cm amateur, ISM", "Broadband, amateur TV"))
+        self.assertEqual(names(3_350_000_000), ("9 cm amateur", "Radio astronomy (protected)"))
+        self.assertEqual(names(5_900_000_000), ("5 cm amateur", "All modes"))      # up to 5925 MHz
+        self.assertEqual(names(462_600_000), ("Fixed and mobile", "FRS and GMRS"))
+        self.assertEqual(names(162_475_000), ("Fixed and mobile", "Weather radio"))
+        self.assertIsNone(band_at(self.bands, 70_200_000).get("segments"))         # no 4 m band
+
+    def test_region_2_s_channels(self):
+        sets = {channel_set["name"]: channel_set for channel_set in self.plan["channels"]}
+        self.assertEqual(sorted(sets), ["CB radio", "FM broadcast", "FRS and GMRS", "Maritime VHF"])
+        fm = sets["FM broadcast"]
+        self.assertEqual((fm["first"], fm["count"], fm["spacing"], fm["number"]), (88_100_000, 100, 200_000, 201))
+        self.assertEqual(len(sets["FRS and GMRS"]["list"]), 22)
+        europe = load_plan("europe")
+        for name in ("CB radio", "Maritime VHF"):        # the same tables, read in other sources
+            with self.subTest(channel_set=name):
+                self.assertIn(sets[name], europe["channels"])
+        self.assertEqual(band_at(self.bands, 98_100_000)["step"], 100_000)
+        self.assertEqual(band_at(self.bands, 124_500_000)["step"], 25_000)
+        self.assertEqual(band_at(self.bands, 1_000_000)["step"], 10_000)
 
 
 # Where France's national table (TNRBF) differs from Europe's plan, as
@@ -414,14 +467,15 @@ class EnginePlanTest(unittest.TestCase):
         self.assertIn(bandplan.DEFAULT_PLAN, bandplan.PLANS)
         self.assertEqual(bandplan.plan_path(bandplan.DEFAULT_PLAN), plan_path())
         self.assertEqual(bandplan.plan_choices(), [{"id": "europe", "name": "Europe (ITU Region 1)"},
-                                                   {"id": "france", "name": "France (metropolitan)"}])
+                                                   {"id": "france", "name": "France (metropolitan)"},
+                                                   {"id": "americas", "name": "Americas (ITU Region 2)"}])
         for plan in bandplan.PLANS:
             self.assertEqual(bandplan.checked_plan(plan), plan)
         for value in ("", "europa", "../europe", None, 1, ["europe"]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 bandplan.checked_plan(value)
         with self.assertRaises(ValueError):
-            bandplan.load_plan("americas")
+            bandplan.load_plan("asia-pacific")
 
     def test_the_engine_reads_the_plan_in_use_unless_another_is_chosen(self):
         plan = bandplan.default_plan()
@@ -433,6 +487,15 @@ class EnginePlanTest(unittest.TestCase):
         self.assertEqual(plan.mode_at(156_800_000), "NFM")      # maritime VHF's channel 16
         self.assertEqual(plan.mode_at(98_100_000), "WFM")
         self.assertEqual(plan.mode_at(124_500_000), "AM")
+
+    def test_the_americas_plan_gives_wfm_its_75_us(self):
+        plan = bandplan.load_plan("americas")
+        self.assertEqual(plan.name, "Americas (ITU Region 2)")
+        self.assertAlmostEqual(plan.wfm_deemphasis_s, 75e-6)
+        self.assertEqual(plan.mode_at(98_100_000), "WFM")
+        self.assertEqual(plan.channel(98_102_000, 150_000), 98_100_000)     # an FM station on its channel
+        self.assertEqual(plan.mode_at(162_550_000), "NFM")                  # weather radio
+        self.assertEqual(plan.mode_at(156_800_000), "NFM")
 
     def test_a_plan_names_itself_and_its_wfm_de_emphasis(self):
         plan = BandPlan.parse(SMALL_PLAN)
@@ -537,7 +600,7 @@ class EnginePlanTest(unittest.TestCase):
                     self.assertIsNone(plan.mode_at(145_600_000))
                     self.assertEqual(plan.channel(145_600_049, 10_000), 145_600_000)
                     self.assertEqual(plan.wfm_deemphasis_s, WFM_DEEMPHASIS_S)
-                    self.assertEqual(choices, [{"id": "europe", "name": "europe"}, {"id": "france", "name": "france"}])
+                    self.assertEqual(choices, [{"id": plan, "name": plan} for plan in bandplan.PLANS])
 
     @unittest.skipUnless(NODE, "Node.js runs the interface's modules")
     def test_the_interface_decodes_the_plan_in_use_and_the_plans_offered(self):

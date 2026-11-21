@@ -284,7 +284,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                           "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
                           "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"],
                           "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"},
-                                         {"id": "france", "name": "France (metropolitan)"}]})
+                                         {"id": "france", "name": "France (metropolitan)"},
+                                         {"id": "americas", "name": "Americas (ITU Region 2)"}]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(8)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences",
                                  "recording"])

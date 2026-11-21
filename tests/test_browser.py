@@ -1403,7 +1403,8 @@ class BrowserTest(unittest.TestCase):
                 self.open_menu(page, "bookmarks")
                 choice = page.locator("#bm-plan")
                 expect(choice).to_have_value("europe")
-                expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)", "France (metropolitan)"])
+                expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)", "France (metropolitan)",
+                                                               "Americas (ITU Region 2)"])
                 expect(choice).to_be_enabled()
                 expect(plan.locator(".item.sub .name", has_text="APRS")).to_have_count(1)
                 page.keyboard.press("Escape")
