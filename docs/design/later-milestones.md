@@ -1419,8 +1419,15 @@ published (its 2025 revisions were not), WFM's de-emphasis 75 µs, and
 Region 2's time signals and standard frequencies for the automatic
 calibration. No regional document numbers CB, FRS, GMRS or MURS or gives
 broadcast and airband spacings for the region: those come from the United
-States' rules, national, and band-plan.md says so (Americas). Pull
-request 3, Asia-Pacific, is to come.
+States' rules, national, and band-plan.md says so (Americas).
+
+The same day, pull request 3, Asia-Pacific, is built: Region 3's column
+of Article 5 and the IARU Region 3 band plan (R3-004 Rev. 2, November
+2024), Region 3's time signals and standard frequencies for the automatic
+calibration, maritime VHF as its one channel set, national channel plans
+left out, and WFM's de-emphasis 50 µs, a choice that band-plan.md states
+(Asia-Pacific). The milestone's four plans are built; the owner's check of
+the French plan remains.
 
 ## 5. Several receivers at once
 

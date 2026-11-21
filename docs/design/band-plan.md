@@ -2,8 +2,10 @@
 
 The colour strip under the spectrum names what each frequency range is used
 for. Its data is `src/radiolack/web/bandplan-europe.json`, Europe's plan,
-`bandplan-france.json`, France's ([France](#france), below), or
-`bandplan-americas.json`, the Americas' ([Americas](#americas), below): the engine's
+`bandplan-france.json`, France's ([France](#france), below),
+`bandplan-americas.json`, the Americas' ([Americas](#americas), below), or
+`bandplan-asia-pacific.json`, Asia-Pacific's ([Asia-Pacific](#asia-pacific),
+below): the engine's
 `band_plan` setting names the plan in use, Europe's unless chosen
 otherwise, which the
 Bookmarks menu chooses, among those that `bandplan.PLANS` lists, each in
@@ -24,9 +26,8 @@ carry.
   whole with its satellite segment.
 - Europe: ITU Region 1 as the CEPT applies it; France's plan is Europe's
   changed where France's national table differs ([France](#france)). The
-  Americas: ITU Region 2 ([Americas](#americas)). Region 3 belongs to a
-  later pull request of [`later-milestones.md`](later-milestones.md),
-  section 4.
+  Americas: ITU Region 2 ([Americas](#americas)). Asia-Pacific: ITU
+  Region 3 ([Asia-Pacific](#asia-pacific)).
 - 252 bands and 130 segments in pull request 11 of
   [`coverage-and-precision.md`](coverage-and-precision.md), and 16 channel
   sets (680 channels) and 141 known frequencies in pull request 12.
@@ -641,6 +642,129 @@ Found, and kept:
   runs from 420 to 450 MHz (above).
 - The naval VLF stations of TF.768, which send no plain carrier, are not
   known frequencies, as in Europe's plan.
+
+## Asia-Pacific
+
+`bandplan-asia-pacific.json`, "Asia-Pacific (ITU Region 3)", is the plan of
+ITU Region 3: most of Asia, and Oceania
+([`later-milestones.md`](later-milestones.md), section 4, pull request 3).
+Its broadcast FM has 50 µs of de-emphasis.
+
+### Sources
+
+Read on 2026-11-21, in the edition current that day.
+
+| Source | Edition | Used for |
+| --- | --- | --- |
+| ITU Radio Regulations, Volume 1, Article 5 (Table of Frequency Allocations, Region 3 column, and its footnotes), https://www.itu.int/pub/R-REG-RR-2024 | Edition of 2024 (WRC-23), in force from 1 January 2025 | Every band's edges and allocation from 8.3 kHz to 10.5 GHz, the amateur allocations of Region 3, and the edges and uses that footnotes give (5.138 and 5.150, ISM; 5.226, maritime VHF; 5.328AA, ADS-B; 5.313A, 5.317A, 5.341C, 5.346A and 5.433A, mobile networks) |
+| ITU Radio Regulations, Volume 2, Appendices 15 and 18 | Edition of 2024 | The distress and safety frequencies and the maritime VHF channels, worldwide, as in Europe's plan |
+| IARU Region 3 Band Plan, document R3-004, https://iaru-r3.org/wp-content/uploads/2025/01/R3-004-Band-Plans-IARU-Region-3.pdf, listed on https://www.iaru-r3.org/reference/standard-documents/ | Rev. 2, November 2024, adopted by the 19th IARU Region 3 Conference | The segments of the amateur bands from 2200 m to 3 cm, and their centres of activity and calling frequencies |
+| Recommendation ITU-R TF.768, and its attachment of station characteristics, https://www.itu.int/oth/R0A08000007/en | TF.768-7; the attachment updated 6 March 2026 | The time signals and standard frequencies of the stations in Region 3: 40 and 60 kHz, 2.5, 5, 10 and 15 MHz |
+
+The Radio Regulations and TF.768 are free downloads of the ITU; the IARU
+Region 3 site says its materials may be subject to copyright, and the plan
+is published for amateurs to use. Only frequencies and facts are taken
+from them: every name is written for Radiolack, and nothing comes from
+another program's band plan.
+
+### How the plan of Asia-Pacific is written
+
+- By the rules of Europe's plan ([How the plan is written](#how-the-plan-is-written)),
+  with Region 3's column of Article 5 in place of the ECA, as the
+  Americas' plan is written.
+- The amateur bands are Region 3's allocations, secondary ones included:
+  160 m from 1800 to 2000 kHz, 80 m to 3900 kHz, 40 m to 7200 kHz, 6 m
+  from 50 to 54 MHz, 2 m to 148 MHz, 70 cm (430 to 440 MHz), 23 cm, 13 cm,
+  9 cm (3300 to 3500 MHz), 5 cm (5650 to 5850 MHz) and 3 cm. Region 3 has
+  no 4 m, 1.25 m or 33 cm band. Their segments follow the IARU Region 3
+  plan, merged into a few per band; the international beacons' frequencies
+  on 20 m to 12 m are segments of 1 kHz, the plan's guard band of 500 Hz
+  on each side.
+- The IARU Region 3 plan gives no channel spacing, so the amateur segments
+  have no step.
+- Mobile networks are named where a footnote identifies a band for IMT
+  across the region or in most of its countries: 698 to 790 MHz (5.313A),
+  790 to 960 MHz (5.317A), 1427 to 1518 MHz (5.341C and 5.346A),
+  3500 to 3600 MHz (5.433A), and the bands that Europe's and the Americas'
+  plans name so above 1.7 GHz.
+- The steps outside the amateur bands are Europe's plan's, unsourced: 9 kHz
+  on medium wave, 5 kHz in the HF broadcasting bands and 50 kHz for FM
+  broadcast; the airband's is 25 kHz, as the Americas' rules give it, not
+  Europe's 8.33 kHz.
+- FM broadcast runs from 87 to 108 MHz, Region 3's broadcasting
+  allocation. WFM's de-emphasis, 50 µs, is a choice: no source read gives
+  one for the region, and a country may use 75 µs.
+- The one channel set is maritime VHF (Appendix 18, as in Europe's plan).
+- Known frequencies: Region 3's time signals and standard frequencies,
+  marked `reference` for the automatic calibration; the worldwide ones of
+  Europe's plan (distress and safety, aeronautical emergency, radio
+  astronomy lines, Galileo's carriers); and the IARU Region 3 plan's
+  centres of activity and calling frequencies, its suggested APRS
+  frequencies on 2 m among them.
+
+### Left out
+
+- National allocations, the footnotes that name countries among them:
+  broadcasting in 76 to 87 MHz (5.183), the 7100 to 7200 kHz fixed and
+  mobile allocation (5.141B), 70 cm's national extensions, and the IMT
+  identifications of a few countries (5.296A).
+- The IARU plan's 5850 to 5925 MHz segment: Region 3's table has no
+  amateur allocation there.
+- National channel plans: CB, the licence-free services, FM broadcast
+  channels, television channels, the 2 m and 70 cm repeater pairs.
+- The APRS frequencies that the IARU plan names after member societies,
+  and the digital modes' frequencies of its footnotes.
+- The station names of the time signals, and the standard frequency that
+  TF.768's attachment lists for a satellite, at 2599.675 MHz.
+
+### What could not be checked
+
+- The IARU Region 3 plan's overlapping ranges, read as meant: 10 m's
+  repeater inputs (29510 to 29590 kHz) and FM simplex (written 29520 to
+  29620 kHz, here from 29590 kHz), 20 m's narrow band ranges (14070 to
+  14110 and 14100 to 14112 kHz, split here at the beacon's guard band), and
+  13 cm's beacons (2304.3 to 2304.4 MHz) inside its next range (written
+  from 2304.3 MHz, here from 2304.4 MHz). 40 m's digital voice centre,
+  7070 kHz, is listed beside 7040 to 7060 kHz, outside that range: it
+  stays at 7070 kHz.
+- 30 m starts at 10110 kHz in the IARU plan and at 10100 kHz in Article 5:
+  the band follows Article 5, its segments the plan.
+- The steps outside the amateur bands, and WFM's de-emphasis (above).
+
+### Second reading
+
+On 2026-11-21, a reviewer who had not seen the author's notes read the
+file against the sources above, given only the file, the writing rules
+and the documents, and checked its structure by script.
+
+Checked: every band edge from 8.3 kHz to 10.5 GHz against Region 3's
+column of Article 5 and the footnotes that give edges; every amateur band,
+segment, centre of activity and calling frequency against the IARU
+Region 3 plan, Article 5 followed where the two differ; the `reference`
+frequencies against TF.768's stations in Region 3, and no other frequency
+marked; the worldwide known frequencies and maritime VHF against Europe's
+plan, by script; the file's structure, names and size. No edge, segment
+or reference was found wrong.
+
+Found, and corrected:
+
+- 1452 to 1492 MHz was named after broadcasting, where footnote 5.346A
+  identifies it for mobile networks across Region 3: 1427 to 1518 MHz is
+  now one band, "Mobile networks (1.5 GHz)", as in the other plans.
+- 10 m's 29100 to 29300 kHz was named "All modes, AM", where the plan says
+  all modes in 6 kHz: now "All modes (6 kHz)", still in AM.
+- 15 m's 21150.5 to 21450 kHz left out the satellite uplinks that the plan
+  allows there: now "CW, phone, satellite uplinks".
+- The satellite's standard frequency and 40 m's digital voice centre are
+  now stated above.
+
+Found, and kept:
+
+- 3900 to 4000 kHz is "75 m broadcast", where 3900 to 3950 kHz is also
+  aeronautical mobile: broadcasting is the use a listener meets.
+- Maritime VHF's edges come from footnote 5.226, as in the other plans.
+- The steps outside the amateur bands: none plainly wrong for the region,
+  they stay unsourced.
 
 ## File format (version 2)
 

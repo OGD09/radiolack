@@ -1404,7 +1404,7 @@ class BrowserTest(unittest.TestCase):
                 choice = page.locator("#bm-plan")
                 expect(choice).to_have_value("europe")
                 expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)", "France (metropolitan)",
-                                                               "Americas (ITU Region 2)"])
+                                                               "Americas (ITU Region 2)", "Asia-Pacific (ITU Region 3)"])
                 expect(choice).to_be_enabled()
                 expect(plan.locator(".item.sub .name", has_text="APRS")).to_have_count(1)
                 page.keyboard.press("Escape")

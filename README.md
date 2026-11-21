@@ -1062,7 +1062,7 @@ from 50 to 250 kHz. Its audio has the de-emphasis of the band plan in use,
 50 µs in Europe and 75 µs in the Americas ([Band plan](#band-plan)), and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
 the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
-WFM, so tuning into 87.5 to 108 MHz (88 to 108 MHz in the Americas) selects it, with Radio > "Mode and step
+WFM, so tuning into 87.5 to 108 MHz (88 to 108 MHz in the Americas, 87 to 108 MHz in Asia-Pacific) selects it, with Radio > "Mode and step
 from the band plan". Where the plan gives AM, SAM counts as AM: tuning
 there in SAM keeps SAM.
 
@@ -1923,7 +1923,7 @@ channel sets are those that a regulation or the IARU Region 1 plans number
 across Europe: CB, PMR446, maritime VHF, the amateur FM and repeater channels of
 10 m, 6 m, 2 m, 70 cm and 23 cm, the DAB blocks of Band III, the UHF
 television channels and DECT. The Americas' are CB, FM broadcast, maritime
-VHF, and FRS and GMRS. The known frequencies are the distress and
+VHF, and FRS and GMRS; Asia-Pacific's is maritime VHF. The known frequencies are the distress and
 safety frequencies, the time signals and standard frequencies, the radio
 astronomy lines, Galileo's carriers and the amateur centres of activity and
 calling frequencies, and in the Americas MURS and the weather radio
@@ -1944,10 +1944,13 @@ Bookmarks > Plan names the band plan in use and chooses another, for every
 interface at once, as the bookmarks are; Radiolack remembers it. The plan
 gives the strip, the modes and steps, the channels that the signals found
 show on, the stations of the automatic calibration and WFM's de-emphasis.
-Three plans so far: Europe (ITU Region 1), used unless another is chosen;
+Four plans so far: Europe (ITU Region 1), used unless another is chosen;
 the Americas (ITU Region 2), whose FM broadcast has 75 µs of de-emphasis,
 with the IARU Region 2 band plan in the amateur bands, 1.25 m and 33 cm
-among them, and medium wave by 10 kHz; and France (metropolitan), which is
+among them, and medium wave by 10 kHz; Asia-Pacific (ITU Region 3), with
+the IARU Region 3 band plan in the amateur bands, 80 m up to 3900 kHz, 40 m
+up to 7200 kHz and 2 m up to 148 MHz, FM broadcast from 87 MHz and maritime
+VHF as its one channel set; and France (metropolitan), which is
 Europe's changed where France's
 national table of frequency allocations differs: no 4 m or 9 cm amateur
 band, 160 m up to 1850 kHz, Band III up to 225 MHz, and a few utility
@@ -1967,7 +1970,9 @@ hand from the ITU Radio Regulations, the CEPT's European table and the IARU
 Region 1 band plans, France's from Europe's and the ANFR's national table
 (TNRBF), the Americas' from the Radio Regulations' Region 2 column and the
 IARU Region 2 band plan, with its channel sets and some steps from the
-United States' rules, which are national; each is read a second time
+United States' rules, which are national, Asia-Pacific's from the Radio
+Regulations' Region 3 column and the IARU Region 3 band plan; each is read
+a second time
 against its sources. National tables
 differ and are the reference, and local law may
 forbid listening to some services or disclosing what they carry. Its format,

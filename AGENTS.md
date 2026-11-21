@@ -117,7 +117,7 @@ the history under the tag `v0.1.0`.
   that waited longest first, and their states),
   `bandplan` (the band plans as the engine reads them, `PLANS`, each in
   `web/bandplan-ID.json`, the file the interface loads once the engine
-  names it, Europe's, France's and the Americas' so far, the engine's `band_plan` setting
+  names it, Europe's, France's, the Americas' and Asia-Pacific's so far, the engine's `band_plan` setting
   choosing the one in use: the mode the
   History's Bookmark button gives a frequency, for the range scan, and
   the channel a signal shows on, for the lists, the standard-frequency
@@ -286,10 +286,11 @@ the history under the tag `v0.1.0`.
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
   the stations and the calibration state's decoding, and `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, skipped
-  where Node is missing. `bandplan-europe.json`, `bandplan-france.json`
-  and `bandplan-americas.json` are the band plans' data, Europe's,
-  France's, Europe's changed where France's national table differs, and
-  the Americas', ITU Region 2's ([docs/design/band-plan.md](docs/design/band-plan.md)).
+  where Node is missing. `bandplan-europe.json`, `bandplan-france.json`,
+  `bandplan-americas.json` and `bandplan-asia-pacific.json` are the band
+  plans' data, Europe's, France's, Europe's changed where France's
+  national table differs, the Americas', ITU Region 2's, and
+  Asia-Pacific's, ITU Region 3's ([docs/design/band-plan.md](docs/design/band-plan.md)).
   `pair.html`, `pair.css` and `pair.js` (typed) are the pairing page that
   remote access serves to a device that is not paired, with `style.css`
   and the icons. `favicon.svg` and `apple-touch-icon.png` (the iPhone's
