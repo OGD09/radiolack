@@ -727,7 +727,10 @@ that disagree, or a correction beyond -100 to 100 ppm. A run stopped with
 Stop proposes from the stations it measured; one ended by a change of the
 receiver's settings, other than its gains, antenna and DC spike, or of the
 VFO, by a scan or a recording, proposes nothing; choosing another receiver
-forgets the latest proposal.
+forgets the latest proposal. A change that ends a run applies once the
+receiver and the VFO are back: a press on the spectrum while it shows a
+station tunes the VFO there, outside the span the receiver comes back to,
+where it reads nothing until the receiver is tuned there too.
 
 The stations lie on shortwave and below: set the shortwave input first
 ([Shortwave](#shortwave)). In direct sampling at 2.4 MS/s the receiver
