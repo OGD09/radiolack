@@ -1055,7 +1055,8 @@ buttons land on the step's grid, and Shift with an arrow key steps ten
 times as far; a typed frequency, a bookmark and a digit do not.
 
 WFM plays broadcast FM in mono, through a filter 180 kHz wide by default,
-from 50 to 250 kHz. Its audio has the European 50 µs de-emphasis and runs
+from 50 to 250 kHz. Its audio has the de-emphasis of the band plan in use,
+50 µs in Europe ([Band plan](#band-plan)), and runs
 from 40 Hz to 15 kHz, without the stereo pilot; it comes at 32 kHz, while
 the other modes' audio comes at 12 kHz. The band plan gives FM broadcast
 WFM, so tuning into 87.5 to 108 MHz selects it, with Radio > "Mode and step
@@ -1491,7 +1492,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   and the scanners' settings: whether detection is on, its threshold, the
   ignored frequencies, the memory scan's and the range scan's resume
   time, and the range scan's longest listening time, range, time per
-  window, passes and listening ([Scanners](#scanners)). It also holds the own
+  window, passes and listening ([Scanners](#scanners)), and the band plan
+  in use ([Band plan](#band-plan)). It also holds the own
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start
@@ -1933,6 +1935,13 @@ drawn; elsewhere the click zooms to the range. Display > "Channels and
 known frequencies" hides the ticks, the marks and their names; the line
 under the frequency still names them. A bookmark added on a channel or a
 known frequency takes its name.
+
+Bookmarks > Plan names the band plan in use and chooses another, for every
+interface at once, as the bookmarks are; Radiolack remembers it. The plan
+gives the strip, the modes and steps, the channels that the signals found
+show on, the stations of the automatic calibration and WFM's de-emphasis.
+Europe's is the only one so far: the choice stays greyed out until others
+come.
 
 The Bookmarks menu lists the ranges in view, each with the known
 frequencies inside it; a click on a range frames it, and a click on a known

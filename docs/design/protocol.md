@@ -23,7 +23,8 @@ preferences apart from this computer's.
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
     "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
-    "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"]}
+    "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"],
+    "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"}]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -59,7 +60,13 @@ preferences apart from this computer's.
    the spectra that the engine sends, besides the spectrum frames, to an
    interface that asks: `fine`, the fine spectrum of the VFO's channel (the
    fine frames, below). An engine older than the fine spectrum sends no
-   `spectra`: it sends none.
+   `spectra`: it sends none. `band_plans` lists the band plans that the
+   engine offers, in the order the Bookmarks menu shows them: each `id`,
+   which names it in the band plan message and in the `band_plan` message
+   and names its file, `bandplan-ID.json`, served beside the interface,
+   and the `name` that the plan gives itself, or its `id` for a file the
+   engine cannot read. An engine older than the choice of plan sends no
+   `band_plans`: it uses Europe's, `bandplan-europe.json`.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -170,6 +177,18 @@ preferences apart from this computer's.
    while the engine runs, numbered again at each start, and its `name`, 1
    to 40 characters on one line, which no other category has, ignoring
    case. A category holds bookmarks alone.
+
+   Then the band plan in use, a JSON text message, sent again whenever it
+   changes, whichever interface changed it:
+
+   ```json
+   {"type": "band_plan", "plan": "europe"}
+   ```
+
+   `plan` is the `id` of one of the hello's `band_plans`. The interface
+   loads that plan's file, and the engine takes from it the channels that
+   the signals found show on, the modes of the range scan, the stations of
+   the automatic calibration and WFM's de-emphasis.
 
 5. Then the scanner state, a JSON text message, sent again whenever it
    changes, whichever interface or scan changed it. The engine saves its
@@ -1069,6 +1088,20 @@ name that another has, ignoring case, or when there are already 2000
 bookmarks or 100 categories. Otherwise every interface receives the
 bookmarks.
 
+A `band_plan` message chooses the band plan in use, for every interface:
+
+```json
+{"type": "band_plan", "plan": "europe"}
+```
+
+`plan` is the `id` of one of the hello's `band_plans`. The engine refuses
+another field or plan, changing nothing; otherwise it saves the choice,
+and every interface receives the band plan message, then the signals
+found, on the new plan's channels. Choosing the plan in use changes
+nothing. Remote clients may choose it. An engine older than the choice of
+plan refuses the message as one of an unknown type: an interface sends it
+only for a plan that the hello lists.
+
 A `scanner` message changes the signal detection, the memory scan or the
 range scan (the sweep), the same for every interface:
 
@@ -1772,6 +1805,12 @@ and later.
   calibration when another receiver is chosen, unless that ended it,
   without a new version: an interface then receives the state of no
   calibration, as before the first.
+  The same day, the choice of band plan (later-milestones.md, section 4,
+  pull request 1), without a new version: the hello's `band_plans`, the
+  band plan message and the `band_plan` message. An older interface
+  ignores them and loads Europe's plan, which the engine offers alone so
+  far. A newer interface reads a hello without `band_plans`, an older
+  engine's, as one that uses Europe's plan.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

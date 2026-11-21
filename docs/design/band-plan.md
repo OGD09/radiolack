@@ -1,9 +1,13 @@
 # Band plan
 
 The colour strip under the spectrum names what each frequency range is used
-for. Its data is `src/radiolack/web/bandplan-europe.json`: the interface loads
-it at start-up through `bandplan.js`, which checks it and turns it into one
-sorted list of ranges, and `tests/test_bandplan.py` checks its structure.
+for. Its data is `src/radiolack/web/bandplan-europe.json`, the one band plan
+so far: the engine's `band_plan` setting names the plan in use, which the
+Bookmarks menu chooses, among those that `bandplan.PLANS` lists, each in
+`web/bandplan-ID.json` ([`later-milestones.md`](later-milestones.md),
+section 4). The interface loads the plan that the engine names through
+`bandplan.js`, which checks it and turns it into one sorted list of ranges,
+and `tests/test_bandplan.py` checks its structure.
 
 It is a detailed guide, not a legal reference (decided 2026-11-16,
 [`scoping.md`](scoping.md)): national tables differ and are the reference,
@@ -334,6 +338,7 @@ frequency per line:
 | --- | --- |
 | `format` | `2`. |
 | `name` | Name of the plan, shown in the Bookmarks menu. |
+| `wfm_deemphasis_us` | The de-emphasis of broadcast FM where the plan applies, in µs: `50` or `75`. The engine reads it alone, for WFM's audio. |
 | `types` | Colour of each type, as `#rrggbb`. Types are colour categories (broadcasting, aviation, amateur CW sections, ...), every one of them used. |
 | `bands` | The bands, in frequency order and contiguous. |
 | `channels` | The channel sets, possibly none. |

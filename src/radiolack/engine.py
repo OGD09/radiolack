@@ -55,7 +55,8 @@ source. Whether it runs is never saved: while a scan runs, the receiver's
 saved settings are those of the scan's start.
 
 The engine also keeps the bookmarks, shared by every client like the
-settings, and the interfaces' preferences (preferences.py), which a new
+settings, the band plan in use (bandplan.py), shared and saved the same
+way, and the interfaces' preferences (preferences.py), which a new
 interface starts with: one set for this computer's interfaces, and one for
 each paired device once it gave one, until then this computer's. With an
 update check (updates.py), it checks for a newer Radiolack when it starts,
@@ -143,12 +144,12 @@ from typing import Any, Protocol
 import numpy as np
 
 from . import __version__, calibration
-from .bandplan import default_plan, plan_mode
+from .bandplan import DEFAULT_PLAN, checked_plan, load_plan, plan_mode
 from .bookmarks import Bookmark, Bookmarks
 from .carrier import SILENT, UNSTABLE, Carrier, CarrierMeasure
 from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
-                    has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
+                    WFM_DEEMPHASIS_S, has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
 from .fine import REMOTE_FINE_BINS, FineSpectrum, encode_fine
 from .keptscans import KeptScans, checked_name
 from .observations import Observations
@@ -547,6 +548,7 @@ class Engine:
             "source": lambda subscription: self.state(subscription.remote),
             "demod": lambda subscription: self.demod_state(subscription.acknowledged),
             "bookmarks": lambda _: self.bookmarks_state(),
+            "band_plan": lambda _: self.band_plan_state(),
             "scanner": lambda _: self.scanner_state(),
             "peaks": lambda _: self.peaks_state(),
             "preferences": lambda subscription: self.preferences_state(subscription.device),
@@ -617,8 +619,8 @@ class Engine:
         self._kept_resumed = False      # the range scan starting again goes on with the kept scan that runs
         self._kept_step_s = 0.0         # the latest block of the range scan, in time.monotonic()
         # Scanners: detection's settings, the signals found and the ignored
-        # frequencies; the band plan, which gives the channels they show on
-        # and the modes the range scan takes; the memory scan's resume
+        # frequencies; the band plan in use, which gives the channels they
+        # show on, the modes the range scan takes and WFM's de-emphasis; the memory scan's resume
         # time, which the range scan takes too, the bookmarks it watches,
         # the windows they take and the channels of the span; the range
         # scan's (the sweep's) range, time per window, listening and passes;
@@ -630,7 +632,8 @@ class Engine:
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
         self._signals = Signals()
-        self._plan = default_plan()
+        self._band_plan = _saved_band_plan(settings.get("band_plan"))
+        self._plan = load_plan(self._band_plan)
         self._resume_s = DEFAULT_RESUME_S
         self._listen_s = DEFAULT_LISTEN_S
         self._watch = ChannelWatch()        # used by one block at a time, like the demodulator
@@ -856,6 +859,27 @@ class Engine:
             subscription.changed("bookmarks")
         self._settings_changed()
         self._watch_bookmarks()
+
+    def band_plan_state(self) -> dict[str, Any]:
+        """The band plan message (docs/design/protocol.md): the plan in use."""
+        return {"type": "band_plan", "plan": self._band_plan}
+
+    def configure_band_plan(self, changes: Mapping[str, object]) -> None:
+        """Change the band plan in use, ``plan``, one of bandplan.PLANS, for
+        every client: from now on, the signals show on its channels, the
+        range scan takes its modes and WFM its de-emphasis. Raises
+        ValueError, changing nothing, for another field or plan."""
+        for name in changes:
+            if name != "plan":
+                raise ValueError(f"unknown band plan field: {str(name)[:40]}")
+        plan = checked_plan(changes.get("plan"))
+        if plan == self._band_plan:
+            return
+        self._band_plan, self._plan = plan, load_plan(plan)
+        for subscription in self._clients:
+            subscription.changed("band_plan")
+            subscription.changed("peaks")       # on the new plan's channels
+        self._settings_changed()
 
     def scanner_state(self) -> dict[str, Any]:
         """The scanner state message (docs/design/protocol.md)."""
@@ -1521,7 +1545,8 @@ class Engine:
                     _process_block, self.analyzer, self._demodulator, self._detector, self._watch, samples,
                     *label, self._dc_removal, self._demod, audio, threshold_db,
                     DETECTION_BLOCKS if sweep is None else sweep.search_blocks,
-                    None if channels is None else self._bands, measure, source.rate_scale, fine)
+                    None if channels is None else self._bands, measure, source.rate_scale, fine,
+                    self._plan.wfm_deemphasis_s)
                 self._publish(label, power, codes, meter, pcm)
                 if fine is not None and fine_codes:
                     self._publish_fine(fine, fine_codes)
@@ -2932,6 +2957,7 @@ class Engine:
                                "sweep_low_hz": self._sweep_low_hz, "sweep_high_hz": self._sweep_high_hz,
                                "sweep_window_s": self._sweep_window_s, "sweep_listen": self._sweep_listen,
                                "sweep_passes": self._sweep_passes, "ignored_hz": self._signals.ignored}
+        settings["band_plan"] = self._band_plan
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
         chosen = self._chosen_recordings
@@ -3137,6 +3163,17 @@ def _saved_recordings_folder(saved: object) -> Path | None:
         return None
 
 
+def _saved_band_plan(saved: object) -> str:
+    """The band plan in use, as saved: Europe's unless another was saved."""
+    if saved is None:
+        return DEFAULT_PLAN
+    try:
+        return checked_plan(saved)
+    except ValueError as error:
+        log.warning("the saved band plan is not used: %s", error)
+        return DEFAULT_PLAN
+
+
 def _saved_check_at_start(saved: object) -> bool:
     """Whether to check for updates at start, as saved: yes unless saved as
     false."""
@@ -3156,6 +3193,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
                    measure: tuple[CarrierMeasure, tuple[Any, ...], float, tuple[float, float]] | None = None,
                    rate_scale: float = 1.0,
                    fine: tuple[FineSpectrum, tuple[Any, ...], float] | None = None,
+                   wfm_deemphasis_s: float = WFM_DEEMPHASIS_S,
                    ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
                               tuple[np.ndarray, np.ndarray] | None, Carrier | None, list[np.ndarray]]:
     """The bin powers, the display codes, the channel meter, with ``audio``
@@ -3174,7 +3212,8 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     noise blanker acts within the demodulator, on the VFO's channel alone:
     the bin powers, detection, the memory scan's channels, the measure and
     the fine spectrum take the samples as received. Without ``fine`` the
-    demodulator's front filter is not tapped."""
+    demodulator's front filter is not tapped. WFM takes the de-emphasis of
+    time constant ``wfm_deemphasis_s``."""
     if dc_removal:
         # A mean in single precision would leave a trace of a strong offset.
         samples = samples - np.complex64(samples.mean(dtype=np.complex128))
@@ -3198,7 +3237,7 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
             fine_codes.extend(analyzer.codes(power) for power in
                               spectrum.add(front, demodulator.channel_rate_hz, fine_key))
     meter, pcm = demodulator.process(samples, settings.frequency_hz - shift_hz, rate_hz, settings, noise, audio, tap,
-                                     front_tap)
+                                     front_tap, wfm_deemphasis_s)
     if threshold_db is None:
         detector.reset()
         detections = None

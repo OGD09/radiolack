@@ -1,8 +1,11 @@
-"""The band plan as the engine reads it: the mode it gives a frequency, and
-the channel it shows a signal on.
+"""The band plans as the engine reads them: the mode one gives a frequency,
+the channel it shows a signal on, and its WFM de-emphasis.
 
-The interface reads the same file (format in docs/design/band-plan.md) in
-bandplan.js and channels.js, for all that it shows. The engine reads what
+PLANS names the band plans, each in ``web/bandplan-ID.json``; the engine's
+``band_plan`` setting chooses the one in use, Europe's unless chosen
+otherwise, and the interface loads the same file (format in
+docs/design/band-plan.md) in bandplan.js and channels.js, for all that it
+shows. The engine reads what
 its range scan and its lists of signals need: each range's mode and
 step, a band without segments being one range, a band with segments one
 range per segment, the parts that its segments leave out taking the
@@ -16,7 +19,8 @@ VFO takes there. ``BandPlan.channel`` gives the frequency that a signal
 shows on: in a range whose step is CHANNEL_STEP_HZ or more, the nearest
 channel of the step, for a signal WIDE_HZ wide or more, or within REACH_HZ
 of it; elsewhere, its frequency to SHOWN_HZ. A plan that cannot be read
-gives no mode and shows every signal to SHOWN_HZ, and the output says why.
+gives no mode and shows every signal to SHOWN_HZ, its WFM de-emphasis
+being WFM_DEEMPHASIS_S, and the output says why.
 """
 
 from __future__ import annotations
@@ -30,12 +34,15 @@ import math
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .demod import MODES
+from .demod import MODES, WFM_DEEMPHASIS_S
 
 log = logging.getLogger(__name__)
 
-PLAN_PATH = Path(__file__).with_name("web") / "bandplan-europe.json"    # the one that main.js loads
+WEB_DIR = Path(__file__).with_name("web")      # where the interface loads them from too
+PLANS = ("europe",)             # the band plans, each in WEB_DIR / f"bandplan-{ID}.json"
+DEFAULT_PLAN = "europe"         # the plan in use unless the user chose another
 PLAN_FORMAT = 2
+DEEMPHASIS_US = (50, 75)        # the WFM de-emphasis that a plan may name, in µs
 SPOT_TOLERANCE_HZ = 50          # a frequency this close to a known frequency is on it, as in channels.js
 CHANNEL_STEP_HZ = 12_500        # ranges whose step is this or more show their signals on their channels:
 WIDE_HZ = 4_000                 # a signal this wide or wider on the nearest channel,
@@ -68,12 +75,16 @@ class ChannelSet:
 
 
 class BandPlan:
-    """A band plan's ranges, channel sets and known frequencies, each sorted
-    and without overlaps, and the frequencies of its standard-frequency
-    stations, ``references``, lowest first; an empty plan by default."""
+    """A band plan's name, ranges, channel sets and known frequencies, each
+    sorted and without overlaps, the frequencies of its standard-frequency
+    stations, ``references``, lowest first, and its WFM de-emphasis's time
+    constant, in seconds; an empty plan, without a name, by default."""
 
     def __init__(self, ranges: Iterable[PlanRange] = (), sets: Iterable[ChannelSet] = (),
-                 spots: Iterable[tuple[int, str | None]] = (), references: Iterable[int] = ()) -> None:
+                 spots: Iterable[tuple[int, str | None]] = (), references: Iterable[int] = (),
+                 name: str = "", wfm_deemphasis_s: float = WFM_DEEMPHASIS_S) -> None:
+        self.name = name
+        self.wfm_deemphasis_s = wfm_deemphasis_s
         self.references = tuple(sorted(set(references)))
         self._ranges = tuple(ranges)
         self._range_starts = [entry.from_hz for entry in self._ranges]
@@ -88,6 +99,10 @@ class BandPlan:
         ValueError, saying what is wrong, for a malformed one."""
         if not isinstance(data, dict) or data.get("format") != PLAN_FORMAT:
             raise ValueError(f"format {PLAN_FORMAT} expected")
+        title = _text(data.get("name"), "the plan's name")
+        deemphasis = data.get("wfm_deemphasis_us")
+        if isinstance(deemphasis, bool) or deemphasis not in DEEMPHASIS_US:
+            raise ValueError("wfm_deemphasis_us must be " + " or ".join(map(str, DEEMPHASIS_US)))
         bands, sets, spots = (_list(data.get(key), key) for key in ("bands", "channels", "spots"))
         ranges: list[PlanRange] = []
         edge = -math.inf
@@ -116,7 +131,7 @@ class BandPlan:
                 raise ValueError("channel sets overlap")
         known = [_spot(entry, modes) for entry in spots]
         return cls(ranges, channel_sets, (spot for spot, _ in known),
-                   (spot[0] for spot, reference in known if reference))
+                   (spot[0] for spot, reference in known if reference), title, deemphasis / 1e6)
 
     def range_at(self, frequency_hz: float) -> PlanRange | None:
         """The range that holds ``frequency_hz``, or None outside the plan."""
@@ -174,15 +189,42 @@ def plan_mode(planned: str | None, current: str) -> str:
     return current if planned == "AM" and current == "SAM" else planned
 
 
+def plan_path(plan: str) -> Path:
+    """The file of the band plan named ``plan``, one of PLANS."""
+    return WEB_DIR / f"bandplan-{plan}.json"
+
+
 @functools.cache
-def default_plan() -> BandPlan:
-    """The band plan that the interface shows, read once: an empty one when
-    it cannot be read, which the output tells."""
+def load_plan(plan: str) -> BandPlan:
+    """The band plan named ``plan``, one of PLANS, read once: an empty one
+    when it cannot be read, which the output tells."""
+    if plan not in PLANS:
+        raise ValueError(f"unknown band plan: {plan[:40]}")
     try:
-        return BandPlan.parse(json.loads(PLAN_PATH.read_text(encoding="utf-8")))
+        return BandPlan.parse(json.loads(plan_path(plan).read_text(encoding="utf-8")))
     except (OSError, ValueError) as error:      # a JSON or text decoding error is a ValueError
-        log.warning("the band plan gives no mode and no channel: %s", error)
+        log.warning("the band plan %s gives no mode and no channel: %s", plan, error)
         return BandPlan()
+
+
+def default_plan() -> BandPlan:
+    """The band plan in use unless the user chose another."""
+    return load_plan(DEFAULT_PLAN)
+
+
+def checked_plan(value: object) -> str:
+    """``value``, the name of a band plan, one of PLANS. Raises ValueError
+    for any other."""
+    if not isinstance(value, str) or value not in PLANS:
+        raise ValueError(f"unknown band plan: {str(value)[:40]}")
+    return value
+
+
+def plan_choices() -> list[dict[str, str]]:
+    """Each band plan's name in PLANS, ``id``, and the name it gives itself,
+    ``name``, its ``id`` for one that cannot be read: the hello's
+    ``band_plans`` (docs/design/protocol.md)."""
+    return [{"id": plan, "name": load_plan(plan).name or plan} for plan in PLANS]
 
 
 def _entry(item: object, modes: Sequence[str]) -> tuple[str, int, int, str | None, float | None]:

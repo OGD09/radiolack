@@ -8,8 +8,8 @@ the mode's passband, whose power is the channel level; after the mode's
 detector, the audio filter keeps the audio band and brings the rate down to
 12 kHz, or to 32 kHz in WFM. NFM goes through the FM discriminator, then a
 de-emphasis and a high-pass filter against CTCSS tones; WFM, broadcast FM
-in mono, through the same discriminator, then a 50 µs de-emphasis and a
-low-pass filter at 15 kHz, below the stereo pilot; AM through an envelope
+in mono, through the same discriminator, then the band plan's de-emphasis,
+50 µs or 75 µs, and a low-pass filter at 15 kHz, below the stereo pilot; AM through an envelope
 detector that follows the carrier's level; SAM, synchronous AM, through the
 channel turned by its carrier's phase, which a band-pass 80 Hz wide follows
 (``CarrierSearch``, ``SyncDetector``), or AM's envelope while it has no
@@ -64,7 +64,7 @@ DEEMPHASIS_REFERENCE_HZ = 1_000.0   # unit gain there
 NFM_HIGH_PASS_HZ = 280.0            # removes CTCSS tones (up to 250.3 Hz)
 NFM_LOW_PASS_HZ = 3_500.0
 WFM_MAX_DEVIATION_HZ = 75_000.0     # WFM: full-scale audio, broadcast's peak deviation
-WFM_DEEMPHASIS_S = 50e-6            # WFM de-emphasis in Europe, -6 dB per octave above 3.2 kHz
+WFM_DEEMPHASIS_S = 50e-6            # WFM de-emphasis where no plan names one, Europe's: -6 dB/octave above 3.2 kHz
 WFM_HIGH_PASS_HZ = 40.0             # WFM: removes the offset of a station tuned beside its centre
 WFM_LOW_PASS_HZ = 15_000.0          # WFM: broadcast's audio, without the 19 kHz stereo pilot
 AUDIO_HIGH_PASS_HZ = 100.0          # AM, SAM, SSB and CW: no hum, nothing left of a carrier
@@ -259,10 +259,11 @@ def channel_taps(mode: str, bandwidth_hz: float, rate_hz: float) -> np.ndarray:
     return taps
 
 
-def audio_taps(mode: str, rate_hz: float, notches: Sequence[float] = ()) -> np.ndarray:
+def audio_taps(mode: str, rate_hz: float, notches: Sequence[float] = (),
+               wfm_deemphasis_s: float = WFM_DEEMPHASIS_S) -> np.ndarray:
     """The audio filter at the channel rate. NFM: de-emphasis with unit gain
     at 1 kHz, high-pass at 280 Hz and low-pass at 3.5 kHz. WFM: de-emphasis
-    with unit gain at the lowest frequencies, as receivers apply it,
+    of time constant ``wfm_deemphasis_s`` with unit gain at the lowest frequencies, as receivers apply it,
     high-pass at 40 Hz and low-pass at 15 kHz. The other modes, SAM as AM:
     high-pass at 100 Hz and low-pass at 5 kHz, with each of ``notches``, in
     Hz, removed: ``NOTCH_HALF_HZ`` on each side of it. The taps are as many
@@ -276,7 +277,7 @@ def audio_taps(mode: str, rate_hz: float, notches: Sequence[float] = ()) -> np.n
             deemphasis = np.sqrt((1 + (DEEMPHASIS_REFERENCE_HZ / corner) ** 2) / (1 + (frequency / corner) ** 2))
             return deemphasis * ((frequency >= NFM_HIGH_PASS_HZ) & (frequency <= NFM_LOW_PASS_HZ))
     elif mode == "WFM":
-        corner = 1 / (2 * math.pi * WFM_DEEMPHASIS_S)
+        corner = 1 / (2 * math.pi * wfm_deemphasis_s)
 
         def response(frequency: np.ndarray) -> np.ndarray:
             deemphasis = 1 / np.sqrt(1 + (frequency / corner) ** 2)
@@ -560,7 +561,8 @@ class Demodulator:
     def process(self, samples: np.ndarray, centre_hz: float, rate_hz: float, settings: DemodSettings,
                 noise_density: float | None, audio: bool,
                 tap: Callable[[np.ndarray], None] | None = None,
-                front_tap: Callable[[np.ndarray], None] | None = None) -> tuple[Meter, np.ndarray | None]:
+                front_tap: Callable[[np.ndarray], None] | None = None,
+                wfm_deemphasis_s: float = WFM_DEEMPHASIS_S) -> tuple[Meter, np.ndarray | None]:
         """The meter for ``samples``, received at ``centre_hz`` and ``rate_hz``,
         and with ``audio`` the 16-bit audio they make. ``noise_density`` is
         the noise power per hertz around the VFO, for the automatic squelch.
@@ -581,7 +583,8 @@ class Demodulator:
         blanked since a tap began: the front filter's output plus what a
         silent copy of it gives for the samples zeroed alone, a few, which
         costs far less than filtering every sample again, and for ``tap`` a
-        copy of the channel filter."""
+        copy of the channel filter. WFM's audio takes the de-emphasis of time
+        constant ``wfm_deemphasis_s``, the band plan's."""
         wide = settings.mode == "WFM"
         if rate_hz != self._rate_hz or wide != self._wide:
             self._start(rate_hz, wide)
@@ -667,9 +670,10 @@ class Demodulator:
         if not audio:
             self._audio = None
             return Meter(level_db, threshold, self._open, locked, 0 if settings.notching else None, impulses), None
-        if self._audio is None or self._audio.mode != settings.mode:
+        if (self._audio is None or self._audio.mode != settings.mode
+                or (settings.mode == "WFM" and self._audio.wfm_deemphasis_s != wfm_deemphasis_s)):
             self._audio = _AudioPath(settings.mode, self.channel_rate_hz, self._decimation, self._search,
-                                     settings.notch)
+                                     settings.notch, wfm_deemphasis_s)
         else:
             self._audio.set_notch(settings.notch)
         sound = self._audio.process(channel, power, gate)
@@ -751,7 +755,8 @@ class _AudioPath:
     the squelch stays open until the decisions about it are in, and the gate
     fades out before the noise that follows a carrier. The AM detector and
     the AGC use that wait to look ahead too, and SAM's band-pass lags within
-    it. SAM takes ``search``, the demodulator's, which finds its carrier.
+    it. SAM takes ``search``, the demodulator's, which finds its carrier,
+    and WFM ``wfm_deemphasis_s``, its de-emphasis's time constant.
 
     With ``notch``, in NOTCH_MODES, ``AutoNotch`` reads the detector's
     output, before the gate, so that a line is found whether or not the
@@ -767,8 +772,10 @@ class _AudioPath:
     from the same old taps to the newest."""
 
     def __init__(self, mode: str, channel_rate_hz: float, decimation: int,
-                 search: CarrierSearch | None = None, notch: bool = False) -> None:
+                 search: CarrierSearch | None = None, notch: bool = False,
+                 wfm_deemphasis_s: float = WFM_DEEMPHASIS_S) -> None:
         self.mode = mode
+        self.wfm_deemphasis_s = wfm_deemphasis_s
         self._rate_hz = channel_rate_hz
         window = max(1, round(SQUELCH_WINDOW_S * channel_rate_hz))
         self._fade = max(1, round(FADE_S * channel_rate_hz))
@@ -786,7 +793,8 @@ class _AudioPath:
             self._detector = SyncDetector(channel_rate_hz, self._span, search)
         else:
             self._detector = _SidebandDetector(channel_rate_hz, self._span, window)
-        self._filter = FftFilter(audio_taps(mode, channel_rate_hz), channel_rate_hz, up=1, down=decimation)
+        self._filter = FftFilter(audio_taps(mode, channel_rate_hz, wfm_deemphasis_s=wfm_deemphasis_s),
+                                 channel_rate_hz, up=1, down=decimation)
         self._decisions = np.zeros(self._span)      # the squelch's last decisions
         self._passed = np.zeros(self._fade - 1)     # the gate's last values, for the fades
         self._notch: AutoNotch | None = None

@@ -1372,13 +1372,18 @@ class BrowserTest(unittest.TestCase):
         # Under the bookmarks, the band plan lists the ranges in view with the
         # known frequencies inside them, at most 200 rows; filtered, the
         # ranges, channel sets and known frequencies of the whole plan. A set
-        # frames itself, a known frequency tunes there.
+        # frames itself, a known frequency tunes there. Plan names the plan
+        # in use, greyed out while the engine offers one alone.
         url = self.serve()      # the simulated band, the VFO on 145.6 MHz
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
                 plan, note = page.locator("#plan-list"), page.locator("#plan-note")
                 self.open_menu(page, "bookmarks")
+                choice = page.locator("#bm-plan")
+                expect(choice).to_have_value("europe")
+                expect(choice.locator("option")).to_have_text(["Europe (ITU Region 1)"])
+                expect(choice).to_be_disabled()
                 expect(plan.locator(".item.sub .name", has_text="APRS")).to_have_count(1)
                 page.keyboard.press("Escape")
                 for _ in range(4):                  # 474 kHz around the VFO: 144.8 MHz out of view

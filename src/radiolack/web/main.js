@@ -82,7 +82,7 @@ const PALETTES = {
   ice: ['#000000', '#06142e', '#12407a', '#2a86c8', '#7fd3f5', '#f2fbff'],
   gray: ['#000000', '#ffffff'],
 };
-const BAND_PLAN_URL = 'bandplan-europe.json';
+const DEFAULT_BAND_PLAN = 'europe';     // the plan of an engine that offers no choice
 const SQL_WHEEL_PX = 50;            // wheel travel over the S-meter that moves the squelch by 1 dB, as one notch does
 
 // ------------------------------------------------------------------ DOM
@@ -145,6 +145,7 @@ const S = {
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };    // band plan, empty until loaded
 let planState = 'loading';              // 'loading', 'ready' or 'failed'
+let planId = null;                      // the band plan loaded or loading, which the engine names
 let bookmarks = [];         // the engine's, in frequency order: { id, f, name, mode, scan, category }
 let categories = [];        // the engine's, by name: { id, name }
 let categoriesKnown = false;  // whether the engine that runs keeps categories
@@ -429,6 +430,13 @@ const stream = new EngineStream({
     if (historyShown()) syncHistorySummary();
   },
   onDemod: applyDemod,
+  onBandPlan: (id) => {
+    if (id !== planId) {
+      if (planId !== null && historyShown()) askHistory();     // the History's channels are the new plan's
+      loadPlan(id);
+    }
+    syncPlanChoice();
+  },
   onBookmarks: (list, categoryList) => {
     bookmarks = list.map((b) => ({ id: b.id, f: b.frequencyHz, name: b.name, mode: b.mode, scan: b.scan, category: b.category }));
     categories = categoryList ?? [];
@@ -644,7 +652,9 @@ const stream = new EngineStream({
       $('#ab-remote-client').hidden = !stream.remote;
       $('#ab-report-section').hidden = stream.remote;     // the engine reports to this computer's interfaces only
       syncVersion();
+      if (!stream.bandPlans.length && planId === null) loadPlan(DEFAULT_BAND_PLAN);     // an engine without the choice
     }
+    syncPlanChoice();     // greyed out until the stream opens again
     syncSource();
     syncScanner();
     syncRecording();
@@ -2945,20 +2955,41 @@ function renderPlanList() {
 }
 const rowKey = (row) => (row.kind === 'group' ? `g${row.name}` : row.kind === 'range' ? `r${row.index}`
   : row.kind === 'set' ? `c${row.set.from}` : `s${row.spot.f}`);
-function loadPlan() {
-  loadBandPlan(BAND_PLAN_URL, MODE_ORDER).then((loaded) => {
+// The band plan that the engine names, from its file: a plan named while
+// another loads replaces it.
+function loadPlan(id) {
+  planId = id;
+  loadBandPlan(`bandplan-${id}.json`, MODE_ORDER).then((loaded) => {
+    if (id !== planId) return false;
     plan = loaded;
     planState = 'ready';
+    return true;
   }, (error) => {
+    if (id !== planId) return false;
     console.error(error);
+    plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };
     planState = 'failed';
-  }).then(() => {
+    return true;
+  }).then((current) => {
+    if (!current) return;
     renderPlanList();
     lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
     setView(view.f0, view.f1);          // the view reaches the plan's end now, and redraws the overlays
     if (signalsShown()) renderPeaks();     // signals show on their channels now
   });
 }
+// The Bookmarks menu's choice of plan, the engine's: the plans its hello
+// offers, the one it uses chosen; with one plan alone, it names it.
+function syncPlanChoice() {
+  const select = $('#bm-plan'), choices = stream.bandPlans;
+  const options = choices.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+  if (select.dataset.options !== options) { select.innerHTML = options; select.dataset.options = options; }
+  if (planId !== null) select.value = planId;
+  select.disabled = streamState !== 'open' || choices.length < 2;
+}
+$('#bm-plan').addEventListener('change', (e) => {
+  if (!stream.setBandPlan(e.target.value)) syncPlanChoice();
+});
 // Bookmarks belong to the engine: changes go to it, and every interface
 // shows them once the engine sends them back. A click on a bookmark tunes
 // there with its mode, its box ticks it for the memory scan, and Edit turns
@@ -4746,7 +4777,6 @@ setView(fStart(), fEnd());
 layout();
 syncSource();
 syncDisplay();
-loadPlan();
 renderBookmarks();
 syncCategoryControls();
 syncScanTabs();
