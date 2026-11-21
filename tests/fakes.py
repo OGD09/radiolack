@@ -20,6 +20,7 @@ from unittest import mock
 import numpy as np
 
 import radiolack
+from radiolack.bandplan import default_plan
 from radiolack.engine import FixedSource
 from radiolack.updates import UpdateResult
 
@@ -130,6 +131,12 @@ def stand_in_soapysdr() -> Iterator[ModuleType]:
         sys.modules.pop("SoapySDR", None)
         if saved is not None:
             sys.modules["SoapySDR"] = saved
+
+
+def reference_carriers(amplitude: float = 0.2) -> dict[float, float]:
+    """A carrier of ``amplitude`` on every standard-frequency station of the
+    band plan, as FakeRtlTcp's ``carriers`` take them."""
+    return {float(frequency_hz): amplitude for frequency_hz in default_plan().references}
 
 
 def free_port() -> int:

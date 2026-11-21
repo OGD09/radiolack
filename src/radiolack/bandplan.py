@@ -7,7 +7,8 @@ its range scan and its lists of signals need: each range's mode and
 step, a band without segments being one range, a band with segments one
 range per segment, the parts that its segments leave out taking the
 band's; the channel sets, with their channels and modes; and the known
-frequencies' modes. ``BandPlan.mode_at`` gives the mode that the History's
+frequencies' modes, and which of them are standard-frequency stations, which
+the automatic calibration measures (calibration.py). ``BandPlan.mode_at`` gives the mode that the History's
 Bookmark button gives a frequency: a known frequency's within
 SPOT_TOLERANCE_HZ, else a channel set's within half its spacing of one of
 its channels, else the range's, if any; ``plan_mode`` the mode that the
@@ -68,10 +69,12 @@ class ChannelSet:
 
 class BandPlan:
     """A band plan's ranges, channel sets and known frequencies, each sorted
-    and without overlaps; an empty plan by default."""
+    and without overlaps, and the frequencies of its standard-frequency
+    stations, ``references``, lowest first; an empty plan by default."""
 
     def __init__(self, ranges: Iterable[PlanRange] = (), sets: Iterable[ChannelSet] = (),
-                 spots: Iterable[tuple[int, str | None]] = ()) -> None:
+                 spots: Iterable[tuple[int, str | None]] = (), references: Iterable[int] = ()) -> None:
+        self.references = tuple(sorted(set(references)))
         self._ranges = tuple(ranges)
         self._range_starts = [entry.from_hz for entry in self._ranges]
         self._sets = tuple(sets)
@@ -111,7 +114,9 @@ class BandPlan:
         for below, above in zip(channel_sets, channel_sets[1:]):
             if above.from_hz < below.to_hz:
                 raise ValueError("channel sets overlap")
-        return cls(ranges, channel_sets, (_spot(entry, modes) for entry in spots))
+        known = [_spot(entry, modes) for entry in spots]
+        return cls(ranges, channel_sets, (spot for spot, _ in known),
+                   (spot[0] for spot, reference in known if reference))
 
     def range_at(self, frequency_hz: float) -> PlanRange | None:
         """The range that holds ``frequency_hz``, or None outside the plan."""
@@ -217,11 +222,16 @@ def _channel_set(item: object, modes: Sequence[str]) -> ChannelSet:
     return ChannelSet(low, high, spacing, _mode(item.get("mode"), name, modes), tuple(channels))
 
 
-def _spot(item: object, modes: Sequence[str]) -> tuple[int, str | None]:
+def _spot(item: object, modes: Sequence[str]) -> tuple[tuple[int, str | None], bool]:
+    """A known frequency and its mode, and whether it is a standard-frequency
+    station, as bandplan.js reads it."""
     if not isinstance(item, dict):
         raise ValueError("spots must be objects")
     name = _text(item.get("name"), "a spot's name")
-    return _hz(item.get("f"), f"{name}: f"), _mode(item.get("mode"), name, modes)
+    reference = item.get("reference", False)
+    if "reference" in item and reference is not True:
+        raise ValueError(f"{name}: reference must be true or absent")
+    return (_hz(item.get("f"), f"{name}: f"), _mode(item.get("mode"), name, modes)), reference
 
 
 def _list(value: object, what: str) -> list:

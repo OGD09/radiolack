@@ -1294,6 +1294,23 @@ stations that the band plan marks `reference`.
 - **Protocol**: a `calibration` state for every interface (the run, its
   progress, its results, its proposal), since the receiver is shared, and
   start and stop commands. Apply is the ordinary correction.
+- **Fixed with pull request 1** (protocol.md, the calibration state): the
+  receiver tunes a quarter of the sample rate below a station, or above
+  it, clear of the DC residue and of the span's edges; the VFO goes onto
+  the station in AM, its filter 2.5 windows wide; a station whose
+  carrier is not measured within 6 s gives none. "Agree within 0.3 ppm"
+  is the largest group whose corrections lie within 0.3 ppm of each
+  other: two such groups that share no station propose nothing, and of
+  overlapping ones the tightest proposes. "One alone" is the only station
+  received. Without a proposal the state says why: no station, one too
+  weak, stations that disagree, or a correction beyond ±100 ppm. A change
+  of the gains, `rtl_agc`, antenna power, antenna socket or DC removal
+  leaves the run going; any other change of the source's settings, or of
+  the VFO's frequency, mode or filter, stops it, the receiver and the VFO
+  coming back before the change applies. A stopped run proposes from
+  what it measured; one stopped by a change, a scan, a recording or
+  another receiver proposes nothing. While it runs, a carrier's measure
+  waits and a driver's check is refused.
 
 ### Pull requests
 

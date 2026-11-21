@@ -23,7 +23,7 @@ preferences apart from this computer's.
    ```json
    {"type": "hello", "protocol": 6, "version": "0.13.0", "remote": false,
     "scanners": ["peaks", "memory", "history", "sweep", "signals", "scans"], "recording": ["audio", "iq"],
-    "measures": ["carrier", "driver_pll"], "spectra": ["fine"]}
+    "measures": ["carrier", "driver_pll", "calibration"], "spectra": ["fine"]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -49,10 +49,13 @@ preferences apart from this computer's.
    `recording`: it records nothing; one older than the I/Q recordings lists
    `audio` alone. `measures` lists what the engine measures when an
    interface asks: `carrier`, the carrier at the VFO (the carrier's
-   measure, below), and `driver_pll`, the check of the rtl-sdr driver's
-   computation on that carrier (the driver's check, below). An engine
-   older than the calibration sends no `measures`: it measures nothing;
-   one older than the driver's check lists `carrier` alone. `spectra` lists
+   measure, below), `driver_pll`, the check of the rtl-sdr driver's
+   computation on that carrier (the driver's check, below), and
+   `calibration`, the automatic calibration (the calibration state,
+   below). An engine older than the calibration sends no `measures`: it
+   measures nothing; one older than the driver's check lists `carrier`
+   alone, and one older than the automatic calibration does not list
+   `calibration`. `spectra` lists
    the spectra that the engine sends, besides the spectrum frames, to an
    interface that asks: `fine`, the fine spectrum of the VFO's channel (the
    fine frames, below). An engine older than the fine spectrum sends no
@@ -523,7 +526,65 @@ preferences apart from this computer's.
     opens no stream, but each module's search talks to the devices plugged
     in. The list lives in memory only.
 
-11. Then, to this computer's interfaces only, the storage state, a JSON text
+11. Then the calibration state, a JSON text message, sent again whenever
+    it changes: as the automatic calibration starts, at each station
+    measured and as it ends. The calibration that runs, or the latest
+    since Radiolack started, which another replaces as it starts:
+
+    ```json
+    {"type": "calibration", "running": false, "stations": [2500000, 5000000, 10000000],
+     "results": [
+       {"frequency_hz": 2500000, "carrier_hz": null, "margin_db": 14.2, "ppm": null, "agrees": false,
+        "reason": "no_signal"},
+       {"frequency_hz": 5000000, "carrier_hz": 4999978.9, "margin_db": 38.5, "ppm": 4.22, "agrees": true,
+        "reason": null},
+       {"frequency_hz": 10000000, "carrier_hz": 9999958.1, "margin_db": 44.0, "ppm": 4.19, "agrees": true,
+        "reason": null}],
+     "proposal": {"ppm": 4.21, "stations": 2}, "reason": null, "ended": "done"}
+    ```
+
+    | Field | Meaning |
+    | --- | --- |
+    | `running` | Whether a calibration runs. |
+    | `stations` | Its stations, in Hz, in the order it measures them: the band plan's standard-frequency stations (`"reference": true`) within the receiver's reach, lowest first, twelve at most; empty before the first calibration. |
+    | `results` | What it measured at each station so far, in the order of `stations`: `frequency_hz`, the station's; `carrier_hz`, the carrier on the air, to the tenth of a hertz, or null when none was measured, and `reason` says why; `margin_db`, as in the carrier's measure; `ppm`, the correction that brings that carrier to the station, to the hundredth, or null; `agrees`, whether it is among those the proposal comes from; `reason`, null with a carrier, otherwise the carrier's measure's `silent`, `no_signal`, `several` or `unstable` (`silent` and `unstable` also when no measure ended within 6 s), or `refused`, the receiver refused the station's centre frequency. |
+    | `proposal` | Once it ended with `done` or `stopped`, the correction it proposes, `ppm`, in ppm to the hundredth, and `stations`, how many agreed on it: 1 when one station alone was received, which an interface flags. Null otherwise, and while it runs. |
+    | `reason` | Once it ended with `done` or `stopped` without a proposal, why: `none`, no station was received; `weak`, one alone, less than 30 dB above the noise; `disagree`, the corrections received do not agree; `range`, they agree on a correction beyond -100 to 100 ppm. Null otherwise. |
+    | `ended` | Why the latest calibration ended: `done`, every station was measured; `stopped`, an interface stopped it; `tuned`, an interface changed the source's settings, other than its gains, `rtl_agc`, `bias_tee`, `antenna` and `dc_removal`, or the VFO's frequency, mode or filter; `source`, another receiver was chosen; `scan`, a scan started; `recording`, a recording started. Null while it runs and before the first. |
+
+    A calibration starts only when an interface asks (the `calibration`
+    message, below), never at start, and goes on without any client.
+    It stops a scan, and a check of the driver's computation, first. At
+    each station, for every interface, it tunes the receiver a quarter of
+    the sample rate below the station, or above it where the receiver
+    does not reach below or where the centre in use would lie within 3 kHz
+    of the station's filter, or the filter beyond 40 % of the rate from
+    it, and
+    the VFO onto the station in AM, with a filter 2.5 times the window
+    wide, 100 Hz at least; once the receiver's samples come from there,
+    it measures, as the carrier's measure does, the strongest line within
+    the window: 200 ppm of the station's frequency, 2 kHz at most, on
+    each side of it. The correction a carrier implies is
+    (1 + p) × f / c − 1, where p is the correction in use, f the
+    station's frequency and c the carrier's, as the Calibrate dialog
+    computes it. The proposal is the median of the largest group of
+    corrections within 0.3 ppm of each other, of two or more stations,
+    or the correction of the one station received, alone, at 30 dB or
+    more; two such groups that share no station leave none, and of two
+    that overlap the tightest proposes. Whatever ends it, the receiver's
+    centre frequency and the VFO's frequency, mode and filter come back
+    where it found them, before the change that ended it applies, except
+    with `source`, where the new receiver's settings apply. While it
+    runs, the settings saved for the receiver are those of its start, a
+    carrier's measure waits for its end and is then taken where the VFO
+    is back, and a driver's check is refused. It runs neither behind a
+    converter, whose oscillator would pass for the crystal's error, nor
+    while a recording runs, nor on a source without a frequency
+    correction or that does not tune. It is never saved: the latest
+    calibration is forgotten when Radiolack stops. The proposal is applied
+    as any change of the correction (`ppm`, below).
+
+12. Then, to this computer's interfaces only, the storage state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -536,7 +597,7 @@ preferences apart from this computer's.
     | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
     | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-12. Then, to this computer's interfaces only, the update state, a JSON text
+13. Then, to this computer's interfaces only, the update state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -551,7 +612,7 @@ preferences apart from this computer's.
     | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
     | `check_at_start` | Whether the engine checks when it starts. |
 
-13. Then, to this computer's interfaces only, remote access's state, a JSON
+14. Then, to this computer's interfaces only, remote access's state, a JSON
     text message, sent again whenever it changes:
 
     ```json
@@ -576,7 +637,7 @@ preferences apart from this computer's.
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
     | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
-14. Binary spectrum frames, about 30 per second while the source streams.
+15. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
     bin:
 
@@ -619,7 +680,7 @@ preferences apart from this computer's.
     the automatic one, which is NaN while the engine has no noise estimate
     (the VFO outside the span); the squelch then stays closed.
 
-15. Binary audio frames, about 30 per second, only to an interface that asked
+16. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -667,7 +728,7 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
     and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-16. Binary fine frames, about 10 per second, only to an interface that asked
+17. Binary fine frames, about 10 per second, only to an interface that asked
     for the fine spectrum (`fine` message): the spectrum of the VFO's
     channel before the demodulator, at a few hertz per bin. Each frame has
     the spectrum frames' 40-byte little-endian header, of another kind,
@@ -731,7 +792,7 @@ preferences apart from this computer's.
     2048 bins, each the highest of the four it groups, so that narrow lines
     stay visible.
 
-17. The observations, a JSON text message, to one interface only, when it
+18. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -763,7 +824,7 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-18. A kept scan with its channels, a JSON text message, to one interface
+19. A kept scan with its channels, a JSON text message, to one interface
     only, when it asks for it (`scans` message's `get`): the kept scan's
     fields, as in the kept scans, with its channels, by frequency, in
     place of their count.
@@ -787,7 +848,7 @@ preferences apart from this computer's.
     the ignored frequencies never, and keeps at most 1000 channels in each
     scan, the least recently found leaving first.
 
-19. The recordings, a JSON text message, to one interface only, when it
+20. The recordings, a JSON text message, to one interface only, when it
     asks for them or deleted one (`recordings` message): the latest 500
     recordings of the recordings folder, the newest first.
 
@@ -808,7 +869,7 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-20. A problem report, a JSON text message, to one interface of this
+21. A problem report, a JSON text message, to one interface of this
     computer only, when it asks for one (`report` message): what its user
     may share, or not, when Radiolack misbehaves (README.md, Problem
     reports).
@@ -823,7 +884,7 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-21. A carrier's measure, a JSON text message, to one interface only, when
+22. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
     channel, before the demodulator, and unblanked whether the noise
@@ -852,8 +913,9 @@ preferences apart from this computer's.
     waits for a measure: the interfaces that ask while one runs share it,
     and each receives it alone, with its own latest `id`; one that goes
     away stops waiting, and once none waits nothing more is measured.
+    While an automatic calibration runs, a measure waits for its end.
 
-22. A driver's check, a JSON text message, to the interfaces that asked
+23. A driver's check, a JSON text message, to the interfaces that asked
     for it (`carrier` message with the action `identify`) only: which of
     the rtl-sdr driver's two computations an R820T's or R828D's PLL
     follows, or why none was named.
@@ -868,7 +930,7 @@ preferences apart from this computer's.
     | `id` | The `id` of the interface's `identify` message, or null when it gave none. |
     | `driver_pll` | `truncating` or `rounding`: the computation the carrier followed, now the source's `driver_pll`, saved with the receiver; null when none was named, and `reason` says why. |
     | `previous` | The source's `driver_pll` when the check began: `unknown`, `truncating` or `rounding`; null for a source without it. An answer equal to it confirms it; another replaced it. |
-    | `reason` | Null with a computation. Otherwise, before anything moved: `receiver`, the source is not an RTL-SDR whose tuner is an R820T or R828D; `direct`, it samples directly; `range`, the tuner is not placed on its grid there (`centre_in_use_hz`); `scan`, a memory scan or a sweep runs; `iq`, an I/Q recording runs; `position`, the VFO lies within 3 kHz of the centre in use, or nearer the span's edge than the filter's width and 2 kHz, where a move of the centre would bring the DC residue onto the carrier or take it out of the span; `indistinct`, no centre within 2 kHz of the centre in use lets the two computations differ by 40 Hz or more. `lost`, before anything moved, the VFO's channel receives nothing at this sample rate (WFM below 320 kHz), or, after the check moved the receiver, a point had no steady carrier within 6 s (the carrier's measure's `silent`, `no_signal`, `several` or `unstable`, or no samples). Once every point is measured: `neither`, the carrier's moves followed neither computation within 5 Hz at every point; `both`, they followed both. And `stopped`: the check stopped before its end: an interface changed the source's settings or the VFO's frequency, mode or filter, a scan or an I/Q recording started, every interface that asked went away, or Radiolack stopped. A failed check leaves `driver_pll` as it was. An interface shows a reason it does not know as a failed check. |
+    | `reason` | Null with a computation. Otherwise, before anything moved: `receiver`, the source is not an RTL-SDR whose tuner is an R820T or R828D; `direct`, it samples directly; `range`, the tuner is not placed on its grid there (`centre_in_use_hz`); `scan`, a memory scan or a sweep runs; `calibration`, an automatic calibration runs; `iq`, an I/Q recording runs; `position`, the VFO lies within 3 kHz of the centre in use, or nearer the span's edge than the filter's width and 2 kHz, where a move of the centre would bring the DC residue onto the carrier or take it out of the span; `indistinct`, no centre within 2 kHz of the centre in use lets the two computations differ by 40 Hz or more. `lost`, before anything moved, the VFO's channel receives nothing at this sample rate (WFM below 320 kHz), or, after the check moved the receiver, a point had no steady carrier within 6 s (the carrier's measure's `silent`, `no_signal`, `several` or `unstable`, or no samples). Once every point is measured: `neither`, the carrier's moves followed neither computation within 5 Hz at every point; `both`, they followed both. And `stopped`: the check stopped before its end: an interface changed the source's settings or the VFO's frequency, mode or filter, a scan, an automatic calibration or an I/Q recording started, every interface that asked went away, or Radiolack stopped. A failed check leaves `driver_pll` as it was. An interface shows a reason it does not know as a failed check. |
 
     The engine measures the carrier, as for a carrier's measure, on the
     channel unblanked whether the noise blanker is on or not, at the
@@ -888,7 +950,7 @@ preferences apart from this computer's.
     receiver as it is back. An interface that goes away stops waiting;
     once none waits, the check stops.
 
-23. An error, to one interface only, when the engine refuses a message from
+24. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -898,8 +960,9 @@ preferences apart from this computer's.
 
 What is waiting for an interface goes out in this order: the source state,
 the demodulation settings, the bookmarks, the scanner state, the signals
-found, the recording state, the kept scans, the storage state, the update
-state and remote access's state, each when it changed (and the preferences
+found, the recording state, the kept scans, the SoapySDR devices, the
+calibration state, the storage state, the update state and remote
+access's state, each when it changed (and the preferences
 at the start), then the observations, the kept scans' channels, the
 recordings, the reports, the carrier's
 measures, the driver's checks and errors, in the
@@ -1202,6 +1265,24 @@ optional, a whole number from 1 to 2⁵³ − 1, which the measure or the check
 repeats. An interface that asks again before its measure comes waits for
 the same one, which carries its new id; likewise for a check. The engine
 refuses other fields and values.
+
+A `calibration` message starts the automatic calibration, or stops the
+one that runs, for every interface (the calibration state, above):
+
+```json
+{"type": "calibration", "action": "start"}
+{"type": "calibration", "action": "stop"}
+```
+
+`action` is `start` or `stop`. Starting while a calibration runs, or
+stopping while none does, changes nothing. The engine refuses other
+fields and values, and refuses to start, with an error that says why, on
+a source without a frequency correction or that does not tune, behind a
+converter, while a recording runs, and when no standard-frequency
+station lies within the receiver's reach. Remote clients may start and
+stop it. An engine older than the automatic calibration refuses the
+message as one of an unknown type: an interface sends it only when the
+hello lists `calibration` among its `measures`.
 
 A `remote` message changes remote access ([Remote access](#remote-access)),
 one setting at a time:
@@ -1660,6 +1741,17 @@ and later.
   older interface ignores the categories and shows one list; the
   bookmarks it adds are uncategorized, and its changes leave a bookmark's
   category as it is.
+  On 2026-11-21, the automatic calibration (later-milestones.md, section
+  3, pull request 1), without a new version: `calibration` in the hello's
+  `measures`, the calibration state, the `calibration` message, and the
+  driver's check's `reason` `calibration`. An older interface ignores the
+  state and never sends the message; it sees another interface's
+  calibration as the receiver and the VFO moving, in AM, from station to
+  station for a minute or two, then coming back, and its Calibrate dialog
+  waits for the end of it for a carrier's measure, and shows a driver's
+  check refused with `calibration` as a failed check. A newer interface
+  reads a hello without `calibration`, an older engine's, as one without
+  the automatic calibration.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

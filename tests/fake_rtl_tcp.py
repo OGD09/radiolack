@@ -10,6 +10,10 @@ port given. The device decides what it does:
 - "stubborn": serves, but ignores SIGTERM, logging "<pid> ignoring" each time.
 - "carrier": serves CARRIER_HZ through a crystal CARRIER_CRYSTAL_PPB off,
   its R820T's PLL computed as rtl-sdr up to 2.0.1 does, until SIGTERM.
+- "references": serves a carrier on every standard-frequency station of
+  the band plan (bandplan.py's ``references``) through a crystal
+  REFERENCES_CRYSTAL_PPB off, its tuner exact, until SIGTERM: what the
+  automatic calibration measures.
 - "crackle": serves noise with an impulse of CRACKLE_SAMPLES samples every
   CRACKLE_PERIOD, which a noise blanker removes, until SIGTERM.
 - any other value: serves until SIGTERM.
@@ -29,11 +33,12 @@ import sys
 import time
 
 from radiolack import r82xx
-from tests.fakes import FakeRtlTcp
+from tests.fakes import FakeRtlTcp, reference_carriers
 
 OPEN_S = 0.2    # rtl_tcp opens the receiver before it listens
 CARRIER_HZ = 145_010_000            # the "carrier" device's carrier, on the air
 CARRIER_CRYSTAL_PPB = 3_210         # and its crystal's error
+REFERENCES_CRYSTAL_PPB = -4_270     # the "references" device's crystal's error
 CRACKLE_PERIOD = 2_000              # the "crackle" device's impulses: one every this many samples,
 CRACKLE_SAMPLES = 2                 # each this long
 FOUND = ("Found 1 device(s):\n  0:  Realtek, RTL2838UHIDIR, SN: 00000001\n\n"
@@ -68,6 +73,8 @@ async def serve(port: int, device: str) -> None:
     if device == "carrier":
         scene = {"carriers": {CARRIER_HZ: 0.3}, "crystal_ppb": CARRIER_CRYSTAL_PPB,
                  "tuner_pll": functools.partial(r82xx.tuned_hz, "truncating")}
+    elif device == "references":
+        scene = {"carriers": reference_carriers(), "crystal_ppb": REFERENCES_CRYSTAL_PPB}
     elif device == "crackle":
         scene = {"carriers": {}, "impulses": (CRACKLE_PERIOD, CRACKLE_SAMPLES)}
     async with FakeRtlTcp(port=port, chunk_bytes=8000, **scene) as fake:

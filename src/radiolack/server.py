@@ -8,8 +8,8 @@ its bookmarks, the signals it finds and what its update check found to each
 interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for the fine spectrum, for an update check, for the observations,
-for the list of the recordings, for the measure of a carrier and for the
-SoapySDR devices. It serves the recordings that
+for the list of the recordings, for the measure of a carrier, for the
+automatic calibration and for the SoapySDR devices. It serves the recordings that
 the engine lists, and the I/Q recordings' metadata, to download
 (``/recordings/NAME``).
 
@@ -71,12 +71,13 @@ _CLOSE_TIMEOUT_S = 2.0          # wait for a client to acknowledge a closed stre
 _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "scanner", "observations", "scans", "preferences",
-             "recording", "recordings", "update", "remote", "report", "carrier", "devices")
+             "recording", "recordings", "update", "remote", "report", "carrier", "calibration", "devices")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS, "devices": LOCAL_DEVICE_FIELDS}
 RECORDING_KINDS = ("audio", "iq")  # what the engine records, as the hello tells
-MEASURES = ("carrier", "driver_pll")   # what the engine measures when an interface asks, as the hello tells
+# What the engine measures when an interface asks, as the hello tells.
+MEASURES = ("carrier", "driver_pll", "calibration")
 SPECTRA = ("fine",)     # the spectra the engine sends besides the spectrum frames when asked, as the hello tells
 _DOWNLOAD_CHUNK = 256 * 1024    # a recording goes out in parts this large
 _REMOTE_HEARTBEAT_S = 20.0      # a device that stops answering pings loses its stream
@@ -337,6 +338,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             engine.report(changes, subscription)
         elif kind == "carrier":
             engine.measure_carrier(changes, subscription)
+        elif kind == "calibration":
+            engine.calibrate(changes)
         elif kind == "devices":
             engine.configure_devices(changes)
         else:

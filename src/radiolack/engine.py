@@ -101,6 +101,19 @@ measures that carrier at the centre in use and at centres off the tuner's
 grid, for every interface, brings the receiver back whatever ends the
 check, and saves the computation found with the receiver.
 
+Any client may also start the automatic calibration (calibration.py), and
+stop it: like a scan, the engine tunes the receiver and the VFO, for every
+client, to each standard-frequency station of the band plan within its
+reach, measures its carrier, then brings them back, and every client
+learns the run's progress, its results and the correction it proposes,
+which a client applies as any change of the correction. It stops a scan,
+a check of the driver's computation and the carrier's measures wait for
+it, and a scan, a recording, another receiver, or a change of the source's
+settings or of the VFO's frequency, mode or filter stops it, the receiver
+and the VFO coming back first; it starts neither while a recording runs,
+nor behind a converter, nor on a source without a correction, and never
+by itself.
+
 With a store (store.py), it starts from what was saved: the settings saved
 for its receiver (each receiver, by its ``settings_key``, has its own), the
 bookmarks, the preferences, whether to check for updates at start, what
@@ -129,7 +142,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from . import __version__
+from . import __version__, calibration
 from .bandplan import default_plan, plan_mode
 from .bookmarks import Bookmark, Bookmarks
 from .carrier import SILENT, UNSTABLE, Carrier, CarrierMeasure
@@ -179,6 +192,10 @@ MAX_REQUEST_ID = 2 ** 53 - 1    # the largest whole number JavaScript counts exa
 CHECK_POINT_TIMEOUT_S = 6.0     # a point of the driver's check whose carrier is not measured within this ends it
 CHECK_CLEARANCE_HZ = 1_000.0    # the VFO stays this far from the centre at every point of the driver's check
 STOPPED = "stopped"     # a driver's check that an interface's change, or the engine's stop, ended
+STATION_TIMEOUT_S = 6.0     # a calibration's station whose carrier is not measured within this gives none
+# Source settings that leave a calibration running: they change what the
+# receiver hears, not where it tunes nor how its samples are labelled.
+CALIBRATION_KEEPS = ("gain_db", "stage_gains_db", "rtl_agc", "bias_tee", "antenna", "dc_removal")
 RECORDING_PROGRESS_S = 1.0      # a recording's length and size go to the clients this often
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
@@ -544,6 +561,7 @@ class Engine:
             self._device_search.on_change = self._follow_devices
             self._states["devices"] = lambda subscription: self.devices_state(subscription.remote)
         self._states["scans"] = lambda _: self.scans_state()
+        self._states["calibration"] = lambda _: self.calibration_state()
         self._states["storage"] = lambda _: self.storage_state()
         self._states["update"] = lambda _: self.update_state()
         self._remote = remote
@@ -663,6 +681,9 @@ class Engine:
         self._source_changes = 0
         # The check of the driver's computation while one runs (pllcheck.py).
         self._driver_check: _DriverCheck | None = None
+        # The automatic calibration that runs, or the latest, until another
+        # starts: it runs while its ``ended`` is None.
+        self._calibration: _CalibrationRun | None = None
         self._adopt()
         self._watch_bookmarks()
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
@@ -686,7 +707,8 @@ class Engine:
         """The messages for a new client, starting with the source state, the
         demodulation settings, the bookmarks, the scanner state, the signals
         found, the preferences, the recording state and, with sources that
-        open SoapySDR devices, the devices state, then, unless
+        open SoapySDR devices, the devices state, the kept scans and the
+        calibration state, then, unless
         it is a paired ``device`` that remote access serves, named by its id,
         the storage state, the update state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
@@ -736,8 +758,12 @@ class Engine:
         the VFO stays on the signal it was on, and the signals found
         through the previous converter are forgotten. A check of the
         driver's computation that runs stops first, bringing the receiver
-        back, so that the change applies to the receiver as it was."""
+        back, so that the change applies to the receiver as it was; so does
+        a calibration that runs, unless the changes are all among
+        CALIBRATION_KEEPS."""
         self._end_driver_check(STOPPED)
+        if not set(changes) <= set(CALIBRATION_KEEPS):
+            self._end_calibration("source" if "kind" in changes else "tuned")
         self._configure(changes, restoring=False)
 
     def _configure(self, changes: Mapping[str, object], *, restoring: bool) -> None:
@@ -790,7 +816,8 @@ class Engine:
         the client that asked for it, which receives the settings in either
         case. Tuning the VFO stops a scan; tuning it, or another mode or
         filter, stops a check of the driver's computation, whose carrier it
-        moves."""
+        moves, and a calibration that runs, whose VFO comes back first: the
+        changes then apply to the VFO as it was."""
         if subscription is not None and change_id is not None:
             subscription.acknowledged = change_id
             subscription.changed("demod")
@@ -798,6 +825,9 @@ class Engine:
         if (demod.frequency_hz, demod.mode, demod.bandwidth_hz) != (
                 self._demod.frequency_hz, self._demod.mode, self._demod.bandwidth_hz):
             self._end_driver_check(STOPPED)
+            if self._running_calibration() is not None:
+                self._end_calibration("tuned")
+                demod = self._demod.changed(changes)
         if demod.frequency_hz != self._demod.frequency_hz:
             self._stop_scan("tuned")
         self._demod = demod
@@ -1262,8 +1292,8 @@ class Engine:
         ends the check. A computation found is saved with the receiver,
         replacing the one set. Refused, with the reason in the answer and
         nothing moved, with another receiver, in direct sampling, below
-        where the PLL is computed, while a scan runs or an I/Q recording is
-        made, with a VFO whose channel receives nothing at the sample rate,
+        where the PLL is computed, while a scan, a calibration or an I/Q
+        recording runs, with a VFO whose channel receives nothing at the sample rate,
         or too near the centre or the span's edge for the moves, and where
         the computations cannot be told apart."""
         check = self._driver_check
@@ -1273,8 +1303,10 @@ class Engine:
         described = self.source.describe()
         tuning = self.source.pll_tuning()
         points: tuple[Point, ...] = ()
-        if isinstance(tuning, str):
-            reason: str | None = tuning
+        if self._running_calibration() is not None:
+            reason: str | None = "calibration"     # whose receiver is not where it comes back
+        elif isinstance(tuning, str):
+            reason = tuning
         elif self._scanning():
             reason = "scan"
         elif self._iq is not None:
@@ -1300,6 +1332,51 @@ class Engine:
             (centre_hz, described["centre_in_use_hz"]), time.monotonic())
         log.info("checking the driver's computation at %d Hz, then off the grid at %s Hz", request_hz,
                  ", ".join(str(point.request_hz) for point in points))
+
+    def calibration_state(self) -> dict[str, Any]:
+        """The calibration state message (docs/design/protocol.md): the
+        calibration that runs, or the latest, with its stations, what it
+        measured at each so far and, once it ended, why, and the correction
+        it proposes, or why none."""
+        run = self._calibration
+        if run is None:
+            return {"type": "calibration", "running": False, "stations": [], "results": [], "proposal": None,
+                    "reason": None, "ended": None}
+        proposal = run.proposal
+        agreeing = () if proposal is None else proposal.agreeing
+        results = [{"frequency_hz": result.frequency_hz,
+                    "carrier_hz": None if result.carrier_hz is None else round(result.carrier_hz, 1),
+                    "margin_db": result.margin_db,
+                    "ppm": None if result.ppm is None else round(result.ppm, 2) + 0.0,     # no -0.0
+                    "agrees": index in agreeing, "reason": result.reason}
+                   for index, result in enumerate(run.results)]
+        return {"type": "calibration", "running": run.ended is None,
+                "stations": [station.frequency_hz for station in run.stations], "results": results,
+                "proposal": (None if proposal is None or proposal.ppm is None
+                             else {"ppm": proposal.ppm, "stations": len(agreeing)}),
+                "reason": None if proposal is None else proposal.reason, "ended": run.ended}
+
+    def calibrate(self, changes: Mapping[str, object]) -> None:
+        """Start the automatic calibration, ``action`` ``start``, unless one
+        runs, or stop the one that runs, ``stop``, if one does: for every
+        client, which learn its progress, its results and its proposal.
+        Starting stops a scan and a check of the driver's computation, which
+        bring the receiver back first. Raises ValueError, changing nothing,
+        on a source without a frequency correction or that does not tune,
+        behind a converter, whose oscillator would pass for the crystal's
+        error, while a recording runs, and when no standard-frequency
+        station of the band plan lies within the receiver's reach."""
+        for name in changes:
+            if name != "action":
+                raise ValueError(f"unknown calibration field: {str(name)[:40]}")
+        action = changes.get("action")
+        if action == "stop":
+            self._end_calibration("stopped")
+        elif action == "start":
+            if self._running_calibration() is None:
+                self._start_calibration()
+        else:
+            raise ValueError("a calibration message takes the action start or stop")
 
     def configure_recordings(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's recordings message, which without any field asks
@@ -1333,8 +1410,9 @@ class Engine:
         """Stop for good: every client's messages end with ``None``, the
         source is closed, the recordings that run stop and a running update
         check stops; a check of the driver's computation brings the receiver
-        back first. Safe to repeat."""
+        back first, as does a calibration that runs. Safe to repeat."""
         self._end_driver_check(STOPPED)
+        self._end_calibration("closed")
         self._closed = True
         for subscription in self._clients:
             subscription.end()
@@ -1580,23 +1658,33 @@ class Engine:
         self._settings_changed()
 
     def _carrier_measure(self, capture: tuple[float, float], label: tuple[float, float]
-                         ) -> tuple[CarrierMeasure, tuple[Any, ...], float] | None:
+                         ) -> tuple[CarrierMeasure, tuple[Any, ...], float, tuple[float, float]] | None:
         """What a block measures of the carrier, while an interface waits for
         it, from the centre asked and the rate of its samples, ``capture``,
         and their centre in use, ``label``: the measure, the setting its
-        samples come from, which starts it again when it changes, and the
-        frequency on the air of the channel's 0 Hz. A VFO whose channel
+        samples come from, which starts it again when it changes, the
+        frequency on the air of the channel's 0 Hz, and where the measure
+        looks, from that 0 Hz: within the VFO's filter. A VFO whose channel
         receives nothing, outside the span or in a mode that the sample rate
         cannot hold, answers at once: there is nothing to measure. While a
-        check of the driver's computation runs, it alone measures, from the
-        samples of the point it waits for."""
+        calibration or a check of the driver's computation runs, it alone
+        measures, from the samples of the station or the point it waits
+        for: a calibration within the station's window."""
         demod = self._demod
+        origin_hz = demod.frequency_hz - vfo_position_hz(demod.mode)
+        run = self._running_calibration()
+        if run is not None:
+            if (capture[0], label[0]) != run.expected:
+                return None         # the receiver still settles on the station
+            window = calibration.window_hz(run.stations[len(run.results)].frequency_hz)
+            key = (len(run.results), capture, label, self._dc_removal)
+            return run.gatherer, key, origin_hz, (-window, window)
         check = self._driver_check
         if check is not None:
             if (capture[0], label[0]) != check.expected:
                 return None         # the receiver still settles on the point
             key = (len(check.offsets), capture, label, self._dc_removal)
-            return check.gatherer, key, demod.frequency_hz - vfo_position_hz(demod.mode)
+            return check.gatherer, key, origin_hz, _filter_band(demod)
         if self._carrier is None:
             return None
         centre_hz, rate_hz = label
@@ -1604,14 +1692,20 @@ class Engine:
             self._answer_carrier(Carrier(None, None, SILENT), 0.0)
             return None
         key = (self._source_changes, demod.frequency_hz, demod.mode, demod.bandwidth_hz, label, self._dc_removal)
-        return self._carrier, key, demod.frequency_hz - vfo_position_hz(demod.mode)
+        return self._carrier, key, origin_hz, _filter_band(demod)
 
-    def _measured(self, measure: tuple[CarrierMeasure, tuple[Any, ...], float], carrier: Carrier,
-                  label_hz: float) -> None:
+    def _measured(self, measure: tuple[CarrierMeasure, tuple[Any, ...], float, tuple[float, float]],
+                  carrier: Carrier, label_hz: float) -> None:
         """A measure ended with ``carrier``, from samples labelled
-        ``label_hz``: for the point of the driver's check that waited for
-        it, or for the interfaces waiting for a carrier's measure, unless it
-        no longer counts."""
+        ``label_hz``: for the station of the calibration that waited for it,
+        the point of the driver's check that waited for it, or the
+        interfaces waiting for a carrier's measure, unless it no longer
+        counts."""
+        run = self._running_calibration()
+        if run is not None:
+            if measure[0] is run.gatherer:
+                self._station_measured(run, carrier, measure[2])
+            return
         check = self._driver_check
         if check is not None:
             if measure[0] is check.gatherer:
@@ -1622,10 +1716,17 @@ class Engine:
 
     def _check_carrier(self) -> None:
         """End a carrier's measure that settings kept starting again, or for
-        which no samples came, once it ran for CARRIER_TIMEOUT_S, and a
-        point of the driver's check once it ran for CHECK_POINT_TIMEOUT_S:
-        the measures asked meanwhile wait for the check's end."""
+        which no samples came, once it ran for CARRIER_TIMEOUT_S, a point of
+        the driver's check once it ran for CHECK_POINT_TIMEOUT_S, and a
+        calibration's station once it ran for STATION_TIMEOUT_S: the
+        measures asked meanwhile wait for the check's or the calibration's
+        end."""
         now = time.monotonic()
+        run = self._running_calibration()
+        if run is not None:
+            if now - run.began >= STATION_TIMEOUT_S:
+                self._station_measured(run, Carrier(None, None, UNSTABLE if run.gatherer.received else SILENT), 0.0)
+            return
         check = self._driver_check
         if check is not None:
             if now - check.began >= CHECK_POINT_TIMEOUT_S:
@@ -1714,6 +1815,127 @@ class Engine:
                                 "margin_db": carrier.margin_db, "reason": carrier.reason})
         self._carrier_waiting.clear()
         self._carrier = None
+
+    def _running_calibration(self) -> _CalibrationRun | None:
+        """The calibration that runs, if one does."""
+        run = self._calibration
+        return run if run is not None and run.ended is None else None
+
+    def _calibration_changed(self) -> None:
+        for subscription in self._clients:
+            subscription.changed("calibration")
+
+    def _start_calibration(self) -> None:
+        """Start a calibration (``calibrate``), from the receiver and the VFO
+        as a scan or a check of the driver's computation that runs leaves
+        them once stopped."""
+        described = self.source.describe()
+        if described["ppm"] is None or "ppm" not in described["settable"]:
+            raise ValueError("this receiver has no frequency correction to calibrate")
+        if "centre_hz" not in described["settable"]:
+            raise ValueError("calibrating needs a receiver that tunes, such as an RTL-SDR")
+        if _conversion(described).active:
+            raise ValueError("a converter is set in front of the receiver: its oscillator would pass for the "
+                             "crystal's error")
+        if self._recording_runs():
+            raise ValueError("a recording runs: stop it before calibrating")
+        low_hz, high_hz = described["range_hz"]
+        stations = calibration.stations(self._plan.references, described["sample_rate_hz"], (low_hz, high_hz),
+                                        self.source.centre_in_use)
+        if not stations:
+            raise ValueError("no standard-frequency station of the band plan lies within the receiver's reach")
+        self._end_driver_check(STOPPED)     # which brings the receiver back
+        self._stop_scan(None)       # likewise, unless on a signal or a bookmark
+        run = _CalibrationRun(stations, (self._span()[0], self._demod), described["ppm"])
+        self._calibration = run
+        log.info("calibrating on %s Hz", ", ".join(str(station.frequency_hz) for station in stations))
+        self._wanted.set()          # it goes on without any client
+        self._calibration_changed()
+        self._next_station(run)
+
+    def _next_station(self, run: _CalibrationRun) -> None:
+        """Tune to the first station of ``run`` not yet measured, for every
+        client: the receiver to its centre, the VFO onto it in
+        calibration.MODE with a filter that holds its window; a station
+        whose centre the receiver refuses gives no carrier. Once every
+        station is measured, the calibration ends."""
+        while len(run.results) < len(run.stations):
+            station = run.stations[len(run.results)]
+            if self._span()[0] != station.centre_hz:
+                try:
+                    self.source.configure({"centre_hz": station.centre_hz})
+                except ValueError as error:
+                    log.warning("the calibration skipped %d Hz: the receiver did not tune to %.0f Hz: %s",
+                                station.frequency_hz, station.centre_hz, error)
+                    run.results.append(calibration.Result(station.frequency_hz, None, None, None,
+                                                          calibration.REFUSED))
+                    self._calibration_changed()
+                    continue
+            self._demod = self._demod.changed({"frequency_hz": station.frequency_hz, "mode": calibration.MODE,
+                                               "bandwidth_hz": calibration.filter_width_hz(station.frequency_hz)})
+            self._demod_changed()
+            run.expected = (station.centre_hz, self.source.describe()["centre_in_use_hz"])
+            run.gatherer = CarrierMeasure()
+            run.began = time.monotonic()
+            return
+        self._end_calibration("done")
+
+    def _station_measured(self, run: _CalibrationRun, carrier: Carrier, origin_hz: float) -> None:
+        """The measure of the station that ``run`` waits for ended with
+        ``carrier``, whose frequency counts from ``origin_hz``, that of the
+        channel's 0 Hz on the air: with the correction it implies; then the
+        next station."""
+        station = run.stations[len(run.results)]
+        if carrier.frequency_hz is None:
+            result = calibration.Result(station.frequency_hz, None, carrier.margin_db, None, carrier.reason)
+        else:
+            carrier_hz = origin_hz + carrier.frequency_hz
+            result = calibration.Result(station.frequency_hz, carrier_hz, carrier.margin_db,
+                                        calibration.implied_ppm(run.ppm, carrier_hz, station.frequency_hz))
+        run.results.append(result)
+        self._calibration_changed()
+        self._next_station(run)
+
+    def _end_calibration(self, reason: str, back: bool = True) -> None:
+        """End the calibration that runs, if one does, for ``reason``:
+        ``done``, every station measured; ``stopped``, a client stopped it;
+        ``tuned``, a client changed the source's settings or the VFO's
+        frequency, mode or filter; ``source``, another receiver; ``scan``,
+        ``recording`` or ``closed``, the engine stopping. With ``done`` and
+        ``stopped`` it proposes a correction from what it measured. With
+        ``back``, the receiver and the VFO come back where it found them;
+        the carrier's measures that waited start from the receiver as it is
+        then, and every client learns how it ended."""
+        run = self._running_calibration()
+        if run is None:
+            return
+        run.ended = reason
+        if reason in ("done", "stopped"):
+            run.proposal = calibration.propose(run.results)
+        if back:
+            centre_hz, start = run.home
+            if self._span()[0] != centre_hz:
+                try:
+                    self.source.configure({"centre_hz": centre_hz})
+                except ValueError as error:
+                    log.warning("the receiver did not come back to %.0f Hz after the calibration: %s", centre_hz,
+                                error)
+            vfo = dataclasses.replace(self._demod, frequency_hz=start.frequency_hz, mode=start.mode,
+                                      bandwidth_hz=start.bandwidth_hz)
+            if vfo != self._demod:
+                self._demod = vfo
+                self._demod_changed()
+        proposal = run.proposal
+        log.info("the calibration ended (%s) with %d of %d stations received%s", reason,
+                 sum(result.ppm is not None for result in run.results), len(run.stations),
+                 "" if proposal is None else f", proposing {proposal.ppm} ppm" if proposal.ppm is not None
+                 else f", proposing nothing ({proposal.reason})")
+        self._calibration_changed()
+        if self._carrier is not None:
+            self._carrier = CarrierMeasure()
+            self._carrier_began = time.monotonic()
+        if self._idle():
+            self._wanted.clear()
 
     def _check_peaks(self) -> None:
         """Tell the clients of the signals found once the list changed, such
@@ -1826,6 +2048,7 @@ class Engine:
         if self._audio is not None or self._closed:
             return
         folder = self._recording_folder()
+        self._end_calibration("recording")      # the recording starts where the VFO comes back
         recording = AudioRecording(folder, time.time(), self._demod.frequency_hz, self._demod.mode,
                                    make_folder=folder == self._default_recordings, report=self._reporter())
         self._audio, self._audio_rate, self._audio_samples = recording, None, 0
@@ -1841,6 +2064,7 @@ class Engine:
             return
         folder = self._recording_folder()
         self._end_driver_check(STOPPED)     # the recording starts where the receiver comes back
+        self._end_calibration("recording")
         source = self.source
         # Named after the centre asked; its metadata gives the centre in use, as the samples are labelled,
         # and their format, which the first samples give.
@@ -2075,6 +2299,7 @@ class Engine:
         if not self._memory_ids:    # from the span a sweep brings the receiver back to
             raise ValueError("no ticked bookmark lies within the receiver's reach")
         self._end_driver_check(STOPPED)     # which brings the receiver back too
+        self._end_calibration("scan")       # likewise
         self._stop_scan(None)       # the range scan, which brings the receiver back unless on a signal
         centre_hz = self._span()[0]
         self._memory = MemoryScan()
@@ -2095,6 +2320,7 @@ class Engine:
         if not here:
             self._sweep_windows(self._sweep_low_hz, self._sweep_high_hz)     # refused, it changes nothing
         self._end_driver_check(STOPPED)     # which brings the receiver back
+        self._end_calibration("scan")       # likewise
         self._stop_scan(None)       # the memory scan or the range scan, which bring the receiver back
         # From the span the receiver came back to.
         centre_hz = self._span()[0]
@@ -2242,9 +2468,10 @@ class Engine:
         return self._running_scan() is not None
 
     def _idle(self) -> bool:
-        """Whether nothing needs the source's samples: no client, no scan and
-        no recording, while the engine runs."""
-        return not self._clients and not self._scanning() and not self._recording_runs() and not self._closed
+        """Whether nothing needs the source's samples: no client, no scan, no
+        calibration and no recording, while the engine runs."""
+        return (not self._clients and not self._scanning() and self._running_calibration() is None
+                and not self._recording_runs() and not self._closed)
 
     def _stop_scan(self, reason: str | None) -> None:
         """Stop the scan that runs, if one does, for ``reason``: "tuned",
@@ -2428,8 +2655,9 @@ class Engine:
         settings kept for when it comes back; ``new`` starts from those
         saved for its receiver."""
         old = self.source
-        # Saved before the scan stops: those of the scan's start.
+        # Saved before the scan or the calibration stops: those of its start.
         self._receivers[old.settings_key] = self._receiver_settings()
+        self._end_calibration("source", back=False)
         self._stop_scan("source")
         self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
         if new.kind in UNRECORDED_KINDS:
@@ -2460,6 +2688,7 @@ class Engine:
             new.close()         # it never read: nothing to release
             return
         self._end_driver_check(STOPPED)
+        self._end_calibration("source")
         self._replace(new)
         self._source_changed()
 
@@ -2544,6 +2773,7 @@ class Engine:
         log.info("the %s source reads %s", self.source.kind, self._settings_key)
         if not isinstance(saved, dict):
             return
+        self._end_calibration("source")
         # A scan started before, such as --scan's, which the receiver's
         # first opening follows at once, starts again from these settings.
         scan = "signals" if self._sweep_here else self._running_scan()
@@ -2564,15 +2794,18 @@ class Engine:
             self._scans_changed(soon=True)
 
     def _receiver_settings(self) -> dict[str, Any]:
-        """The settings saved for the receiver in use: while a scan runs,
-        with the centre frequency, and the VFO's frequency, mode and filter
-        width, at its start, and while a check of the driver's computation
-        runs, with the centre frequency at its start."""
+        """The settings saved for the receiver in use: while a scan or a
+        calibration runs, with the centre frequency, and the VFO's
+        frequency, mode and filter width, at its start, and while a check of
+        the driver's computation runs, with the centre frequency at its
+        start."""
         state = self.state()
         source = {name: state[name] for name in state["settable"] if name not in UNSAVED_SETTINGS}
         demod = self._demod.describe()
-        if self._home is not None:
-            centre_hz, start = self._home
+        run = self._running_calibration()
+        home = run.home if run is not None else self._home
+        if home is not None:
+            centre_hz, start = home
             demod.update(frequency_hz=start.frequency_hz, mode=start.mode, bandwidth_hz=start.bandwidth_hz)
             if "centre_hz" in source:       # not with a source that does not tune
                 source["centre_hz"] = centre_hz
@@ -2837,6 +3070,27 @@ class _DriverCheck:
     offsets: list[float] = dataclasses.field(default_factory=list)
 
 
+@dataclasses.dataclass
+class _CalibrationRun:
+    """An automatic calibration (calibration.py): its stations; the centre
+    asked and the demodulation settings at its start, whose VFO comes back
+    at its end; the correction in use while it runs; what it measured at
+    each station so far, in order; the centre asked and the centre in use
+    of the samples that the station it waits for takes, its measure and
+    when it began; and once it ended, why, and with ``done`` or
+    ``stopped`` the correction it proposes, or why none."""
+
+    stations: tuple[calibration.Station, ...]
+    home: tuple[float, DemodSettings]
+    ppm: float
+    results: list[calibration.Result] = dataclasses.field(default_factory=list)
+    expected: tuple[float, float] | None = None
+    began: float = 0.0
+    gatherer: CarrierMeasure = dataclasses.field(default_factory=CarrierMeasure)
+    ended: str | None = None
+    proposal: calibration.Proposal | None = None
+
+
 def _driver_answer(request_id: int | None, found: str | None, previous: object, reason: str | None
                    ) -> dict[str, Any]:
     """The answer to a check of the driver's computation (docs/design/protocol.md)."""
@@ -2889,15 +3143,17 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
                    watch: ChannelWatch, samples: np.ndarray, centre_hz: float, rate_hz: float,
                    dc_removal: bool, settings: DemodSettings, audio: bool, threshold_db: float | None,
                    search_blocks: int, bands: np.ndarray | None,
-                   measure: tuple[CarrierMeasure, tuple[Any, ...], float] | None = None, rate_scale: float = 1.0,
+                   measure: tuple[CarrierMeasure, tuple[Any, ...], float, tuple[float, float]] | None = None,
+                   rate_scale: float = 1.0,
                    fine: tuple[FineSpectrum, tuple[Any, ...], float] | None = None,
                    ) -> tuple[np.ndarray, np.ndarray, Meter, np.ndarray | None, list[Detection] | None,
                               tuple[np.ndarray, np.ndarray] | None, Carrier | None, list[np.ndarray]]:
     """The bin powers, the display codes, the channel meter, with ``audio``
     the audio, once ``detector`` has averaged ``search_blocks`` blocks the
     signals found, once ``watch`` knows the noise the power and the noise of
-    the memory scan's channels, once ``measure``, a carrier's measure and
-    the setting of these samples, has one its result, and with ``fine``,
+    the memory scan's channels, once ``measure``, a carrier's measure, the
+    setting of these samples and where it looks in the channel, from its
+    0 Hz, has one its result, and with ``fine``,
     the fine spectrum and the setting of these samples, the codes of the
     fine frames they complete, of a block of samples, worked out in a
     worker thread. Detection is off without ``threshold_db``, and the
@@ -2919,13 +3175,10 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     carrier: list[Carrier | None] = [None]     # what the measure gives, if any
     tap: Callable[[np.ndarray], None] | None = None
     if measure is not None:
-        gatherer, key, _ = measure
-        low_hz, high_hz = passband_hz(settings.mode, settings.bandwidth_hz)
-        position = vfo_position_hz(settings.mode)       # where the channel's filter lies, from its 0 Hz
+        gatherer, key, _, (low_hz, high_hz) = measure
 
         def tap(channel: np.ndarray) -> None:
-            carrier[0] = gatherer.add(channel, demodulator.channel_rate_hz, position + low_hz, position + high_hz,
-                                      key)
+            carrier[0] = gatherer.add(channel, demodulator.channel_rate_hz, low_hz, high_hz, key)
     fine_codes: list[np.ndarray] = []
     front_tap: Callable[[np.ndarray], None] | None = None
     if fine is not None:
@@ -2947,6 +3200,14 @@ def _process_block(analyzer: SpectrumAnalyzer, demodulator: Demodulator, detecto
     else:
         levels = watch.levels(power, centre_hz, rate_hz, bands, analyzer.enbw)
     return power, analyzer.codes(power), meter, pcm, detections, levels, carrier[0], fine_codes
+
+
+def _filter_band(demod: DemodSettings) -> tuple[float, float]:
+    """Where the VFO's filter passes, from its channel's 0 Hz: where a
+    carrier's measure looks."""
+    low_hz, high_hz = passband_hz(demod.mode, demod.bandwidth_hz)
+    position = vfo_position_hz(demod.mode)
+    return position + low_hz, position + high_hz
 
 
 def _conversion(described: Mapping[str, Any]) -> Conversion:

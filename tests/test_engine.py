@@ -37,8 +37,12 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 # What a new client gets first; a remote client, without the last two.
-STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "storage",
-          "update")
+STATES = ("source", "demod", "bookmarks", "scanner", "peaks", "preferences", "recording", "scans", "calibration",
+          "storage", "update")
+
+# The calibration state before any calibration ran.
+CALIBRATION_IDLE = {"type": "calibration", "running": False, "stations": [], "results": [], "proposal": None,
+                    "reason": None, "ended": None}
 
 
 def scanner_state(**changes) -> dict:
@@ -198,6 +202,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                      "folder": None, "default_folder": None})
         self.assertEqual(subscription.get_nowait(), {"type": "scans", "scans": []})
+        self.assertEqual(subscription.get_nowait(), CALIBRATION_IDLE)     # no calibration ran
         # Without a store, nothing is saved.
         self.assertEqual(subscription.get_nowait(),
                          {"type": "storage", "directory": None, "saving": False, "problem": ""})
