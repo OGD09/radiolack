@@ -2929,6 +2929,44 @@ class BrowserTest(unittest.TestCase):
                 second.locator("#src-device").select_option("synthetic")
                 expect(second.locator("#src-device")).to_have_value("synthetic")
 
+    def test_a_radio_added_in_the_receiver_menu_reads_its_own_receiver(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program and the radio's process import from
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        usb = directory / "usb"
+        plug_usb_device(usb, "1-1", manufacturer="Realtek", product="RTL2838UHIDIR", serial="RTLSDR1")
+        url = self.serve(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP, usb_devices=usb),
+                         store=Store(directory / "radiolack"))
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    expect(page.locator("#radio-list option")).to_have_text(["Radio 1 · Synthetic band"])
+                    expect(page.locator("#radio-remove-row")).to_be_hidden()
+                expect(first.locator("#radio-add option")).to_have_text(
+                    ["Choose a receiver", "RTL-SDR · RTL2838UHIDIR · RTLSDR1", "RTL-SDR · rtl_tcp"])
+                first.locator("#radio-add").select_option(label="RTL-SDR · RTL2838UHIDIR · RTLSDR1")
+                # The first interface shows the new radio, read in a process of its own; the other stays.
+                expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                radio_ids = []
+                for page in (first, second):
+                    expect(page.locator("#radio-list option")).to_have_count(2)
+                    radio_ids.append(page.locator("#radio-list option").nth(1).get_attribute("value"))
+                self.assertEqual(radio_ids[0], radio_ids[1])
+                expect(first.locator("#radio-list")).to_have_value(radio_ids[0])
+                expect(second.locator("#radio-list")).to_have_value("1")
+                expect(second.locator("#src-device option").nth(1)).to_have_text(
+                    f"RTL-SDR · RTL2838UHIDIR · RTLSDR1 · read by radio {radio_ids[0]}")
+                expect(second.locator("#src-device option").nth(1)).to_be_disabled()
+                expect(second.locator("#radio-remove")).to_be_disabled()
+                # A page loaded again shows again the radio it showed.
+                first.wait_for_timeout(1500)    # the preferences are saved every second
+                first.reload()
+                expect(first.locator("#radio-list")).to_have_value(radio_ids[0])
+                self.open_menu(first, "receiver")
+                first.locator("#radio-remove").click()
+                for page in (first, second):
+                    expect(page.locator("#radio-list option")).to_have_count(1)
+                    expect(page.locator("#radio-list")).to_have_value("1")
+
     def test_the_receiver_menu_searches_and_opens_soapysdr_devices(self):
         # Stand-in devices only: the search and the devices are the stand-in's.
         soapy = self.enterContext(stand_in_soapysdr())

@@ -43,11 +43,13 @@ export function choosable(device) {
 }
 
 /**
- * Who holds a receiver not in use here, from the drivers bound to it, or ''.
+ * Who holds a receiver not in use here: another of Radiolack's radios, or
+ * from the drivers bound to it; or ''.
  * @param {RtlDevice} device
  */
 function holder(device) {
   if (device.inUse) return '';
+  if (device.radio !== null) return `read by radio ${device.radio}`;
   if (device.drivers.includes('usbfs')) return 'in use by another program';
   const dvb = device.drivers.find((driver) => driver.startsWith('dvb_usb'));
   if (dvb) return 'held by the DVB driver';
@@ -95,25 +97,32 @@ export function rtlNote(devices) {
  * The Receiver list for the source in use, the RTL-SDR receivers the
  * engine listed last (null before it answered, or for an engine that lists
  * none), whether this interface picked "SoapySDR device" with no device
- * in use, and whether the stream is open. Kinds the engine does not open
- * cannot be chosen, nor anything while the stream is closed.
+ * in use, whether the stream is open, and the other radios, which the
+ * simulated band and the rtl_tcp server belong to when one reads them.
+ * Kinds the engine does not open cannot be chosen, nor what another radio
+ * reads, nor anything while the stream is closed.
  * @param {SourceState | null} source
  * @param {RtlDevicesState | null} listed
  * @param {boolean} soapyPicked
  * @param {boolean} open
+ * @param {{id: number, kind: string}[]} [others]
  * @returns {ReceiverList}
  */
-export function receiverList(source, listed, soapyPicked, open) {
+export function receiverList(source, listed, soapyPicked, open, others = []) {
   const kinds = open && source ? source.kinds : [];
   /** @param {string} kind */
-  const kindOption = (kind, /** @type {string} */ label) => ({ value: kind, label, disabled: !kinds.includes(kind) });
+  const kindOption = (kind, /** @type {string} */ label) => {
+    const reader = kind === 'synthetic' || kind === 'rtl_tcp' ? others.find((other) => other.kind === kind) : undefined;
+    return reader ? { value: kind, label: `${label} · read by radio ${reader.id}`, disabled: true }
+      : { value: kind, label, disabled: !kinds.includes(kind) };
+  };
   const devices = listed && listed.listing === 'sysfs' ? listed.devices : [];
   const fallback = !devices.some(choosable);
   /** @type {ReceiverOption[]} */
   const rtl = devices.map((device, index) => ({
     value: `${RTL_PREFIX}${index}`,
     label: rtlLabel(device),
-    disabled: !kinds.includes(RTL_KIND) || (!choosable(device) && !device.inUse),
+    disabled: !kinds.includes(RTL_KIND) || (!device.inUse && (!choosable(device) || device.radio !== null)),
   }));
   if (fallback) rtl.unshift(kindOption(RTL_KIND, 'RTL-SDR · this computer'));
   const options = [kindOption('synthetic', 'Synthetic band (2 m)'), ...rtl,

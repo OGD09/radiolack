@@ -294,6 +294,9 @@ the history under the tag `v0.1.0`.
   Automatic step), `rtldevices.js` (the Receiver list's entries: one per
   RTL-SDR receiver plugged in, what they say of those that cannot be
   chosen, and the entry that opens the one used last without a list),
+  `radios.js` (the Receiver menu's radios: the radio list, the receivers
+  a radio may be added from, the second press that removes a busy one,
+  the menu dot across the radios, and the radio a device showed last),
   `categories.js` (the Bookmarks menu's categories: the
   list's sections, a category's box, the questions that moving bookmarks
   and removing a category ask, and a category's name's check),
@@ -321,6 +324,7 @@ the history under the tag `v0.1.0`.
   `history.js` in Node, `tests/test_devices.py` `devices.js` and the
   devices state's decoding, `tests/test_rtldevices_list.py`
   `rtldevices.js` and the RTL-SDR receivers message's decoding,
+  `tests/test_radios.py` `radios.js` and the radios message's decoding,
   `tests/test_categories.py` `categories.js`
   and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
