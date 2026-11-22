@@ -514,6 +514,32 @@ Size: 329800
 SHA256: b32fc9c11d13302f14caa46f3bf62af862814f2232d27797e087e487ce7a159c
 
 Package: radiolack
+Version: 0.25.0
+Architecture: all
+Maintainer: OGD09 <46905152+OGD09@users.noreply.github.com>
+Installed-Size: 1842
+Depends: python3 (>= 3.11), python3-aiohttp (>= 3.8), python3-cryptography (>= 38), python3-numpy (>= 1:1.24), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0, ca-certificates
+Recommends: rtl-sdr
+Suggests: python3-soapysdr, soapysdr-module-hackrf, soapysdr-module-airspy, soapysdr-module-lms7, soapysdr-module-bladerf, soapysdr-module-rtlsdr
+Section: hamradio
+Priority: optional
+Description: Receive-only SDR receiver with band plans
+ Radiolack shows the spectrum and the waterfall of an SDR receiver in a
+ desktop window and plays NFM, AM, synchronous AM, USB, LSB, CW and WFM. It
+ reads an RTL-SDR receiver plugged into this computer, or one that rtl_tcp
+ serves from another computer, and labels every frequency with a European
+ band plan, a guide rather than a legal reference, with the IARU Region 1
+ plans inside the amateur bands. Other receivers, such as a HackRF, an
+ Airspy or a LimeSDR, are read through SoapySDR, which is optional.
+ .
+ Phones, tablets and other computers on the local network use it through
+ remote access. A systemd service, which the package never enables, runs it
+ on a computer without a display, next to the receiver.
+Filename: pool/main/r/radiolack/radiolack_0.25.0_all.deb
+Size: 354204
+SHA256: 9bd4a012346c5a5dff0abee83e7f25f0bc9e53557375afea93402c7028ec6879
+
+Package: radiolack
 Version: 0.3.0
 Architecture: all
 Maintainer: OGD09 <46905152+OGD09@users.noreply.github.com>
