@@ -214,7 +214,7 @@ class RadioProcessTest(unittest.IsolatedAsyncioTestCase):
             radio._process.send_signal(signal.SIGKILL)
             error = await message_where(subscription, state("error"))
         self.assertEqual(error["command"], "radio")
-        self.assertIn("radio 2 stopped", error["message"])
+        self.assertIn("receiver 2 stopped", error["message"])
         self.assertEqual([entry["id"] for entry in self.engine.radios_state()["radios"]], [1])
         self.assertIs(subscription.radio, self.engine.radios[0])
 

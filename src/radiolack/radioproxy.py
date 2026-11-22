@@ -275,7 +275,7 @@ class RadioProcess:
               share_receivers: bool = False) -> None:
         assert method in CALLS
         if self._closed:
-            raise ValueError("this radio is being removed")
+            raise ValueError("this receiver is being removed")
         if share_receivers:     # the receiver it opens starts from the settings saved for it
             self.share(receivers=self._engine.receivers, radios=self._engine.others(self))
         self._post({"op": "call", "method": method, "command": command, "args": list(args),

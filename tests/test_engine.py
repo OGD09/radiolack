@@ -755,9 +755,9 @@ class SeveralRadiosTest(unittest.IsolatedAsyncioTestCase):
         [state] = of_type(waiting(other), "radios")
         self.assertEqual((len(state["radios"]), state["shown"]), (2, 1))
         # A receiver belongs to one radio: the first reads "test".
-        with self.assertRaisesRegex(ValueError, "radio 1 reads this receiver already"):
+        with self.assertRaisesRegex(ValueError, "receiver 1 reads this device already"):
             engine.configure_radios({"add": {"kind": "test"}}, subscription)
-        with self.assertRaisesRegex(ValueError, "radio 1 reads this receiver already"):
+        with self.assertRaisesRegex(ValueError, "receiver 1 reads this device already"):
             engine.radios[1].configure({"kind": "test"})
         self.assertEqual(engine.radios[1].source.kind, "other")
         for refused in ({"kind": "radio"}, {"kind": 3}, "other", {"device": "0"}):
@@ -774,12 +774,12 @@ class SeveralRadiosTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.close, engine)
         for index in range(MAX_RADIOS - 1):
             engine.add_radio({"kind": str(index)})
-        with self.assertRaisesRegex(ValueError, "4 radios at most"):
+        with self.assertRaisesRegex(ValueError, "4 receivers at most"):
             engine.add_radio({"kind": "4"})
         self.assertEqual(len(engine.radios), MAX_RADIOS)
         with self.assertRaisesRegex(ValueError, "4 radios at most"):
             Engine(FakeSource(), more_sources=[OtherSource() for _ in range(MAX_RADIOS)])
-        with self.assertRaisesRegex(ValueError, "radio 2 reads this receiver already"):
+        with self.assertRaisesRegex(ValueError, "receiver 2 reads this device already"):
             Engine(FakeSource(), more_sources=[OtherSource(), OtherSource()])
         # Without sources to open, a client adds none.
         fixed = Engine(FakeSource())
@@ -799,9 +799,9 @@ class SeveralRadiosTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(subscription.radio, engine.radios[0])
         self.assertTrue(added.source.closed)
         await frame_from(subscription, FAKE_CENTRE_HZ)
-        with self.assertRaisesRegex(ValueError, "the first radio stays"):
+        with self.assertRaisesRegex(ValueError, "the first receiver stays"):
             engine.configure_radios({"remove": 1}, subscription)
-        with self.assertRaisesRegex(ValueError, "no such radio"):
+        with self.assertRaisesRegex(ValueError, "no such receiver"):
             engine.configure_radios({"remove": 2}, subscription)
         # Its receiver comes back with its settings, on a new radio.
         engine.configure_radios({"add": {"kind": "other"}}, subscription)

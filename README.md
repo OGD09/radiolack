@@ -19,7 +19,7 @@ other receivers through SoapySDR ([SoapySDR receivers](#soapysdr-receivers)),
 or simulates a 2 m band (synthetic I/Q computed in memory). The
 engine computes the spectrum and streams it to the interface, which draws the
 spectrum and the waterfall with WebGL2 and keeps every setting in one menu
-([The menu](#the-menu)). The Receiver menu switches between the
+([The menu](#the-menu)). The Receivers menu switches between the
 simulated band and the receivers, sets the receiver's
 centre frequency, sample rate, gain and frequency correction, changes the
 address of an rtl_tcp server, and turns the removal of the DC spike and
@@ -204,8 +204,8 @@ radiolack
 ```
 
 opens the interface in a desktop window, on the source used last: the
-simulated 2 m band the first time. The Receiver menu's list switches to a
-receiver ([RTL-SDR receivers](#rtl-sdr-receivers)). Closing the window
+simulated 2 m band the first time. In the Receivers menu, "Change
+device…" switches to a receiver ([RTL-SDR receivers](#rtl-sdr-receivers)). Closing the window
 stops Radiolack.
 
 | Option | Effect |
@@ -218,21 +218,21 @@ stops Radiolack.
 | `--scan memory`, `--scan sweep`, `--scan signals` | Starts a scan at start without waiting for an interface: the memory scan, the range scan with its saved settings (`sweep`), or the range scan over the current window, stopping to listen (`signals`): see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
 | `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, or a SoapySDR device's own, once it opens) for the first receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device without antenna power ignore it, which Radiolack says. |
 | `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the sources used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
-| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the sources used last. The Receiver menu can change the address. One rtl_tcp server at a time. |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the sources used last. The Receivers menu can change the address. One rtl_tcp server at a time. |
 | `--soapy ARGS` | Reads a receiver through SoapySDR instead of the sources used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). |
 | `--version` | Prints the version. |
 
 `--rtl-sdr`, `--rtl-tcp` and `--soapy` may come together, and `--rtl-sdr`
 and `--soapy` more than once, up to four receivers: each receiver given
-gets a radio of its own, in the order given, with its own spectrum, VFO,
+is read on its own, in the order given, with its own spectrum, VFO,
 scans and recordings, and `--scan` and `--bias-tee` apply to the first.
-Without them, Radiolack opens the radios used last. The Receiver menu
-adds and removes radios and chooses the one an interface shows
+Without them, Radiolack opens the receivers used last. The Receivers menu
+adds and removes receivers and chooses the one an interface shows
 ([Several receivers](#several-receivers)); the bookmarks and the History
-are common to the radios. Each radio after the first runs in a process of its own, so that
-two receivers at 2.4 MS/s fit on a laptop's processor; the first radio
-stays as long as Radiolack runs. Should a radio's process stop, its radio
-goes away and Radiolack says so.
+are common to them. Each receiver after the first runs in a process of its own, so that
+two receivers at 2.4 MS/s fit on a laptop's processor; the first
+stays as long as Radiolack runs. Should a receiver's process stop, the
+receiver goes away and Radiolack says so.
 
 Without a desktop window, stop Radiolack with Ctrl+C.
 
@@ -286,10 +286,12 @@ eight menus beside the one it shows:
   ([Scanners](#scanners)).
 - Record: the recordings and, on this computer, their folder
   ([Recording](#recording)).
-- Receiver: the source and its settings
-  ([RTL-SDR receivers](#rtl-sdr-receivers)), and the SoapySDR devices
-  found, with a device's antenna sockets and, under Advanced, its gain
-  stages and settings ([SoapySDR receivers](#soapysdr-receivers)).
+- Receivers: one card per receiver ([Several receivers](#several-receivers)),
+  then the settings of the one this window shows, under Device (its
+  device, "Change device…" and Remove), Tuning, Gain, Input and Advanced
+  ([RTL-SDR receivers](#rtl-sdr-receivers)): the SoapySDR devices found,
+  with a device's antenna sockets and, under Advanced, its gain stages
+  and settings ([SoapySDR receivers](#soapysdr-receivers)).
 - Display: the spectrum's height, the spectrum, the waterfall, and the band
   plan, the bookmarks and the channels and known frequencies on the
   spectrum.
@@ -308,40 +310,56 @@ and the icon opens the last menu shown again. In a window 600 px wide or
 less, the list of menus comes first, and a menu takes its place with an
 arrow back to the list. A dot on the icon tells that a recording runs, in
 red, or that the memory scan or the range scan runs, in green, on any
-radio.
+receiver.
 
 ## Several receivers
 
-Radiolack reads up to four receivers at once, each in a radio of its own,
-with its own spectrum, VFO, scans and recordings; the bookmarks and the
-History are common to them. An interface shows one radio at a time: two
-windows, or a window and a phone, show two radios side by side. The
-Receiver menu, at its top:
+Radiolack reads up to four receivers at once, each with its own
+spectrum, VFO, scans and recordings; the bookmarks and the History are
+common to them. An interface shows one receiver at a time: two windows,
+or a window and a phone, show two receivers side by side. The Receivers
+menu opens on one card per receiver, numbered from 1:
 
-- "Radio" lists the radios, each with its number, what it reads, and the
-  scan or the recordings that run on it, such as "Radio 2 · RTL-SDR ·
-  RTLSDR1 · recording audio". Choosing one shows it in this interface
-  alone; the others go on with their scans and recordings.
-- "Add a radio" lists the receivers that no radio reads: the simulated
-  band, each RTL-SDR receiver plugged in, an rtl_tcp server and the
-  SoapySDR devices found. Choosing one opens it in a new radio, which this
-  interface then shows, with the settings kept for that receiver.
-- "Remove this radio" stops its scan and its recordings, releases its
-  receiver and keeps its settings; the interfaces that showed it show the
-  first radio, which stays as long as Radiolack runs. While a scan or a
-  recording runs on it, a second press confirms, saying what stops.
+- Each card names the device and its serial number, or an rtl_tcp
+  server's address, and says whether it is receiving, with its centre
+  frequency on the receiver shown, waits for its device or is idle,
+  read by no interface and running nothing. A tag tells a scan or a
+  recording that runs on it, such as "Memory scan" or "Recording audio".
+- The card of the receiver this window shows is framed in blue and says
+  "Shown here"; the others have "Show here", which shows that receiver in
+  this window alone; the others go on with their scans and recordings.
+- "+ Add a receiver", under the cards, says how many more devices are
+  plugged in, up to four receivers, and lists the devices that no
+  receiver reads: the simulated band, each RTL-SDR receiver plugged in,
+  an rtl_tcp server and the SoapySDR devices found. Choosing one opens it
+  in a new receiver, which this window then shows, with the settings kept
+  for that device.
 
-The "Receiver" list below then applies to the radio shown: a receiver that
-another radio reads shows "read by radio N" and cannot be chosen. Each
-device remembers the receiver of the radio it chose or added last, and
-shows that radio again at its next connection while Radiolack still runs
-it; this computer's windows share that choice, the last one made. Radiolack
-reopens the radios at its next start, unless a receiver option is given.
+The settings below, headed "Receiver N" with the device's name, apply to
+the receiver shown. Under Device, "Change device…" shows the list of
+devices: one that another receiver reads shows "read by receiver N" and
+cannot be chosen. Remove stops the receiver's scan and its recordings,
+releases its device and keeps its settings; the interfaces that showed it
+show receiver 1, which stays as long as Radiolack runs and cannot be
+removed. While a scan or a recording runs on it, a second press
+confirms, saying what stops.
+
+With several receivers, a chip beside the frequency, such as "2
+RTL2838UHIDIR", names the receiver this window shows; a press on it opens
+the Receivers menu. A device is named as it names itself: an RTL-SDR's
+product, such as RTL2838UHIDIR for the chip it carries, or a SoapySDR
+device's label, once the Receivers menu has listed it; its kind before.
+
+Each device remembers the receiver it chose or added last, and shows it
+again at its next connection while Radiolack still runs it; this
+computer's windows share that choice, the last one made. Radiolack
+reopens the receivers at its next start, unless a receiver option is
+given. The protocol calls them radios ([docs/design/protocol.md](docs/design/protocol.md)).
 
 ## RTL-SDR receivers
 
-Radiolack reads RTL-SDR receivers through rtl_tcp. The Receiver menu's
-list switches between the simulated band ("Synthetic band (2 m)"),
+Radiolack reads RTL-SDR receivers through rtl_tcp. The Receivers menu's
+device list, which "Change device…" shows, switches between the simulated band ("Synthetic band (2 m)"),
 each receiver plugged into this computer, such as "RTL-SDR · NESDR SMArt
 v5 · 59196661" (its name and serial number), a receiver behind an rtl_tcp
 server ("RTL-SDR · rtl_tcp"), for every open interface, and a receiver
@@ -353,7 +371,7 @@ options below choose one on the command line.
 
 The receivers plugged in:
 
-- Radiolack lists them each time the Receiver menu shows, and again every
+- Radiolack lists them each time the Receivers menu shows, and again every
   2 seconds while it shows, so that a receiver plugged in meanwhile
   appears; never otherwise. It reads what Linux tells of the USB devices
   (`/sys/bus/usb/devices`) and opens none of them, so the list never
@@ -364,8 +382,8 @@ The receivers plugged in:
   wherever it is plugged in. The first time you choose the only receiver
   plugged in, it starts from the settings kept for the first receiver,
   `--rtl-sdr` without a device, which were its own.
-- A receiver that another of Radiolack's radios reads shows "read by
-  radio N" ([Several receivers](#several-receivers)). A receiver that
+- A device that another of Radiolack's receivers reads shows "read by
+  receiver N" ([Several receivers](#several-receivers)). A receiver that
   another program holds stays listed, with "in use by
   another program" (Gqrx or an rtl_tcp, for instance), or "held by the DVB
   driver" when Linux took it as a TV tuner (the rtl-sdr package's
@@ -401,7 +419,7 @@ radiolack --rtl-sdr
   system stops it (through setpriv, from util-linux).
 - `--rtl-sdr 1` reads the second receiver, and `--rtl-sdr SERIAL` the one
   with that serial number, as rtl_tcp's `-d` option takes them. The
-  Receiver menu lists the receivers plugged in with their serial
+  Receivers menu lists the receivers plugged in with their serial
   numbers.
 - When rtl_tcp cannot open the receiver, the status line says why: no
   receiver found, in use by another program, or no permission (the udev
@@ -422,12 +440,12 @@ radiolack --rtl-tcp
 `--rtl-tcp PORT`, `--rtl-tcp HOST` and `--rtl-tcp HOST:PORT` read the
 rtl_tcp at that address, with an IPv6 address in brackets (`[::1]:1234`).
 `--rtl-tcp` alone reads the address used last, on the command line or in the
-Receiver menu, and rtl_tcp's default address, 127.0.0.1:1234, the first time.
+Receivers menu, and rtl_tcp's default address, 127.0.0.1:1234, the first time.
 rtl_tcp has no access control: anyone who reaches it can use the receiver,
 so keep it on 127.0.0.1, or on a network you trust when the receiver is on
 another computer.
 
-The Receiver menu's "Server address" field changes the address while
+The Receivers menu's "Server address" field changes the address while
 Radiolack runs, for instance when the receiver's computer answers at another
 address on another network: type HOST, PORT or HOST:PORT and press Enter.
 Radiolack hangs up and connects there with the same settings, and every open
@@ -454,7 +472,7 @@ With either option:
 - At each connection, Radiolack sends its own settings, since rtl_tcp keeps
   those of its previous client: 145 MHz, 2.4 MS/s, automatic gain and no
   frequency correction at first, then the latest ones.
-- The Receiver menu names the tuner and sets the centre frequency, the sample
+- The Receivers menu names the tuner and sets the centre frequency, the sample
   rate (0.240 and 0.300 MS/s, or 1.024 to 2.88 MS/s), the gain and the
   frequency correction. "Tuner
   AGC" gives automatic gain; otherwise the gain is one of those the tuner
@@ -517,7 +535,7 @@ With either option:
 
 An RTL-SDR Blog V3 or V4 can power an active antenna or a preamplifier
 through its antenna socket: 4.5 V, at most 180 mA, with its bias tee. The
-Receiver menu's "Antenna power (bias tee)" shows whether it is on, on every
+Receivers menu's "Antenna power (bias tee)" shows whether it is on, on every
 interface. Turning it on takes two presses: the first one makes the button
 say "Confirm: 4.5 V on the antenna socket" for 5 s, and the second one turns
 the power on; turning it off takes one.
@@ -549,7 +567,7 @@ Limits:
 
 ### Shortwave
 
-The Receiver menu's "Shortwave" list says what a receiver uses below its
+The Receivers menu's "Shortwave" list says what a receiver uses below its
 tuner's range, and is kept with that receiver's settings; the line under
 it says what the choice needs:
 
@@ -595,7 +613,7 @@ Limits:
 
 A converter in front of the receiver moves a range of frequencies into the
 tuner's: an upconverter brings shortwave above 24 MHz, and a satellite LNB
-brings the 3 cm band down to a few hundred megahertz. The Receiver menu's
+brings the 3 cm band down to a few hundred megahertz. The Receivers menu's
 "Converter" list says which one is there, and "Converter oscillator" its
 oscillator's frequency, typed as any frequency (125 for 125 MHz, 9750,
 9.75 GHz); both are kept with the receiver's settings:
@@ -646,7 +664,7 @@ Limits:
 
 The receiver's crystal sets every frequency it tunes and its sample rate:
 a crystal 10 ppm fast shows a signal 1.45 kHz too low at 145 MHz, and
-71 Hz too low at 7.1 MHz. The Receiver menu's "Frequency correction (ppm)"
+71 Hz too low at 7.1 MHz. The Receivers menu's "Frequency correction (ppm)"
 takes it to the hundredth of a ppm, from -100.00 to +100.00: a hundredth
 is worth 0.07 Hz at 7 MHz and 1.45 Hz at 145 MHz, where a whole ppm was
 145 Hz. A correction saved by an earlier Radiolack, a whole number, reads
@@ -703,11 +721,11 @@ frequency: rtl-sdr 2.0.2 and later exactly, the older ones one constant low,
 
 So Radiolack asks such a tuner for the nearest centre frequency on that
 grid, at most 56.25 kHz from the one you set, and shows it under the
-Receiver menu's centre frequency ("In use: 144.9975 MHz, where the tuner
+Receivers menu's centre frequency ("In use: 144.9975 MHz, where the tuner
 sits"). The spectrum, the VFO, the scans and the recordings follow it: you
 tune as before.
 
-The Receiver menu's "rtl-sdr driver" tells Radiolack which driver runs,
+The Receivers menu's "rtl-sdr driver" tells Radiolack which driver runs,
 and Radiolack saves it with the receiver:
 
 - "Unknown", the default: Radiolack takes the tuner as exact on its grid.
@@ -793,7 +811,7 @@ says more; the Debian package installs none of them.
 
 ### Calibration
 
-The Receiver menu's Calibrate finds the frequency correction on the
+The Receivers menu's Calibrate finds the frequency correction on the
 standard-frequency stations, by itself, or on a carrier whose frequency you
 know. Either way Radiolack measures the strongest line near the frequency
 to a tenth of a hertz, over two seconds, which the display, at 293 Hz per
@@ -806,14 +824,14 @@ reach, twelve at most, lowest first, the VFO on the station in AM, and
 measures its carrier within 200 ppm of the station, 2 kHz at most; then the
 receiver and the VFO come back where they were. A run takes a few seconds
 per station, for every interface, and goes on when the dialog closes; the
-Receiver menu says while it runs, and Stop ends it. The table shows, for
+Receivers menu says while it runs, and Stop ends it. The table shows, for
 each station, how far its carrier lies from the station's frequency, how
 far it stands above the noise, and the correction it implies, or why it
 gave none. "Proposed correction" is the median of the corrections that
 agree within 0.3 ppm, from two stations at least, or from one alone, the
 only one received, standing 30 dB or more above the noise, which the
 dialog flags; stations outside that group show greyed. "Apply the
-proposal" sends it as a change in the Receiver menu would. Otherwise it
+proposal" sends it as a change in the Receivers menu would. Otherwise it
 says why it proposes nothing: no station received, one too weak, stations
 that disagree, or a correction beyond -100 to 100 ppm. A run stopped with
 Stop proposes from the stations it measured; one ended by a change of the
@@ -847,7 +865,7 @@ On a known carrier:
    rounded to the kilohertz: type the true frequency if it differs. On an
    R820T or R828D, it first identifies the rtl-sdr driver (below).
 4. Apply sends "Correction to apply", the correction that brings the
-   carrier to its true frequency, as a change in the Receiver menu would,
+   carrier to its true frequency, as a change in the Receivers menu would,
    and tunes the VFO there, where the carrier then lies. The next measures
    show it there, within about a hertz.
 
@@ -924,8 +942,8 @@ radiolack --soapy driver=sdrplay
   driver. A driver is required so that no search reaches the network:
   without one, SoapySDR asks every module to search, its remote module
   included.
-- Or choose the receiver in the Receiver menu: "SoapySDR device" in the
-  Receiver list shows the SoapySDR devices found, a "Search again" button
+- Or choose the receiver in the Receivers menu: "SoapySDR device" in the
+  device list, under "Change device…", shows the SoapySDR devices found, a "Search again" button
   and the "SoapySDR device arguments" field. The first time the menu shows
   them, Radiolack searches for HackRF, Airspy, Airspy HF+, LimeSDR and
   bladeRF devices, one driver at a time, never without a driver and never
@@ -942,7 +960,7 @@ radiolack --soapy driver=sdrplay
   computer asks; a search opens no receiver's stream, but each driver's
   search talks to the devices plugged in. Without the Python module, the
   list says which package brings it, and nothing is searched. Once a device
-  was chosen, "SoapySDR device" in the Receiver list opens it again at
+  was chosen, "SoapySDR device" in the device list opens it again at
   once.
 - A device that remote access serves sees the list and may choose among
   the devices found, but neither searches nor sees or gives arguments:
@@ -952,7 +970,7 @@ radiolack --soapy driver=sdrplay
   on this computer. Once found, the receiver is known by its driver and
   serial number: its settings are saved under them, and the next start
   without `--soapy` opens that receiver again.
-- The Receiver menu shows "SoapySDR device", with the receiver's name and
+- The Receivers menu shows "SoapySDR device", with the receiver's name and
   driver once it opens. Its sample rates are those the receiver offers, up
   to 8 MS/s, which the engine holds; where the receiver has an analogue
   filter, Radiolack sets it to the nearest bandwidth at or below 0.8 times
@@ -969,7 +987,7 @@ radiolack --soapy driver=sdrplay
   its overall gain, which the receiver's SoapySDR module spreads across
   them; "Tuner AGC" turns automatic gain on where the receiver has it,
   and is greyed where it has none.
-  With several stages, the Receiver menu's Advanced section, at its
+  With several stages, the Receivers menu's Advanced section, at its
   bottom, has one slider per stage, under the receiver's names for them,
   such as a HackRF's LNA, AMP and VGA, or an SDRplay's IFGR and RFGR,
   which are gain reductions: more is less gain. A stage's change shows in
@@ -987,15 +1005,15 @@ radiolack --soapy driver=sdrplay
   direct sampling, offset tuning and digital AGC. Each starts at the
   receiver's own value, is saved with the receiver once changed, and is
   written between two reads of the receiver, then read back: one that the
-  receiver refuses keeps its value, and the note under the Receiver list
+  receiver refuses keeps its value, and the note under Device
   says why. Radiolack leaves out the settings that are free text, which
   the module would read as it likes, those named for transmission, and
-  more than 32. For shortwave on an RTL-SDR, the Receiver list's RTL-SDR
+  more than 32. For shortwave on an RTL-SDR, the device list's RTL-SDR
   entries' Shortwave list does more than the
   module's direct sampling ([Shortwave](#shortwave)).
 - Antenna power: a setting whose key or name speaks of a bias tee or
   antenna power, such as `biastee`, `bias_tx` or `biasT_ctrl`, is the
-  Receiver menu's "Antenna power (bias tee)", under the rules of an
+  Receivers menu's "Antenna power (bias tee)", under the rules of an
   RTL-SDR's ([Antenna power](#antenna-power)): off at each opening of the
   receiver, whatever the receiver or a saved file says, unless Radiolack
   was started with `--bias-tee` or an interface turned it on since; never
@@ -1006,7 +1024,7 @@ radiolack --soapy driver=sdrplay
 - Without the Python module, `--soapy` says which package to install and
   exits; a SoapySDR receiver reopened at start waits, saying the same, and
   tries again by itself once it is installed. An unplugged or silent
-  receiver is a wait too, with its reason in the Receiver menu and the
+  receiver is a wait too, with its reason in the Receivers menu and the
   status line, tried again by itself.
 - Radiolack opens the receiver's receive stream and nothing else. Its
   overflows, the samples dropped when the computer falls behind (in
@@ -1579,7 +1597,7 @@ it: check the rules where you listen before you record.
 Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
 (`$XDG_CONFIG_HOME/radiolack` when that variable is set):
 
-- `settings.json` holds each receiver's settings: the Receiver menu's and the
+- `settings.json` holds each receiver's settings: the Receivers menu's and the
   demodulation settings (VFO, mode, filter width, squelch, automatic notch,
   noise blanker). The simulated
   band and each receiver plugged into this computer, by index or serial
@@ -1867,9 +1885,9 @@ needs the receiver's power, add it there.
 
 With several receivers ([Several receivers](#several-receivers)), give
 each in the service's command, an RTL-SDR by its serial number, which the
-Receiver menu's list shows: the receivers given at start replace the
-radios used last, so a radio added from an interface lasts until the
-service restarts. `--scan` and `--bias-tee` apply to the first receiver
+Receivers menu's device list shows: the receivers given at start replace
+the receivers used last, so a receiver added from an interface lasts until
+the service restarts. `--scan` and `--bias-tee` apply to the first receiver
 given:
 
 ```ini
@@ -2141,7 +2159,7 @@ npx --yes --package=typescript@7.0.2 -- tsc -p jsconfig.json
 The browser tests drive the interface in headless Chromium, Firefox and
 WebKit through Playwright, against the simulated band, the fake rtl_tcp
 program and rtl_tcp addresses where nothing listens: the stream, the menu,
-its keys and its layout from a phone to a computer, the Receiver menu and
+its keys and its layout from a phone to a computer, the Receivers menu and
 its list, a change made in one interface showing in another, the bookmarks,
 their names and a click that tunes, the S-meter's squelch, the signals
 found, the memory scan, in the span and
@@ -2454,7 +2472,7 @@ src/radiolack/
                 raw samples for an I/Q recording
   soapysearch.py
                 the search for SoapySDR devices, one listed driver at a
-                time, for the Receiver menu
+                time, for the Receivers menu
   r82xx.py      rtl-sdr's two computations of an R820T's PLL, ported from
                 rtl-sdr (GPL-2.0-or-later), and the tuner's grid
   converter.py  a converter in front of a receiver: frequencies on the air
@@ -2463,7 +2481,7 @@ src/radiolack/
                 the receiver and Radiolack
   carrier.py    the measure of a carrier, to a tenth of a hertz, for the
                 calibration
-  sources.py    opens each kind of source, for the Receiver list and at start
+  sources.py    opens each kind of source, for the device list and at start
   spectrum.py   display FFT, and the noise level around the VFO
   synthetic.py  simulated 2 m band
   updates.py    update check: asks the APT repository for a newer version
