@@ -672,7 +672,7 @@ class Engine:
         return radio
 
     def remove_radio(self, radio: AnyRadio) -> None:
-        """Remove ``radio``, unless it is the last: its scan and its
+        """Remove ``radio``, unless it is the first: its scan and its
         recordings stop and its receiver is released, its settings saved
         for when it comes back; its clients show the first radio."""
         if radio is self.radios[0]:
