@@ -89,6 +89,7 @@ from .rtldevices import RtlDevice
 from .soapysearch import DeviceSearch
 from .scanners import checked_frequency
 from .spectrum import SpectrumAnalyzer
+from .devicenames import checked_name, device_key, renamed, saved_names
 from .store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SCANS_FILE, SETTINGS_FILE, Store
 from .updates import UpdateResult
 
@@ -451,6 +452,7 @@ class Engine:
         self._frame_rate = frame_rate
         self._next_radio = 1        # the id of the next radio added
         self._radios_sent: list[dict[str, Any]] | None = None   # the radios' list as the clients last learnt it
+        self._receivers_shared: list[dict[str, Any]] | None = None  # the radios' receivers as their processes learnt them
         self.closing: set[asyncio.Future] = set()   # sources switched away from, until they release their receiver
         # What each client receives first, in this order, then again whenever
         # it changes: its radio's states and the shared ones; remote
@@ -504,6 +506,8 @@ class Engine:
         self.receivers: dict[str, dict[str, Any]] = (
             {key: value for key, value in receivers.items() if isinstance(value, dict)}
             if isinstance(receivers, dict) else {})
+        # The names the user gave the devices (devicenames.py).
+        self.device_names = saved_names(settings.get("device_names"))
         saved_choice = settings.get("source")
         # What opens each kind of source again: the receiver used last of that kind.
         self.reopen: dict[str, dict[str, Any]] = {}
@@ -604,7 +608,7 @@ class Engine:
         reads and runs, and which one ``subscription`` shows."""
         shown = None if subscription is None or subscription.radio is None else subscription.radio.id
         return {"type": "radios", "radios": [radio.summary() for radio in self.radios], "shown": shown,
-                "max": MAX_RADIOS}
+                "max": MAX_RADIOS, "names": dict(self.device_names)}
 
     def radios_changed(self) -> None:
         """What a radio reads or runs may have changed: every client
@@ -615,19 +619,38 @@ class Engine:
         self._radios_sent = radios
         for subscription in self._clients:
             subscription.changed("radios")
+        # The radios' processes learn the others' receivers, which the
+        # centre frequency's moves, in the summaries, leave as they are.
+        receivers = self.others(None)
+        if receivers == self._receivers_shared:
+            return
+        self._receivers_shared = receivers
         for radio in self.radios:
             if isinstance(radio, RadioProcess):
                 radio.share(radios=self.others(radio))
 
+    def rename_device(self, radio: AnyRadio, value: object) -> None:
+        """Give the device that ``radio`` reads the name ``value``, or
+        forget its name for "". Raises ValueError, changing nothing, for a
+        name that is not one (devicenames.py)."""
+        name = checked_name(value)
+        key = device_key(radio.summary())
+        if self.device_names.get(key, "") == name:
+            return
+        self.device_names = renamed(self.device_names, key, name)
+        self._radios_sent = None        # sent again with the names
+        self.radios_changed()
+        self.settings_changed()
+
     def configure_radios(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's radio message, which asks for one thing: show
         the radio whose ``id`` it gives, ``add`` a radio reading the source
-        that it describes, which the client then shows, or ``remove`` the
-        radio whose id it gives. Raises ValueError, changing nothing, when
+        that it describes, which the client then shows, ``remove`` the
+        radio whose id it gives, or ``rename`` the device that a radio reads. Raises ValueError, changing nothing, when
         refused. Only this computer's interfaces may give a SoapySDR
         device's arguments (server.py)."""
         if len(changes) != 1:
-            raise ValueError("a radio message asks for one thing: id, add or remove")
+            raise ValueError("a radio message asks for one thing: id, add, remove or rename")
         name, value = next(iter(changes.items()))
         if name == "id":
             self._show(subscription, self._radio(value))
@@ -635,6 +658,10 @@ class Engine:
             self._show(subscription, self.add_radio(value))
         elif name == "remove":
             self.remove_radio(self._radio(value))
+        elif name == "rename":
+            if not isinstance(value, dict) or set(value) != {"id", "name"}:
+                raise ValueError("rename gives a radio's id and its device's name")
+            self.rename_device(self._radio(value["id"]), value["name"])
         else:
             raise ValueError(f"unknown radio field: {str(name)[:40]}")
 
@@ -1085,8 +1112,9 @@ class Engine:
         for the radios' processes."""
         return [{"id": bookmark_id, **bookmark.describe()} for bookmark_id, bookmark in self.bookmarks.ticked()]
 
-    def others(self, radio: AnyRadio) -> list[dict[str, Any]]:
-        """The receivers of the radios but ``radio``, for its process."""
+    def others(self, radio: AnyRadio | None) -> list[dict[str, Any]]:
+        """The receivers of the radios but ``radio``, for its process; of
+        every radio for None."""
         return [{"id": other.id, "kind": other.source.kind, "reopen": other.source.reopen,
                  "settings_key": other.source.settings_key} for other in self.radios if other is not radio]
 
@@ -1318,6 +1346,7 @@ class Engine:
             settings["radios"] = [{"source": other.source.reopen, "scanner": other.scanner_settings()}
                                   for other in self.radios[1:]]
         settings["band_plan"] = self._band_plan
+        settings["device_names"] = dict(self.device_names)
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
         chosen = self._chosen_recordings

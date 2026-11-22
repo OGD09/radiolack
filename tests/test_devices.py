@@ -44,6 +44,7 @@ const out = {
   pickedRemote: view(synthetic, never, true, true, true),
   searching: view(synthetic, state('searching', []), true, false, true),
   chooseFrom: view(synthetic, found, true, false, true),
+  named: view(synthetic, found, true, false, true, { 'soapy:hackrf 0001': 'Bench HackRF' }).options.map((o) => o.label),
   closed: view(synthetic, found, true, false, false),
   using: view(soapy, inUse, false, false, true),
   usingRemote: view(soapy, { ...inUse, args: null }, false, true, true),
@@ -123,6 +124,8 @@ class DevicesModuleTest(unittest.TestCase):
                                              {"value": "0", "label": "HackRF One 0001"}, {"value": "1", "label": "Airspy a2"}])
         self.assertTrue(choose["listEnabled"])
         self.assertFalse(choose["firstSearch"])
+        # A name given to a device replaces its label.
+        self.assertEqual(found["named"], ["Choose a device", "Bench HackRF", "Airspy a2"])
         closed = found["closed"]
         self.assertFalse(closed["listEnabled"] or closed["searchEnabled"] or closed["argsEnabled"] or closed["firstSearch"])
 

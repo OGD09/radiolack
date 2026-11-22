@@ -2997,6 +2997,24 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
                 expect(first.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
                 # Show here moves an interface to another receiver, and back.
+                # A name given to the device shows on every interface, in
+                # place of the device's own; emptied, the device's own is back.
+                # A card that is not shown gives its own centre frequency too.
+                name = first.locator("#src-name")
+                expect(name).to_have_attribute("placeholder", "RTL2838UHIDIR")
+                name.fill("V3 ADS-B")
+                name.press("Enter")
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} V3 ADS-B")
+                expect(first.locator("#receiver-title-text")).to_have_text(f"{labels[0]} {DOT} V3 ADS-B")
+                other = second.locator("#radio-cards > li").nth(1)
+                expect(other.locator(".card-name")).to_have_text("V3 ADS-B RTLSDR1")
+                expect(other.locator(".state")).to_have_text(f"Receiving {DOT} 145.000 MHz")
+                expect(second.locator("#src-device option").nth(1)).to_have_text(
+                    f"RTL-SDR {DOT} V3 ADS-B {DOT} RTLSDR1 {DOT} read by receiver {added}")
+                name.fill("")
+                name.press("Enter")
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
+                expect(other.locator(".card-name")).to_have_text("RTL2838UHIDIR RTLSDR1")
                 second.get_by_role("button", name=f"Show receiver {added} here", exact=True).click()
                 expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
                 expect(second.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")

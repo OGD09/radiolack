@@ -1,7 +1,8 @@
 /*
  * The Receivers menu's receivers, which the protocol calls radios
  * (later-milestones.md, section 5): one card per receiver, saying what it
- * reads and runs, the one this interface shows framed; the row that adds
+ * reads and runs, the one this interface shows framed; the name given to
+ * its device; the row that adds
  * a receiver from a device that none reads, and the entries it opens; the
  * second press that removes a receiver while a scan or a recording runs
  * on it; the chip beside the frequency, with several receivers; the dot
@@ -73,18 +74,21 @@ export function learnNames(names, listed, devices) {
 }
 
 /**
- * A receiver's device: its name, as learned, or its kind's, and what
- * tells it apart, an RTL-SDR's or a SoapySDR device's serial number or an
- * rtl_tcp server's address; '' for the simulated band.
+ * A receiver's device: the name given to it, else its own (as learned, or
+ * its kind's), its own name alone, and what tells it apart, an RTL-SDR's
+ * or a SoapySDR device's serial number or an rtl_tcp server's address; ''
+ * for the simulated band.
  * @param {Radio} radio
- * @param {Map<string, string>} names
- * @returns {{name: string, serial: string}}
+ * @param {Record<string, string>} given   the names given to the devices (the radios message's)
+ * @param {Map<string, string>} learned    the devices' own names, learnNames's
+ * @returns {{name: string, own: string, serial: string}}
  */
-export function deviceOf(radio, names) {
-  const name = names.get(radioKey(radio)) ?? KIND_NAMES[radio.kind] ?? radio.kind;
+export function deviceOf(radio, given, learned) {
+  const key = radioKey(radio);
+  const own = learned.get(key) ?? KIND_NAMES[radio.kind] ?? radio.kind;
   let serial = radio.device ?? '';
   if (radio.kind === 'soapy' && /^[^\s=,]+ \S+$/.test(serial)) serial = serial.slice(serial.indexOf(' ') + 1);
-  return { name, serial };
+  return { name: Object.hasOwn(given, key) ? given[key] : own, own, serial };
 }
 
 /**
@@ -100,22 +104,24 @@ export function deviceOf(radio, names) {
  */
 
 /**
- * The cards, one per receiver, the first first. The centre frequency is
- * known for the receiver shown alone, from its source state.
+ * The cards, one per receiver, the first first, each with its centre
+ * frequency; the receiver shown takes its source state's, which follows a
+ * change first. An older engine gives the receiver shown's alone.
  * @param {RadiosState} radios
- * @param {Map<string, string>} names
+ * @param {Map<string, string>} learned   the devices' own names, learnNames's
  * @param {number | null} shownCentreHz  the shown receiver's centre frequency, or null
  * @returns {ReceiverCard[]}
  */
-export function receiverCards(radios, names, shownCentreHz) {
+export function receiverCards(radios, learned, shownCentreHz) {
   return radios.radios.map((radio) => {
     const shown = radio.id === radios.shown;
+    const centreHz = shown && shownCentreHz !== null ? shownCentreHz : radio.centreHz;
     /** @type {ReceiverCard['state']} */
     let state = 'idle';
     let stateText = 'Idle';
     if (radio.status === 'streaming') {
       state = 'live';
-      stateText = shown && shownCentreHz !== null ? `Receiving · ${(shownCentreHz / 1e6).toFixed(3)} MHz` : 'Receiving';
+      stateText = centreHz !== null ? `Receiving · ${(centreHz / 1e6).toFixed(3)} MHz` : 'Receiving';
     } else if (radio.status === 'connecting') {
       state = 'wait';
       stateText = 'Connecting';
@@ -127,19 +133,35 @@ export function receiverCards(radios, names, shownCentreHz) {
     const tags = [];
     if (radio.scan !== null) tags.push({ kind: 'scan', text: SCAN_NAMES[radio.scan] ?? `${radio.scan} scan` });
     for (const kind of radio.recording) tags.push({ kind: 'rec', text: RECORDING_NAMES[kind] ?? `recording ${kind}` });
-    return { id: radio.id, ...deviceOf(radio, names), shown, state, stateText, tags };
+    const { name, serial } = deviceOf(radio, radios.names, learned);
+    return { id: radio.id, name, serial, shown, state, stateText, tags };
   });
 }
 
 /**
- * The receiver shown, as the heading of its settings and the chip say it.
- * @param {RadiosState | null} radios
- * @param {Map<string, string>} names
- * @returns {{id: number, name: string} | null}
+ * The receiver shown, as the heading of its settings, the chip and the
+ * Name field say it: its number, its device's name, and the name given to
+ * it ('' without one) with the device's own, which an empty name brings
+ * back. `naming` is false for an engine that keeps no names.
+ * @typedef {object} ShownReceiver
+ * @property {number} id
+ * @property {string} name
+ * @property {string} given
+ * @property {string} own
+ * @property {boolean} naming
  */
-export function shownReceiver(radios, names) {
+
+/**
+ * @param {RadiosState | null} radios
+ * @param {Map<string, string>} learned   the devices' own names, learnNames's
+ * @returns {ShownReceiver | null}
+ */
+export function shownReceiver(radios, learned) {
   const radio = radios ? radios.radios.find((one) => one.id === radios.shown) : undefined;
-  return radio ? { id: radio.id, name: deviceOf(radio, names).name } : null;
+  if (!radios || !radio) return null;
+  const device = deviceOf(radio, radios.names, learned);
+  return { id: radio.id, name: device.name, given: radios.names[radioKey(radio)] ?? '', own: device.own,
+    naming: radios.naming };
 }
 
 /**
@@ -179,6 +201,7 @@ export function radiosBadge(radios) {
  * @returns {AddOption[]}
  */
 export function addOptions(radios, source, listed, devices, open) {
+  const names = radios ? radios.names : {};
   if (!open || !radios || !source || radios.radios.length >= radios.max) return [];
   const kinds = source.kinds;
   /** @param {string} kind */
@@ -191,7 +214,7 @@ export function addOptions(radios, source, listed, devices, open) {
     if (plugged.some(choosable)) {
       for (const device of plugged) {
         if (choosable(device) && device.radio === null && device.device !== null) {
-          options.push({ label: rtlLabel(device), source: { kind: RTL_KIND, device: device.device }, plugged: true });
+          options.push({ label: rtlLabel(device, names), source: { kind: RTL_KIND, device: device.device }, plugged: true });
         }
       }
     } else if (unread(RTL_KIND)) {    // without a list: the first receiver, as --rtl-sdr opens it
@@ -202,7 +225,8 @@ export function addOptions(radios, source, listed, devices, open) {
   if (kinds.includes('soapy') && devices) {
     for (const device of devices.devices) {
       if (!device.inUse) {
-        options.push({ label: `SoapySDR · ${device.label}`, source: { kind: 'soapy', driver: device.driver, serial: device.serial },
+        const name = names[`soapy:${device.driver} ${device.serial}`] ?? device.label;
+        options.push({ label: `SoapySDR · ${name}`, source: { kind: 'soapy', driver: device.driver, serial: device.serial },
           plugged: true });
       }
     }

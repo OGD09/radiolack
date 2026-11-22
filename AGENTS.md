@@ -36,7 +36,9 @@ the history under the tag `v0.1.0`.
   but the first, which stays, each radio after the first in a process of
   its own (`radioproxy`, `radioproc`),
   the radios given at start or those used last, saved with their sources
-  and scanner settings, and the radios' list for every client, and what
+  and scanner settings, and the radios' list for every client, with
+  each one's centre frequency and the names given to the devices, which
+  any client changes, and what
   they share: the clients, each showing one radio, the first until it
   chooses another, the bookmarks, the
   band plan, the observations, the kept scans, the preferences, remote
@@ -132,7 +134,9 @@ the history under the tag `v0.1.0`.
   Radiolack), `store` (settings, bookmarks, observations, kept scans and
   remote access files in
   `$XDG_CONFIG_HOME/radiolack`: whole-file writes, readable by the user
-  only, unreadable files set aside), `bookmarks` (bookmarks, their categories, one level deep, and their checks; the file keeps the bookmarks as an older Radiolack reads them and the categories beside them),
+  only, unreadable files set aside), `devicenames` (the names the user
+  gives the devices, by kind and receiver read, their checks and their
+  limits), `bookmarks` (bookmarks, their categories, one level deep, and their checks; the file keeps the bookmarks as an older Radiolack reads them and the categories beside them),
   `scanners` (detection on the engine's FFTs, averaged over a third of a
   second, against the local noise; the list of the signals found and the
   ignored frequencies; the memory scan's watch of the ticked bookmarks'
@@ -292,11 +296,12 @@ the history under the tag `v0.1.0`.
   Receivers menu's rtl-sdr driver, the centre in use, and the grid's point
   a retune takes to keep the VFO's channel clear of the centre), `tuning.js` (the
   Automatic step), `rtldevices.js` (the device list's entries: one per
-  RTL-SDR receiver plugged in, what they say of those that cannot be
-  chosen, and the entry that opens the one used last without a list),
+  RTL-SDR receiver plugged in, under the name given to it if any, what
+  they say of those that cannot be chosen, and the entry that opens the one used last without a list),
   `radios.js` (the Receivers menu's receivers, the protocol's radios:
-  one card each, its device's name as the lists name it, its state and
-  what runs on it, the one shown framed; the "Add a receiver" row and
+  one card each, its device's name as given or as the lists name it, its
+  state, its centre frequency and what runs on it, the one shown framed;
+  the shown receiver's heading and Name field; the "Add a receiver" row and
   the devices a receiver may be added from, the second press that
   removes a busy one, the chip beside the frequency, the menu dot across
   the receivers, and the receiver a device chose last),
@@ -317,7 +322,7 @@ the history under the tag `v0.1.0`.
   table, its proposal and why none; the correction from a carrier
   measured and its true frequency, with its derivation, the driver's
   check and what the dialog shows), `devices.js` (the Receivers menu's SoapySDR devices:
-  the list, Search again and the arguments field, this computer's alone
+  the list, under the names given, Search again and the arguments field, this computer's alone
   for the last two, and when the first search is asked) and `advanced.js`
   (a SoapySDR device's antenna sockets and Advanced section: a slider per
   gain stage and its settings, the device's texts set as text) carry JSDoc

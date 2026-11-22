@@ -2472,7 +2472,7 @@ function syncSource() {
   // No entry is selected before the engine answers; "SoapySDR device" while one is to be chosen.
   syncRadios();     // the receivers a radio may be added from follow the same states
   const others = radios ? radios.radios.filter((radio) => radio.id !== radios.shown) : [];
-  const receivers = receiverList(source, rtlListed, soapyPicked, streamState === 'open', others);
+  const receivers = receiverList(source, rtlListed, soapyPicked, streamState === 'open', others, radios ? radios.names : {});
   const entries = receivers.options.map((o) => `${o.value}\n${o.label}\n${o.disabled}`).join('\n');
   if (deviceEl.dataset.options !== entries) {
     deviceEl.replaceChildren(...receivers.options.map((o) => {
@@ -2590,7 +2590,7 @@ $('#src-antenna').addEventListener('change', (e) => {
 // computer's interfaces only. The engine searches when this computer's
 // interface asks, first when the part shows in the open Receiver menu.
 function syncDevices() {
-  const view = devicesView(source, devices, soapyPicked, stream.remote, streamState === 'open');
+  const view = devicesView(source, devices, soapyPicked, stream.remote, streamState === 'open', radios ? radios.names : {});
   for (const id of ['#src-soapy-field', '#src-soapy-search-row', '#src-soapy-args-field']) {
     const hidden = id === '#src-soapy-field' ? !view.shown : id === '#src-soapy-search-row' ? !(view.shown && view.searchShown)
       : !(view.shown && view.argsShown);
@@ -2652,7 +2652,8 @@ const sliderGain = () => (source ? source.gainsDb[Number($('#src-gain').value)] 
 // then shows as the engine took it, or the one in use if refused, focus or
 // not; leaving without a change shows the engine's value again. These run
 // before each field's own change handler, which may sync.
-for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-converter-lo'), $('#src-soapy-args')]) {
+for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-converter-lo'), $('#src-soapy-args'),
+  $('#src-name')]) {
   el.addEventListener('input', () => typingIn.add(el));
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
@@ -2665,7 +2666,9 @@ for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-co
 // shown away, the first excepted, with a second press while a scan or a
 // recording runs on it. The engine's radios message is the reference: a
 // choice shows once the engine sends it back. The chip beside the
-// frequency names the receiver shown while there are several.
+// frequency names the receiver shown while there are several. The Name
+// field gives the device that the receiver shown reads a name, which the
+// cards, the chip and the device lists show in place of its own.
 function syncRadios() {
   const open = streamState === 'open';
   const shown = open && stream.severalRadios && radios !== null;
@@ -2678,6 +2681,13 @@ function syncRadios() {
   if (removeEl.textContent !== remove.button) removeEl.textContent = remove.button;
   if (removeEl.disabled !== !remove.enabled) removeEl.disabled = !remove.enabled;
   if (removeEl.title !== remove.title) removeEl.title = remove.title;
+  const heading = shown ? shownReceiver(radios, deviceNames) : null;
+  const naming = heading !== null && heading.naming;
+  const nameField = $('#src-name-field');
+  if (nameField.hidden !== !naming) nameField.hidden = !naming;
+  const nameEl = $('#src-name');
+  if (heading && nameEl.placeholder !== heading.own) nameEl.placeholder = heading.own;
+  if (heading && !typingIn.has(nameEl) && nameEl.value !== heading.given) nameEl.value = heading.given;
   if (!shown) return;
   // The cards are built again only when more than their states change, as
   // the centre frequency does while a scan runs: a button keeps its focus.
@@ -2721,7 +2731,6 @@ function syncRadios() {
   const noteEl = $('#radio-note');
   if (noteEl.textContent !== radioNote) noteEl.textContent = radioNote;
   noteEl.hidden = !radioNote;
-  const heading = shownReceiver(radios, deviceNames);
   const title = heading ? `Receiver ${heading.id} · ${heading.name}` : '';
   const titleEl = $('#receiver-title-text');
   if (titleEl.textContent !== title) titleEl.textContent = title;
@@ -2833,6 +2842,13 @@ $('#radio-add-list').addEventListener('click', (e) => {
   syncRadios();
 });
 $('#radio-chip').addEventListener('click', () => showMenu('receiver'));
+// A name sent shows once the engine sends the radios back; refused, the
+// note under the cards says why, and the field shows the name in use.
+$('#src-name').addEventListener('change', (e) => {
+  radioNote = '';
+  if (radios) stream.renameDevice(radios.shown, e.target.value);
+  syncRadios();
+});
 $('#src-change').addEventListener('click', () => {
   showDeviceChoice($('#src-device-choice').hidden);
 });

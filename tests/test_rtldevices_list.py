@@ -42,6 +42,8 @@ const out = {
   siblingKinds: entries(r.receiverList(rtl, null, false, true, [{ id: 2, kind: 'synthetic' }, { id: 3, kind: 'rtl_tcp' },
     { id: 4, kind: 'soapy' }])),
   picked: r.receiverList(rtl, listed(blog, { ...nesdr, inUse: true }), true, true).value,
+  // A name given to a device replaces its product's.
+  named: entries(r.receiverList(synthetic, listed(blog, nesdr), false, true, [], { 'rtl_sdr:RTLSDR1': 'V3 ADS-B' })),
   stale: r.receiverList(rtl, listed(blog, nesdr), false, true).value,
   held: [['usbfs'], ['dvb_usb_rtl28xxu'], ['other_driver'], []].map((drivers) => r.rtlLabel(device('A', { drivers }))),
   notFound: [r.rtlLabel(device('59196661', { found: false, inUse: true, name: '' })),
@@ -128,6 +130,11 @@ class RtlDevicesModuleTest(unittest.TestCase):
                                                 "rtl_tcp|RTL-SDR · rtl_tcp|true", "soapy|SoapySDR device|true"])
         self.assertEqual(out["at"], ["59196661", None, None, None, None, None])
         self.assertIsNone(out["atNone"])
+
+    def test_a_name_given_to_a_receiver_replaces_its_product_name(self):
+        out = self.run_script(LIST_SCRIPT, "rtldevices.js")
+        self.assertEqual(out["named"][1:3], ["rtl_sdr:0|RTL-SDR \N{MIDDLE DOT} V3 ADS-B \N{MIDDLE DOT} RTLSDR1|false",
+                                             "rtl_sdr:1|RTL-SDR \N{MIDDLE DOT} NESDR SMArt v5 \N{MIDDLE DOT} 59196661|false"])
 
     def test_receivers_rtl_tcp_cannot_tell_apart_are_listed_but_not_chosen(self):
         out = self.run_script(LIST_SCRIPT, "rtldevices.js")

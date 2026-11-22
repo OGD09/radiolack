@@ -205,8 +205,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
                                                      "folder": None, "default_folder": None})
         # One radio, which it shows.
         self.assertEqual(subscription.get_nowait(), {"type": "radios", "radios": [
-            {"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming", "scan": None,
-             "recording": []}], "shown": 1, "max": 4})
+            {"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming",
+             "centre_hz": 145_000_000, "scan": None, "recording": []}], "shown": 1, "max": 4, "names": {}})
         self.assertEqual(subscription.get_nowait(), {"type": "scans", "scans": []})
         self.assertEqual(subscription.get_nowait(), CALIBRATION_IDLE)     # no calibration ran
         # Without a store, nothing is saved.
@@ -849,6 +849,47 @@ class SeveralRadiosPersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again.radios[1].scanner_state()["threshold_db"], 20.0)
         self.assertEqual(again.radios[1].demod_state()["mode"], "AM")
         self.assertNotEqual(again.radios[0].scanner_state()["threshold_db"], 20.0)
+
+    async def test_a_device_keeps_the_name_any_client_gives_it(self):
+        engine = Engine(sources=self.sources, store=Store(self.directory))
+        subscription, other = engine.subscribe(), engine.subscribe()
+        for client in (subscription, other):
+            ready_messages(client)
+        engine.add_radio({"kind": "third"})
+        waiting(other)
+        engine.configure_radios({"rename": {"id": 2, "name": "  Roof dipole "}}, subscription)
+        [state] = of_type(waiting(other), "radios")
+        self.assertEqual(state["names"], {"third:": "Roof dipole"})
+        self.assertEqual([radio["centre_hz"] for radio in state["radios"]],
+                         [FAKE_CENTRE_HZ, ThirdSource.centre_hz])
+        engine.configure_radios({"rename": {"id": 2, "name": "Roof dipole"}}, subscription)     # the same: nothing sent
+        self.assertEqual(of_type(waiting(other), "radios"), [])
+        for refused in ({"id": 2}, {"id": 2, "name": "a\nb"}, {"id": 2, "name": "x" * 41}, {"id": 9, "name": "X"},
+                        {"id": 2, "name": 3}, {"id": 2, "name": "X", "more": 1}, "X"):
+            with self.subTest(refused=refused), self.assertRaises(ValueError):
+                engine.configure_radios({"rename": refused}, subscription)
+        self.assertEqual(engine.device_names, {"third:": "Roof dipole"})
+        await self.closed(engine)
+        self.assertEqual(self.read()["device_names"], {"third:": "Roof dipole"})
+        again = Engine(sources=self.sources, store=Store(self.directory))
+        self.addAsyncCleanup(self.closed, again)
+        self.assertEqual(again.radios_state()["names"], {"third:": "Roof dipole"})
+        # An empty name forgets it.
+        again.rename_device(again.radios[1], "")
+        self.assertEqual(again.radios_state()["names"], {})
+
+    async def test_saved_names_that_are_not_names_are_left_out(self):
+        self.directory.mkdir()
+        (self.directory / SETTINGS_FILE).write_text(json.dumps({"version": 1, "device_names": {
+            "test:": "Bench", "other:": "a\u0007b", "third:": 7, "nokey": "X"}}), encoding="utf-8")
+        engine = Engine(sources=self.sources, store=Store(self.directory))
+        self.addAsyncCleanup(self.closed, engine)
+        self.assertEqual(engine.radios_state()["names"], {"test:": "Bench"})
+        for unreadable in ([], "names"):
+            (self.directory / SETTINGS_FILE).write_text(json.dumps({"device_names": unreadable}), encoding="utf-8")
+            later = Engine(sources=self.sources, store=Store(self.directory))
+            self.addAsyncCleanup(self.closed, later)
+            self.assertEqual(later.radios_state()["names"], {})
 
     async def test_sources_given_at_start_replace_them(self):
         engine = Engine(sources=self.sources, store=Store(self.directory))
