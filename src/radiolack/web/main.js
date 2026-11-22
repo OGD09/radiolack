@@ -144,7 +144,7 @@ const S = {
   sql: -80, sqlAuto: true, notch: false, blanker: false, volume: 70,    // notch, blanker: the engine's, null from an engine without them
   peakMarks: true,
   autoHide: true,
-  radio: '',      // the receiver of the radio this device showed last (radios.js radioKey), shown again at each connection
+  radio: '',      // the receiver of the radio this device chose last (radios.js radioKey), shown again at each connection
 };
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };    // band plan, empty until loaded
@@ -324,8 +324,9 @@ let firstSearchAsked = false;   // this connection asked for the first search of
 let rtlListed = null;       // the RTL-SDR receivers plugged in (stream.js RtlDevicesState), as the engine answered last
 let rtlTimer = 0;           // asks for them again while the Receiver menu shows
 let radios = null;          // the engine's radios (stream.js RadiosState), once received from an engine with several
-let radioRestored = false;  // this connection showed again the radio this device showed last, or found it gone
+let radioRestored = false;  // this connection showed again the radio this device chose last, or found it gone
 let radioAsked = null;      // the id of the radio this interface asked to show, until the engine shows it or refuses
+let radioAdding = false;    // this interface asked for a new radio, which it shows once added, until refused
 let radioNote = '';         // why the engine refused this interface's last radio message
 let removeArmed = 0;        // a first press on Remove waits for the second: its timer
 let demodError = '';        // why the engine refused this interface's last demodulation change
@@ -542,12 +543,17 @@ const stream = new EngineStream({
   },
   onRadios: (state) => {
     const before = radios ? radios.shown : null;
+    const known = radios ? radios.radios.map((radio) => radio.id) : [];
     radios = state;
-    if (radioAsked === state.shown) radioAsked = null;
-    restoreRadio();
-    // Once the radio shown again, the device remembers the one it shows.
+    // The device remembers the radio that this interface chose, or added, by
+    // its receiver: this computer's windows share their preferences, and a
+    // window that chose nothing leaves another's choice alone.
     const shown = state.radios.find((radio) => radio.id === state.shown);
-    if (radioRestored && radioAsked === null && shown) S.radio = radioKey(shown);
+    const added = radioAdding && shown !== undefined && !known.includes(state.shown);
+    if (shown && (radioAsked === state.shown || added)) S.radio = radioKey(shown);
+    if (radioAsked === state.shown) radioAsked = null;
+    if (added) radioAdding = false;
+    restoreRadio();
     if (before !== null && before !== state.shown) {
       soapyPicked = false;  // the Receiver list's choices were the other radio's
       sourceError = '';
@@ -653,6 +659,7 @@ const stream = new EngineStream({
     }
     if (command === 'radio') {
       radioAsked = null;
+      radioAdding = false;
       radioNote = `Refused: ${message}.`;
       syncRadios();
       return;
@@ -683,6 +690,7 @@ const stream = new EngineStream({
       radios = null;          // sent again once the stream opens, showing the first radio
       radioRestored = false;
       radioAsked = null;
+      radioAdding = false;
       radioNote = '';
       disarmRemove();
     }
@@ -2683,7 +2691,7 @@ function syncRadios() {
   const noteEl = $('#radio-note');
   if (noteEl.textContent !== radioNote) noteEl.textContent = radioNote;
 }
-// The radio this device showed last, shown again once per connection, when
+// The radio this device chose last, shown again once per connection, when
 // the engine still runs it.
 function restoreRadio() {
   if (radioRestored || !preferencesLoaded || !radios) return;
@@ -2706,7 +2714,7 @@ $('#radio-add').addEventListener('change', (e) => {
   const sources = JSON.parse(el.dataset.sources || '[]');
   const chosen = el.value === '' ? undefined : sources[Number(el.value)];
   radioNote = '';
-  if (chosen) stream.addRadio(chosen);
+  if (chosen && stream.addRadio(chosen)) radioAdding = true;
   syncRadios();
 });
 $('#radio-remove').addEventListener('click', () => {

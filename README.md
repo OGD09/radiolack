@@ -333,8 +333,9 @@ Receiver menu, at its top:
 
 The "Receiver" list below then applies to the radio shown: a receiver that
 another radio reads shows "read by radio N" and cannot be chosen. Each
-device remembers the receiver of the radio it showed, and shows that radio
-again at its next connection while Radiolack still runs it. Radiolack
+device remembers the receiver of the radio it chose or added last, and
+shows that radio again at its next connection while Radiolack still runs
+it; this computer's windows share that choice, the last one made. Radiolack
 reopens the radios at its next start, unless a receiver option is given.
 
 ## RTL-SDR receivers

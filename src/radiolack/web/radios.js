@@ -3,7 +3,7 @@
  * list, which says what each radio reads and runs, the entries that add a
  * radio from a receiver that no radio reads, the second press that removes
  * a radio while a scan or a recording runs on it, the dot on the menu's
- * icon across the radios, and the radio that this device showed last,
+ * icon across the radios, and the radio that this device chose last,
  * which it shows again at each connection.
  */
 
@@ -27,7 +27,7 @@ const SCAN_NAMES = /** @type {Record<string, string>} */ ({
 const RECORDING_NAMES = /** @type {Record<string, string>} */ ({ audio: 'recording audio', iq: 'recording I/Q' });
 
 /**
- * A radio's receiver, as the device remembers the radio it showed: radio
+ * A radio's receiver, as the device remembers the radio it chose: radio
  * numbers change from one start to the next, receivers do not.
  * @param {Radio} radio
  */
@@ -162,10 +162,10 @@ export function removePress(radios, armed) {
 
 /**
  * The radio to show again at a connection: the one that reads the
- * receiver this device showed last, when the engine shows another; null
+ * receiver this device chose last, when the engine shows another; null
  * otherwise.
  * @param {RadiosState} radios
- * @param {string} remembered  the receiver of the radio this device showed last, radioKey's, or ''
+ * @param {string} remembered  the receiver of the radio this device chose last, radioKey's, or ''
  * @returns {number | null}
  */
 export function radioToRestore(radios, remembered) {

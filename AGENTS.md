@@ -296,7 +296,7 @@ the history under the tag `v0.1.0`.
   chosen, and the entry that opens the one used last without a list),
   `radios.js` (the Receiver menu's radios: the radio list, the receivers
   a radio may be added from, the second press that removes a busy one,
-  the menu dot across the radios, and the radio a device showed last),
+  the menu dot across the radios, and the radio a device chose last),
   `categories.js` (the Bookmarks menu's categories: the
   list's sections, a category's box, the questions that moving bookmarks
   and removing a category ask, and a category's name's check),
