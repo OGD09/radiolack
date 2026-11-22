@@ -227,10 +227,16 @@ class RadioProcessTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_restart_brings_it_back(self):
         self.engine.close()     # one that starts from the sources used last, the simulated band the first time
         self.engine = self.started(given=False)
-        await self.shown({"kind": "rtl_sdr", "device": "0"})
+        radio, subscription = await self.shown({"kind": "rtl_sdr", "device": "0"})
+        frequency_hz = radio.state()["centre_hz"] + 123_000
+        radio.configure_demod({"frequency_hz": frequency_hz}, subscription, 1)
+        await message_where(subscription, state("demod", lambda message: message["acknowledged"] == 1))
         self.engine.close()
         await asyncio.wait_for(self.engine.wait_closed(), WAIT_S)
-        self.assertEqual(self.store.load(SETTINGS_FILE)["radios"][0]["source"], {"kind": "rtl_sdr", "device": "0"})
+        saved = self.store.load(SETTINGS_FILE)
+        self.assertEqual(saved["radios"][0]["source"], {"kind": "rtl_sdr", "device": "0"})
+        # Its receiver's settings as they stood, which it starts from again.
+        self.assertEqual(saved["receivers"][radio.source.settings_key]["demod"]["frequency_hz"], frequency_hz)
         self.engine = self.started(given=False)
         self.assertEqual([(radio.id, radio.source.kind) for radio in self.engine.radios],
                          [(1, "synthetic"), (2, "rtl_sdr")])
