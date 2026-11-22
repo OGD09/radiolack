@@ -38,7 +38,10 @@ the history under the tag `v0.1.0`.
   with fewer bins, passes their changes on,
   switches between kinds of
   sources, restores and saves the settings and the source in use, a
-  receiver's own once its source learns which it reads; searches for
+  receiver's own once its source learns which it reads; lists the RTL-SDR
+  receivers plugged in for the interface that asks, reading sysfs then
+  and never otherwise, and opens one by its serial number for any client;
+  searches for
   SoapySDR devices when this computer's interface asks, never at start
   nor for a remote client, never the driver of the device in use, and
   opens one chosen among them, by its driver and serial number, or by the
@@ -153,7 +156,13 @@ the history under the tag `v0.1.0`.
   latest second counted, and the samples as received for the taps, the
   measure's channel and the fine spectrum's front filter output, while it
   blanks: the blanked front's output plus that of the samples zeroed,
-  filtered alone), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
+  filtered alone), `rtldevices` (the RTL-SDR receivers plugged in, read
+  from sysfs, its root a parameter for the tests' fake trees, without
+  opening any: the USB IDs of librtlsdr's table, GPL-2.0-or-later, whose
+  docstring names the version and keeps the notice that
+  `packaging/copyright` repeats; the strings and the drivers bound; the
+  serial numbers that rtl_tcp's `-d` would read as an index, and those
+  that several share, which cannot be chosen), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
   waiting state; the samples dropped for an engine behind logged at most
@@ -226,7 +235,8 @@ the history under the tag `v0.1.0`.
   device's driver, serial number and label alone, in memory only; the
   search's state, a failed driver's and the missing module's),
   `sources` (opens each kind of source from its saved
-  record, for the Receiver list and at start), `synthetic` (simulated 2 m
+  record, for the Receiver list and at start, and lists the RTL-SDR
+  receivers plugged in from its sysfs folder), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK; an ephemeral WebKit context writes nothing to disk; downloads
   go to the user's Downloads folder without asking, under a name not taken
@@ -258,7 +268,10 @@ the history under the tag `v0.1.0`.
   (the Receiver menu's converter, and the view that follows its change), `tunerpll.js` (the
   Receiver menu's rtl-sdr driver, the centre in use, and the grid's point
   a retune takes to keep the VFO's channel clear of the centre), `tuning.js` (the
-  Automatic step), `categories.js` (the Bookmarks menu's categories: the
+  Automatic step), `rtldevices.js` (the Receiver list's entries: one per
+  RTL-SDR receiver plugged in, what they say of those that cannot be
+  chosen, and the entry that opens the one used last without a list),
+  `categories.js` (the Bookmarks menu's categories: the
   list's sections, a category's box, the questions that moving bookmarks
   and removing a category ask, and a category's name's check),
   `channels.js` (the band plan's channels and known
@@ -283,7 +296,9 @@ the history under the tag `v0.1.0`.
   still holds the mockup's code under `// @ts-nocheck` and gets types as it
   is rewritten. `tests/test_deepzoom.py` runs `deepzoom.js` and
   `history.js` in Node, `tests/test_devices.py` `devices.js` and the
-  devices state's decoding, `tests/test_categories.py` `categories.js`
+  devices state's decoding, `tests/test_rtldevices_list.py`
+  `rtldevices.js` and the RTL-SDR receivers message's decoding,
+  `tests/test_categories.py` `categories.js`
   and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
   the stations and the calibration state's decoding, `tests/test_advanced.py` `advanced.js`,
@@ -546,7 +561,10 @@ the history under the tag `v0.1.0`.
   included, read at start
   with `--scan`, and choosing a receiver in the Receiver menu's list opens
   it: a check started with a temporary `XDG_CONFIG_HOME` begins on the
-  simulated band.
+  simulated band. That list shows the RTL-SDR receivers plugged in, read
+  from sysfs, which opens none and is always fine; choosing one opens it.
+  Tests give `Sources` a fake sysfs tree (`tests.fakes.plug_usb_device`),
+  never the real one where they choose.
 - Never install, upgrade or remove the Debian package, or any system
   package: that needs sudo, which the owner runs.
 - Never enable, start, restart or edit `radiolack.service`, or any other

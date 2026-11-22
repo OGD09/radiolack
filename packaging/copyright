@@ -20,6 +20,16 @@ Comment: A port to Python of rtl-sdr's computations of the R820T's and
  licenses under the GNU General Public License, version 2 or later; the
  port is under version 3 or later, as the "or later" allows.
 
+Files: src/radiolack/rtldevices.py
+Copyright: 2012-2014 Steve Markgraf <steve@steve-m.de>
+ 2012 Dimitri Stolnikov <horiz0n@gmx.net>
+ 2026 OGD09
+License: GPL-3+
+Comment: Holds rtl-sdr's table of the USB IDs of RTL2832U devices
+ (known_devices[] in src/librtlsdr.c), which rtl-sdr licenses under the
+ GNU General Public License, version 2 or later; the copy is under version
+ 3 or later, as the "or later" allows.
+
 License: GPL-3+
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

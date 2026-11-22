@@ -24,6 +24,7 @@ import { modeRateNote } from './rates.js';
 import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
+import { RTL_LIST_MS, receiverList, rtlDeviceAt } from './rtldevices.js';
 import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
 import { CATEGORY_NAME_MAX, UNCATEGORIZED, bookmarkSections, checkedCategoryName, moveRequest, removeQuestion, sectionName,
   sectionScanChange } from './categories.js';
@@ -317,6 +318,8 @@ const typingIn = new Set(); // text fields the user is typing in, which the engi
 let devices = null;         // the SoapySDR devices (stream.js DevicesState), once received: sources that open them
 let soapyPicked = false;    // "SoapySDR device" picked in the Receiver list, no device in use: its part shows
 let firstSearchAsked = false;   // this connection asked for the first search of SoapySDR devices
+let rtlListed = null;       // the RTL-SDR receivers plugged in (stream.js RtlDevicesState), as the engine answered last
+let rtlTimer = 0;           // asks for them again while the Receiver menu shows
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
@@ -410,6 +413,8 @@ const stream = new EngineStream({
     if (converted) newSource = true;
     if (newSource) clearFine();
     if (!before || state.kind !== before.kind) soapyPicked = false;     // another kind in use, from any interface
+    // Another receiver, from any interface: the open Receiver menu's list says so at once.
+    if (rtlTimer && before && (state.kind !== before.kind || state.status !== before.status)) stream.listRtlDevices();
     source = state;
     sourceError = '';
     // A centre that is neither the requested one nor one reported before it: another change won.
@@ -521,6 +526,10 @@ const stream = new EngineStream({
   },
   onDevices: (state) => {
     devices = state;
+    syncSource();
+  },
+  onRtlDevices: (state) => {
+    rtlListed = state;
     syncSource();
   },
   onReport: (report) => {
@@ -638,7 +647,9 @@ const stream = new EngineStream({
     if (state === 'unpaired' && streamOpened) { location.reload(); return; }
     if (state === 'open') streamOpened = true;
     if (state === 'open') firstSearchAsked = false;     // asked again if the engine has still not searched
+    if (state !== 'open') rtlListed = null;     // the engine may be another once the stream opens again
     streamState = state;
+    followRtlList();
     if (state !== 'open') {
       rateSince = 0; frameRate = 0; audio.reset();
       clearFine();              // asked again once the stream opens, the fine history starting empty
@@ -2284,6 +2295,7 @@ function showMenu(name) {
   if (name === 'scan') syncScanTabs();
   if (name === 'record') { renderRecordings(); askRecordings(); }
   if (name === 'receiver') syncDevices();
+  followRtlList();
   liveUi();
 }
 // One column: the list of menus, the last one shown marked as current.
@@ -2292,6 +2304,7 @@ function showMenuList() {
   openName = null;
   menuEl.dataset.level = 'nav';
   openMenuCard();
+  followRtlList();
 }
 // The icon reopens the last menu shown; in one column, the list of menus.
 function openMenu() {
@@ -2308,7 +2321,22 @@ function closeMenu(keyboard = false) {
   menuButton.setAttribute('aria-expanded', 'false');
   if (hadFocus && keyboard) menuButton.focus();
   else if (hadFocus) focused.blur();
+  followRtlList();
   poke();
+}
+// The RTL-SDR receivers plugged in: the engine reads them when the Receiver
+// menu shows, then every RTL_LIST_MS while it shows, so that a receiver
+// plugged in meanwhile appears; never otherwise.
+function followRtlList() {
+  const wanted = !menuEl.hidden && openName === 'receiver' && streamState === 'open'
+    && stream.listings.includes('rtl_sdr');
+  if (wanted && !rtlTimer) {
+    stream.listRtlDevices();
+    rtlTimer = setInterval(() => stream.listRtlDevices(), RTL_LIST_MS);
+  } else if (!wanted && rtlTimer) {
+    clearInterval(rtlTimer);
+    rtlTimer = 0;
+  }
 }
 function toggleMenu(name) { if (openName === name) closeMenu(true); else showMenu(name); }
 // The dot on the menu's icon: red while a recording runs, green while a scan does.
@@ -2386,11 +2414,20 @@ function syncSource() {
   const settable = new Set(streamState === 'open' && source ? source.settable : []);
   const deviceEl = $('#src-device');
   const kinds = streamState === 'open' && source ? source.kinds : [];
-  for (const option of deviceEl.options) option.disabled = !kinds.includes(option.value);
-  deviceEl.disabled = kinds.length < 2;
   // No entry is selected before the engine answers; "SoapySDR device" while one is to be chosen.
-  deviceEl.value = soapyPicked ? SOAPY_KIND : source ? source.kind : '';
-  $('#src-note').textContent = sourceNote();
+  const receivers = receiverList(source, rtlListed, soapyPicked, streamState === 'open');
+  const entries = receivers.options.map((o) => `${o.value}\n${o.label}\n${o.disabled}`).join('\n');
+  if (deviceEl.dataset.options !== entries) {
+    deviceEl.replaceChildren(...receivers.options.map((o) => {
+      const option = new Option(o.label, o.value);
+      option.disabled = o.disabled;
+      return option;
+    }));
+    deviceEl.dataset.options = entries;
+  }
+  deviceEl.disabled = kinds.length < 2;
+  if (deviceEl.value !== receivers.value) deviceEl.value = receivers.value;
+  $('#src-note').textContent = [sourceNote(), receivers.note].filter(Boolean).join(' ');
   syncDevices();
   const addressEl = $('#src-address');
   $('#src-address-field').hidden = !source || !source.settable.includes('address');
@@ -2571,6 +2608,12 @@ $('#src-device').addEventListener('change', (e) => {
   const kind = e.target.value;
   const wasPicked = soapyPicked;
   soapyPicked = false;
+  // An RTL-SDR receiver listed: the engine opens it by its serial number.
+  const rtl = rtlDeviceAt(rtlListed, kind);
+  if (rtl) {
+    if (rtl.inUse || rtl.device === null || !stream.chooseRtlDevice(rtl.device) || wasPicked) syncSource();
+    return;
+  }
   if (source && kind === SOAPY_KIND && kind !== source.kind && !switchesAtOnce(devices)) {
     soapyPicked = true;
     sourceError = '';

@@ -29,7 +29,8 @@ from radiolack.fine import FINE_SIZE, FINE_VERSION, FRAME_KIND_FINE
 from radiolack.spectrum import FRAME_HEADER, FRAME_KIND_SPECTRUM
 from radiolack.store import BOOKMARKS_FILE, SETTINGS_FILE, Store
 from radiolack.updates import UpdateResult
-from tests.fakes import FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates
+from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRuns, FakeSource, FakeUpdates,
+                         plug_usb_device)
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
 STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "scans",
@@ -260,7 +261,8 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                               "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"},
                                              {"id": "france", "name": "France (metropolitan)"},
                                              {"id": "americas", "name": "Americas (ITU Region 2)"},
-                                             {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}]})
+                                             {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
+                          "listings": []})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -633,6 +635,33 @@ class SavedSettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["bookmarks"]["bookmarks"], [{"id": 1, **bookmark, "category": None}])
         self.assertEqual(states["preferences"]["values"], values)
         self.assertEqual((states["storage"]["saving"], states["storage"]["problem"]), (True, ""))
+
+
+class RtlDevicesStreamTest(unittest.IsolatedAsyncioTestCase):
+    """An interface lists the RTL-SDR receivers plugged in, from a fake
+    sysfs tree, and chooses one; no client listens to its samples, so no
+    rtl_tcp starts."""
+
+    async def test_the_hello_offers_the_list_and_the_engine_answers_the_asker(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        plug_usb_device(directory / "usb", "1-1", manufacturer="Nooelec", product="NESDR SMArt v5", serial="59196661")
+        server = LocalServer(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP, usb_devices=directory / "usb"),
+                             store=Store(directory / "radiolack"))
+        server.start()
+        self.addCleanup(server.stop)
+        session = aiohttp.ClientSession()
+        self.addAsyncCleanup(session.close)
+        async with session.ws_connect(f"{server.url}stream", origin=f"http://{LOOPBACK_HOST}:{server.port}") as ws:
+            self.assertEqual((await ws.receive_json(timeout=5))["listings"], ["rtl_sdr"])
+            await ws.send_json({"type": "rtl_devices", "list": True})
+            while (message := await next_text(ws))["type"] != "rtl_devices":
+                self.assertNotEqual(message["type"], "error")
+            self.assertEqual([(device["device"], device["name"]) for device in message["devices"]],
+                             [("59196661", "NESDR SMArt v5")])
+            await ws.send_json({"type": "rtl_devices", "choose": "12345678"})
+            while (message := await next_text(ws))["type"] != "error":
+                pass
+            self.assertEqual(message["command"], "rtl_devices")
 
 
 class StartScanTest(unittest.IsolatedAsyncioTestCase):

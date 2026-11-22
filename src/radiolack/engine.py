@@ -131,6 +131,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import dataclasses
 import functools
 import logging
@@ -159,6 +160,7 @@ from .recordings import (WAV_HEADER, AudioRecording, IQRecording, Recording, che
                          delete_recording, is_recording_file, is_recording_name, list_recordings, meta_name)
 from .remote import REMOTE_FILE, RemoteAccess
 from .report import Report, check_page, receiver_line
+from .rtldevices import RtlDevice, reads_as_index
 from .soapy import SoapySource
 from .soapysearch import Device, DeviceSearch, device as soapy_device
 from .scanners import (DC_GAP_HZ, DEFAULT_LISTEN_S, DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB,
@@ -565,6 +567,11 @@ class Engine:
             self._device_search = DeviceSearch()
             self._device_search.on_change = self._follow_devices
             self._states["devices"] = lambda subscription: self.devices_state(subscription.remote)
+        # The RTL-SDR receivers plugged in, read from sysfs when a client asks, never otherwise.
+        self._rtl_listing: Callable[[], Sequence[RtlDevice] | None] | None = None
+        if sources is not None and "rtl_sdr" in sources.kinds:
+            # Sources lists them (rtldevices.py); a test's opener may not.
+            self._rtl_listing = getattr(sources, "rtl_devices", None)
         self._states["scans"] = lambda _: self.scans_state()
         self._states["calibration"] = lambda _: self.calibration_state()
         self._states["storage"] = lambda _: self.storage_state()
@@ -1217,6 +1224,82 @@ class Engine:
             self._open_soapy(value)
         else:
             raise ValueError(f"unknown devices field: {str(name)[:40]}")
+
+    @property
+    def lists_rtl_devices(self) -> bool:
+        """Whether the engine lists the RTL-SDR receivers plugged in (the
+        hello's ``listings``)."""
+        return self._rtl_listing is not None
+
+    def rtl_devices_state(self) -> dict[str, Any]:
+        """The RTL-SDR receivers message (docs/design/protocol.md), read
+        from sysfs now: the receivers plugged in, none opened, and the one
+        that the source in use reads, listed even when not found."""
+        if self._rtl_listing is None:
+            raise RuntimeError("this engine lists no RTL-SDR receivers")
+        listed = self._rtl_listing()
+        in_use = self.source.reopen.get("device") if self.source.kind == "rtl_sdr" else None
+        # Opened by its index, the first, and alone plugged in: that one.
+        alone = (listed is not None and len(listed) == 1 and bool(listed[0].serial)
+                 and isinstance(in_use, str) and in_use.isdigit() and int(in_use) == 0)
+        devices = [{"device": device.serial or None, "name": device.name, "manufacturer": device.manufacturer,
+                    "drivers": list(device.drivers), "shared": device.shared, "reads_as_index": device.reads_as_index,
+                    "in_use": alone or (in_use is not None and device.serial == in_use), "found": True}
+                   for device in listed or ()]
+        if isinstance(in_use, str) and not any(device["in_use"] for device in devices):
+            devices.append({"device": in_use, "name": "", "manufacturer": "", "drivers": [], "shared": False,
+                            "reads_as_index": reads_as_index(in_use, len(listed or ())),
+                            "in_use": True, "found": False})
+        return {"type": "rtl_devices", "listing": "unavailable" if listed is None else "sysfs", "devices": devices}
+
+    def configure_rtl_devices(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """List the RTL-SDR receivers plugged in (``list``: true), or read
+        one of them by its serial number (``choose``) in place of the source
+        in use, as a switch to another kind of source does; then reply with
+        the list. Raises ValueError, changing nothing, when refused: a
+        serial number that no receiver plugged in has, or that rtl_tcp
+        would not read as this receiver's alone (rtldevices.py). The first time a
+        receiver is chosen by its serial number, alone plugged in, it starts
+        from the settings saved for the first receiver, opened by its index,
+        if any: they were its own."""
+        if self._rtl_listing is None:
+            raise ValueError("this Radiolack does not list RTL-SDR receivers")
+        if len(changes) != 1:
+            raise ValueError("an rtl_devices message asks for one thing: list or choose")
+        name, value = next(iter(changes.items()))
+        if name == "list":
+            if value is not True:
+                raise ValueError("list must be true")
+        elif name == "choose":
+            if not isinstance(value, str) or not value:
+                raise ValueError("choose names a receiver plugged in, by its serial number")
+            self._choose_rtl_device(value)
+        else:
+            raise ValueError(f"unknown rtl_devices field: {str(name)[:40]}")
+        subscription.reply(self.rtl_devices_state())
+
+    def _choose_rtl_device(self, serial: str) -> None:
+        sources = self._sources
+        listed = self._rtl_listing() if self._rtl_listing is not None else None
+        found = [device for device in listed or () if device.serial == serial]
+        if sources is None or not found:
+            raise ValueError("no RTL-SDR receiver plugged in has this serial number: plug it in, or choose another")
+        if not found[0].choosable:
+            raise ValueError("rtl_tcp cannot tell this receiver by its serial number: give it its own with rtl_eeprom -s")
+        if self.source.kind == "rtl_sdr" and any(
+                device["in_use"] and device["device"] == serial for device in self.rtl_devices_state()["devices"]):
+            return      # in use already
+        new = sources.open({"kind": "rtl_sdr", "device": serial})
+        if new.settings_key not in self._receivers and listed is not None and len(listed) == 1:
+            first = sources.open({"kind": "rtl_sdr", "device": "0"})
+            first.close()       # it never read: nothing to release
+            saved = self._receivers.get(first.settings_key)
+            if saved is not None:
+                self._receivers[new.settings_key] = copy.deepcopy(saved)
+        self._end_driver_check(STOPPED)
+        self._end_calibration("source")
+        self._replace(new)
+        self._source_changed()
 
     def recording_state(self, remote: bool = False) -> dict[str, Any]:
         """The recording state message (docs/design/protocol.md): the audio
