@@ -121,7 +121,7 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def listed(engine: Engine, subscription, **changes) -> dict:
         ready_messages(subscription)
-        engine.configure_rtl_devices(changes or {"list": True}, subscription)
+        engine.radios[0].configure_rtl_devices(changes or {"list": True}, subscription)
         reply, = (message for message in ready_messages(subscription) if message["type"] == "rtl_devices")
         return reply
 
@@ -150,16 +150,16 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         plug_usb_device(self.root / "usb", "1-2", **NESDR)
         engine = self.engine()
         subscription = engine.subscribe()
-        self.assertEqual(engine.source.kind, "synthetic")
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")
         reply = self.listed(engine, subscription, choose="59196661")
-        self.assertIsInstance(engine.source, RtlSdrSource)
-        self.assertEqual(engine.source.reopen, {"kind": "rtl_sdr", "device": "59196661"})
+        self.assertIsInstance(engine.radios[0].source, RtlSdrSource)
+        self.assertEqual(engine.radios[0].source.reopen, {"kind": "rtl_sdr", "device": "59196661"})
         self.assertEqual([(device["device"], device["in_use"]) for device in reply["devices"]],
                          [("RTLSDR1", False), ("59196661", True)])
         # The one in use changes nothing.
-        source = engine.source
+        source = engine.radios[0].source
         self.listed(engine, subscription, choose="59196661")
-        self.assertIs(engine.source, source)
+        self.assertIs(engine.radios[0].source, source)
         engine.close()      # the settings are saved as Radiolack stops
         await asyncio.wait_for(engine.wait_closed(), timeout=5)
         self.assertEqual(self.store.load(SETTINGS_FILE)["source"], {"kind": "rtl_sdr", "device": "59196661"})
@@ -175,8 +175,8 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         for changes in ({"choose": "59196661"}, {"choose": "00000001"}, {"choose": "ABC"}, {"choose": ""}, {"choose": 3}, {"list": False}, {"list": True, "x": 1},
                         {}, {"open": "RTLSDR1"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                engine.configure_rtl_devices(changes, subscription)
-        self.assertEqual(engine.source.kind, "synthetic")
+                engine.radios[0].configure_rtl_devices(changes, subscription)
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")
 
     async def test_the_receiver_in_use_stays_listed_when_not_found(self):
         plug_usb_device(self.root / "usb", "1-1", **BLOG)
@@ -205,8 +205,8 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         engine = self.engine(receivers={"rtl_sdr 0": saved})
         subscription = engine.subscribe()
         self.listed(engine, subscription, choose="59196661")
-        state = engine.state()
-        self.assertEqual((state["centre_hz"], state["ppm"], engine.demod_state()["mode"]),
+        state = engine.radios[0].state()
+        self.assertEqual((state["centre_hz"], state["ppm"], engine.radios[0].demod_state()["mode"]),
                          (433_500_000.0, -4.0, "AM"))
 
     async def test_with_two_plugged_in_it_starts_from_its_own_settings(self):
@@ -216,7 +216,7 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         engine = self.engine(receivers={"rtl_sdr 0": saved})
         subscription = engine.subscribe()
         self.listed(engine, subscription, choose="RTLSDR1")
-        self.assertNotEqual(engine.state()["centre_hz"], 433_500_000.0)
+        self.assertNotEqual(engine.radios[0].state()["centre_hz"], 433_500_000.0)
 
     async def test_an_engine_without_rtl_sdr_lists_nothing(self):
         engine = Engine(sources=type("Opener", (), {"kinds": ("synthetic",), "open": Sources().open})())
@@ -224,7 +224,7 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(engine.close)
         self.assertFalse(engine.lists_rtl_devices)
         with self.assertRaisesRegex(ValueError, "does not list"):
-            engine.configure_rtl_devices({"list": True}, engine.subscribe())
+            engine.radios[0].configure_rtl_devices({"list": True}, engine.subscribe())
 
 
 if __name__ == "__main__":

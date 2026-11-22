@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from radiolack import calibration, engine as engine_module
+from radiolack import calibration, radio as radio_module
 from radiolack.bandplan import BandPlan, default_plan
 from radiolack.calibration import (DISAGREE, NONE, RANGE, REFUSED, WEAK, Result, Station, filter_width_hz,
                                    implied_ppm, propose, station_centre, stations, window_hz)
@@ -131,15 +131,15 @@ class RunCase(unittest.IsolatedAsyncioTestCase):
         engine = self.engine(RtlTcpSource(LOOPBACK, fake.port, sample_rate_hz=rate_hz, settle_s=0.1), references,
                              sources=sources)
         subscription = engine.subscribe()
-        engine.configure({"hf_input": "q", "centre_hz": 145_000_000, **settings})
-        engine.configure_demod({"frequency_hz": 145_100_000, "mode": "NFM", "bandwidth_hz": 12_000})
-        await eventually(lambda: engine.state()["status"] == "streaming")
+        engine.radios[0].configure({"hf_input": "q", "centre_hz": 145_000_000, **settings})
+        engine.radios[0].configure_demod({"frequency_hz": 145_100_000, "mode": "NFM", "bandwidth_hz": 12_000})
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
         return engine, subscription, fake
 
     def engine(self, source, references: list[int] | None = None, *, sources: "KindOpener | None" = None) -> Engine:
         engine = Engine(source, sources=sources, recordings=self.folder)
         if references is not None:
-            engine._plan = BandPlan(references=references)
+            engine.plan = BandPlan(references=references)
         task = asyncio.ensure_future(engine.run())
 
         async def stop():
@@ -151,13 +151,13 @@ class RunCase(unittest.IsolatedAsyncioTestCase):
         return engine
 
     async def ended(self, engine: Engine, timeout: float = 60.0) -> dict:
-        await eventually(lambda: not engine.calibration_state()["running"], timeout)
-        return engine.calibration_state()
+        await eventually(lambda: not engine.radios[0].calibration_state()["running"], timeout)
+        return engine.radios[0].calibration_state()
 
     def assert_home(self, engine: Engine) -> None:
         """The receiver and the VFO where the run found them."""
-        demod = engine.demod_state()
-        self.assertEqual(engine.state()["centre_hz"], 145_000_000)
+        demod = engine.radios[0].demod_state()
+        self.assertEqual(engine.radios[0].state()["centre_hz"], 145_000_000)
         self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]), (145_100_000, "NFM", 12_000))
 
 
@@ -170,26 +170,26 @@ class RunTest(RunCase):
         source = RtlSdrSource("references", program=FAKE_RTL_TCP, sample_rate_hz=240_000.0, settle_s=0.1)
         engine = self.engine(source)
         subscription = engine.subscribe()
-        engine.configure({"hf_input": "q", "centre_hz": 145_000_000})
-        engine.configure_demod({"frequency_hz": 145_100_000, "mode": "NFM", "bandwidth_hz": 12_000})
-        await eventually(lambda: engine.state()["status"] == "streaming")
+        engine.radios[0].configure({"hf_input": "q", "centre_hz": 145_000_000})
+        engine.radios[0].configure_demod({"frequency_hz": 145_100_000, "mode": "NFM", "bandwidth_hz": 12_000})
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
         expected_ppm = REFERENCES_CRYSTAL_PPB / 1000
         proposals = []
         for applied in (False, True):
-            engine.calibrate({"action": "start"})
-            state = engine.calibration_state()
+            engine.radios[0].calibrate({"action": "start"})
+            state = engine.radios[0].calibration_state()
             # At 240 kS/s, direct sampling reaches 120 kHz: every station but the two lowest.
             self.assertEqual((state["running"], state["stations"], state["results"], state["ended"]),
                              (True, list(default_plan().references[2:]), [], None))
-            self.assertEqual(engine.demod_state()["mode"], "AM")
-            self.assertEqual(engine.demod_state()["frequency_hz"], 162_000)
+            self.assertEqual(engine.radios[0].demod_state()["mode"], "AM")
+            self.assertEqual(engine.radios[0].demod_state()["frequency_hz"], 162_000)
             state = await self.ended(engine, 90)
             self.assertEqual(state["ended"], "done")
             self.assertEqual(len(state["results"]), 10)
             for station in state["results"]:
                 with self.subTest(applied=applied, station=station["frequency_hz"]):
                     self.assertIsNone(station["reason"])
-                    shown_hz = station["frequency_hz"] * (1 + engine.state()["ppm"] / 1e6) / (
+                    shown_hz = station["frequency_hz"] * (1 + engine.radios[0].state()["ppm"] / 1e6) / (
                         1 + REFERENCES_CRYSTAL_PPB / 1e9)
                     self.assertAlmostEqual(station["carrier_hz"], shown_hz, delta=0.5)
             proposal = state["proposal"]
@@ -199,7 +199,7 @@ class RunTest(RunCase):
             self.assert_home(engine)
             proposals.append(proposal["ppm"])
             # Apply is the ordinary correction.
-            engine.configure({"ppm": proposal["ppm"]})
+            engine.radios[0].configure({"ppm": proposal["ppm"]})
         self.assertLess(abs(proposals[1] - proposals[0]), 0.1)
         # Every client learnt the run's progress.
         states = [message for message in waiting(subscription)
@@ -209,7 +209,7 @@ class RunTest(RunCase):
     async def test_a_station_received_alone_strong_enough_proposes(self):
         engine, _, _ = await self.start([4_996_000, 10_000_000], crystal_ppb=37_420,
                                         carriers={10_000_000.0: 0.2})
-        engine.calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})
         state = await self.ended(engine)
         self.assertEqual([station["reason"] for station in state["results"]], ["no_signal", None])
         self.assertEqual(state["results"][0]["carrier_hz"], None)
@@ -219,7 +219,7 @@ class RunTest(RunCase):
 
     async def test_nothing_received_proposes_nothing(self):
         engine, _, _ = await self.start([5_000_000, 10_000_000], carriers={})
-        engine.calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})
         state = await self.ended(engine)
         self.assertEqual((state["ended"], state["proposal"], state["reason"]), ("done", None, "none"))
         self.assert_home(engine)
@@ -227,23 +227,23 @@ class RunTest(RunCase):
     async def test_a_station_that_gives_no_samples_times_out(self):
         engine, _, fake = await self.start([5_000_000, 10_000_000])
         fake.sending = False
-        with mock.patch.object(engine_module, "STATION_TIMEOUT_S", 0.3):
-            engine.calibrate({"action": "start"})
+        with mock.patch.object(radio_module, "STATION_TIMEOUT_S", 0.3):
+            engine.radios[0].calibrate({"action": "start"})
             state = await self.ended(engine, 10)
         self.assertEqual([station["reason"] for station in state["results"]], ["silent", "silent"])
         self.assertEqual(state["reason"], "none")
 
     async def test_a_station_whose_centre_is_refused_gives_no_carrier(self):
         engine, _, _ = await self.start([5_000_000, 10_000_000])
-        configure = engine.source.configure
+        configure = engine.radios[0].source.configure
 
         def refusing(changes):
             if changes.get("centre_hz") == 4_940_000:
                 raise ValueError("refused")
             configure(changes)
 
-        with mock.patch.object(engine.source, "configure", refusing), self.assertLogs("radiolack.engine", "WARNING"):
-            engine.calibrate({"action": "start"})
+        with mock.patch.object(engine.radios[0].source, "configure", refusing), self.assertLogs("radiolack", "WARNING"):
+            engine.radios[0].calibrate({"action": "start"})
             state = await self.ended(engine)
         self.assertEqual([station["reason"] for station in state["results"]], [REFUSED, None])
         self.assertEqual(state["proposal"]["stations"], 1)
@@ -251,12 +251,12 @@ class RunTest(RunCase):
 
     async def test_the_settings_saved_while_it_runs_are_those_of_its_start(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        saved = engine._receiver_settings()
+        engine.radios[0].calibrate({"action": "start"})
+        saved = engine.radios[0].receiver_settings()
         self.assertEqual(saved["source"]["centre_hz"], 145_000_000)
         self.assertEqual((saved["demod"]["frequency_hz"], saved["demod"]["mode"], saved["demod"]["bandwidth_hz"]),
                          (145_100_000, "NFM", 12_000))
-        self.assertEqual(engine.state()["centre_hz"], 9_940_000)
+        self.assertEqual(engine.radios[0].state()["centre_hz"], 9_940_000)
 
 
 class StopTest(RunCase):
@@ -265,87 +265,87 @@ class StopTest(RunCase):
 
     async def test_a_client_stops_it_and_it_proposes_from_what_it_measured(self):
         engine, _, _ = await self.start([5_000_000, 10_000_000, 15_000_000], crystal_ppb=2_000)
-        engine.calibrate({"action": "start"})
-        engine.calibrate({"action": "start"})       # it runs already: nothing changes
-        await eventually(lambda: len(engine.calibration_state()["results"]) == 2, 30)
-        engine.calibrate({"action": "stop"})
-        state = engine.calibration_state()
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})       # it runs already: nothing changes
+        await eventually(lambda: len(engine.radios[0].calibration_state()["results"]) == 2, 30)
+        engine.radios[0].calibrate({"action": "stop"})
+        state = engine.radios[0].calibration_state()
         self.assertEqual((state["running"], state["ended"], len(state["results"])), (False, "stopped", 2))
         self.assertAlmostEqual(state["proposal"]["ppm"], 2.0, delta=0.05)
         self.assert_home(engine)
-        engine.calibrate({"action": "stop"})        # none runs: nothing changes
-        self.assertEqual(engine.calibration_state(), state)
+        engine.radios[0].calibrate({"action": "stop"})        # none runs: nothing changes
+        self.assertEqual(engine.radios[0].calibration_state(), state)
 
     async def test_tuning_by_hand_stops_it_after_the_vfo_came_back(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        engine.configure_demod({"frequency_hz": 145_200_000})
-        state = engine.calibration_state()
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure_demod({"frequency_hz": 145_200_000})
+        state = engine.radios[0].calibration_state()
         self.assertEqual((state["ended"], state["proposal"], state["reason"]), ("tuned", None, None))
-        demod = engine.demod_state()
+        demod = engine.radios[0].demod_state()
         self.assertEqual((demod["frequency_hz"], demod["mode"], demod["bandwidth_hz"]), (145_200_000, "NFM", 12_000))
-        self.assertEqual(engine.state()["centre_hz"], 145_000_000)
+        self.assertEqual(engine.radios[0].state()["centre_hz"], 145_000_000)
         # A new centre frequency stops another run, the change applying once the receiver is back.
-        engine.calibrate({"action": "start"})
-        engine.configure({"centre_hz": 145_050_000})
-        self.assertEqual(engine.calibration_state()["ended"], "tuned")
-        self.assertEqual((engine.state()["centre_hz"], engine.demod_state()["mode"]), (145_050_000, "NFM"))
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure({"centre_hz": 145_050_000})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "tuned")
+        self.assertEqual((engine.radios[0].state()["centre_hz"], engine.radios[0].demod_state()["mode"]), (145_050_000, "NFM"))
 
     async def test_a_vfo_tuned_by_hand_outside_the_span_stays_there_once_the_receiver_is_back(self):
         # A press on the spectrum while it shows a station's window: the VFO set there, outside
         # the span the receiver comes back to, reads nothing but stays, rather than move to an
         # edge that nobody chose once that span's samples come.
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        await eventually(lambda: engine._capture is not None and engine._capture[0][0] != 145_000_000, 30)
-        engine.configure_demod({"frequency_hz": 9_990_000})
-        self.assertEqual(engine.calibration_state()["ended"], "tuned")
-        await eventually(lambda: engine._capture[0] == (145_000_000, 240_000), 30)
-        self.assertEqual(engine.demod_state()["frequency_hz"], 9_990_000)
+        engine.radios[0].calibrate({"action": "start"})
+        await eventually(lambda: engine.radios[0]._capture is not None and engine.radios[0]._capture[0][0] != 145_000_000, 30)
+        engine.radios[0].configure_demod({"frequency_hz": 9_990_000})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "tuned")
+        await eventually(lambda: engine.radios[0]._capture[0] == (145_000_000, 240_000), 30)
+        self.assertEqual(engine.radios[0].demod_state()["frequency_hz"], 9_990_000)
         # A span that changes afterwards still brings a VFO left outside it to its nearest edge.
-        engine.configure({"centre_hz": 9_700_000})
-        await eventually(lambda: engine._capture[0] == (9_700_000, 240_000), 30)
-        self.assertEqual(engine.demod_state()["frequency_hz"], 9_700_000 + 120_000)
+        engine.radios[0].configure({"centre_hz": 9_700_000})
+        await eventually(lambda: engine.radios[0]._capture[0] == (9_700_000, 240_000), 30)
+        self.assertEqual(engine.radios[0].demod_state()["frequency_hz"], 9_700_000 + 120_000)
 
     async def test_the_gain_leaves_it_running(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        engine.configure({"gain_db": 20.0})
-        engine.configure_demod({"squelch_db": -50.0})
-        self.assertTrue(engine.calibration_state()["running"])
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure({"gain_db": 20.0})
+        engine.radios[0].configure_demod({"squelch_db": -50.0})
+        self.assertTrue(engine.radios[0].calibration_state()["running"])
 
     async def test_a_scan_or_a_recording_stops_it(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        engine.configure_scanner({"sweep_low_hz": 144e6, "sweep_high_hz": 146e6})
-        engine.configure_scanner({"scan": "sweep"})
-        self.assertEqual(engine.calibration_state()["ended"], "scan")
-        self.assertEqual(engine.scanner_state()["scan"], "sweep")
-        engine.configure_scanner({"scan": None})
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure_scanner({"sweep_low_hz": 144e6, "sweep_high_hz": 146e6})
+        engine.radios[0].configure_scanner({"scan": "sweep"})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "scan")
+        self.assertEqual(engine.radios[0].scanner_state()["scan"], "sweep")
+        engine.radios[0].configure_scanner({"scan": None})
         self.assert_home(engine)
-        engine.calibrate({"action": "start"})
-        engine.configure_recording({"audio": True})
-        self.assertEqual(engine.calibration_state()["ended"], "recording")
-        self.assertIsNotNone(engine.recording_state()["audio"])
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure_recording({"audio": True})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "recording")
+        self.assertIsNotNone(engine.radios[0].recording_state()["audio"])
         self.assert_home(engine)
         # And it does not start while one runs.
         with self.assertRaisesRegex(ValueError, "a recording runs"):
-            engine.calibrate({"action": "start"})
-        self.assertEqual(engine.calibration_state()["ended"], "recording")
+            engine.radios[0].calibrate({"action": "start"})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "recording")
 
     async def test_it_stops_a_scan(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.configure_scanner({"sweep_low_hz": 144e6, "sweep_high_hz": 146e6})
-        engine.configure_scanner({"scan": "sweep"})
-        engine.calibrate({"action": "start"})
-        self.assertIsNone(engine.scanner_state()["scan"])
-        self.assertEqual(engine.calibration_state()["stations"], [10_000_000])
+        engine.radios[0].configure_scanner({"sweep_low_hz": 144e6, "sweep_high_hz": 146e6})
+        engine.radios[0].configure_scanner({"scan": "sweep"})
+        engine.radios[0].calibrate({"action": "start"})
+        self.assertIsNone(engine.radios[0].scanner_state()["scan"])
+        self.assertEqual(engine.radios[0].calibration_state()["stations"], [10_000_000])
 
     async def test_a_carrier_s_measure_waits_for_its_end_and_the_driver_s_check_is_refused(self):
         engine, subscription, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
-        engine.measure_carrier({"action": "measure", "id": 7}, subscription)
-        engine.measure_carrier({"action": "identify", "id": 8}, subscription)
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].measure_carrier({"action": "measure", "id": 7}, subscription)
+        engine.radios[0].measure_carrier({"action": "identify", "id": 8}, subscription)
         answer = next(message for message in waiting(subscription)
                       if isinstance(message, dict) and message["type"] == "driver_pll")
         self.assertEqual((answer["id"], answer["reason"]), (8, "calibration"))
@@ -359,53 +359,53 @@ class StopTest(RunCase):
     async def test_it_refuses_a_converter_and_a_receiver_without_a_correction(self):
         engine, _, _ = await self.start([10_000_000], converter="up")
         with self.assertRaisesRegex(ValueError, "a converter is set"):
-            engine.calibrate({"action": "start"})
-        engine.configure({"converter": "none", "hf_input": "none"})
+            engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure({"converter": "none", "hf_input": "none"})
         with self.assertRaisesRegex(ValueError, "no standard-frequency station"):
-            engine.calibrate({"action": "start"})
+            engine.radios[0].calibrate({"action": "start"})
         for changes, refusal in (({"action": "go"}, "the action start or stop"), ({"action": "start", "id": 1},
                                                                                   "unknown calibration field")):
             with self.assertRaisesRegex(ValueError, refusal):
-                engine.calibrate(changes)
-        self.assertIsNone(engine.calibration_state()["ended"])
+                engine.radios[0].calibrate(changes)
+        self.assertIsNone(engine.radios[0].calibration_state()["ended"])
         fixed = self.engine(FakeSource())
         with self.assertRaisesRegex(ValueError, "no frequency correction"):
-            fixed.calibrate({"action": "start"})
+            fixed.radios[0].calibrate({"action": "start"})
 
     async def test_it_goes_on_without_any_client_and_radiolack_s_stop_brings_the_receiver_back(self):
         engine, subscription, _ = await self.start([5_000_000, 10_000_000])
-        engine.calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})
         engine.unsubscribe(subscription)
-        await eventually(lambda: engine.calibration_state()["results"], 30)
+        await eventually(lambda: engine.radios[0].calibration_state()["results"], 30)
         engine.close()
-        self.assertEqual(engine.calibration_state()["ended"], "closed")
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "closed")
         self.assert_home(engine)
 
     async def test_another_kind_of_source_stops_it(self):
         engine, _, _ = await self.start([10_000_000])
-        engine.calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})
         with self.assertRaisesRegex(ValueError, "this source cannot be changed"):
-            engine.configure({"kind": "synthetic"})
-        self.assertEqual(engine.calibration_state()["ended"], "source")
+            engine.radios[0].configure({"kind": "synthetic"})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "source")
         self.assert_home(engine)
 
     async def test_another_receiver_forgets_the_proposal_made_for_the_one_before(self):
         kinds = KindOpener()
         engine, subscription, fake = await self.start([10_000_000], sources=kinds)
         kinds.port = fake.port
-        engine.calibrate({"action": "start"})
+        engine.radios[0].calibrate({"action": "start"})
         self.assertIsNotNone((await self.ended(engine))["proposal"])
         waiting(subscription)
-        engine.configure({"kind": "test"})
+        engine.radios[0].configure({"kind": "test"})
         idle = {"type": "calibration", "running": False, "stations": [], "results": [], "proposal": None,
                 "reason": None, "ended": None}
-        self.assertEqual(engine.calibration_state(), idle)
+        self.assertEqual(engine.radios[0].calibration_state(), idle)
         self.assertIn(idle, waiting(subscription))
         # A run that the switch ended stays, to say so.
-        engine.configure({"kind": "rtl_tcp"})
-        engine.calibrate({"action": "start"})
-        engine.configure({"kind": "test"})
-        self.assertEqual(engine.calibration_state()["ended"], "source")
+        engine.radios[0].configure({"kind": "rtl_tcp"})
+        engine.radios[0].calibrate({"action": "start"})
+        engine.radios[0].configure({"kind": "test"})
+        self.assertEqual(engine.radios[0].calibration_state()["ended"], "source")
 
 
 class KindOpener:

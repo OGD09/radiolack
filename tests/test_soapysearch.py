@@ -152,7 +152,7 @@ class EngineCase(unittest.IsolatedAsyncioTestCase):
         return await asyncio.wait_for(wait(), WAIT_S)
 
     async def searched(self, engine: Engine, subscription: Subscription) -> dict:
-        engine.configure_devices({"search": True})
+        engine.radios[0].configure_devices({"search": True})
         return await self.devices(subscription, lambda state: state["search"] not in ("never", "searching"))
 
 
@@ -169,20 +169,20 @@ class EngineTest(EngineCase):
         self.assertEqual(_apply_command(engine, remote, None, command), ("devices", REFUSED))
         await asyncio.sleep(0)
         self.assertEqual(self.soapy.searches, [])
-        self.assertEqual(engine.devices_state()["search"], "never")
+        self.assertEqual(engine.radios[0].devices_state()["search"], "never")
 
     async def test_a_search_lists_what_it_found_and_runs_one_at_a_time(self):
         hackrf = self.soapy.add("hackrf", serial="0001", label="HackRF One #0 0001")
         engine = self.engine()
         subscription = engine.subscribe()
         self.soapy.search_gate = gate = threading.Event()
-        engine.configure_devices({"search": True})
+        engine.radios[0].configure_devices({"search": True})
         await self.devices(subscription, lambda state: state["search"] == "searching")
-        engine.configure_devices({"search": True})      # one at a time: nothing more
+        engine.radios[0].configure_devices({"search": True})      # one at a time: nothing more
         with self.assertRaisesRegex(ValueError, "a search for SoapySDR devices is running: choose once it ends"):
-            engine.configure_devices({"args": "driver=hackrf"})
+            engine.radios[0].configure_devices({"args": "driver=hackrf"})
         with self.assertRaisesRegex(ValueError, "a search for SoapySDR devices is running"):
-            engine.configure({"kind": "soapy"})
+            engine.radios[0].configure({"kind": "soapy"})
         gate.set()
         state = await self.devices(subscription, lambda state: state["search"] == "done")
         self.assertEqual(state["devices"], [{"driver": "hackrf", "serial": "0001", "label": "HackRF One #0 0001",
@@ -194,7 +194,7 @@ class EngineTest(EngineCase):
         state = await self.searched(engine, subscription)
         self.assertEqual([entry["serial"] for entry in state["devices"]], ["0002"])
         self.assertEqual(listed_searches(self.soapy.searches), list(LISTED_DRIVERS) * 2)
-        self.assertEqual(engine.source.kind, "synthetic")      # nothing opened
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")      # nothing opened
 
     async def test_a_search_that_fails_and_one_without_the_module(self):
         self.soapy.add("lime", serial="0004")
@@ -204,7 +204,7 @@ class EngineTest(EngineCase):
         state = await self.searched(engine, subscription)
         self.assertEqual((state["search"], state["detail"]), ("failed", "the hackrf search failed: libhackrf failed"))
         self.assertEqual([entry["driver"] for entry in state["devices"]], ["lime"])
-        with mock.patch.object(engine._device_search, "_load", lambda: (None, MISSING)):
+        with mock.patch.object(engine.device_search, "_load", lambda: (None, MISSING)):
             state = await self.searched(engine, subscription)
         self.assertEqual((state["search"], state["detail"], state["devices"]), ("unavailable", MISSING, []))
         self.assertEqual(len(self.soapy.searches), len(LISTED_DRIVERS))     # none without the module
@@ -212,12 +212,12 @@ class EngineTest(EngineCase):
     async def test_a_search_that_stops_unexpectedly_leaves_search_again_working(self):
         engine = self.engine()
         subscription = engine.subscribe()
-        with mock.patch.object(engine._device_search, "run", side_effect=RuntimeError("unexpected")), \
-                self.assertLogs("radiolack.engine", "ERROR"):
-            engine.configure_devices({"search": True})
-            self.assertEqual(engine.devices_state()["search"], "searching")
+        with mock.patch.object(engine.device_search, "run", side_effect=RuntimeError("unexpected")), \
+                self.assertLogs("radiolack", "ERROR"):
+            engine.radios[0].configure_devices({"search": True})
+            self.assertEqual(engine.radios[0].devices_state()["search"], "searching")
             await asyncio.wait_for(engine._search_task, WAIT_S)
-        self.assertEqual(engine.devices_state()["search"], "never")
+        self.assertEqual(engine.radios[0].devices_state()["search"], "never")
         self.assertEqual(self.soapy.searches, [])
         self.assertEqual((await self.searched(engine, subscription))["search"], "done")
 
@@ -231,19 +231,19 @@ class EngineTest(EngineCase):
                                 ({"driver": "hackrf"}, "choose names a device found"),
                                 ("hackrf", "choose names a device found")):
             with self.subTest(choose=refused), self.assertRaisesRegex(ValueError, reason):
-                engine.configure_devices({"choose": refused})
-        self.assertEqual(engine.source.kind, "synthetic")
-        engine.configure_devices({"choose": {"driver": "hackrf", "serial": "0002"}})
-        self.assertIsInstance(engine.source, SoapySource)
-        self.assertEqual(engine.source.reopen, {"kind": "soapy", "args": "driver=hackrf,serial=0002"})
+                engine.radios[0].configure_devices({"choose": refused})
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")
+        engine.radios[0].configure_devices({"choose": {"driver": "hackrf", "serial": "0002"}})
+        self.assertIsInstance(engine.radios[0].source, SoapySource)
+        self.assertEqual(engine.radios[0].source.reopen, {"kind": "soapy", "args": "driver=hackrf,serial=0002"})
         state = await self.devices(subscription, lambda state: state["devices"][0]["in_use"]
                                    and state["devices"][0]["label"] == "HackRF One #1 0002")
         self.assertEqual([(entry["serial"], entry["in_use"]) for entry in state["devices"]],
                          [("0002", True), ("0001", False)])
         self.assertEqual((state["chosen"], state["args"]), (True, "driver=hackrf,serial=0002"))
-        self.assertIsNone(engine.devices_state(remote=True)["args"])
-        await eventually(lambda: engine.state()["status"] == "streaming")
-        engine.configure({"ppm": 3.5})
+        self.assertIsNone(engine.radios[0].devices_state(remote=True)["args"])
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
+        engine.radios[0].configure({"ppm": 3.5})
         # While it streams, its driver is not searched again: its devices stay as found.
         before = len(self.soapy.searches)
         state = await self.searched(engine, subscription)
@@ -263,15 +263,15 @@ class EngineTest(EngineCase):
                              ("driver", "KEY=VALUE"), ("driver=a,driver=b", "given twice"),
                              ("driver=" + "a" * 300, "longer than"), (7, "must be text")):
             with self.subTest(args=text), self.assertRaisesRegex(ValueError, reason):
-                engine.configure_devices({"args": text})
+                engine.radios[0].configure_devices({"args": text})
         for message, reason in (({}, "asks for one thing"), ({"search": True, "args": "driver=rtlsdr"}, "one thing"),
                                 ({"search": 1}, "search must be true"), ({"open": "x"}, "unknown devices field")):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, reason):
-                engine.configure_devices(message)
-        self.assertEqual(engine.source.kind, "synthetic")
+                engine.radios[0].configure_devices(message)
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")
         # driver=rtlsdr through the arguments: the device in use is listed, though rtlsdr is never searched.
-        engine.configure_devices({"args": "driver=rtlsdr"})
-        await eventually(lambda: engine.state()["status"] == "streaming")
+        engine.radios[0].configure_devices({"args": "driver=rtlsdr"})
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
         state = await self.devices(subscription, lambda state: state["devices"]
                                    and state["devices"][0]["serial"] == "00000001")
         self.assertEqual(state["devices"], [{"driver": "rtlsdr", "serial": "00000001",
@@ -282,14 +282,14 @@ class EngineTest(EngineCase):
         self.assertEqual(listed_searches(without_source(self.soapy.searches, "rtlsdr")), list(LISTED_DRIVERS))
         self.assertEqual([entry["driver"] for entry in state["devices"]], ["rtlsdr"])
         # The same device again changes nothing; the simulated band back, then the device used last.
-        source = engine.source
-        engine.configure_devices({"args": "driver=rtlsdr,serial=00000001"})
-        self.assertIs(engine.source, source)
-        engine.configure({"kind": "synthetic"})
+        source = engine.radios[0].source
+        engine.radios[0].configure_devices({"args": "driver=rtlsdr,serial=00000001"})
+        self.assertIs(engine.radios[0].source, source)
+        engine.radios[0].configure({"kind": "synthetic"})
         state = await self.devices(subscription, lambda state: not state["devices"])
         self.assertEqual((state["chosen"], state["args"]), (True, None))
-        engine.configure({"kind": "soapy"})
-        self.assertEqual(engine.source.reopen, {"kind": "soapy", "args": "driver=rtlsdr,serial=00000001"})
+        engine.radios[0].configure({"kind": "soapy"})
+        self.assertEqual(engine.radios[0].source.reopen, {"kind": "soapy", "args": "driver=rtlsdr,serial=00000001"})
 
     async def test_a_remote_client_chooses_among_the_devices_found_only(self):
         self.soapy.add("airspy", serial="0002", formats=("CS16", "CF32"), native="CS16")
@@ -301,11 +301,11 @@ class EngineTest(EngineCase):
             with self.subTest(message=message):
                 self.assertEqual(_apply_command(engine, remote, None, json.dumps(message)), ("devices", REFUSED))
         await asyncio.sleep(0)
-        self.assertEqual((engine.source.kind, engine.devices_state()["search"]), ("synthetic", "done"))
+        self.assertEqual((engine.radios[0].source.kind, engine.radios[0].devices_state()["search"]), ("synthetic", "done"))
         self.assertEqual(len(self.soapy.searches), len(LISTED_DRIVERS))     # no search more
         choose = {"type": "devices", "choose": {"driver": "airspy", "serial": "0002"}}
         self.assertEqual(_apply_command(engine, remote, None, json.dumps(choose)), ("devices", None))
-        self.assertEqual(engine.source.reopen, {"kind": "soapy", "args": "driver=airspy,serial=0002"})
+        self.assertEqual(engine.radios[0].source.reopen, {"kind": "soapy", "args": "driver=airspy,serial=0002"})
         state = await self.devices(remote, lambda state: state["devices"] and state["devices"][0]["in_use"])
         self.assertIsNone(state["args"])
 
@@ -315,7 +315,7 @@ class NoSoapyTest(unittest.IsolatedAsyncioTestCase):
         engine = Engine(FakeSource())
         self.assertNotIn("devices", engine._states)
         with self.assertRaisesRegex(ValueError, "this Radiolack does not open SoapySDR devices"):
-            engine.configure_devices({"search": True})
+            engine.radios[0].configure_devices({"search": True})
         engine.close()
         await engine.wait_closed()
 

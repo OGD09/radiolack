@@ -30,7 +30,7 @@ from unittest import mock
 
 import radiolack
 from radiolack import PROJECT_URL, __version__, r82xx
-from radiolack.engine import Engine
+from radiolack.radio import Radio
 from radiolack.recordings import recording_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.report import ISSUES_URL
@@ -1098,13 +1098,13 @@ class BrowserTest(unittest.TestCase):
                     expect(page.locator("#dm-nb-note")).to_be_hidden()
 
     def test_an_engine_without_the_blanker_greys_its_box(self):
-        # An engine older than the blanker sends neither field.
-        state = Engine.demod_state
+        # A radio older than the blanker sends neither field.
+        state = Radio.demod_state
 
-        def older(engine, acknowledged=0):
-            return {name: value for name, value in state(engine, acknowledged).items()
+        def older(radio, acknowledged=0):
+            return {name: value for name, value in state(radio, acknowledged).items()
                     if name not in ("blanker", "blanker_impulses")}
-        self.enterContext(mock.patch.object(Engine, "demod_state", older))
+        self.enterContext(mock.patch.object(Radio, "demod_state", older))
         url = self.serve()
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
