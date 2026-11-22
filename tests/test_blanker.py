@@ -16,7 +16,7 @@ import numpy as np
 from radiolack.carrier import CarrierMeasure, strongest_line
 from radiolack.demod import (BLANKER_LONGEST, BLANKER_MOST, BLANKER_SIDES, MODES, DemodSettings, Demodulator,
                              NoiseBlanker, passband_hz, vfo_position_hz)
-from radiolack.engine import _process_block
+from radiolack.radio import _process_block
 from radiolack.scanners import DETECTION_BLOCKS, ChannelWatch, Detector
 from radiolack.spectrum import SpectrumAnalyzer
 from tests.test_demod import BLOCK, CENTRE, OFFSET, RATE, WFM, am, carrier, fm, noise, open_in, run

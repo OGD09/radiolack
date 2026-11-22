@@ -728,13 +728,13 @@ class EngineTest(EngineCase):
                 self.device(correction=correction, crystal_ppm=37.42, carrier_hz=air_hz)
                 engine = self.engine(self.source())
                 subscription = engine.subscribe()
-                engine.set_audio(subscription, True)
-                engine.configure({"ppm": 37.42, "centre_hz": 145e6})
-                engine.configure_demod({"frequency_hz": round(air_hz), "mode": "AM"})
-                await eventually(lambda: engine.state()["status"] == "streaming")
+                engine.radios[0].set_audio(subscription, True)
+                engine.radios[0].configure({"ppm": 37.42, "centre_hz": 145e6})
+                engine.radios[0].configure_demod({"frequency_hz": round(air_hz), "mode": "AM"})
+                await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
                 frame = await next_frame(subscription)
                 self.assertIsNotNone(frame)
-                engine.measure_carrier({"action": "measure", "id": 1}, subscription)
+                engine.radios[0].measure_carrier({"action": "measure", "id": 1}, subscription)
                 result = await next_carrier(subscription)
                 self.assertIsNone(result["reason"])
                 self.assertAlmostEqual(result["frequency_hz"], air_hz, delta=1.0)
@@ -754,17 +754,17 @@ class EngineTest(EngineCase):
         self.device(correction="corr", crystal_ppm=-3.3, carrier_hz=true_hz, tuning_step_hz=110.0)
         engine = self.engine(self.source())
         subscription = engine.subscribe()
-        engine.configure({"ppm": -3.01, "centre_hz": 111.2e6})
-        engine.configure_demod({"frequency_hz": true_hz, "mode": "AM"})
-        await eventually(lambda: engine.state()["status"] == "streaming")
-        engine.measure_carrier({"action": "measure", "id": 1}, subscription)
+        engine.radios[0].configure({"ppm": -3.01, "centre_hz": 111.2e6})
+        engine.radios[0].configure_demod({"frequency_hz": true_hz, "mode": "AM"})
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
+        engine.radios[0].measure_carrier({"action": "measure", "id": 1}, subscription)
         before = await next_carrier(subscription)
         self.assertGreater(abs(before["frequency_hz"] - true_hz), 10.0)
         device = self.soapy.opened[0]
         asked_hz = device.frequency_hz
         # Applied as the dialog does.
-        engine.configure({"ppm": calibrated_ppm(-3.01, before["frequency_hz"], true_hz)})
-        engine.measure_carrier({"action": "measure", "id": 2}, subscription)
+        engine.radios[0].configure({"ppm": calibrated_ppm(-3.01, before["frequency_hz"], true_hz)})
+        engine.radios[0].measure_carrier({"action": "measure", "id": 2}, subscription)
         after = await next_carrier(subscription)
         self.assertAlmostEqual(after["frequency_hz"], true_hz, delta=1.0)
         self.assertEqual(device.frequency_hz, asked_hz)
@@ -778,11 +778,11 @@ class EngineTest(EngineCase):
             engine = Engine(self.source(), sources=Sources(), store=Store(directory))
             task = asyncio.ensure_future(engine.run())
             subscription = engine.subscribe()
-            await eventually(lambda: engine.state()["status"] == "streaming")
-            await eventually(lambda: engine.source.settings_key == f"soapy test {serial_expected}")
-            state = engine.state()
+            await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
+            await eventually(lambda: engine.radios[0].source.settings_key == f"soapy test {serial_expected}")
+            state = engine.radios[0].state()
             if changes:
-                engine.configure(changes)
+                engine.radios[0].configure(changes)
             engine.unsubscribe(subscription)
             engine.close()
             await asyncio.wait_for(task, 10)
@@ -814,14 +814,14 @@ class EngineTest(EngineCase):
             "scanner": {"sweep_low_hz": 144e6, "sweep_high_hz": 146e6}}), encoding="utf-8")
         self.device(serial="0001")
         engine = self.engine(self.source(), store=Store(directory))
-        engine.start_given_scan("sweep")
-        await eventually(lambda: engine.source.settings_key == "soapy test 0001")
-        self.assertEqual(engine.scanner_state()["scan"], "sweep")
-        self.assertEqual(engine.state()["ppm"], 12.5)
+        engine.radios[0].start_given_scan("sweep")
+        await eventually(lambda: engine.radios[0].source.settings_key == "soapy test 0001")
+        self.assertEqual(engine.radios[0].scanner_state()["scan"], "sweep")
+        self.assertEqual(engine.radios[0].state()["ppm"], 12.5)
         # The sweep's windows, from 144 MHz, not the saved centre, which comes back once it stops.
-        self.assertLess(engine.state()["centre_hz"], 146e6)
-        engine.configure_scanner({"scan": None})
-        await eventually(lambda: engine.state()["centre_hz"] == 433e6)
+        self.assertLess(engine.radios[0].state()["centre_hz"], 146e6)
+        engine.radios[0].configure_scanner({"scan": None})
+        await eventually(lambda: engine.radios[0].state()["centre_hz"] == 433e6)
 
     async def test_a_devices_controls_are_saved_and_its_antenna_power_never(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
@@ -832,14 +832,14 @@ class EngineTest(EngineCase):
             engine = Engine(self.source("driver=sdrplay"), sources=Sources(), store=Store(directory))
             task = asyncio.ensure_future(engine.run())
             subscription = engine.subscribe()
-            await eventually(lambda: engine.state()["status"] == "streaming")
-            await eventually(lambda: engine.source.settings_key == key)
+            await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
+            await eventually(lambda: engine.radios[0].source.settings_key == key)
             device = self.soapy.opened[-1]
             if changes:
-                engine.configure(changes)
+                engine.radios[0].configure(changes)
                 await eventually(lambda: device.antenna == changes["antenna"])
-            state = engine.state()
-            remote = engine.state(remote=True)["settable"]
+            state = engine.radios[0].state()
+            remote = engine.radios[0].state(remote=True)["settable"]
             engine.unsubscribe(subscription)
             engine.close()
             await asyncio.wait_for(task, 10)
@@ -873,13 +873,13 @@ class EngineTest(EngineCase):
                               for setting in spec.settings)
         engine = self.engine(self.source("driver=rtlsdr"), store=Store(directory))
         engine.subscribe()
-        await eventually(lambda: engine.source.settings_key == "soapy rtlsdr 00000001")
+        await eventually(lambda: engine.radios[0].source.settings_key == "soapy rtlsdr 00000001")
         device = self.soapy.opened[-1]
         # Restored in the same pass that would write the antenna power.
         await eventually(lambda: "offset_tune=true" in device.events)
         self.assertEqual(device.setting_values["biastee"], "false")
         self.assertNotIn("biastee=true", device.events)
-        self.assertFalse(engine.state()["bias_tee"])
+        self.assertFalse(engine.radios[0].state()["bias_tee"])
 
 
 def encoded(soapy, sample_format: str, start: int, count: int, full_scale: float | None = None) -> bytes:
@@ -1011,12 +1011,12 @@ class IQRecordingTest(EngineCase):
         started earlier would take the rate asked before the device opens,
         which its opening may change."""
         subscription = engine.subscribe()
-        await eventually(lambda: engine.state()["status"] == "streaming")
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
         return subscription
 
     async def record(self, engine: Engine, subscription: Subscription, at_least: int = 50_000) -> dict:
         """The I/Q recording started, once it has ``at_least`` bytes."""
-        engine.configure_recording({"iq": True})
+        engine.radios[0].configure_recording({"iq": True})
         state = await next_recording(subscription,
                                      lambda state: with_iq_file(state) and state["iq"]["bytes"] >= at_least)
         return state["iq"]
@@ -1065,19 +1065,19 @@ class IQRecordingTest(EngineCase):
         subscription = await self.streaming(engine)
         iq = await self.record(engine, subscription)
         self.assertEqual(iq["rate_hz"], 2_048_000)      # the offered rate nearest the default 2.4 MS/s
-        engine.configure({"centre_hz": 433_000_000})
-        await eventually(lambda: engine.source.centre_hz == 433e6)
-        given = iq_bytes(engine.recording_state())
-        await eventually(lambda: iq_bytes(engine.recording_state()) > given + 100_000)
-        with self.assertLogs("radiolack.engine", logging.WARNING):
-            engine.configure({"sample_rate_hz": RATE_HZ})
-        self.assertEqual(engine.recording_state()["stopped"], {"kind": "iq", "reason": "sample_rate", "detail": ""})
-        await eventually(lambda: engine.source.sample_rate_hz == RATE_HZ)
+        engine.radios[0].configure({"centre_hz": 433_000_000})
+        await eventually(lambda: engine.radios[0].source.centre_hz == 433e6)
+        given = iq_bytes(engine.radios[0].recording_state())
+        await eventually(lambda: iq_bytes(engine.radios[0].recording_state()) > given + 100_000)
+        with self.assertLogs("radiolack", logging.WARNING):
+            engine.radios[0].configure({"sample_rate_hz": RATE_HZ})
+        self.assertEqual(engine.radios[0].recording_state()["stopped"], {"kind": "iq", "reason": "sample_rate", "detail": ""})
+        await eventually(lambda: engine.radios[0].source.sample_rate_hz == RATE_HZ)
         again = await self.record(engine, subscription)
         self.assertEqual(again["rate_hz"], 1_024_000)
-        with self.assertLogs("radiolack.engine", logging.WARNING):
-            engine.configure_devices({"args": "driver=other"})
-        state = engine.recording_state()
+        with self.assertLogs("radiolack", logging.WARNING):
+            engine.radios[0].configure_devices({"args": "driver=other"})
+        state = engine.radios[0].recording_state()
         self.assertEqual((state["iq"], state["stopped"]), (None, {"kind": "iq", "reason": "receiver", "detail": ""}))
         await self.stops[engine]()
         metadata, segments = self.recorded(iq["file"], 8)
@@ -1097,9 +1097,9 @@ class IQRecordingTest(EngineCase):
                 self.soapy.reset()
                 self.device()
                 engine = self.engine(self.source(), recordings=self.folder)
-                engine.configure(changes)
+                engine.radios[0].configure(changes)
                 subscription = await self.streaming(engine)
-                await eventually(lambda: engine.source.centre_hz == changes["centre_hz"])
+                await eventually(lambda: engine.radios[0].source.centre_hz == changes["centre_hz"])
                 iq = await self.record(engine, subscription)
                 self.assertRegex(iq["file"], rf"Z_{frequency / 1e6:.6f}MHz_")
                 await self.stops[engine]()
@@ -1116,14 +1116,14 @@ class IQRecordingTest(EngineCase):
         subscription = await self.streaming(engine)
         with mock.patch.object(recordings, "IQ_PENDING_LIMIT_BYTES", 1), \
                 mock.patch.object(recordings, "IQ_PENDING_S", 0.0), \
-                self.assertLogs("radiolack.engine", logging.WARNING):
-            engine.configure_recording({"iq": True})
+                self.assertLogs("radiolack", logging.WARNING):
+            engine.radios[0].configure_recording({"iq": True})
             state = await next_recording(subscription, lambda state: state["stopped"] is not None)
         self.assertEqual((state["iq"], state["stopped"]),
                          (None, {"kind": "iq", "reason": "disk", "detail": "the disk did not keep up"}))
         iq = await self.record(engine, subscription)
         with mock.patch.object(recordings, "MIN_FREE_BYTES", 2 ** 62), \
-                self.assertLogs("radiolack.engine", logging.WARNING) as logs:
+                self.assertLogs("radiolack", logging.WARNING) as logs:
             state = await next_recording(subscription, lambda state: state["iq"] is None)
         self.assertEqual(state["stopped"], {"kind": "iq", "reason": "space", "detail": ""})
         self.assertIn("less than 2 GiB is free on its disk", logs.output[0])
@@ -1141,11 +1141,11 @@ class IQRecordingTest(EngineCase):
         iq = await self.record(engine, subscription)
         device.present = False
         await eventually(lambda: source.status == "waiting")
-        given = iq_bytes(engine.recording_state())
+        given = iq_bytes(engine.radios[0].recording_state())
         self.assertGreaterEqual(given, iq["bytes"])         # it goes on, waiting
         device.present = True
-        await eventually(lambda: iq_bytes(engine.recording_state()) > given + 100_000)
-        engine.configure_recording({"iq": False})
+        await eventually(lambda: iq_bytes(engine.radios[0].recording_state()) > given + 100_000)
+        engine.radios[0].configure_recording({"iq": False})
         await self.stops[engine]()
         metadata, segments = self.recorded(iq["file"], 8)
         self.assertGreaterEqual(len(metadata["captures"]), 2)
@@ -1170,8 +1170,8 @@ class IQRecordingTest(EngineCase):
         subscription = await self.streaming(engine)
         name = (await self.record(engine, subscription))["file"]
         meta = meta_name(name)
-        engine.configure_recording({"iq": False})
-        await eventually(lambda: not engine._unfinished)        # its thread done
+        engine.radios[0].configure_recording({"iq": False})
+        await eventually(lambda: not engine.unfinished)        # its thread done
         engine.configure_recordings({}, subscription)
         [entry] = (await next_reply(subscription, "recordings"))["files"]
         size = (self.folder / name).stat().st_size
@@ -1188,11 +1188,11 @@ class IQRecordingTest(EngineCase):
     async def test_never_on_the_simulated_band_nor_at_start(self):
         engine = self.engine(SyntheticBand(), recordings=self.folder, sources=Sources())
         with self.assertRaisesRegex(ValueError, "^the simulated band is not recorded$"):
-            engine.configure_recording({"iq": True})
+            engine.radios[0].configure_recording({"iq": True})
         self.device()
-        engine.configure_devices({"args": "driver=test"})
+        engine.radios[0].configure_devices({"args": "driver=test"})
         await self.streaming(engine)
-        self.assertEqual((engine.recording_state()["iq"], self.folder.exists()), (None, False))
+        self.assertEqual((engine.radios[0].recording_state()["iq"], self.folder.exists()), (None, False))
 
 
 def opened_capabilities(soapy, driver: str) -> Capabilities:

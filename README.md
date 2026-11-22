@@ -2300,13 +2300,16 @@ src/radiolack/
   server.py     local web server (aiohttp): interface files, the stream and
                 the recordings' downloads, and remote access's HTTPS
                 listener
-  engine.py     reads a source, removes its DC offset, shares spectrum
-                frames, the demodulation settings, the bookmarks, the
-                signals found, the recording state and the update check's
-                findings with the interfaces, sends audio and the fine
-                spectrum to those that ask, records the audio and the
-                receiver's raw I/Q, and saves the settings and the
-                observations
+  engine.py     holds the radios and what they share with the
+                interfaces: the bookmarks, the band plan, the
+                observations, the kept scans, the preferences, the update
+                check's findings and remote access's state; saves the
+                settings and the observations
+  radio.py      one receiver's radio: reads its source, removes its DC
+                offset, shares spectrum frames, the demodulation
+                settings, the signals found and the recording state,
+                sends audio and the fine spectrum to those that ask, and
+                records the audio and the receiver's raw I/Q
   recordings.py the audio's WAV files and the raw I/Q's SigMF files, each
                 recording written by a thread of its own, their folder and
                 its list

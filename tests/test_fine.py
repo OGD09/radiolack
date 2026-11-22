@@ -13,7 +13,8 @@ import numpy as np
 
 from radiolack.demod import CW_PITCH_HZ, DemodSettings, Demodulator
 from radiolack.dsp import FftFilter
-from radiolack.engine import CLIENT_FINE, Engine, Subscription, _process_block
+from radiolack.engine import CLIENT_FINE, Engine, Subscription
+from radiolack.radio import _process_block
 from radiolack.fine import (FINE_SIZE, FINE_VERSION, FRAME_KIND_FINE, REMOTE_FINE_BINS, FineSpectrum,
                             encode_fine)
 from radiolack.scanners import DETECTION_BLOCKS, ChannelWatch, Detector
@@ -376,10 +377,10 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
         lines = (VFO_HZ + 1_000, VFO_HZ + 1_020)
         engine = self.start(CarriersSource(dict.fromkeys(lines, 0.01)))
         listener, other = engine.subscribe(), engine.subscribe()
-        engine.set_fine(listener, True)
+        engine.radios[0].set_fine(listener, True)
         for mode, width_hz in (("AM", 8_000), ("USB", 2_700), ("LSB", 2_700), ("CW", 500)):
             with self.subTest(mode=mode):
-                engine.configure_demod({"frequency_hz": VFO_HZ, "mode": mode, "bandwidth_hz": width_hz})
+                engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": mode, "bandwidth_hz": width_hz})
                 centre_hz = VFO_HZ - (CW_PITCH_HZ if mode == "CW" else 0.0)
                 frames = await fine_frames(listener, 2, centre_hz)
                 for frame in frames:
@@ -397,8 +398,8 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
         lines = (VFO_HZ + 15_000, VFO_HZ + 15_020)
         engine = self.start(CarriersSource(dict.fromkeys(lines, 0.01), rate_scale=scale))
         listener = engine.subscribe()
-        engine.set_fine(listener, True)
-        engine.configure_demod({"frequency_hz": VFO_HZ, "mode": "CW", "bandwidth_hz": 500})
+        engine.radios[0].set_fine(listener, True)
+        engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": "CW", "bandwidth_hz": 500})
         for frame in await fine_frames(listener, 2, VFO_HZ - CW_PITCH_HZ * scale):
             self.assertEqual(decode(frame)[3], 48_000.0 * scale)
             self.assert_lines(frame, lines)
@@ -407,8 +408,8 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
         lines = (VFO_HZ + 5_000, VFO_HZ + 5_200)
         engine = self.start(CarriersSource(dict.fromkeys(lines, 0.01), rate_hz=WIDE_RATE_HZ))
         listener = engine.subscribe()
-        engine.set_fine(listener, True)
-        engine.configure_demod({"frequency_hz": VFO_HZ, "mode": "WFM", "bandwidth_hz": 180_000})
+        engine.radios[0].set_fine(listener, True)
+        engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": "WFM", "bandwidth_hz": 180_000})
         for frame in await fine_frames(listener, 2, VFO_HZ):
             _, _, _, width, db = decode(frame)
             self.assertEqual((width, len(db)), (320_000.0, FINE_SIZE))     # 39 Hz a bin
@@ -419,8 +420,8 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
         # codes' step, 0.625 dB, and the front filter's ripple remain.
         engine = self.start(CarriersSource({VFO_HZ: 0.1}))
         listener = engine.subscribe()
-        engine.set_fine(listener, True)
-        engine.configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
+        engine.radios[0].set_fine(listener, True)
+        engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
         [frame] = await fine_frames(listener, 1, VFO_HZ)
         fine_db = decode(frame)[4][FINE_SIZE // 2]
         while not isinstance(message := await next_message(listener), bytes) or message[0] != FRAME_KIND_SPECTRUM:
@@ -433,18 +434,18 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_remote_client_gets_2048_bins_each_the_highest_of_its_group(self):
         engine = self.start(CarriersSource({VFO_HZ + 1_000: 0.01}))
         remote = engine.subscribe(device="phone")
-        engine.set_fine(remote, True)
-        engine.configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
+        engine.radios[0].set_fine(remote, True)
+        engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
         frame = (await fine_frames(remote, 1, VFO_HZ))[0]
         kind, _, centre, width, db = decode(frame)
         self.assertEqual((kind, centre, width, len(db)), (FRAME_KIND_FINE, VFO_HZ, 48_000.0, REMOTE_FINE_BINS))
         self.assert_lines(frame, (VFO_HZ + 1_000,))
         # The same frame as this computer's interface receives, in fewer bins.
         local = engine.subscribe()
-        engine.set_fine(local, True)
+        engine.radios[0].set_fine(local, True)
         waiting(local), waiting(remote)
         codes = np.random.default_rng(1).integers(0, 256, FINE_SIZE, np.uint8)
-        engine._publish_fine(engine._fine_measure((FAKE_CENTRE_HZ, FAKE_RATE_HZ), 1.0), [codes])
+        engine.radios[0]._publish_fine(engine.radios[0]._fine_measure((FAKE_CENTRE_HZ, FAKE_RATE_HZ), 1.0), [codes])
         [full] = ready_fine(local)
         [light] = ready_fine(remote)
         self.assertEqual(full[:FRAME_HEADER.size], light[:FRAME_HEADER.size])
@@ -463,30 +464,30 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(FineSpectrum, "add", autospec=True, side_effect=counted):
             first, second = engine.subscribe(), engine.subscribe()
-            source = engine.source
+            source = engine.radios[0].source
             while source.reads < 20:
                 await next_message(first)
-            self.assertEqual((added, engine._fine), ([], None))
+            self.assertEqual((added, engine.radios[0]._fine), ([], None))
             # Asked twice by one, once by another: one spectrum, one frame each time.
-            engine.set_fine(first, True)
-            engine.set_fine(first, True)
-            engine.set_fine(second, True)
-            spectrum = engine._fine
+            engine.radios[0].set_fine(first, True)
+            engine.radios[0].set_fine(first, True)
+            engine.radios[0].set_fine(second, True)
+            spectrum = engine.radios[0]._fine
             frames = {subscription: await fine_frames(subscription, 3) for subscription in (first, second)}
             self.assertEqual({id(item) for item in added}, {id(spectrum)})
             for subscription in (first, second):
                 sequences = [decode(frame)[1] for frame in frames[subscription]]
                 self.assertEqual(len(set(sequences)), 3)
             # Off for one: the other still gets them, from the same spectrum.
-            engine.set_fine(first, False)
-            engine.set_fine(first, False)       # off again, without having asked again
-            self.assertIs(engine._fine, spectrum)
+            engine.radios[0].set_fine(first, False)
+            engine.radios[0].set_fine(first, False)       # off again, without having asked again
+            self.assertIs(engine.radios[0]._fine, spectrum)
             waiting(first)
             await fine_frames(second, 2)
             self.assertFalse(ready_fine(first))
             # The last one leaves: nothing more is computed.
             engine.unsubscribe(second)
-            self.assertIsNone(engine._fine)
+            self.assertIsNone(engine.radios[0]._fine)
             reads = source.reads
             while source.reads < reads + 2:     # the block in progress, then one more
                 await next_message(first)
@@ -499,7 +500,7 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
         engine = self.start(CarriersSource({VFO_HZ: 0.01}), queue_size=4)
         slow, reader = engine.subscribe(), engine.subscribe()
         for subscription in (slow, reader):
-            engine.set_fine(subscription, True)
+            engine.radios[0].set_fine(subscription, True)
         frames = await fine_frames(reader, 3 * CLIENT_FINE + 2)
         kept = ready_fine(slow)
         self.assertLessEqual(len(kept), CLIENT_FINE)
@@ -509,38 +510,38 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
     async def test_idle_once_the_only_client_leaves(self):
         engine = self.start(CarriersSource({VFO_HZ: 0.01}))
         subscription = engine.subscribe()
-        engine.set_fine(subscription, True)
+        engine.radios[0].set_fine(subscription, True)
         await fine_frames(subscription, 1)
         engine.unsubscribe(subscription)
-        self.assertIsNone(engine._fine)
-        self.assertFalse(engine._wanted.is_set())     # the engine stops reading after the block in progress
+        self.assertIsNone(engine.radios[0]._fine)
+        self.assertFalse(engine.radios[0]._wanted.is_set())     # the engine stops reading after the block in progress
 
     async def test_a_frame_of_a_block_whose_setting_changed_meanwhile_is_dropped(self):
         engine = Engine(CarriersSource({VFO_HZ: 0.01}))
         self.addCleanup(engine.close)
         subscription = engine.subscribe()
-        engine.set_fine(subscription, True)
+        engine.radios[0].set_fine(subscription, True)
         waiting(subscription)
         label = (FAKE_CENTRE_HZ, FAKE_RATE_HZ)
         codes = np.zeros(FINE_SIZE, np.uint8)
         for change in ({"frequency_hz": VFO_HZ + 5}, {"mode": "CW"}, {"dc_removal": False}):
             with self.subTest(change=change):
-                fine = engine._fine_measure(label, 1.0)
+                fine = engine.radios[0]._fine_measure(label, 1.0)
                 if "dc_removal" in change:
-                    engine.configure(change)
+                    engine.radios[0].configure(change)
                 else:
-                    engine.configure_demod(change)
-                engine._publish_fine(fine, [codes])
+                    engine.radios[0].configure_demod(change)
+                engine.radios[0]._publish_fine(fine, [codes])
                 self.assertFalse(ready_fine(subscription))
-        fine = engine._fine_measure(label, 1.0)
-        engine._publish_fine(fine, [codes])
+        fine = engine.radios[0]._fine_measure(label, 1.0)
+        engine.radios[0]._publish_fine(fine, [codes])
         [frame] = ready_fine(subscription)
         self.assertEqual(decode(frame)[2], VFO_HZ + 5 - CW_PITCH_HZ)
         # A spectrum dropped meanwhile, as the last client stopped asking, sends nothing either.
-        fine = engine._fine_measure(label, 1.0)
-        engine.set_fine(subscription, False)
-        engine.set_fine(subscription, True)
-        engine._publish_fine(fine, [codes])
+        fine = engine.radios[0]._fine_measure(label, 1.0)
+        engine.radios[0].set_fine(subscription, False)
+        engine.radios[0].set_fine(subscription, True)
+        engine.radios[0]._publish_fine(fine, [codes])
         self.assertFalse(ready_fine(subscription))
 
     async def test_a_switch_of_source_starts_again_from_the_new_receiver(self):
@@ -548,11 +549,11 @@ class EngineFineTest(unittest.IsolatedAsyncioTestCase):
                               other=lambda: CarriersSource({}, centre_hz=FAKE_CENTRE_HZ + 1e6, kind="other"))
         engine = self.start(None, sources=sources)
         subscription = engine.subscribe()
-        engine.set_fine(subscription, True)
-        engine.configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
+        engine.radios[0].set_fine(subscription, True)
+        engine.radios[0].configure_demod({"frequency_hz": VFO_HZ, "mode": "AM"})
         await fine_frames(subscription, 1, VFO_HZ)
-        engine.configure({"kind": "other"})
-        vfo_hz = engine.demod_state()["frequency_hz"]       # the other receiver's, a quarter of its span up
+        engine.radios[0].configure({"kind": "other"})
+        vfo_hz = engine.radios[0].demod_state()["frequency_hz"]       # the other receiver's, a quarter of its span up
         self.assertNotEqual(vfo_hz, VFO_HZ)
         [frame] = await fine_frames(subscription, 1, vfo_hz)
         self.assertLess(decode(frame)[4].max(), -60)    # noise only: nothing of the first receiver's carrier

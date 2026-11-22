@@ -48,10 +48,11 @@ from aiohttp import WSCloseCode, WSMsgType, web
 
 from . import __version__
 from .bandplan import plan_choices
-from .engine import (LOCAL_DEVICE_FIELDS, LOCAL_RECORDING_SETTINGS, LOCAL_SETTINGS, Engine, Source, SourceOpener,
+from .engine import (LOCAL_DEVICE_FIELDS, LOCAL_RECORDING_SETTINGS, Engine, Source, SourceOpener,
                      Subscription, UpdateChecker)
 from .remote import (SESSION_COOKIE, SESSION_MAX_AGE_S, Device, RemoteAccess, device_label, host_name,
                      is_private, issue_server_certificate, remote_urls, server_context)
+from .radio import LOCAL_SETTINGS
 from .recordings import open_recording
 from .scanners import SCANNERS
 from .store import Store
@@ -306,27 +307,30 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
     if subscription.remote and (kind in _LOCAL_COMMANDS
                                 or any(name in changes for name in _LOCAL_FIELDS.get(kind, ()))):
         return kind, "only Radiolack's interface on the computer may change this"
+    radio = subscription.radio
+    if radio is None:       # the stream is ending
+        return kind, "the stream is closing"
     try:
         if kind == "source":
-            engine.configure(changes)
+            radio.configure(changes)
         elif kind == "demod":
             change_id = changes.pop("id", None)
             if change_id is not None and (isinstance(change_id, bool) or not isinstance(change_id, int)
                                           or not 0 < change_id <= _MAX_CHANGE_ID):
                 return kind, "a change id must be a whole number from 1"
-            engine.configure_demod(changes, subscription, change_id)
+            radio.configure_demod(changes, subscription, change_id)
         elif kind == "bookmark":
             engine.edit_bookmarks(changes)
         elif kind == "band_plan":
             engine.configure_band_plan(changes)
         elif kind == "scanner":
-            engine.configure_scanner(changes)
+            radio.configure_scanner(changes)
         elif kind == "observations":
             engine.configure_observations(changes, subscription)
         elif kind == "scans":
             engine.configure_scans(changes, subscription)
         elif kind == "recording":
-            engine.configure_recording(changes, subscription)
+            radio.configure_recording(changes, subscription)
         elif kind == "recordings":
             engine.configure_recordings(changes, subscription)
         elif kind == "preferences":
@@ -339,13 +343,13 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
         elif kind == "remote":
             remote.command(changes)
         elif kind == "report":
-            engine.report(changes, subscription)
+            radio.report(changes, subscription)
         elif kind == "carrier":
-            engine.measure_carrier(changes, subscription)
+            radio.measure_carrier(changes, subscription)
         elif kind == "calibration":
-            engine.calibrate(changes)
+            radio.calibrate(changes)
         elif kind == "devices":
-            engine.configure_devices(changes)
+            radio.configure_devices(changes)
         else:
             on = changes.pop("on", None)
             what = "audio" if kind == "audio" else "the fine spectrum"
@@ -354,9 +358,9 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             if not isinstance(on, bool):
                 return kind, f"{what} must be turned on or off: true or false"
             if kind == "audio":
-                engine.set_audio(subscription, on)
+                radio.set_audio(subscription, on)
             else:
-                engine.set_fine(subscription, on)
+                radio.set_fine(subscription, on)
     except ValueError as error:
         return kind, str(error)
     return kind, None
@@ -924,16 +928,16 @@ class LocalServer:
             raise
 
     def start_scan(self, scan: str) -> None:
-        """Start ``scan``, "memory" or "sweep", given at start, as
-        Engine.start_given_scan does: it goes on without any interface.
-        Raises ValueError, saying why, when it cannot start, and TimeoutError
+        """Start ``scan``, "memory" or "sweep", given at start, on the
+        engine's radio, as Radio.start_given_scan does: it goes on without
+        any interface. Raises ValueError, saying why, when it cannot start, and TimeoutError
         when the server does not answer in time."""
         loop, engine = self._loop, self._engine
         if loop is None or engine is None:
             raise RuntimeError("the server is not running")
 
         async def start() -> None:
-            engine.start_given_scan(scan)
+            engine.radios[0].start_given_scan(scan)
 
         future = asyncio.run_coroutine_threadsafe(start(), loop)
         try:
@@ -944,7 +948,7 @@ class LocalServer:
 
     def power_antenna(self) -> None:
         """Turn the antenna power on for the receiver in use, given at start
-        (cli's --bias-tee), as Engine.power_antenna does. Raises ValueError,
+        (cli's --bias-tee), as Radio.power_antenna does. Raises ValueError,
         saying why, for a source without it, and TimeoutError when the
         server does not answer in time."""
         loop, engine = self._loop, self._engine
@@ -952,7 +956,7 @@ class LocalServer:
             raise RuntimeError("the server is not running")
 
         async def power() -> None:
-            engine.power_antenna()
+            engine.radios[0].power_antenna()
 
         future = asyncio.run_coroutine_threadsafe(power(), loop)
         try:

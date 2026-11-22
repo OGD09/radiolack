@@ -3,10 +3,10 @@
 section 1, the first pull request's first spike, and spike 7 of
 scoping.md.
 
-The tool feeds the engine's own block processing (``engine._process_block``:
+The tool feeds the engine's own block processing (``radio._process_block``:
 DC removal, display spectrum, detection, the VFO's channel, its meter and
 its audio) with synthetic samples at each rate, in the block the engine
-takes at that rate (``Engine.run``: the rate over the frame rate, 30 blocks
+takes at that rate (``Radio.run``: the rate over the frame rate, 30 blocks
 a second, at least one FFT), the VFO in NFM with its 10 kHz filter, audio
 and detection on, as an interface listening would have them. It also times
 what bringing those samples in costs a SoapySDR source, which the rule's
@@ -79,7 +79,7 @@ import numpy as np
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 from radiolack.demod import MODE_BANDWIDTHS_HZ, DemodSettings, Demodulator  # noqa: E402
-from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
+from radiolack.radio import FRAME_RATE, _process_block  # noqa: E402
 from radiolack.rtltcp import BUFFER_S, SAMPLE_RATES_HZ  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
 from radiolack.soapy import FORMATS, Format, NativeBuffer, to_complex  # noqa: E402
@@ -118,7 +118,7 @@ def to_native(samples: np.ndarray, sample_format: Format) -> np.ndarray:
 
 
 def block_size(rate_hz: float) -> int:
-    """The engine's block at this rate (engine.Engine.run)."""
+    """The engine's block at this rate (radio.Radio.run)."""
     return max(FFT_SIZE, round(rate_hz / FRAME_RATE))
 
 

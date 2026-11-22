@@ -20,7 +20,7 @@ drops the oldest samples when the engine falls behind, as the rtl_tcp
 client's buffer does. Meanwhile this thread takes the engine's blocks from
 the buffer, the rate over 30, converts them to complex64 and, unless
 ``--without-engine``, processes them as the engine does
-(``engine._process_block``, the VFO in NFM with audio and detection, as
+(``radio._process_block``, the VFO in NFM with audio and detection, as
 measure_rates.py does), so that the reader competes for Python's lock with
 the engine's work, as it will in Radiolack.
 

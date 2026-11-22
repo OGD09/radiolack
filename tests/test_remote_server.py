@@ -20,7 +20,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver
 
 from radiolack import __version__
-from radiolack.engine import REMOTE_BINS
+from radiolack.radio import REMOTE_BINS
 from radiolack.fine import FRAME_KIND_FINE, REMOTE_FINE_BINS
 from radiolack.recordings import wav_header
 from radiolack.remote import REMOTE_FILE, SESSION_COOKIE

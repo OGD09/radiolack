@@ -7,7 +7,7 @@ The tools are the package's: synchronous AM, the SAM mode (demod.py), the
 automatic notch and the noise blanker, the demodulation settings' ``notch``
 and ``blanker``, and the fine spectrum (fine.py), which the engine computes
 while an interface asks for it. The tool feeds the engine's own block
-processing (``engine._process_block``: DC removal, display spectrum,
+processing (``radio._process_block``: DC removal, display spectrum,
 detection, the VFO's channel, its meter and its audio) with synthetic
 samples, in the engine's block size, 1/30 s of samples, and times it in
 seven configurations: without any tool (the baseline), with each tool
@@ -70,7 +70,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 from radiolack.demod import (CHANNEL_RATE_HZ, MODE_BANDWIDTHS_HZ, WFM_DEEMPHASIS_S,  # noqa: E402
                             DemodSettings, Demodulator, audio_taps)
-from radiolack.engine import FRAME_RATE, _process_block  # noqa: E402
+from radiolack.radio import FRAME_RATE, _process_block  # noqa: E402
 from radiolack.fine import FineSpectrum, encode_fine  # noqa: E402
 from radiolack.scanners import DEFAULT_THRESHOLD_DB, DETECTION_BLOCKS, ChannelWatch, Detector  # noqa: E402
 from radiolack.spectrum import SpectrumAnalyzer  # noqa: E402
@@ -233,7 +233,7 @@ class Run:
 
 
 def block_size(rate_hz: float = RATE_HZ) -> int:
-    """The engine's block at this rate (engine.Engine.run)."""
+    """The engine's block at this rate (radio.Radio.run)."""
     return max(SpectrumAnalyzer().fft_size, round(rate_hz / FRAME_RATE))
 
 

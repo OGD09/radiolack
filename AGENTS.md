@@ -28,8 +28,13 @@ the history under the tag `v0.1.0`.
   on), `remote` (remote access: the
   local certificate authority, with `cryptography`, the access code, paired
   devices with their sessions and interface preferences, the private
-  addresses to listen on), `engine`
-  (reads a source, removes the DC offset, shares spectrum frames, the source
+  addresses to listen on), `engine` and `radio` (the engine holds its
+  radios, one so far, each the engine of one receiver, in `radio`, and
+  what they share: the clients, each showing one radio, the bookmarks, the
+  band plan, the observations, the kept scans, the preferences, remote
+  access's and the update check's states, the search for SoapySDR
+  devices, the recordings folder, its list and deletions, and the store;
+  the rest is each radio's: reads a source, removes the DC offset, shares spectrum frames, the source
   state, the demodulation settings, the bookmarks, the scanner state, the
   signals found, the recording state, the SoapySDR devices found and the
   update check's findings with

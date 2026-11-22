@@ -324,7 +324,7 @@ class BiasTeeOptionTest(unittest.TestCase):
 
         def power(server):
             power_antenna(server)
-            states.append(server._engine.state()["bias_tee"])
+            states.append(server._engine.radios[0].state()["bias_tee"])
 
         with own_settings(), mock.patch.object(cli.LocalServer, "power_antenna", autospec=True,
                                                side_effect=power), \
@@ -572,7 +572,7 @@ class SoapyOptionTest(unittest.TestCase):
 
         def power(server):
             power_antenna(server)
-            states.append(server._engine.state()["bias_tee"])
+            states.append(server._engine.radios[0].state()["bias_tee"])
 
         with stand_in_soapysdr() as soapy, own_settings(), \
                 mock.patch.object(cli.LocalServer, "power_antenna", autospec=True, side_effect=power):
