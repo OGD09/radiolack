@@ -107,6 +107,7 @@ radio program, only on receiver drivers.
 | 2026-11-20 | Bookmark categories, as the owner chose after 0.19.0: categories that the owner makes, one level deep, named "Category", a bookmark in one at most, uncategorized ones first; dragging a bookmark onto a category asks Confirm or Cancel, which the owner chose over an Undo; Edit's Category choice and a Select mode move them without dragging, on the iPhone and from the keyboard; a category's box ticks its bookmarks for the memory scan; removing a category keeps its bookmarks. `bookmarks.json` keeps its bookmarks as they are and lists the categories beside them, so that an older Radiolack loses the categories, not the bookmarks. Set aside: categories within categories, categories from the band plan, a bookmark in several categories, a manual order, and dragging on a touch screen. Designed in [`bookmark-categories.md`](bookmark-categories.md). |
 | 2026-11-21 | France's band plan takes the national table of frequency allocations' facts alone, as the owner chose: the ANFR's terms allow its table reproduced only whole and unchanged, while French law on public information (the CRPA) lets it be reused with its source and date, its meaning kept; the plan takes its edges and services, as it takes the Radio Regulations', names them in Radiolack's own words and names the table with its edition and address, never reproducing it. Set aside: stopping the pull request, which the milestone's design allowed. |
 | 2026-11-22 | The Receiver menu lists the RTL-SDR receivers plugged in, one entry each, as the owner asked with two dongles on one computer, before the several receivers' engine split: read from Linux's sysfs (`/sys/bus/usb/devices`: the IDs in librtlsdr's table, the product, manufacturer and serial strings, the drivers bound), never by opening a receiver (no librtlsdr, rtl_test, rtl_eeprom, rtl_tcp or SoapySDR call), each time the menu shows and every 2 s while it shows, as a native list gives no event as it opens, never otherwise. The list is an answer to the asking interface (the `rtl_devices` message, protocol 6 unchanged: additive), not a state sent to every client, so that nothing reads sysfs unasked; remote clients may list and choose, as they may switch receivers. Choosing one opens it by its serial number through rtl_tcp's `-d`, its settings kept under it; the first time the only receiver plugged in is chosen, it starts from those kept under index 0, which were its own; with several, an index's settings stay with the index, as which receiver it named cannot be known. rtl_tcp reads `-d` as an index first (C's strtol in base 0), then as a serial number, in librtlsdr's order, which need not be sysfs's: receivers that share a serial number, or whose serial number reads as an index (`00000001` with two plugged in), stay listed but cannot be chosen, and the menu and README say to give each its own serial number with `rtl_eeprom -s`, the owner's action, rather than Radiolack guessing an index. A receiver held by a program (`usbfs`) or the DVB driver stays listed, saying so; the receiver in use stays listed when not found. Where nothing can be chosen, or without sysfs, "RTL-SDR · this computer" opens the receiver used last, as before. The several receivers' Receiver menu (its pull request 4) builds on this list. |
+| 2026-11-22 | Several receivers at once: each radio added runs in a process of its own, as the owner chose after spike 9, which found two radios in one process at the limit on the owner's laptop and four over the processor's limit on the computer next to the receivers, while two radios in a process each ran as one alone does. In its design the first radio stays in Radiolack's process, so that one receiver costs what it did; Radiolack's process keeps what the radios share and the clients, and relays the children's states, frames and audio (later-milestones.md, section 5, Processes). The milestone's "Done when" takes the receivers at hand, the HackRF being away: on the owner's laptop, the Nooelec's memory scan on 2 m while a second interface listens on the V3, two interfaces showing both, a restart bringing both back; the iPhone is the owner's to check, as remote access is never turned on on the owner's network for a check. |
 
 ## Scope
 
@@ -536,13 +537,15 @@ second reading.
 
 1. Spike: two radios in one Radiolack, on the owner's two computers.
 2. The radio, split from the engine, without a change in behaviour.
-3. Several radios: engine, protocol, start options.
+3. Several radios: engine, protocol, start options, each radio added in
+   a process of its own.
 4. The Receiver menu's radios.
 5. Service notes.
 
-Done when, with the V3 and the HackRF on the computer next to them, the
-iPhone listens on one while the other's memory scan stops on a bookmark,
-two browser windows show both, and a restart brings both back.
+Done when, with the Nooelec and the V3 on the owner's laptop, a second
+interface listens on the V3 while the Nooelec's memory scan stops on a
+bookmark and the History records it, two interfaces show both, and a
+restart brings both back; the iPhone is the owner's to check.
 
 ### DRM
 
@@ -582,7 +585,7 @@ band.
 | 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
 | 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Answered on 2026-11-18 on the owner's laptop: the engine and the samples' intake hold 4 to 8 MS/s under 50% of one core back to back, 33 to 38% at 8 MS/s in two measures, and 10 MS/s, 48 to 54%, on the limit, is not offered; the searches of `hackrf`, `airspy`, `lime` and `bladerf` make no socket, `airspyhf` stays by its code and `sdrplay` waits for its module; and a thread read the owner's V3 at 2.4 MS/s for 60 s without losing a sample, so the reader stays a thread. Paced as a receiver delivers its blocks, the engine takes a third to 45% of one core at every rate on that laptop, whose processor slows down between blocks, and a few blocks take longer than their 33 ms, most at 8 and 10 MS/s: 8 MS/s is to confirm on the RSPdx-R2 ([Spike 7 result](#spike-7-result-2026-11-18)). |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Answered on 2026-11-17: 3.2 to 3.3% of one core together on the owner's laptop, against 12.5% for the engine itself, once synchronous AM and the blanker, over their 1.5% each, were reworked once; the blanker stays at its share, 1.40 and 1.54% in two measures, and is kept with that cost, by the owner's decision of 2026-11-16 ([Spike 8 result](#spike-8-result-2026-11-17)). |
-| 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Measured on 2026-11-22: yes on the computer next to the receivers, 29% of two cores, the audio never short; on the owner's laptop, busy with its desktop, not quite: in two ten-minute measures of three, one listener ran dry once, and one 10 s window reached 64% of two cores. Two radios in a process each ran there as one radio alone does ([Spike 9 result](#spike-9-result-2026-11-22)). One process or a process per radio: the owner's decision. |
+| 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Measured on 2026-11-22: yes on the computer next to the receivers, 29% of two cores, the audio never short; on the owner's laptop, busy with its desktop, not quite: in two ten-minute measures of three, one listener ran dry once, and one 10 s window reached 64% of two cores. Two radios in a process each ran there as one radio alone does ([Spike 9 result](#spike-9-result-2026-11-22)). Decided the same day: a process per radio (see Decisions). |
 | 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
 
 ### Spike 1 result (2026-11-08)
@@ -1222,6 +1225,9 @@ command, and no receiver fell behind in any measure.
 - **Four radios** in one process keep their audio on the computer next to
   the receivers but go over the processor's limit, 52% of two cores on
   average and 69% at the highest.
+
+Decided on 2026-11-22 by the owner: a process per radio (Decisions);
+its design keeps the first radio in Radiolack's process.
 
 Not measured: the radios once split (the measure runs engines), the native
 window's own work on the laptop, another listener than the tool's model of
