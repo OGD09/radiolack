@@ -44,7 +44,7 @@ const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'scans', 'preferences',
-  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices', 'calibration'];
+  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices', 'calibration', 'rtl_devices'];
 const DEVICE_SEARCHES = ['never', 'searching', 'done', 'failed', 'unavailable'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
@@ -503,9 +503,31 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  */
 
 /**
+ * An RTL-SDR receiver plugged into this computer, as the engine read it
+ * from sysfs without opening it, or the one that the source in use reads.
+ * @typedef {object} RtlDevice
+ * @property {string | null} device  what opens it, its serial number; null without one, when it
+ *                                   cannot be chosen; for a receiver in use not found, as it was opened
+ * @property {string} name           its product's name, or librtlsdr's for its IDs; "" when not found
+ * @property {string} manufacturer   "" when it gives none
+ * @property {string[]} drivers      the kernel drivers bound to it, such as "usbfs" (a program holds it)
+ * @property {boolean} shared        another receiver listed has the same serial number
+ * @property {boolean} readsAsIndex  rtl_tcp would read `device` as an index among those listed
+ * @property {boolean} inUse         the source in use reads it
+ * @property {boolean} found         false for the receiver in use when the list does not hold it
+ */
+
+/**
+ * The RTL-SDR receivers plugged in, as the engine answered this interface.
+ * @typedef {object} RtlDevicesState
+ * @property {'sysfs' | 'unavailable'} listing  "unavailable" where the engine cannot list them
+ * @property {RtlDevice[]} devices
+ */
+
+/**
  * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'scans'
  *   | 'preferences' | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'
- *   | 'calibration'} Command
+ *   | 'calibration' | 'rtl_devices'} Command
  */
 
 /**
@@ -654,6 +676,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {(remote: RemoteState) => void} onRemote       sent next, then at every change
  * @property {(devices: DevicesState) => void} [onDevices]
  *   with sources that open SoapySDR devices: sent after the recording state, then at every change
+ * @property {(devices: RtlDevicesState) => void} [onRtlDevices]
+ *   the RTL-SDR receivers plugged in: sent when this interface asks for them, or chose one
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
  * @property {(check: DriverCheck) => void} onDriverCheck   sent when this interface asks for one
@@ -1420,6 +1444,28 @@ export function decodeDevices(message) {
 }
 
 /**
+ * Decode an RTL-SDR receivers message. Returns null when a field is
+ * missing or malformed.
+ * @param {any} message  a parsed JSON message of type "rtl_devices"
+ * @returns {RtlDevicesState | null}
+ */
+export function decodeRtlDevices(message) {
+  /** @param {unknown} value */
+  const text = (value) => typeof value === 'string';
+  /** @param {any} d */
+  const device = (d) => d !== null && typeof d === 'object' && (d.device === null || (text(d.device) && d.device !== ''))
+    && text(d.name) && text(d.manufacturer) && Array.isArray(d.drivers) && d.drivers.every(text)
+    && typeof d.shared === 'boolean' && typeof d.reads_as_index === 'boolean' && typeof d.in_use === 'boolean' && typeof d.found === 'boolean';
+  const m = message;
+  if (!['sysfs', 'unavailable'].includes(m.listing) || !Array.isArray(m.devices) || !m.devices.every(device)) return null;
+  return {
+    listing: m.listing,
+    devices: m.devices.map((/** @type {any} */ d) => ({ device: d.device, name: d.name, manufacturer: d.manufacturer,
+      drivers: d.drivers.slice(), shared: d.shared, readsAsIndex: d.reads_as_index, inUse: d.in_use, found: d.found })),
+  };
+}
+
+/**
  * The fields of a bookmark command, named as the engine names them.
  * @param {BookmarkFields} fields
  */
@@ -1458,6 +1504,8 @@ export class EngineStream {
   #recordings = [];       // what the engine records, as its last hello listed it
   /** @type {string[]} */
   #measures = [];         // what the engine measures, as its last hello listed it
+  /** @type {string[]} */
+  #listings = [];         // the receivers the engine lists, as its last hello listed them
   /** @type {string[]} */
   #spectra = [];          // the spectra the engine sends when asked, as its last hello listed them
   /** @type {BandPlanChoice[]} */
@@ -1521,6 +1569,16 @@ export class EngineStream {
    */
   get measures() {
     return this.#measures.slice();
+  }
+
+  /**
+   * The receivers that the engine lists when an interface asks, as its
+   * last hello listed them: "rtl_sdr", those plugged into the computer;
+   * an older engine lists none.
+   * @returns {string[]}
+   */
+  get listings() {
+    return this.#listings.slice();
   }
 
   /**
@@ -2018,6 +2076,31 @@ export class EngineStream {
   }
 
   /**
+   * Ask the engine for the RTL-SDR receivers plugged into the computer,
+   * which it reads now: this interface alone receives them. Returns false,
+   * sending nothing, when the stream is not open or the engine lists none.
+   * @returns {boolean}
+   */
+  listRtlDevices() {
+    if (!this.#listings.includes('rtl_sdr')) return false;
+    return this.#send({ type: 'rtl_devices', list: true });
+  }
+
+  /**
+   * Ask the engine to read the RTL-SDR receiver plugged in with this serial
+   * number in place of the source in use: every interface then receives
+   * the new source state, and this one the receivers again, or an error.
+   * Returns false, sending nothing, when the stream is not open or the
+   * engine lists none.
+   * @param {string} serial
+   * @returns {boolean}
+   */
+  chooseRtlDevice(serial) {
+    if (!this.#listings.includes('rtl_sdr')) return false;
+    return this.#send({ type: 'rtl_devices', choose: serial });
+  }
+
+  /**
    * Ask the engine to read the SoapySDR device that device arguments name,
    * such as "driver=rtlsdr", as `chooseDevice` does. This computer's
    * interfaces only.
@@ -2190,6 +2273,9 @@ export class EngineStream {
     } else if (message.type === 'devices') {
       const devices = decodeDevices(message);
       if (devices && this.#handlers.onDevices) this.#handlers.onDevices(devices);
+    } else if (message.type === 'rtl_devices') {
+      const listed = decodeRtlDevices(message);
+      if (listed && this.#handlers.onRtlDevices) this.#handlers.onRtlDevices(listed);
     } else if (message.type === 'calibration') {
       const calibration = decodeCalibration(message);
       if (calibration && this.#handlers.onCalibration) this.#handlers.onCalibration(calibration);
@@ -2221,6 +2307,7 @@ export class EngineStream {
     this.#scanners = names(message.scanners);
     this.#recordings = names(message.recording);
     this.#measures = names(message.measures);
+    this.#listings = names(message.listings);
     this.#spectra = names(message.spectra);
     this.#bandPlans = decodeBandPlans(message.band_plans);
     this.#remoteOff = false;

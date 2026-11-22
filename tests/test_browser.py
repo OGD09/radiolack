@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import tempfile
@@ -41,7 +42,8 @@ from radiolack.sources import Sources
 from radiolack.store import BOOKMARKS_FILE, OBSERVATIONS_FILE, SCANS_FILE, SETTINGS_FILE, Store, shown_path
 from radiolack.synthetic import Emitter, Schedule, SyntheticBand
 from radiolack.updates import UpdateResult
-from tests.fakes import FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port, stand_in_soapysdr
+from tests.fakes import (FAKE_RTL_TCP, LOOPBACK, FakeRtlTcpRuns, FakeUpdates, free_port, plug_usb_device,
+                         stand_in_soapysdr)
 
 ENABLED = os.environ.get("RADIOLACK_BROWSER_TESTS") == "1"
 DRIVEN = ("chromium", "firefox", "webkit")      # the browsers that the tests drive
@@ -2848,7 +2850,9 @@ class BrowserTest(unittest.TestCase):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
         address = f"{LOOPBACK}:{free_port()}"     # the rtl_tcp server used last: nothing listens there
         Store(directory).save(SETTINGS_FILE, {"receivers": {"rtl_tcp": {"source": {"address": address}}}})
-        url = self.serve(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP), store=Store(directory))
+        # No receiver plugged in: the entry that opens the one used last, the first the first time.
+        url = self.serve(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP, usb_devices=directory.parent / "usb"),
+                         store=Store(directory))
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 receiver = first.locator("#src-device")
@@ -2888,6 +2892,42 @@ class BrowserTest(unittest.TestCase):
                 expect(second.locator("#src-soapy-field")).to_be_hidden()
                 first.locator("#src-device").select_option("synthetic")
                 expect(first.locator("#src-soapy-field")).to_be_hidden()
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_receiver_list_shows_each_rtl_sdr_plugged_in_while_the_menu_shows(self):
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        usb = directory / "usb"
+        plug_usb_device(usb, "1-1", manufacturer="Realtek", product="RTL2838UHIDIR", serial="RTLSDR1")
+        plug_usb_device(usb, "3-1.3", manufacturer="Nooelec", product="NESDR SMArt v5", serial="59196661")
+        url = self.serve(sources=Sources(rtl_tcp_program=FAKE_RTL_TCP, usb_devices=usb),
+                         store=Store(directory / "radiolack"))
+        listed = ["Synthetic band (2 m)", "RTL-SDR · RTL2838UHIDIR · RTLSDR1", "RTL-SDR · NESDR SMArt v5 · 59196661",
+                  "RTL-SDR · rtl_tcp", "SoapySDR device"]
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                for page in (first, second):
+                    expect(page.locator("#src-device option")).to_have_text(listed)
+                    expect(page.locator("#src-device")).to_have_value("synthetic")
+                first.locator("#src-device").select_option(label="RTL-SDR · NESDR SMArt v5 · 59196661")
+                for page in (first, second):
+                    expect(page.locator("#src-device")).to_have_value("rtl_sdr:1")
+                    expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                # Plugged in while the menu shows: listed within a few seconds; unplugged, gone.
+                plug_usb_device(usb, "1-2", serial="00000001", drivers=("usbfs",))
+                expect(second.locator("#src-device option").nth(2)).to_have_text(
+                    "RTL-SDR · RTL2838UHIDIR · 00000001 · in use by another program")
+                expect(second.locator("#src-device")).to_have_value("rtl_sdr:2")
+                shutil.rmtree(usb / "1-2")
+                expect(second.locator("#src-device option")).to_have_text(listed)
+                # Nothing is read while the menu is closed.
+                sent = len(self.sent[first])
+                first.keyboard.press("Escape")
+                expect(first.locator("#menu")).to_be_hidden()
+                first.wait_for_timeout(2500)
+                self.assertEqual(sum('"rtl_devices"' in message for message in self.sent[first][sent:]), 0)
+                second.locator("#src-device").select_option("synthetic")
+                expect(second.locator("#src-device")).to_have_value("synthetic")
 
     def test_the_receiver_menu_searches_and_opens_soapysdr_devices(self):
         # Stand-in devices only: the search and the devices are the stand-in's.

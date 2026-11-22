@@ -11,8 +11,10 @@ rtl_tcp server.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from .engine import Source
+from .rtldevices import USB_DEVICES, RtlDevice, list_devices
 from .rtltcp import RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource
 from .soapy import SoapySource
 from .synthetic import SyntheticBand
@@ -27,12 +29,21 @@ class Sources:
     server or a SoapySDR device, which only its device arguments open:
     ``--soapy``, the Receiver menu's list of the devices found or its
     arguments field gives them first, and they are saved. The first of
-    ``kinds`` is the default."""
+    ``kinds`` is the default. It lists the RTL-SDR receivers plugged in
+    from the sysfs folder ``usb_devices`` (rtldevices.py), a fake tree in
+    tests."""
 
     kinds = ("synthetic", "rtl_sdr", "rtl_tcp", "soapy")
 
-    def __init__(self, *, rtl_tcp_program: Sequence[str] = (RTL_TCP_PROGRAM,)) -> None:
+    def __init__(self, *, rtl_tcp_program: Sequence[str] = (RTL_TCP_PROGRAM,),
+                 usb_devices: Path = USB_DEVICES) -> None:
         self._program = tuple(rtl_tcp_program)
+        self._usb_devices = usb_devices
+
+    def rtl_devices(self) -> list[RtlDevice] | None:
+        """The RTL-SDR receivers plugged into this computer, none opened;
+        None where sysfs cannot tell (rtldevices.list_devices)."""
+        return list_devices(self._usb_devices)
 
     def open(self, reopen: Mapping[str, object]) -> Source:
         """A new source from what ``reopen`` gave of another, such as

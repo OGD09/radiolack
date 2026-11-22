@@ -286,7 +286,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                           "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"},
                                          {"id": "france", "name": "France (metropolitan)"},
                                          {"id": "americas", "name": "Americas (ITU Region 2)"},
-                                         {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}]})
+                                         {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
+                          "listings": []})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(8)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences",
                                  "recording"])
@@ -373,6 +374,10 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                 await ws.send_json(command)
                 self.assertEqual(await self.next_error(ws),
                                  {"type": "error", "command": command["type"], "message": REFUSED})
+        # Listing the RTL-SDR receivers plugged in is allowed: this engine has none to list.
+        await ws.send_json({"type": "rtl_devices", "list": True})
+        self.assertEqual(await self.next_error(ws), {"type": "error", "command": "rtl_devices",
+                                                     "message": "this Radiolack does not list RTL-SDR receivers"})
         # Remote access's state changes, as another device pairs: only this computer's interface learns it.
         await self.pair(self.device())
         await self.next_remote(lambda state: len(state["devices"]) == 2)
