@@ -265,7 +265,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                                              {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
                           "listings": [],
                           "radios": [{"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming",
-                                      "scan": None, "recording": []}]})
+                                      "centre_hz": 145_000_000, "scan": None, "recording": []}]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)

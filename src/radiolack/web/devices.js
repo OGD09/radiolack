@@ -100,9 +100,10 @@ export function searchNote(devices, remote) {
  * @param {boolean} picked
  * @param {boolean} remote
  * @param {boolean} open
+ * @param {Record<string, string>} [names]  the names given to the devices, which the list shows
  * @returns {DevicesView}
  */
-export function devicesView(source, devices, picked, remote, open) {
+export function devicesView(source, devices, picked, remote, open, names = {}) {
   const shown = Boolean(source && devices && source.kinds.includes(SOAPY_KIND)
     && (source.kind === SOAPY_KIND || picked));
   if (!shown || !source || !devices) {
@@ -112,7 +113,8 @@ export function devicesView(source, devices, picked, remote, open) {
   const searching = devices.search === 'searching';
   const inUse = source.kind === SOAPY_KIND ? devices.devices.findIndex((device) => device.inUse) : -1;
   /** @type {DeviceOption[]} */
-  const options = devices.devices.map((device, index) => ({ value: String(index), label: device.label }));
+  const options = devices.devices.map((device, index) => ({ value: String(index),
+    label: names[`${SOAPY_KIND}:${device.driver} ${device.serial}`] ?? device.label }));
   if (inUse < 0) {
     const label = searching ? 'Searching…' : options.length ? 'Choose a device' : 'No device found';
     options.unshift({ value: '', label });

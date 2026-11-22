@@ -2367,7 +2367,7 @@ def _driver_answer(request_id: int | None, found: str | None, previous: object, 
 
 def source_summary(source: Source) -> dict[str, Any]:
     """What the radios message says of a radio's source: its kind, the
-    receiver it reads, the tuner and the status."""
+    receiver it reads, the tuner, the status and the centre frequency."""
     described = source.describe()
     if source.kind == "rtl_sdr":
         device = source.reopen.get("device")
@@ -2377,7 +2377,10 @@ def source_summary(source: Source) -> dict[str, Any]:
         device = source.settings_key.removeprefix("soapy ")
     else:
         device = None
-    return {"kind": source.kind, "device": device, "tuner": described.get("tuner"), "status": described.get("status")}
+    centre = described.get("centre_hz")
+    return {"kind": source.kind, "device": device, "tuner": described.get("tuner"), "status": described.get("status"),
+            "centre_hz": round(centre) if isinstance(centre, (int, float)) and not isinstance(centre, bool)
+            and math.isfinite(centre) else None}
 
 
 def _open_saved(sources: SourceOpener, saved: object) -> Source:

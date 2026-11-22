@@ -288,7 +288,7 @@ eight menus beside the one it shows:
   ([Recording](#recording)).
 - Receivers: one card per receiver ([Several receivers](#several-receivers)),
   then the settings of the one this window shows, under Device (its
-  device, "Change device…" and Remove), Tuning, Gain, Input and Advanced
+  device, its name, "Change device…" and Remove), Tuning, Gain, Input and Advanced
   ([RTL-SDR receivers](#rtl-sdr-receivers)): the SoapySDR devices found,
   with a device's antenna sockets and, under Advanced, its gain stages
   and settings ([SoapySDR receivers](#soapysdr-receivers)).
@@ -321,8 +321,8 @@ or a window and a phone, show two receivers side by side. The Receivers
 menu opens on one card per receiver, numbered from 1:
 
 - Each card names the device and its serial number, or an rtl_tcp
-  server's address, and says whether it is receiving, with its centre
-  frequency on the receiver shown, waits for its device or is idle,
+  server's address, and says whether it is receiving, with its own
+  centre frequency, waits for its device or is idle,
   read by no interface and running nothing. A tag tells a scan or a
   recording that runs on it, such as "Memory scan" or "Recording audio".
 - The card of the receiver this window shows is framed in blue and says
@@ -336,7 +336,14 @@ menu opens on one card per receiver, numbered from 1:
   for that device.
 
 The settings below, headed "Receiver N" with the device's name, apply to
-the receiver shown. Under Device, "Change device…" shows the list of
+the receiver shown. Under Device, Name gives the device a name of your
+own, such as "V3 ADS-B" or "Nooelec 2 m", 40 characters at most: the
+cards, the chip beside the frequency and the device lists show it in
+place of the device's own name, on every interface, a phone included,
+and it stays with the device, by its serial number (a SoapySDR device's
+driver and serial number, an rtl_tcp server's address), whichever
+receiver reads it later. Emptied, the field gives the device its own
+name back. "Change device…" shows the list of
 devices: one that another receiver reads shows "read by receiver N" and
 cannot be chosen. Remove stops the receiver's scan and its recordings,
 releases its device and keeps its settings; the interfaces that showed it
@@ -346,9 +353,10 @@ confirms, saying what stops.
 
 With several receivers, a chip beside the frequency, such as "2
 RTL2838UHIDIR", names the receiver this window shows; a press on it opens
-the Receivers menu. A device is named as it names itself: an RTL-SDR's
-product, such as RTL2838UHIDIR for the chip it carries, or a SoapySDR
-device's label, once the Receivers menu has listed it; its kind before.
+the Receivers menu. A device is named by the name you gave it, or else as
+it names itself: an RTL-SDR's product, such as RTL2838UHIDIR for the chip
+it carries, or a SoapySDR device's label, once the Receivers menu has
+listed it; its kind before.
 
 Each device remembers the receiver it chose or added last, and shows it
 again at its next connection while Radiolack still runs it; this
@@ -1607,7 +1615,8 @@ Radiolack keeps its settings and bookmarks in `~/.config/radiolack`
   ignored frequencies, the memory scan's and the range scan's resume
   time, and the range scan's longest listening time, range, time per
   window, passes and listening ([Scanners](#scanners)), and the band plan
-  in use ([Band plan](#band-plan)). It also holds the own
+  in use ([Band plan](#band-plan)), and the names given to the devices
+  ([Several receivers](#several-receivers)). It also holds the own
   settings of this computer's interfaces: the display, waterfall and
   overlay settings, the volume, the tuning step, the band plan's choice of
   mode and whether the spectrum marks the signals found. Last, it records whether Radiolack checks for updates at start

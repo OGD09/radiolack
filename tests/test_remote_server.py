@@ -289,7 +289,7 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                                          {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
                           "listings": [],
                           "radios": [{"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming",
-                                      "scan": None, "recording": []}]})
+                                      "centre_hz": 145_000_000, "scan": None, "recording": []}]})
         kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(9)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences",
                                  "recording", "radios"])

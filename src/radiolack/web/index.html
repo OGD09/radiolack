@@ -244,6 +244,11 @@
             <div class="receiver-title" id="receiver-title"><b id="receiver-title-text"></b><span class="note">settings</span></div>
           </div>
           <h3>Device</h3>
+          <div class="field" id="src-name-field" hidden>
+            <label for="src-name">Name</label>
+            <input id="src-name" type="text" maxlength="40" spellcheck="false" autocomplete="off" aria-describedby="src-name-note">
+            <p class="note" id="src-name-note">Shown on its card, beside the frequency and in the device lists; left empty, the device's own name.</p>
+          </div>
           <p class="note device-line" id="src-note"></p>
           <div class="row"><button type="button" class="btn" id="src-change" aria-expanded="false" aria-controls="src-device-choice">Change device…</button><button type="button" class="btn danger" id="radio-remove" hidden disabled>Remove</button></div>
           <div id="src-device-choice" hidden>

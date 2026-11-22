@@ -57,14 +57,17 @@ function holder(device) {
 }
 
 /**
- * An RTL-SDR receiver's entry text.
+ * An RTL-SDR receiver's entry text: the name given to it, if any, in place
+ * of its product's.
  * @param {RtlDevice} device
+ * @param {Record<string, string>} [names]  the names given to the devices, by radios.js radioKey's key
  */
-export function rtlLabel(device) {
+export function rtlLabel(device, names = {}) {
   if (!device.found) {
     return device.readsAsIndex ? `RTL-SDR · receiver ${device.device} by its index` : `RTL-SDR · ${device.device} · not found`;
   }
-  const parts = ['RTL-SDR', device.name, device.device ?? 'no serial number'];
+  const given = device.device !== null ? names[`${RTL_KIND}:${device.device}`] : undefined;
+  const parts = ['RTL-SDR', given ?? device.name, device.device ?? 'no serial number'];
   const held = holder(device);
   if (held) parts.push(held);
   return parts.join(' · ');
@@ -106,9 +109,10 @@ export function rtlNote(devices) {
  * @param {boolean} soapyPicked
  * @param {boolean} open
  * @param {{id: number, kind: string}[]} [others]
+ * @param {Record<string, string>} [names]  the names given to the devices, which the entries show
  * @returns {ReceiverList}
  */
-export function receiverList(source, listed, soapyPicked, open, others = []) {
+export function receiverList(source, listed, soapyPicked, open, others = [], names = {}) {
   const kinds = open && source ? source.kinds : [];
   /** @param {string} kind */
   const kindOption = (kind, /** @type {string} */ label) => {
@@ -121,7 +125,7 @@ export function receiverList(source, listed, soapyPicked, open, others = []) {
   /** @type {ReceiverOption[]} */
   const rtl = devices.map((device, index) => ({
     value: `${RTL_PREFIX}${index}`,
-    label: rtlLabel(device),
+    label: rtlLabel(device, names),
     disabled: !kinds.includes(RTL_KIND) || (!device.inUse && (!choosable(device) || device.radio !== null)),
   }));
   if (fallback) rtl.unshift(kindOption(RTL_KIND, 'RTL-SDR · this computer'));

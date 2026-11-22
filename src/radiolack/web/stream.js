@@ -532,6 +532,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {string} status             its source state's
  * @property {string | null} scan        the scan that runs on it, as the scanner state's
  * @property {string[]} recording        what it records: "audio", "iq", both or neither
+ * @property {number | null} centreHz    its source's centre frequency; null from an older engine
  */
 
 /**
@@ -540,6 +541,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {Radio[]} radios   the first first
  * @property {number} shown     the id of the radio this interface shows
  * @property {number} max       the most radios the engine runs at once
+ * @property {Record<string, string>} names  the names given to the devices, by radios.js radioKey's key
+ * @property {boolean} naming    the engine keeps devices' names: an older engine's message has none
  */
 
 /**
@@ -1457,15 +1460,21 @@ export function decodeRadios(message) {
   /** @param {any} r */
   const radio = (r) => r !== null && typeof r === 'object' && whole(r.id) && typeof r.kind === 'string'
     && textOrNull(r.device) && textOrNull(r.tuner) && typeof r.status === 'string' && textOrNull(r.scan)
-    && Array.isArray(r.recording) && r.recording.every((/** @type {unknown} */ kind) => typeof kind === 'string');
+    && Array.isArray(r.recording) && r.recording.every((/** @type {unknown} */ kind) => typeof kind === 'string')
+    && (r.centre_hz === undefined || r.centre_hz === null || Number.isFinite(r.centre_hz));
   const m = message;
   if (!Array.isArray(m.radios) || !m.radios.length || !m.radios.every(radio) || !whole(m.shown) || !whole(m.max)) return null;
   if (!m.radios.some((/** @type {any} */ r) => r.id === m.shown)) return null;
+  const naming = m.names !== undefined;
+  if (naming && (m.names === null || typeof m.names !== 'object' || Array.isArray(m.names)
+    || !Object.values(m.names).every((name) => typeof name === 'string'))) return null;
   return {
     radios: m.radios.map((/** @type {any} */ r) => ({ id: r.id, kind: r.kind, device: r.device, tuner: r.tuner,
-      status: r.status, scan: r.scan, recording: r.recording.slice() })),
+      status: r.status, scan: r.scan, recording: r.recording.slice(), centreHz: r.centre_hz ?? null })),
     shown: m.shown,
     max: m.max,
+    names: naming ? { ...m.names } : {},
+    naming,
   };
 }
 
@@ -2198,6 +2207,19 @@ export class EngineStream {
   removeRadio(id) {
     if (!this.#severalRadios) return false;
     return this.#send({ type: 'radio', remove: id });
+  }
+
+  /**
+   * Give the device that the radio with this id reads a name, or forget
+   * its name with "": every interface receives the radios again, with the
+   * names, or this one an error.
+   * @param {number} id
+   * @param {string} name
+   * @returns {boolean}
+   */
+  renameDevice(id, name) {
+    if (!this.#severalRadios) return false;
+    return this.#send({ type: 'radio', rename: { id, name } });
   }
 
   /**

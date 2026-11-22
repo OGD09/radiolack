@@ -29,7 +29,7 @@ preferences apart from this computer's.
                    {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
     "listings": ["rtl_sdr"],
     "radios": [{"id": 1, "kind": "rtl_sdr", "device": "0", "tuner": "Rafael Micro R820T", "status": "idle",
-                "scan": null, "recording": []}]}
+                "centre_hz": 145000000, "scan": null, "recording": []}]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -510,10 +510,10 @@ preferences apart from this computer's.
    ```json
    {"type": "radios", "radios": [
      {"id": 1, "kind": "rtl_sdr", "device": "59196661", "tuner": "Rafael Micro R820T", "status": "streaming",
-      "scan": "memory", "recording": []},
+      "centre_hz": 145000000, "scan": "memory", "recording": []},
      {"id": 2, "kind": "rtl_sdr", "device": "RTLSDR1", "tuner": "Rafael Micro R820T", "status": "streaming",
-      "scan": null, "recording": ["audio"]}],
-    "shown": 2, "max": 4}
+      "centre_hz": 1090000000, "scan": null, "recording": ["audio"]}],
+    "shown": 2, "max": 4, "names": {"rtl_sdr:RTLSDR1": "V3 ADS-B"}}
    ```
 
    | Field | Meaning |
@@ -522,10 +522,12 @@ preferences apart from this computer's.
    | `id` | The radio's number, a whole number from 1 that the engine never gives twice while it runs: a removed radio's is not given again. |
    | `kind`, `tuner`, `status` | Its source state's. |
    | `device` | Which receiver it reads: an `rtl_sdr` source's index or serial number, an `rtl_tcp` source's address, a `soapy` source's driver and serial number, or its device arguments until known; null for the simulated band. |
+   | `centre_hz` | The centre frequency that its source state gives, in whole hertz, or null when it gives none. |
    | `scan` | The scan that runs on it, as the scanner state's `scan`. |
    | `recording` | The recordings that run on it: `audio`, `iq`, both or neither. |
    | `shown` | The `id` of the radio that this interface shows. |
    | `max` | The most radios the engine runs at once: 4. |
+   | `names` | The names that the user gave the devices, which the interface shows in place of their own (the `radio` message's `rename`), by device: the radio's `kind` and `device` joined by a colon, `""` for a null `device` (`"rtl_sdr:RTLSDR1"`, `"soapy:hackrf 0001"`, `"rtl_tcp:127.0.0.1:1234"`, `"synthetic:"`). The devices that no radio reads keep theirs, which the device lists show; 64 at most, the latest named kept. |
 
    A receiver, by its saved settings, belongs to one radio: the simulated
    band, the rtl_tcp server and each RTL-SDR or SoapySDR device are read
@@ -1464,13 +1466,14 @@ that another receiver shares or that rtl_tcp would read as an index (the
 receivers' `shared` and `reads_as_index`), saying why.
 
 A `radio` message chooses the radio that this interface shows, adds a
-radio or removes one, one field at a time:
+radio, removes one or names the device that one reads, one field at a time:
 
 ```json
 {"type": "radio", "id": 2}
 {"type": "radio", "add": {"kind": "rtl_sdr", "device": "RTLSDR1"}}
 {"type": "radio", "add": {"kind": "soapy", "driver": "sdrplay", "serial": "1234"}}
 {"type": "radio", "remove": 2}
+{"type": "radio", "rename": {"id": 2, "name": "V3 ADS-B"}}
 ```
 
 | Field | Value |
@@ -1478,9 +1481,10 @@ radio or removes one, one field at a time:
 | `id` | A radio's `id`: the interface shows it from now on, and receives its states again, then its frames. Its audio and fine frames follow if the interface asked for them: the request stays with the interface. |
 | `add` | A source, among the source state's `kinds`: `{"kind": KIND}` and, for an `rtl_sdr` source, its `device`, an index or a serial number; for a `soapy` source, a device among those found, by its `driver` and `serial`, or its device arguments, `args`. A new radio reads it, starting from the settings saved for its receiver, and the interface that added it shows it. |
 | `remove` | A radio's `id`, any but the first: the radio's scan and recordings stop, its receiver is released, its settings saved for when it comes back, and the interfaces that showed it show the first radio. |
+| `rename` | A radio's `id` and a `name` for the device that it reads, a text of 40 characters at most without control characters, its outer spaces removed; `""` forgets the name, and the interfaces show the device's own again. The name stays with the device, whichever radio reads it later, and is saved; every interface receives the radios again. |
 
 The engine refuses a message without a field or with more than one, an
-unknown or invalid field, an unknown radio, a fifth radio, a source that
+unknown or invalid field, an unknown radio, a name that is not one, a fifth radio, a source that
 cannot open, a receiver that another radio reads, a SoapySDR device while
 a search runs, and removing the first radio, which stays, saying why. The radios after
 the first are saved with their sources and scanner settings, and open
@@ -1963,6 +1967,13 @@ and later.
   every interface does until it chooses another. A newer interface reads
   a hello without `radios`, an older engine's, as one with a single
   radio.
+  The same day, the devices' names and each radio's centre frequency,
+  without a new version: the radios message's `names` and `centre_hz`,
+  the hello's `centre_hz`, and the `radio` message's `rename`. An older
+  interface ignores them; a newer one reads a radios message without
+  `names`, an older engine's, as one that cannot name the devices, and
+  hides the Name field, and a radio without `centre_hz` as one without a
+  centre frequency.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

@@ -17,10 +17,10 @@ RADIOS_SCRIPT = """
 const r = await import(process.argv[1]);
 const kinds = ['synthetic', 'rtl_sdr', 'rtl_tcp', 'soapy'];
 const radio = (id, more = {}) => ({ id, kind: 'rtl_sdr', device: '59196661', tuner: 'Rafael Micro R820T',
-  status: 'streaming', scan: null, recording: [], ...more });
+  status: 'streaming', scan: null, recording: [], centreHz: null, ...more });
 const nesdr = radio(1, { scan: 'memory' });
 const v3 = radio(2, { device: 'RTLSDR1', recording: ['audio', 'iq'] });
-const state = (shown, ...radios) => ({ radios, shown, max: 4 });
+const state = (shown, ...radios) => ({ radios, shown, max: 4, names: {}, naming: true });
 const device = (serial, more = {}) => ({ device: serial, name: 'NESDR SMArt v5', manufacturer: 'Nooelec', drivers: [],
   shared: false, readsAsIndex: false, inUse: false, radio: null, found: true, ...more });
 const listed = { listing: 'sysfs', devices: [device('59196661', { inUse: true, radio: 1 }), device('RTLSDR1', { name: 'RTL2838UHIDIR' }),
@@ -35,8 +35,14 @@ r.learnNames(names, listed, soapy);
 const tcp = radio(4, { kind: 'rtl_tcp', device: '127.0.0.1:1234', status: 'waiting' });
 const band = radio(3, { kind: 'synthetic', device: null, status: 'idle', scan: 'sweep' });
 const hackrf = radio(5, { kind: 'soapy', device: 'hackrf 0001', status: 'connecting' });
+const given = { 'rtl_sdr:RTLSDR1': 'V3 ADS-B', 'soapy:hackrf 0001': 'Bench HackRF' };
+const named = { ...state(2, radio(1, { centreHz: 145000000 }), v3, hackrf), names: given };
 const out = {
   names: [...names.entries()].sort(),
+  namedCards: r.receiverCards(named, names, 104100000).map((card) => `${card.id}|${card.name}|${card.serial}|${card.stateText}`),
+  namedShown: r.shownReceiver(named, names),
+  unnamedShown: r.shownReceiver({ ...state(1, nesdr), naming: false }, names),
+  namedAdd: adds({ ...state(1, nesdr), names: given }, source, listed, soapy, true),
   cards: r.receiverCards(state(2, nesdr, v3, band, tcp, hackrf), names, 104100000),
   cardsWithoutCentre: r.receiverCards(state(1, radio(1, { device: '0' })), new Map(), null),
   shownReceiver: [r.shownReceiver(state(2, nesdr, v3), names), r.shownReceiver(state(1, band), names), r.shownReceiver(null, names)],
@@ -70,12 +76,16 @@ const radio = { id: 1, kind: 'rtl_sdr', device: '59196661', tuner: 'Rafael Micro
   scan: 'memory', recording: ['audio'] };
 const valid = { type: 'radios', radios: [radio, { ...radio, id: 2, device: null, tuner: null, scan: null, recording: [] }],
   shown: 2, max: 4 };
+const named = { ...valid, radios: [{ ...radio, centre_hz: 145000000 }], shown: 1, names: { 'rtl_sdr:59196661': 'Nooelec 2 m' } };
 const out = {
   valid: s.decodeRadios(valid),
+  named: s.decodeRadios(named),
   refused: [
     { ...valid, radios: [] }, { ...valid, radios: null }, { ...valid, shown: 3 }, { ...valid, shown: null },
     { ...valid, max: 0 }, { ...valid, radios: [{ ...radio, id: 0 }] }, { ...valid, radios: [{ ...radio, recording: [1] }] },
     { ...valid, radios: [{ ...radio, scan: 1 }] }, { ...valid, radios: [null] },
+    { ...named, names: null }, { ...named, names: ['x'] }, { ...named, names: { a: 3 } },
+    { ...named, radios: [{ ...radio, centre_hz: 'x' }] },
   ].map(s.decodeRadios),
 };
 console.log(JSON.stringify(out));
@@ -111,7 +121,8 @@ class RadiosModuleTest(unittest.TestCase):
         # Before any list, an RTL-SDR is named by its kind; without the centre, the state alone.
         self.assertEqual(out["cardsWithoutCentre"], [
             {"id": 1, "name": "RTL-SDR", "serial": "0", "shown": True, "state": "live", "stateText": "Receiving", "tags": []}])
-        self.assertEqual(out["shownReceiver"], [{"id": 2, "name": "RTL2838UHIDIR"}, None, None])
+        self.assertEqual(out["shownReceiver"], [
+            {"id": 2, "name": "RTL2838UHIDIR", "given": "", "own": "RTL2838UHIDIR", "naming": True}, None, None])
         self.assertEqual(out["keys"], ["rtl_sdr:59196661", "synthetic:"])
         self.assertEqual(out["badge"], [{"scanning": False, "recording": False}, {"scanning": True, "recording": False},
                                         {"scanning": False, "recording": True}])
@@ -146,6 +157,22 @@ class RadiosModuleTest(unittest.TestCase):
             {**first, "shown": False}])
         self.assertEqual(out["press"], ["none", "arm", "remove", "remove"])
 
+    def test_a_name_given_to_a_device_replaces_its_own_and_each_card_has_its_centre(self):
+        out = self.run_script(RADIOS_SCRIPT, "radios.js")
+        self.assertEqual(out["namedCards"], [
+            "1|NESDR SMArt v5|59196661|Receiving \N{MIDDLE DOT} 145.000 MHz",
+            "2|V3 ADS-B|RTLSDR1|Receiving \N{MIDDLE DOT} 104.100 MHz",
+            "5|Bench HackRF|0001|Connecting"])
+        self.assertEqual(out["namedShown"], {"id": 2, "name": "V3 ADS-B", "given": "V3 ADS-B", "own": "RTL2838UHIDIR",
+                                             "naming": True})
+        self.assertEqual(out["unnamedShown"], {"id": 1, "name": "NESDR SMArt v5", "given": "", "own": "NESDR SMArt v5",
+                                               "naming": False})
+        self.assertEqual(out["namedAdd"], [
+            'Synthetic band (2 m)|{"kind":"synthetic"}|false',
+            'RTL-SDR \N{MIDDLE DOT} V3 ADS-B \N{MIDDLE DOT} RTLSDR1|{"kind":"rtl_sdr","device":"RTLSDR1"}|true',
+            'RTL-SDR \N{MIDDLE DOT} rtl_tcp|{"kind":"rtl_tcp"}|false',
+            'SoapySDR \N{MIDDLE DOT} Bench HackRF|{"kind":"soapy","driver":"hackrf","serial":"0001"}|true'])
+
     def test_the_radio_shown_last_is_shown_again_while_it_runs(self):
         out = self.run_script(RADIOS_SCRIPT, "radios.js")
         self.assertEqual(out["restore"], [2, None, None, None])
@@ -154,10 +181,13 @@ class RadiosModuleTest(unittest.TestCase):
         out = self.run_script(DECODE_SCRIPT, "stream.js")
         self.assertEqual(out["valid"], {"radios": [
             {"id": 1, "kind": "rtl_sdr", "device": "59196661", "tuner": "Rafael Micro R820T", "status": "streaming",
-             "scan": "memory", "recording": ["audio"]},
+             "scan": "memory", "recording": ["audio"], "centreHz": None},
             {"id": 2, "kind": "rtl_sdr", "device": None, "tuner": None, "status": "streaming", "scan": None,
-             "recording": []}], "shown": 2, "max": 4})
-        self.assertEqual(out["refused"], [None] * 9)
+             "recording": [], "centreHz": None}], "shown": 2, "max": 4, "names": {}, "naming": False})
+        # From an engine that keeps names and sends each radio's centre frequency.
+        self.assertEqual(out["named"]["radios"][0]["centreHz"], 145000000)
+        self.assertEqual((out["named"]["names"], out["named"]["naming"]), ({"rtl_sdr:59196661": "Nooelec 2 m"}, True))
+        self.assertEqual(out["refused"], [None] * 13)
 
 
 if __name__ == "__main__":
