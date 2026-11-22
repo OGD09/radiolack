@@ -150,8 +150,8 @@ import numpy as np
 
 from .converter import DEFAULT_LO_HZ, HIGHEST_HZ, Conversion, checked_converter, checked_lo, mhz
 from .correction import checked_ppm, whole_ppm
-from .rtltcp import (BUFFER_S, DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, IDLE_S, READ_WAIT_S, RETRY_S, SETTLE_S,
-                     TIMEOUT_S, finite_number)
+from .rtltcp import (BUFFER_S, DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, IDLE_S, READ_WAIT_S, REPORT_S, RETRY_S,
+                     SETTLE_S, TIMEOUT_S, Losses, finite_number)
 
 MODULE = "SoapySDR"
 PACKAGE = "python3-soapysdr"    # what brings the module on Debian and Ubuntu
@@ -160,7 +160,6 @@ MAX_RATE_HZ = 8_000_000.0       # the highest rate offered (spike 7)
 BANDWIDTH_SHARE = 0.8           # the analogue bandwidth: at most this share of the sample rate
 TIMEOUT_US = 100_000            # a read's wait for samples, which bounds how soon the thread sees a change
 FAILED_READS = 10               # stream errors in a row that end a session
-REPORT_S = 60.0                 # the losses are logged at most this often
 TAP_S = 1.0                     # samples waiting for the event loop on their way to an I/Q recording, at most
 STOP_S = 5.0                    # the reading thread stops within a read and a stop; a warning after this
 MAX_ARGS = 256                  # characters in the device arguments
@@ -1254,58 +1253,6 @@ def _text(error: BaseException) -> str:
     return text if len(text) <= _TEXT_CHARS else text[:_TEXT_CHARS - 1] + "…"
 
 
-# ------------------------------------------------------------- reporting
-
-
-class Losses:
-    """What the source reports as it runs: the device's overflows, the
-    samples the buffer dropped for an engine behind, the blocks that took
-    the engine longer than their period, and the samples that an I/Q
-    recording did not get, the event loop behind; logged at most every
-    ``interval_s``, with their counts since the previous line."""
-
-    def __init__(self, name: str, interval_s: float = REPORT_S, clock: Callable[[], float] = time.monotonic) -> None:
-        self.name = name
-        self._interval_s = interval_s
-        self._clock = clock
-        self._lock = threading.Lock()
-        self.overflows = 0          # since the previous line, as the counts below
-        self.dropped = 0
-        self.late_blocks = 0
-        self.unrecorded = 0
-        self._since = clock()
-        self._logged = -math.inf
-
-    def add(self, *, overflows: int = 0, dropped: int = 0, late_blocks: int = 0, unrecorded: int = 0) -> None:
-        with self._lock:
-            self.overflows += overflows
-            self.dropped += dropped
-            self.late_blocks += late_blocks
-            self.unrecorded += unrecorded
-
-    def check(self, flush: bool = False) -> None:
-        """Log the counts, if any, unless a line went out less than the
-        interval ago; with ``flush``, whatever the interval."""
-        with self._lock:
-            now = self._clock()
-            if not (self.overflows or self.dropped or self.late_blocks or self.unrecorded):
-                return
-            if not flush and now - self._logged < self._interval_s:
-                return
-            parts = []
-            if self.overflows:
-                parts.append(f"{self.overflows} overflows reported by the device")
-            if self.dropped:
-                parts.append(f"{self.dropped} samples dropped, the engine behind")
-            if self.late_blocks:
-                parts.append(f"{self.late_blocks} blocks took the engine longer than their period")
-            if self.unrecorded:
-                parts.append(f"{self.unrecorded} samples not recorded, the event loop behind")
-            log.warning("%s: %s, in the last %.0f s", self.name, ", ".join(parts), now - self._since)
-            self.overflows = self.dropped = self.late_blocks = self.unrecorded = 0
-            self._since = self._logged = now
-
-
 # ------------------------------------------------------------- the source
 
 
@@ -1369,7 +1316,7 @@ class SoapySource:
         self.on_change: Callable[[], None] | None = None
         self.status = "idle"        # "connecting", "streaming", "waiting" or "idle"
         self.detail = ""            # why the source waits
-        self._losses = Losses(f"SoapySDR {self._args['driver']}", report_s, clock)
+        self._losses = Losses(f"SoapySDR {self._args['driver']}", report_s, clock, log)
         # The buffer of the session that runs and what its samples were
         # taken with, set by the thread under ``_buffer_lock``; the samples
         # a read waits for.
@@ -1860,8 +1807,8 @@ class SoapySource:
                        capabilities.full_scale)
         with self._buffer_lock:
             previous = self._buffer
-            if previous is not None:
-                self._losses.add(dropped=previous.dropped - self._dropped)
+            if previous is not None and self._label is not None:
+                self._losses.add(dropped=previous.dropped - self._dropped, rate_hz=self._label.sample_rate_hz)
             self._buffer, self._label, self._dropped = buffer, label, 0
         self._tap_gap = True        # a new label: a new capture
         return retuned
@@ -2076,9 +2023,9 @@ class SoapySource:
         """Count the samples the buffer dropped since the latest count, and
         log the losses when due."""
         with self._buffer_lock:
-            buffer = self._buffer
-            if buffer is not None and buffer.dropped != self._dropped:
-                self._losses.add(dropped=buffer.dropped - self._dropped)
+            buffer, label = self._buffer, self._label
+            if buffer is not None and label is not None and buffer.dropped != self._dropped:
+                self._losses.add(dropped=buffer.dropped - self._dropped, rate_hz=label.sample_rate_hz)
                 self._dropped = buffer.dropped
         self._losses.check()
 

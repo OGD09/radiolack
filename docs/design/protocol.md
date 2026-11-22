@@ -1278,12 +1278,14 @@ A `report` message asks the engine for a problem report, which comes to the
 sender alone, with what the interface tells of itself, if it does:
 
 ```json
-{"type": "report", "page": "Mozilla/5.0 (X11; Linux x86_64) ...; WebGL2 views; 1280x800 at 1x"}
+{"type": "report", "page": "Mozilla/5.0 (X11; Linux x86_64) ...; WebGL2 views; 1280x800 at 1x; audio since load: ran dry 2, 0.0 s dropped by the engine, 0.0 s skipped"}
 ```
 
 `page`, a line of text of 300 characters at most, goes into the report as
 it is. The engine refuses other fields and another `page`, and the message
-of a remote client.
+of a remote client. Radiolack's interface tells its web engine, whether its
+views draw, its window's size and the audio it lost since it loaded, last,
+shortening the web engine's name to keep the rest within the limit.
 
 A `carrier` message asks the engine to measure the carrier at the VFO,
 which comes to the sender alone (the carrier's measure, above):

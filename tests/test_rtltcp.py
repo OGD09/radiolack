@@ -3,6 +3,7 @@ ephemeral port, and a fake rtl_tcp program that never opens a receiver."""
 
 import asyncio
 import functools
+import logging
 import os
 import shutil
 import sys
@@ -176,6 +177,25 @@ class StreamingTest(SourceTest):
         await asyncio.sleep(0.4)                # far more than the source keeps
         i_codes, _ = sample_codes(await self.read(source))
         self.assertEqual(i_codes, {fake_codes(433e6, 0)[0]})
+
+    async def test_logs_the_samples_dropped_for_a_reader_behind_without_the_address(self):
+        source = await self.start(buffer_s=0.01)
+        with self.assertLogs("radiolack.rtltcp", logging.WARNING) as logs:
+            await self.read(source)
+            await asyncio.sleep(0.3)            # far more than the source keeps
+            await self.read(source)
+        [message] = [record.getMessage() for record in logs.records]
+        self.assertRegex(message, r"^rtl_tcp: [1-9]\d* samples dropped \(\d+\.\d s\), the engine behind, "
+                                  r"in the last \d+ s$")
+        self.assertNotIn(str(self.fake.port), message)
+        # At most once a minute: the drops that follow wait for the next line.
+        await asyncio.sleep(0.3)
+        with self.assertNoLogs("radiolack.rtltcp", logging.WARNING):
+            await self.read(source)
+        with self.assertLogs("radiolack.rtltcp", logging.WARNING) as logs:
+            source.close()
+            await source.wait_closed()          # its last count goes out as it stops
+        self.assertRegex(logs.records[-1].getMessage(), r"^rtl_tcp: [1-9]\d* samples dropped \(\d+\.\d s\)")
 
 
 class SettingsTest(SourceTest):

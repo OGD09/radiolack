@@ -779,7 +779,9 @@ class BrowserTest(unittest.TestCase):
                 expect(dialog).to_be_visible()
                 text = page.locator("#report-text")
                 expect(text).to_have_value(re.compile(rf"^Radiolack {re.escape(__version__)}( \(Debian package\))?\n"))
-                expect(text).to_have_value(re.compile(r"\nInterface: \S.*\nReceiver: synthetic, streaming, "))
+                expect(text).to_have_value(re.compile(
+                    r"\nInterface: \S.*; audio since load: ran dry \d+, \d+\.\d s dropped by the engine, "
+                    r"\d+\.\d s skipped\nReceiver: synthetic, streaming, "))
                 self.assertTrue(page.locator("#report-issue").get_attribute("href").startswith(f"{ISSUES_URL}?body="))
                 page.locator("#report-copy").click()
                 # Without the clipboard, which a headless browser may refuse, the report is selected.

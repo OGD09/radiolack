@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import math
+import re
 import sys
 import tempfile
 import threading
@@ -26,7 +27,8 @@ from radiolack import soapy as soapy_source
 from radiolack.demod import FRAME_KIND_AUDIO
 from radiolack.engine import Engine, Subscription
 from radiolack.recordings import meta_name
-from radiolack.soapy import (FORMATS, MISSING, Capabilities, Losses, NativeBuffer, SoapySource, args_text,
+from radiolack.rtltcp import Losses
+from radiolack.soapy import (FORMATS, MISSING, Capabilities, NativeBuffer, SoapySource, args_text,
                              is_antenna_power, load_module, module_problem, parse_args, read_capabilities,
                              transmit_named)
 from radiolack.sources import Sources
@@ -313,7 +315,7 @@ def replace_centre(settings, centre_hz):
 class LossesTest(unittest.TestCase):
     def test_logged_at_most_once_a_minute_with_the_counts_since(self):
         clock = FakeClock()
-        losses = Losses("SoapySDR test", 60.0, clock)
+        losses = Losses("SoapySDR test", 60.0, clock, soapy_source.log)     # as a SoapySDR source makes it
         losses.check()      # nothing to say
         with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
             losses.add(overflows=2, dropped=1000)
@@ -326,12 +328,16 @@ class LossesTest(unittest.TestCase):
             losses.check()
             losses.add(dropped=5)
             losses.check(flush=True)
+            losses.add(dropped=1_200_000, rate_hz=2_400_000)      # with their rate: their length too
+            losses.add(dropped=512_000, rate_hz=1_024_000)
+            losses.check(flush=True)
         self.assertEqual([record.getMessage() for record in logs.records], [
             "SoapySDR test: 2 overflows reported by the device, 1000 samples dropped, the engine behind, in the "
             "last 0 s",
             "SoapySDR test: 1 overflows reported by the device, 3 blocks took the engine longer than their "
             "period, in the last 61 s",
-            "SoapySDR test: 5 samples dropped, the engine behind, in the last 0 s"])
+            "SoapySDR test: 5 samples dropped, the engine behind, in the last 0 s",
+            "SoapySDR test: 1712000 samples dropped (1.0 s), the engine behind, in the last 0 s"])
 
 
 class SourceCase(unittest.IsolatedAsyncioTestCase):
@@ -572,8 +578,11 @@ class SourceTest(SourceCase):
         self.device()
         source = self.source(report_s=0.0, buffer_s=0.01)
         await self.samples(source, 1024)
+        dropped = re.compile(r"[1-9]\d* samples dropped \(\d+\.\d s\), the engine behind")
+        deadline = time.monotonic() + 10
         with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
-            while not any("samples dropped, the engine behind" in line for line in logs.output):
+            while not any(dropped.search(line) for line in logs.output):
+                self.assertLess(time.monotonic(), deadline, logs.output)
                 await asyncio.sleep(0.05)
                 await self.samples(source, 1024)
 

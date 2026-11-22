@@ -2,7 +2,8 @@
  * Audio output: plays the engine's audio frames (stream.js) on this device,
  * through an AudioWorklet (audio-worklet.js) and a volume control. Browsers
  * may hold the audio until the user clicks, taps or presses a key on the
- * page; it then starts with that gesture.
+ * page; it then starts with that gesture. It keeps the losses that the
+ * worklet counts, which a problem report tells.
  */
 
 const WORKLET_URL = 'audio-worklet.js';
@@ -13,6 +14,14 @@ const PROCESSOR_NAME = 'radiolack-audio';
 // (Safari on the iPhone, for one).
 const GESTURES = ['pointerdown', 'pointerup', 'touchend', 'keydown'];
 const VOLUME_TIME_S = 0.02;     // volume changes glide over about this long, without clicks
+
+/**
+ * The audio lost since the page loaded: the times playback ran dry, its
+ * frames late or paused (a retune pauses them too), the seconds of silence
+ * put in place of frames that the engine dropped for this interface, and
+ * the seconds skipped once this device fell behind.
+ * @typedef {{ dry: number, missingS: number, skippedS: number }} AudioLosses
+ */
 
 /**
  * "off" until started, "starting" while the worklet loads, "blocked" while
@@ -31,6 +40,8 @@ export class AudioOutput {
   /** @type {AudioState} */
   #state = 'off';
   #gainValue = 1;
+  /** @type {AudioLosses} */
+  #losses = { dry: 0, missingS: 0, skippedS: 0 };
   #onState;
   #resume = () => {
     // A gesture lets the browser start the audio it holds.
@@ -45,6 +56,11 @@ export class AudioOutput {
   /** @returns {AudioState} */
   get state() {
     return this.#state;
+  }
+
+  /** @returns {AudioLosses} */
+  get losses() {
+    return { ...this.#losses };
   }
 
   /** Prepare the output: it plays as soon as the browser lets it. */
@@ -62,6 +78,7 @@ export class AudioOutput {
       await context.audioWorklet.addModule(WORKLET_URL);
       const node = new AudioWorkletNode(context, PROCESSOR_NAME,
         { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = (event) => this.#counted(event.data);
       const gain = new GainNode(context, { gain: this.#gainValue });
       node.connect(gain).connect(context.destination);
       this.#node = node;
@@ -117,6 +134,15 @@ export class AudioOutput {
       for (const type of GESTURES) window.addEventListener(type, this.#resume, { capture: true });
       this.#set('blocked');
       context.resume().catch(() => {});     // works at once where the browser allows it
+    }
+  }
+
+  /** @param {any} message  the worklet's losses since the start */
+  #counted(message) {
+    if (message?.type !== 'losses') return;
+    const { dry, missingS, skippedS } = message;
+    if ([dry, missingS, skippedS].every((value) => Number.isFinite(value) && value >= 0)) {
+      this.#losses = { dry, missingS, skippedS };
     }
   }
 
