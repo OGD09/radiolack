@@ -1309,7 +1309,9 @@ class Engine:
         sources to open, which sources open at the next start."""
         radio = self.radios[0]
         settings: dict[str, Any] = {} if self.sources is None else {"source": radio.source.reopen}
-        settings["receivers"] = {**self.receivers, radio.source.settings_key: radio.receiver_settings()}
+        # Every radio's receiver as it stands, which that radio starts from again.
+        settings["receivers"] = {**self.receivers, **{each.source.settings_key: each.receiver_settings()
+                                                      for each in self.radios}}
         settings["scanner"] = radio.scanner_settings()
         if self.sources is not None and len(self.radios) > 1:
             # The radios after the first, which an older Radiolack leaves out.
