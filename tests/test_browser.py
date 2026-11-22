@@ -1858,7 +1858,7 @@ class BrowserTest(unittest.TestCase):
                 menu, title, icon = page.locator("#menu"), page.locator("#menu-title"), page.locator(MENU_BUTTON)
                 for selector in REMOVED_CONTROLS:
                     expect(page.locator(selector)).to_have_count(0)
-                expect(title).to_have_text("Receiver")      # which interfaces() opened
+                expect(title).to_have_text("Receivers")     # which interfaces() opened
                 expect(icon).to_have_attribute("aria-expanded", "true")
                 for key, name in enumerate(MENUS, start=1):
                     page.keyboard.press(str(key))
@@ -2984,22 +2984,24 @@ class BrowserTest(unittest.TestCase):
                 expect(second.locator("#src-device option").nth(1)).to_be_disabled()
                 expect(second.locator("#radio-remove")).to_be_visible()
                 expect(second.locator("#radio-remove")).to_be_disabled()     # receiver 1 stays
+                # A page loaded again shows again the receiver it showed. Its
+                # device's name comes once the Receivers menu lists the
+                # receivers plugged in: its kind's until then. The chip opens
+                # the menu.
+                first.wait_for_timeout(1500)    # the preferences are saved every second
+                first.reload()
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL-SDR")
+                expect(first.locator("#menu")).to_be_hidden()
+                first.locator("#radio-chip").click()
+                expect(first.locator('#menu section[data-menu="receiver"]')).to_be_visible()
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
+                expect(first.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
                 # Show here moves an interface to another receiver, and back.
                 second.get_by_role("button", name=f"Show receiver {added} here", exact=True).click()
                 expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
                 expect(second.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                 second.get_by_role("button", name="Show receiver 1 here", exact=True).click()
                 expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", "Receiver 1")
-                # The chip opens the Receivers menu.
-                first.keyboard.press("Escape")
-                expect(first.locator("#menu")).to_be_hidden()
-                first.locator("#radio-chip").click()
-                expect(first.locator('#menu section[data-menu="receiver"]')).to_be_visible()
-                # A page loaded again shows again the receiver it showed.
-                first.wait_for_timeout(1500)    # the preferences are saved every second
-                first.reload()
-                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
-                self.open_menu(first, "receiver")
                 first.locator("#radio-remove").click()
                 for page in (first, second):
                     expect(page.locator("#radio-cards > li")).to_have_count(1)
