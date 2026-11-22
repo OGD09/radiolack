@@ -799,7 +799,7 @@ class SeveralRadiosTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(subscription.radio, engine.radios[0])
         self.assertTrue(added.source.closed)
         await frame_from(subscription, FAKE_CENTRE_HZ)
-        with self.assertRaisesRegex(ValueError, "the last radio cannot be removed"):
+        with self.assertRaisesRegex(ValueError, "the first radio stays"):
             engine.configure_radios({"remove": 1}, subscription)
         with self.assertRaisesRegex(ValueError, "no such radio"):
             engine.configure_radios({"remove": 2}, subscription)

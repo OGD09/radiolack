@@ -33,6 +33,8 @@ the history under the tag `v0.1.0`.
   addresses to listen on), `engine` and `radio` (the engine holds its
   radios, four at most, each the engine of one receiver, in `radio`, a
   receiver read by one radio at most, which any client adds and removes,
+  but the first, which stays, each radio after the first in a process of
+  its own (`radioproxy`, `radioproc`),
   the radios given at start or those used last, saved with their sources
   and scanner settings, and the radios' list for every client, and what
   they share: the clients, each showing one radio, the first until it
@@ -109,6 +111,16 @@ the history under the tag `v0.1.0`.
   recording's file to download it, and deleting a recording, with an I/Q
   recording's metadata, only for the files named as recordings; an I/Q
   recording's length from the format its metadata names),
+  `radioproxy` and `radioproc` (a radio in a process of its own,
+  later-milestones.md, section 5: `RadioProcess`, the engine's stand-in
+  for the radio, starts `python3 -m radiolack.radioproc` over a socket
+  pair, keeps its states and hands its frames to the clients; the
+  process runs the unchanged `Radio` against copies of what the radios
+  share, sent again when they change, and sends back its states, frames,
+  refusals, settings, kept scan, observations and log records; framed
+  JSON headers with binary data, the frames dropped for a parent behind;
+  closed, it releases its receiver, killed after 10 s; one that ends
+  unasked takes its radio away),
   `report` (problem reports: the latest warnings and errors of the
   `radiolack` logger, kept in memory from `cli`'s start, which still writes
   them on the error output; the report's facts, without the receiver's

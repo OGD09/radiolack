@@ -120,6 +120,7 @@ class KeptScans:
 
     def __init__(self, saved: object = None) -> None:
         self._scans: list[KeptScan] = []
+        self._followed: dict[object, KeptScan] = {}     # scans that run elsewhere, by their key there
         if saved is not None:
             self._restore(saved)
 
@@ -198,6 +199,34 @@ class KeptScans:
             return False
         scan.end_s = max(now, scan.start_s)
         scan.ended = ended
+        return True
+
+    def follow(self, key: object, entry: object) -> bool:
+        """Follow a scan that runs in a radio's own process (radioproc.py):
+        ``entry`` is what ``KeptScan.stored`` gives of it there, ``key``
+        names it among those followed. The first time, it joins the kept
+        scans under an id of their own, as ``start`` keeps a scan; then its
+        progress replaces what is kept, its id and name staying, as an
+        interface may rename it. Once it ended it is no longer followed.
+        False, changing nothing, for an entry that is not valid, or for a
+        scan deleted since it ended."""
+        scan = _scan(entry)
+        if scan is None:
+            log.warning("a radio's kept scan is not valid and is left out")
+            return False
+        kept = self._followed.get(key)
+        if kept is None:
+            if scan.ended is not None:
+                return False        # it ended before it was followed: never shown running
+            kept = self.start(scan.name, scan.start_s, scan.low_hz, scan.high_hz, scan.listen, scan.passes_set)
+            self._followed[key] = kept
+        elif kept not in self._scans:
+            del self._followed[key]
+            return False
+        kept.passes, kept.channels = scan.passes, scan.channels
+        if scan.ended is not None:
+            kept.end_s, kept.ended = scan.end_s, scan.ended
+            del self._followed[key]
         return True
 
     def end_all(self, now: float, ended: str) -> bool:

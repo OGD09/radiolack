@@ -228,7 +228,10 @@ gets a radio of its own, in the order given, with its own spectrum, VFO,
 scans and recordings, and `--scan` and `--bias-tee` apply to the first.
 Without them, Radiolack opens the radios used last. An interface shows the
 first radio for now; the bookmarks and the History are common to the
-radios.
+radios. Each radio after the first runs in a process of its own, so that
+two receivers at 2.4 MS/s fit on a laptop's processor; the first radio
+stays as long as Radiolack runs. Should a radio's process stop, its radio
+goes away and Radiolack says so.
 
 Without a desktop window, stop Radiolack with Ctrl+C.
 

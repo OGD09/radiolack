@@ -844,7 +844,8 @@ class LocalServer:
     one more radio reads each of ``more_sources``; without either, the
     radios used last read the sources that ``sources`` opened last. The
     engine closes them when the server stops; with ``sources``, an
-    interface may switch to another kind of source, and add a radio.
+    interface may switch to another kind of source, and add a radio. Each
+    radio after the first runs in a process of its own (radioproxy.py).
     Without ``source`` and ``sources``, it reads the synthetic band. With a ``store``, the engine
     starts from the saved settings and saves their changes; with ``updates``,
     it checks for a newer Radiolack. It records into ``recordings``, unless
@@ -990,7 +991,7 @@ class LocalServer:
         source = SyntheticBand() if self._source is None and self._sources is None else self._source
         access = RemoteAccess()
         engine = Engine(source, more_sources=self._more_sources, sources=self._sources, store=self._store,
-                        updates=self._updates, remote=access, recordings=self._recordings)
+                        updates=self._updates, remote=access, recordings=self._recordings, radio_processes=True)
         remote = RemoteListener(engine, access, self._remote_addresses, self._host, self._interface)
         self._engine, self._access, self._remote = engine, access, remote
         runner = web.AppRunner(create_app(self.port, engine, remote, self._interface), handle_signals=False)

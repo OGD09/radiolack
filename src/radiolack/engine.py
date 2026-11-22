@@ -81,6 +81,7 @@ from .keptscans import KeptScans
 from .observations import Observations
 from .preferences import check_preferences, saved_preferences
 from .radio import FRAME_RATE, Radio
+from .radioproxy import RadioProcess
 from .recordings import check_folder, chosen_folder, delete_recording, is_recording_file, is_recording_name, \
     list_recordings
 from .remote import REMOTE_FILE, RemoteAccess
@@ -102,6 +103,7 @@ SCANS_FIELDS = ("get", "rename", "name", "delete", "clear_all")
 SCANS_SAVE_S = 10.0     # a running scan is kept on disk and in the clients' list at most this long after a change
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
 MAX_RADIOS = 4          # radios at once, each reading a receiver of its own
+AnyRadio = Radio | RadioProcess     # the first radio, in Radiolack's process, or another in its own
 # A radio's own states, which a client receives again when it shows another radio.
 RADIO_STATES = ("source", "demod", "scanner", "peaks", "recording", "devices", "calibration")
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
@@ -328,7 +330,9 @@ class Subscription:
         for kind, describe in self._states.items():
             if kind in self._due:
                 self._due.discard(kind)
-                return describe(self)
+                message = describe(self)
+                if message is not None:     # a radio in its own process sends its states once it can
+                    return message
         if self._replies:
             return self._replies.popleft()
         if self._audio:
@@ -384,7 +388,7 @@ class Subscription:
             self._due.add(kind)
             self._ready.set()
 
-    def show(self, radio: Radio) -> None:
+    def show(self, radio: AnyRadio) -> None:
         """Show ``radio`` from now on: the previous radio's frames, audio
         and fine frames that wait go, and the client receives its new
         radio's states again."""
@@ -432,15 +436,18 @@ class Engine:
                  remote: RemoteAccess | None = None, recordings: Path | None = None,
                  frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
                  queue_size: int = CLIENT_QUEUE, save_delay_s: float = SAVE_DELAY_S,
-                 observations_save_s: float = OBSERVATIONS_SAVE_S) -> None:
+                 observations_save_s: float = OBSERVATIONS_SAVE_S, radio_processes: bool = False) -> None:
         if frame_rate <= 0:
             raise ValueError(f"the frame rate must be positive, not {frame_rate}")
         self.sources = sources
+        # The radios after the first each in a process of their own, which
+        # opens sources as ``sources`` would (Sources.recipe).
+        self._radio_processes = radio_processes and hasattr(sources, "recipe")
         self._queue_size = queue_size
         self._clients: set[Subscription] = set()
         self._closed = False
         self._stopped = asyncio.Event()     # set once closed, which ends ``run``
-        self._tasks: dict[Radio, asyncio.Future] = {}  # each radio's reading, while the engine runs
+        self._tasks: dict[AnyRadio, asyncio.Future] = {}  # each radio's reading, while the engine runs
         self._frame_rate = frame_rate
         self._next_radio = 1        # the id of the next radio added
         self._radios_sent: list[dict[str, Any]] | None = None   # the radios' list as the clients last learnt it
@@ -531,7 +538,7 @@ class Engine:
         self._requests: set[asyncio.Future] = set()
         if len(more_sources) >= MAX_RADIOS:
             raise ValueError(f"{MAX_RADIOS} radios at most")
-        self.radios: list[Radio] = []
+        self.radios: list[AnyRadio] = []
         radio = self._new_radio(source, saved_choice=saved_choice, saved_scanner=settings.get("scanner"),
                                 analyzer=analyzer)
         saved_radios = settings.get("radios")
@@ -608,6 +615,9 @@ class Engine:
         self._radios_sent = radios
         for subscription in self._clients:
             subscription.changed("radios")
+        for radio in self.radios:
+            if isinstance(radio, RadioProcess):
+                radio.share(radios=self.others(radio))
 
     def configure_radios(self, changes: Mapping[str, object], subscription: Subscription) -> None:
         """Answer a client's radio message, which asks for one thing: show
@@ -628,7 +638,7 @@ class Engine:
         else:
             raise ValueError(f"unknown radio field: {str(name)[:40]}")
 
-    def add_radio(self, described: object) -> Radio:
+    def add_radio(self, described: object) -> AnyRadio:
         """A new radio, reading the source that ``described`` gives as
         ``sources.open`` takes it, such as {"kind": "rtl_sdr", "device":
         "1"}, or for a SoapySDR device among those found, its ``driver``
@@ -661,12 +671,12 @@ class Engine:
         self.settings_changed()
         return radio
 
-    def remove_radio(self, radio: Radio) -> None:
+    def remove_radio(self, radio: AnyRadio) -> None:
         """Remove ``radio``, unless it is the last: its scan and its
         recordings stop and its receiver is released, its settings saved
         for when it comes back; its clients show the first radio."""
-        if len(self.radios) == 1:
-            raise ValueError("the last radio cannot be removed")
+        if radio is self.radios[0]:
+            raise ValueError("the first radio stays: choose another receiver for it instead")
         self.receivers[radio.source.settings_key] = radio.receiver_settings()
         self.radios.remove(radio)
         for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
@@ -682,7 +692,7 @@ class Engine:
         self.radios_changed()
         self.settings_changed()
 
-    def check_free(self, source: Source, radio: Radio | None = None) -> None:
+    def check_free(self, source: Source, radio: AnyRadio | None = None) -> None:
         """Raises ValueError when a radio other than ``radio`` reads the
         receiver that ``source`` would read."""
         for other in self.radios:
@@ -725,6 +735,7 @@ class Engine:
         for subscription in self._clients:
             subscription.changed("band_plan")
             subscription.changed("peaks")       # on the new plan's channels
+        self._share(band_plan=plan)
         self.settings_changed()
 
     def observations_state(self) -> dict[str, Any]:
@@ -1059,12 +1070,91 @@ class Engine:
             subscription.changed("remote")
         self.settings_changed()
 
+    # The radios in processes of their own (radioproxy.py).
+
+    def shared_copy(self, radio: RadioProcess) -> dict[str, Any]:
+        """What a radio's process needs of what the radios share, as it
+        starts."""
+        return {"sources": self.sources.recipe(),   # type: ignore[union-attr]
+                "receivers": self.receivers, "reopen": self.reopen, "band_plan": self._band_plan,
+                "bookmarks": self.ticked_copy(),
+                "radios": self.others(radio), "search": self.search_copy(), "recordings": self._recordings_copy()}
+
+    def ticked_copy(self) -> list[dict[str, Any]]:
+        """The bookmarks that the memory scan goes through, with their ids,
+        for the radios' processes."""
+        return [{"id": bookmark_id, **bookmark.describe()} for bookmark_id, bookmark in self.bookmarks.ticked()]
+
+    def others(self, radio: AnyRadio) -> list[dict[str, Any]]:
+        """The receivers of the radios but ``radio``, for its process."""
+        return [{"id": other.id, "kind": other.source.kind, "reopen": other.source.reopen,
+                 "settings_key": other.source.settings_key} for other in self.radios if other is not radio]
+
+    def search_copy(self) -> dict[str, Any] | None:
+        """The search for SoapySDR devices, for the radios' processes."""
+        search = self.device_search
+        if search is None:
+            return None
+        return {"drivers": list(search.drivers), "status": search.status, "detail": search.detail,
+                "devices": [[device.driver, device.serial, device.label] for device in search.devices]}
+
+    def _recordings_copy(self) -> list[str | None]:
+        return [None if self.default_recordings is None else str(self.default_recordings),
+                None if self._chosen_recordings is None else str(self._chosen_recordings)]
+
+    def _share(self, **shared: Any) -> None:
+        for radio in self.radios:
+            if isinstance(radio, RadioProcess):
+                radio.share(**shared)
+
+    def follow_settings(self, radio: RadioProcess, receivers: Mapping[str, Any], reopen: Mapping[str, Any]) -> None:
+        """A radio's process changed its settings, those saved for
+        receivers and the receivers used last: save them."""
+        for key, value in receivers.items():
+            if value is None:
+                self.receivers.pop(key, None)
+            elif isinstance(value, dict):
+                self.receivers[key] = value
+        for kind, value in reopen.items():
+            if isinstance(value, dict):
+                self.reopen[kind] = value
+        self.settings_changed()
+
+    def follow_kept_scan(self, radio: RadioProcess, scan: object, soon: bool) -> None:
+        """A radio's process changed its kept scan."""
+        key = (radio.id, scan.get("id") if isinstance(scan, dict) else None)
+        if self.kept.follow(key, scan):
+            self.scans_changed(soon=soon)
+
+    def follow_observations(self, found: Sequence[Any], now: float, hour: int) -> None:
+        """A radio's process found signals: they join the observations."""
+        self.observations.record(found, now, hour)
+        self.observations_changed()
+
+    def radio_failed(self, radio: RadioProcess, reason: str) -> None:
+        """A radio's process ended unasked: the radio goes, its clients
+        showing the first radio."""
+        if radio not in self.radios:
+            return
+        self.radios.remove(radio)
+        self._tasks.pop(radio, None)
+        for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
+            self._show(subscription, self.radios[0])
+            subscription.reply({"type": "error", "command": "radio", "message": f"radio {radio.id} stopped: {reason}"})
+        self.radios_changed()
+        self.settings_changed()
+
     def _new_radio(self, source: Source | None, *, saved_choice: object = None, saved_scanner: object = None,
-                   analyzer: SpectrumAnalyzer | None = None) -> Radio:
+                   analyzer: SpectrumAnalyzer | None = None) -> AnyRadio:
         """A new radio reading ``source``, which runs at once if the engine
         does."""
-        radio = Radio(self, source, radio_id=self._next_radio, saved_choice=saved_choice,
-                      saved_scanner=saved_scanner, frame_rate=self._frame_rate, analyzer=analyzer)
+        radio: AnyRadio
+        if self._radio_processes and self.radios and source is not None:
+            radio = RadioProcess(self, source, radio_id=self._next_radio, saved_scanner=saved_scanner,
+                                 frame_rate=self._frame_rate)
+        else:
+            radio = Radio(self, source, radio_id=self._next_radio, saved_choice=saved_choice,
+                          saved_scanner=saved_scanner, frame_rate=self._frame_rate, analyzer=analyzer)
         self._next_radio += 1
         self.radios.append(radio)
         if self._tasks or (self.radios and self.radios[0] in self._tasks):
@@ -1089,7 +1179,7 @@ class Engine:
                 continue
             self._new_radio(source, saved_scanner=entry.get("scanner"))
 
-    def _radio(self, radio_id: object) -> Radio:
+    def _radio(self, radio_id: object) -> AnyRadio:
         if isinstance(radio_id, bool) or not isinstance(radio_id, int):
             raise ValueError("a radio's id must be a whole number")
         for radio in self.radios:
@@ -1097,7 +1187,7 @@ class Engine:
                 return radio
         raise ValueError("no such radio: it may have been removed")
 
-    def _show(self, subscription: Subscription, radio: Radio) -> None:
+    def _show(self, subscription: Subscription, radio: AnyRadio) -> None:
         """``subscription`` shows ``radio`` from now on."""
         old = subscription.radio
         if old is radio or self._closed:
@@ -1161,6 +1251,7 @@ class Engine:
             self._chosen_recordings = folder
             for client in self._clients:
                 client.changed("recording")
+            self._share(recordings=self._recordings_copy())
             self.settings_changed()
 
     async def _answer_recordings(self, folder: Path, delete: str | None, subscription: Subscription) -> None:

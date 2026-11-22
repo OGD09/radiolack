@@ -1477,15 +1477,26 @@ radio or removes one, one field at a time:
 | --- | --- |
 | `id` | A radio's `id`: the interface shows it from now on, and receives its states again, then its frames. Its audio and fine frames follow if the interface asked for them: the request stays with the interface. |
 | `add` | A source, among the source state's `kinds`: `{"kind": KIND}` and, for an `rtl_sdr` source, its `device`, an index or a serial number; for a `soapy` source, a device among those found, by its `driver` and `serial`, or its device arguments, `args`. A new radio reads it, starting from the settings saved for its receiver, and the interface that added it shows it. |
-| `remove` | A radio's `id`: the radio's scan and recordings stop, its receiver is released, its settings saved for when it comes back, and the interfaces that showed it show the first radio. |
+| `remove` | A radio's `id`, any but the first: the radio's scan and recordings stop, its receiver is released, its settings saved for when it comes back, and the interfaces that showed it show the first radio. |
 
 The engine refuses a message without a field or with more than one, an
 unknown or invalid field, an unknown radio, a fifth radio, a source that
 cannot open, a receiver that another radio reads, a SoapySDR device while
-a search runs, and removing the last radio, saying why. The radios after
+a search runs, and removing the first radio, which stays, saying why. The radios after
 the first are saved with their sources and scanner settings, and open
 again at the next start unless sources are given (`--rtl-sdr`,
 `--rtl-tcp`, `--soapy`).
+
+Each radio after the first runs in a process of its own
+(later-milestones.md, section 5). Nothing changes in the messages, but
+a refusal of a message to such a radio (`source`, `demod`, `scanner`,
+`recording`, `carrier`, `calibration`, `devices` with a choice,
+`rtl_devices` with `choose`) comes as its `error` once that process has
+read it, after messages sent meanwhile. Should that process end unasked,
+the radio goes away: the interfaces that showed it receive an `error`
+whose `command` is `radio` and whose message begins "radio N stopped",
+then show the first radio, and every interface receives the radios'
+summary without it.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
 `scans`, `observations`, `preferences`, `recording`, `recordings`, `carrier`,

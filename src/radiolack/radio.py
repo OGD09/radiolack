@@ -299,20 +299,14 @@ class Radio:
     def summary(self) -> dict[str, Any]:
         """What the radios message says of this radio: what it reads, and
         the scan and the recordings that run."""
-        source = self.source
-        described = source.describe()
-        if source.kind == "rtl_sdr":
-            device = source.reopen.get("device")
-        elif source.kind == "rtl_tcp":
-            device = described.get("address")
-        elif source.kind == "soapy":
-            device = source.settings_key.removeprefix("soapy ")
-        else:
-            device = None
-        return {"id": self.id, "kind": source.kind, "device": device, "tuner": described.get("tuner"),
-                "status": described.get("status"), "scan": self._running_scan(),
+        return {"id": self.id, **source_summary(self.source), "scan": self._running_scan(),
                 "recording": [kind for kind, running in (("audio", self._audio), ("iq", self._iq))
                               if running is not None]}
+
+    @property
+    def kept_scan(self) -> KeptScan | None:
+        """The kept scan of this radio's range scan, the latest it ran."""
+        return self._kept
 
     def end_kept_scan(self, ended: str) -> bool:
         """End this radio's kept scan, if it runs, for ``ended``, as when
@@ -2369,6 +2363,21 @@ def _driver_answer(request_id: int | None, found: str | None, previous: object, 
                    ) -> dict[str, Any]:
     """The answer to a check of the driver's computation (docs/design/protocol.md)."""
     return {"type": "driver_pll", "id": request_id, "driver_pll": found, "previous": previous, "reason": reason}
+
+
+def source_summary(source: Source) -> dict[str, Any]:
+    """What the radios message says of a radio's source: its kind, the
+    receiver it reads, the tuner and the status."""
+    described = source.describe()
+    if source.kind == "rtl_sdr":
+        device = source.reopen.get("device")
+    elif source.kind == "rtl_tcp":
+        device = described.get("address")
+    elif source.kind == "soapy":
+        device = source.settings_key.removeprefix("soapy ")
+    else:
+        device = None
+    return {"kind": source.kind, "device": device, "tuner": described.get("tuner"), "status": described.get("status")}
 
 
 def _open_saved(sources: SourceOpener, saved: object) -> Source:

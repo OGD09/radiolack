@@ -40,6 +40,21 @@ class Sources:
         self._program = tuple(rtl_tcp_program)
         self._usb_devices = usb_devices
 
+    def recipe(self) -> dict[str, object]:
+        """How to make these sources again in another process, as JSON
+        values: ``from_recipe`` takes them (radioproc.py)."""
+        return {"rtl_tcp_program": list(self._program), "usb_devices": str(self._usb_devices)}
+
+    @classmethod
+    def from_recipe(cls, recipe: Mapping[str, object]) -> Sources:
+        """Sources as ``recipe`` describes them. Raises ValueError for a
+        recipe that ``recipe`` did not give."""
+        program, usb_devices = recipe.get("rtl_tcp_program"), recipe.get("usb_devices")
+        if (not isinstance(program, list) or not program or not all(isinstance(part, str) for part in program)
+                or not isinstance(usb_devices, str)):
+            raise ValueError("not a recipe for sources")
+        return cls(rtl_tcp_program=program, usb_devices=Path(usb_devices))
+
     def rtl_devices(self) -> list[RtlDevice] | None:
         """The RTL-SDR receivers plugged into this computer, none opened;
         None where sysfs cannot tell (rtldevices.list_devices)."""
