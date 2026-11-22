@@ -1440,6 +1440,11 @@ the bookmarks of 2 m while the owner listens to shortwave on the HackRF.
   their scans and recordings. Two browser windows show two receivers side
   by side; one window never shows two.
 - Bookmarks and the History are common to the receivers.
+- **A process per radio**, as the owner chose on 2026-11-22 after the
+  spike: each radio added runs in a process of its own (Processes below).
+- **Done when with the receivers at hand**, as the owner chose the same
+  day, the HackRF being away until mid-January 2027: the owner's laptop
+  and its two RTL-SDRs (Done when below).
 
 ### Design
 
@@ -1462,6 +1467,45 @@ the bookmarks of 2 m while the owner listens to shortwave on the HackRF.
   more than once, a radio each, in order; `--scan` and `--bias-tee` apply
   to the first. Without them Radiolack reopens the radios used last.
 
+### Processes
+
+- **The first radio runs in Radiolack's process**, as the one radio does
+  today: with one receiver, nothing changes and no process is added. Each
+  radio added runs in a process of its own, which Radiolack starts with
+  its own Python and import path (`python3 -m radiolack.radioproc`): it
+  opens the radio's receiver, processes its samples, and runs its scans,
+  measures, calibration and recordings, the radio's code unchanged.
+- **Radiolack's process keeps what the radios share and the clients.** It
+  relays a child's states, spectrum frames, fine frames and audio to the
+  interfaces that show its radio, and their commands to it. It keeps each
+  child's states as last sent, for local and for remote clients, so that
+  an interface that turns to that radio gets them at once; a frame, the
+  audio or the fine spectrum crosses once, whatever the number of
+  interfaces, which the parent copies to each.
+- **What a child needs of what is shared comes as copies** whenever it
+  changes: the bookmarks, the band plan, the receivers that the other
+  radios read, the recordings folder. **What it changes there goes back
+  as messages**: the signals it found for the History, its kept scan, its
+  receiver's settings to save, its recordings' files.
+- **One socket pair per child**, messages framed by their length, a JSON
+  header and binary data: nothing on the network, no port.
+- **A command answers its error later**, to the interface that sent it,
+  where one radio answers at once: the child checks it.
+- **A receiver belongs to one radio**: a child refuses a receiver that the
+  copies say another radio reads. Two children opening the same receiver
+  at the same moment are not told apart: the second waits, as for a
+  receiver that another program holds.
+- **Logs**: a child's records go to Radiolack's logger, with its radio's
+  number, so that the error output and problem reports keep them.
+- **Ending**: Radiolack asks the child to close; it releases its receiver
+  as a radio does, the antenna power off and rtl_tcp stopped, then exits.
+  A child whose socket closes, or that receives SIGTERM, as the service's
+  stop sends it to every process, does the same; it ignores the
+  terminal's Ctrl-C, which Radiolack handles. One that has not exited ten
+  seconds after it was asked to close is killed. A child that ends
+  unasked, after an error, takes its radio away, saying why, its
+  interfaces moving to the first.
+
 ### Spike, first pull request
 
 Two radios on synthetic samples at 2.4 MS/s, each with a listener, for ten
@@ -1470,26 +1514,38 @@ They pass when the audio never runs dry and Radiolack stays under 60% of
 two cores. If they fail, each radio gets a process of its own, and the
 spike's report says what that changes before the refactoring starts.
 
+Measured on 2026-11-22 with `tools/measure_radios.py` (scoping.md,
+[Spike 9 result](scoping.md#spike-9-result-2026-11-22)): on the computer
+next to the receivers two radios pass, 29% of two cores, the audio never
+short; on the owner's laptop, busy with its desktop, they are at the
+limit, a listener running dry once in ten minutes in two measures of
+three, and two radios in a process each run there as one radio alone
+does. The owner chose a process per radio on 2026-11-22.
+
 ### Pull requests
 
 1. The spike and its figures.
 2. The radio, split from the engine, with one radio and no change in
    behaviour.
-3. Several radios: engine, protocol, start options.
+3. Several radios: engine, protocol, start options, each radio added in
+   a process of its own.
 4. The Receiver menu's radios, the dot, each device's radio.
 5. Service notes and README.md.
 
 ### Done when
 
-On the computer next to the receivers, with the V3 and the HackRF: the
-iPhone listens on the HackRF while the V3's memory scan stops on a
-bookmark and the History records it; two browser windows show both; and a
-restart brings both radios back.
+On the owner's laptop, with the Nooelec on the 2 m dipole and the V3 on
+the ADS-B antenna: the Nooelec's memory scan stops on a 2 m bookmark and
+the History records it while a second interface listens on the V3 to a
+broadcast FM station in WFM; two interfaces show both radios; and a
+restart brings both back. The iPhone, through remote access, is the
+owner's to check.
 
 ### Limits
 
 - Each radio costs what one engine costs: 12 to 15% of one core at
-  2.4 MS/s on the owner's laptop.
+  2.4 MS/s on the owner's laptop. Each radio added adds a process: 56 MB
+  before it reads a sample.
 - One interface plays one radio's audio.
 
 Set aside: a split view, audio from two radios mixed, a scan option per
