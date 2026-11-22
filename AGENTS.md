@@ -19,7 +19,9 @@ the history under the tag `v0.1.0`.
 ## Layout
 
 - `src/radiolack/`: `cli` (entry point: `--ui`, `--port`, `--remote`,
-  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`, `--soapy`), `server` (aiohttp on 127.0.0.1,
+  `--scan`, `--bias-tee`, `--rtl-sdr`, `--rtl-tcp`, `--soapy`, the last
+  three together and repeated, a radio each, four at most, one rtl_tcp),
+  `server` (aiohttp on 127.0.0.1,
   own event loop in a background thread; interface files, read once at
   start, the `/stream` WebSocket and the recordings' downloads
   (`/recordings/<file>`); starts the scan given at start;
@@ -29,8 +31,14 @@ the history under the tag `v0.1.0`.
   local certificate authority, with `cryptography`, the access code, paired
   devices with their sessions and interface preferences, the private
   addresses to listen on), `engine` and `radio` (the engine holds its
-  radios, one so far, each the engine of one receiver, in `radio`, and
-  what they share: the clients, each showing one radio, the bookmarks, the
+  radios, four at most, each the engine of one receiver, in `radio`, a
+  receiver read by one radio at most, which any client adds and removes,
+  but the first, which stays, each radio after the first in a process of
+  its own (`radioproxy`, `radioproc`),
+  the radios given at start or those used last, saved with their sources
+  and scanner settings, and the radios' list for every client, and what
+  they share: the clients, each showing one radio, the first until it
+  chooses another, the bookmarks, the
   band plan, the observations, the kept scans, the preferences, remote
   access's and the update check's states, the search for SoapySDR
   devices, the recordings folder, its list and deletions, and the store;
@@ -48,7 +56,7 @@ the history under the tag `v0.1.0`.
   and never otherwise, and opens one by its serial number for any client;
   searches for
   SoapySDR devices when this computer's interface asks, never at start
-  nor for a remote client, never the driver of the device in use, and
+  nor for a remote client, never the drivers of the devices in use, and
   opens one chosen among them, by its driver and serial number, or by the
   device arguments that this computer's interfaces alone give, never
   while a search runs; sends a
@@ -71,7 +79,7 @@ the history under the tag `v0.1.0`.
   searches the current window alone without tuning it, for a number of
   passes or without end, and may tune the VFO alone to each window's
   active signals in turn, in the band plan's mode ("signals" starts it
-  over the current window, listening), one scan at a time, saving the
+  over the current window, listening), one scan at a time on each radio, saving the
   receiver's settings of its start and bringing the receiver back once
   stopped, unless on a signal or a bookmark; sends each signal found and each observed channel
   with the frequency it shows on, the band plan's channel or the 100 Hz;
@@ -103,6 +111,16 @@ the history under the tag `v0.1.0`.
   recording's file to download it, and deleting a recording, with an I/Q
   recording's metadata, only for the files named as recordings; an I/Q
   recording's length from the format its metadata names),
+  `radioproxy` and `radioproc` (a radio in a process of its own,
+  later-milestones.md, section 5: `RadioProcess`, the engine's stand-in
+  for the radio, starts `python3 -m radiolack.radioproc` over a socket
+  pair, keeps its states and hands its frames to the clients; the
+  process runs the unchanged `Radio` against copies of what the radios
+  share, sent again when they change, and sends back its states, frames,
+  refusals, settings, kept scan, observations and log records; framed
+  JSON headers with binary data, the frames dropped for a parent behind;
+  closed, it releases its receiver, killed after 10 s; one that ends
+  unasked takes its radio away),
   `report` (problem reports: the latest warnings and errors of the
   `radiolack` logger, kept in memory from `cli`'s start, which still writes
   them on the error output; the report's facts, without the receiver's
@@ -139,7 +157,7 @@ the history under the tag `v0.1.0`.
   each scan's channels within its range, on the lists' frequency, its
   passes and ending, the squelch's open time while it listened, the
   limits, names and checks of the saved file, a scan that ran read back as
-  interrupted),
+  interrupted, one running on each radio at most),
   `preferences` (the interfaces' preferences and their checks), `spectrum`
   (display FFT with NumPy, noise estimate around the VFO, or beyond a WFM
   channel), `dsp` (FIR design and overlap-save FFT filters that shift and

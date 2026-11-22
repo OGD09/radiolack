@@ -137,10 +137,10 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         plug_usb_device(self.root / "usb", "1-2", **NESDR, drivers=("dvb_usb_rtl28xxu",))
         self.assertEqual(self.listed(engine, subscription)["devices"], [
             {"device": "RTLSDR1", "name": "RTL2838UHIDIR", "manufacturer": "Realtek", "drivers": ["usbfs"],
-             "shared": False, "reads_as_index": False, "in_use": False, "found": True},
+             "shared": False, "reads_as_index": False, "in_use": False, "radio": None, "found": True},
             {"device": "59196661", "name": "NESDR SMArt v5", "manufacturer": "Nooelec",
              "drivers": ["dvb_usb_rtl28xxu"], "shared": False, "reads_as_index": False, "in_use": False,
-             "found": True},
+             "radio": None, "found": True},
         ])
         shutil.rmtree(self.root / "usb" / "1-1")
         self.assertEqual([device["device"] for device in self.listed(engine, subscription)["devices"]], ["59196661"])
@@ -164,6 +164,19 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(engine.wait_closed(), timeout=5)
         self.assertEqual(self.store.load(SETTINGS_FILE)["source"], {"kind": "rtl_sdr", "device": "59196661"})
 
+    async def test_each_receiver_names_the_radio_that_reads_it(self):
+        plug_usb_device(self.root / "usb", "1-1", **BLOG)
+        plug_usb_device(self.root / "usb", "1-2", **NESDR, drivers=("usbfs",))
+        engine = self.engine()
+        subscription = engine.subscribe()
+        second = engine.add_radio({"kind": "rtl_sdr", "device": "59196661"})
+        self.assertEqual([(device["device"], device["in_use"], device["radio"])
+                          for device in self.listed(engine, subscription)["devices"]],
+                         [("RTLSDR1", False, None), ("59196661", False, second.id)])
+        with self.assertRaisesRegex(ValueError, "reads this receiver already"):
+            engine.radios[0].configure_rtl_devices({"choose": "59196661"}, subscription)
+        self.assertEqual(engine.radios[0].source.kind, "synthetic")
+
     async def test_refuses_a_receiver_not_plugged_in_or_that_rtl_tcp_cannot_tell(self):
         plug_usb_device(self.root / "usb", "1-1", **BLOG)
         plug_usb_device(self.root / "usb", "1-2", serial=None)
@@ -184,7 +197,7 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         subscription = engine.subscribe()
         self.assertEqual(self.listed(engine, subscription)["devices"][1], {
             "device": "59196661", "name": "", "manufacturer": "", "drivers": [], "shared": False,
-            "reads_as_index": False, "in_use": True, "found": False})
+            "reads_as_index": False, "in_use": True, "radio": 1, "found": False})
 
     async def test_the_first_receiver_by_index_is_the_one_plugged_in_alone(self):
         plug_usb_device(self.root / "usb", "1-1", **NESDR)

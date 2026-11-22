@@ -125,11 +125,11 @@ from .converter import HIGHEST_HZ, Conversion
 from .demod import (AUDIO_MODES, MODE_BANDWIDTHS_HZ, MODES, SQUELCH_MARGIN_DB, DemodSettings, Demodulator, Meter,
                     WFM_DEEMPHASIS_S, has_channel, noise_clearance_hz, passband_hz, vfo_position_hz)
 from .fine import REMOTE_FINE_BINS, FineSpectrum, encode_fine
-from .keptscans import checked_name
+from .keptscans import KeptScan, KeptScans, checked_name
 from .pllcheck import LOST, MAX_MOVE_HZ, Point, choose_points, identify
 from .recordings import WAV_HEADER, AudioRecording, IQRecording, Recording, meta_name
 from .report import Report, check_page, receiver_line
-from .rtldevices import reads_as_index
+from .rtldevices import RtlDevice, reads_as_index
 from .soapy import SoapySource
 from .soapysearch import Device, device as soapy_device
 from .scanners import (DC_GAP_HZ, DEFAULT_LISTEN_S, DEFAULT_RESUME_S, DEFAULT_SWEEP_HZ, DEFAULT_THRESHOLD_DB,
@@ -179,7 +179,7 @@ log = logging.getLogger(__name__)
 class Radio:
     """Turn one source into display frames and audio for its clients, the
     engine's subscriptions that show it (``clients``), which the engine
-    attaches and detaches.
+    attaches and detaches. ``radio_id`` names it to the clients.
 
     The radio reads ``source``, or without one the source that the engine's
     sources open from ``saved_choice``, the source saved last, and starts
@@ -188,9 +188,10 @@ class Radio:
     observations, the kept scans, the receivers' saved settings, the
     sources and the recordings folder, and saves them."""
 
-    def __init__(self, engine: Engine, source: Source | None, *, saved_choice: object = None,
+    def __init__(self, engine: Engine, source: Source | None, *, radio_id: int = 1, saved_choice: object = None,
                  saved_scanner: object = None, frame_rate: float = FRAME_RATE,
                  analyzer: SpectrumAnalyzer | None = None) -> None:
+        self.id = radio_id
         self._engine = engine
         self.analyzer = analyzer if analyzer is not None else SpectrumAnalyzer()
         self._frame_rate = frame_rate
@@ -223,6 +224,7 @@ class Radio:
             raise ValueError("an engine needs a source, or sources to open one")
         engine.reopen[self.source.kind] = self.source.reopen
         self._kept_name: str | None = None      # the name given to the range scan about to start
+        self._kept: KeptScan | None = None      # the kept scan of this radio's range scan, if it ran
         self._kept_resumed = False      # the range scan starting again goes on with the kept scan that runs
         self._kept_step_s = 0.0         # the latest block of the range scan, in time.monotonic()
         # Scanners: detection's settings, the signals found and the ignored
@@ -288,9 +290,28 @@ class Radio:
         self.watch_bookmarks()
 
     def attach(self, subscription: Subscription) -> None:
-        """A client shows this radio from now on: it reads for it."""
+        """A client shows this radio from now on: it reads for it, and
+        computes the fine spectrum if the client asked for it."""
         self.clients.add(subscription)
+        self._follow_fine()
         self._wanted.set()
+
+    def summary(self) -> dict[str, Any]:
+        """What the radios message says of this radio: what it reads, and
+        the scan and the recordings that run."""
+        return {"id": self.id, **source_summary(self.source), "scan": self._running_scan(),
+                "recording": [kind for kind, running in (("audio", self._audio), ("iq", self._iq))
+                              if running is not None]}
+
+    @property
+    def kept_scan(self) -> KeptScan | None:
+        """The kept scan of this radio's range scan, the latest it ran."""
+        return self._kept
+
+    def end_kept_scan(self, ended: str) -> bool:
+        """End this radio's kept scan, if it runs, for ``ended``, as when
+        the radio is removed. Returns whether it ran."""
+        return KeptScans.end(self._kept, time.time(), ended)
 
     def detach(self, subscription: Subscription) -> None:
         """A client no longer shows this radio: the measures and the check
@@ -731,23 +752,35 @@ class Radio:
     def rtl_devices_state(self) -> dict[str, Any]:
         """The RTL-SDR receivers message (docs/design/protocol.md), read
         from sysfs now: the receivers plugged in, none opened, and the one
-        that the source in use reads, listed even when not found."""
+        that the source in use reads, listed even when not found; each
+        with the radio that reads it, this one or another."""
         listing = self._engine.rtl_listing
         if listing is None:
             raise RuntimeError("this engine lists no RTL-SDR receivers")
         listed = listing()
+
+        def reads(radio: Radio, device: RtlDevice) -> bool:
+            in_use = radio.source.reopen.get("device") if radio.source.kind == "rtl_sdr" else None
+            if not isinstance(in_use, str):
+                return False
+            # Opened by its index, the first, and alone plugged in: that one.
+            alone = (listed is not None and len(listed) == 1 and bool(listed[0].serial)
+                     and in_use.isdigit() and int(in_use) == 0)
+            return alone or device.serial == in_use
+
+        devices = []
+        for device in listed or ():
+            reader = next((radio for radio in self._engine.radios if reads(radio, device)), None)
+            devices.append({"device": device.serial or None, "name": device.name,
+                            "manufacturer": device.manufacturer, "drivers": list(device.drivers),
+                            "shared": device.shared, "reads_as_index": device.reads_as_index,
+                            "in_use": reader is self, "radio": None if reader is None else reader.id,
+                            "found": True})
         in_use = self.source.reopen.get("device") if self.source.kind == "rtl_sdr" else None
-        # Opened by its index, the first, and alone plugged in: that one.
-        alone = (listed is not None and len(listed) == 1 and bool(listed[0].serial)
-                 and isinstance(in_use, str) and in_use.isdigit() and int(in_use) == 0)
-        devices = [{"device": device.serial or None, "name": device.name, "manufacturer": device.manufacturer,
-                    "drivers": list(device.drivers), "shared": device.shared, "reads_as_index": device.reads_as_index,
-                    "in_use": alone or (in_use is not None and device.serial == in_use), "found": True}
-                   for device in listed or ()]
         if isinstance(in_use, str) and not any(device["in_use"] for device in devices):
             devices.append({"device": in_use, "name": "", "manufacturer": "", "drivers": [], "shared": False,
                             "reads_as_index": reads_as_index(in_use, len(listed or ())),
-                            "in_use": True, "found": False})
+                            "in_use": True, "radio": self.id, "found": False})
         return {"type": "rtl_devices", "listing": "unavailable" if listed is None else "sysfs", "devices": devices}
 
     def configure_rtl_devices(self, changes: Mapping[str, object], subscription: Subscription) -> None:
@@ -788,6 +821,11 @@ class Radio:
                 device["in_use"] and device["device"] == serial for device in self.rtl_devices_state()["devices"]):
             return      # in use already
         new = sources.open({"kind": "rtl_sdr", "device": serial})
+        try:
+            self._engine.check_free(new, self)
+        except ValueError:
+            new.close()         # it never read: nothing to release
+            raise
         receivers = self._engine.receivers
         if new.settings_key not in receivers and listed is not None and len(listed) == 1:
             first = sources.open({"kind": "rtl_sdr", "device": "0"})
@@ -990,6 +1028,7 @@ class Radio:
         self._source_changes += 1       # a carrier's measure starts again
         for subscription in self.clients:
             subscription.changed("source")
+        self._engine.radios_changed()
         self._engine.settings_changed()
         self.watch_bookmarks()
         self.follow_devices()          # the device in use, or the device chosen, may change
@@ -1404,6 +1443,7 @@ class Radio:
     def _scanner_changed(self) -> None:
         for subscription in self.clients:
             subscription.changed("scanner")
+        self._engine.radios_changed()
 
     def _record(self, found: Sequence[Signal]) -> None:
         """Keep the signals found in a search as observations, at this
@@ -1412,17 +1452,18 @@ class Radio:
         now = time.time()
         self._engine.observations.record(found, now, time.localtime(now).tm_hour)
         self._engine.observations_changed()
-        running = self._engine.kept.running
-        if self._sweep is not None and running is not None:
+        running = self._kept
+        if self._sweep is not None and running is not None and running.ended is None:
             plan = self._engine.plan
             channels = [(plan.channel(round(signal.frequency_hz), round(signal.width_hz)), signal.margin_db)
                         for signal in found if running.low_hz <= signal.frequency_hz <= running.high_hz]
-            if self._engine.kept.record(channels, now):
+            if KeptScans.record(running, channels, now):
                 self._engine.scans_changed()
 
     def _recording_changed(self) -> None:
         for subscription in self.clients:
             subscription.changed("recording")
+        self._engine.radios_changed()
 
     def _start_audio(self) -> None:
         """Start recording the audio, unless such a recording runs: from the
@@ -1673,17 +1714,18 @@ class Radio:
         kept scan that runs, after a new receiver's settings."""
         self._kept_step_s = time.monotonic()
         if self.source.kind in UNRECORDED_KINDS:
-            if self._engine.kept.end(time.time(), "source"):      # one that ran on a receiver stops there
+            if KeptScans.end(self._kept, time.time(), "source"):      # one that ran on a receiver stops there
                 self._engine.scans_changed(soon=True)
             return
-        if self._kept_resumed and self._engine.kept.running is not None:
+        if self._kept_resumed and self._kept is not None and self._kept.ended is None:
             return
+        KeptScans.end(self._kept, time.time(), "stopped")      # never in practice: a scan stops first
         if here:
             rate_hz = self._span()[1]
             low_hz, high_hz = windows.centre(0) - USABLE_FRACTION * rate_hz, windows.centre(0) + USABLE_FRACTION * rate_hz
         else:
             low_hz, high_hz = self._sweep_low_hz, self._sweep_high_hz
-        self._engine.kept.start(self._kept_name, time.time(), max(1.0, low_hz), high_hz, listen, passes)
+        self._kept = self._engine.kept.start(self._kept_name, time.time(), max(1.0, low_hz), high_hz, listen, passes)
         self._engine.scans_changed(soon=True)
 
     def _sweep_windows(self, low_hz: float, high_hz: float) -> SweepWindows:
@@ -1753,9 +1795,9 @@ class Radio:
         listening = sweep.listening
         if (listening is not None and listening.state == "listening" and listening.frequency_hz is not None
                 and squelch_open):
-            self._engine.kept.listened(listening.frequency_hz, elapsed)
+            KeptScans.listened(self._kept, listening.frequency_hz, elapsed)
             self._engine.scans_changed()
-        if self._engine.kept.progress(sweep.passes):
+        if KeptScans.progress(self._kept, sweep.passes):
             self._engine.scans_changed()
 
     def _span_signals(self, label: tuple[float, float], now: float) -> dict[int, tuple[float, float]]:
@@ -1822,7 +1864,7 @@ class Radio:
             log.warning("the memory scan stopped: no ticked bookmark lies within the receiver's reach any more")
         self._memory = self._tour = self._sweep = self._home = None
         self._sweep_here = False
-        if sweep is not None and not self._kept_resumed and self._engine.kept.end(time.time(), reason or "stopped"):
+        if sweep is not None and not self._kept_resumed and KeptScans.end(self._kept, time.time(), reason or "stopped"):
             self._engine.scans_changed(soon=True)
         self._stopped = None if reason is None else (scan, reason)
         if home is not None:
@@ -1967,6 +2009,11 @@ class Radio:
             except ValueError as error:
                 log.warning("the saved %s receiver is not used: %s", kind, error)
                 new = sources.open({"kind": kind})
+            try:
+                self._engine.check_free(new, self)
+            except ValueError:
+                new.close()         # it never read: nothing to release
+                raise
             self._replace(new)
         self._source_changed()
 
@@ -2007,6 +2054,11 @@ class Radio:
         if self.source.kind == "soapy" and new.reopen == self.source.reopen:
             new.close()         # it never read: nothing to release
             return
+        try:
+            self._engine.check_free(new, self)
+        except ValueError:
+            new.close()         # it never read: nothing to release
+            raise
         self._end_driver_check(STOPPED)
         self._end_calibration("source")
         self._replace(new)
@@ -2083,7 +2135,7 @@ class Radio:
                     log.warning("the %s stopped: %s", SCAN_NAMES[scan], error)
         finally:
             self._kept_resumed = False
-        if self._sweep is None and self._engine.kept.end(time.time(), "stopped"):
+        if self._sweep is None and KeptScans.end(self._kept, time.time(), "stopped"):
             self._engine.scans_changed(soon=True)
 
     def receiver_settings(self) -> dict[str, Any]:
@@ -2311,6 +2363,21 @@ def _driver_answer(request_id: int | None, found: str | None, previous: object, 
                    ) -> dict[str, Any]:
     """The answer to a check of the driver's computation (docs/design/protocol.md)."""
     return {"type": "driver_pll", "id": request_id, "driver_pll": found, "previous": previous, "reason": reason}
+
+
+def source_summary(source: Source) -> dict[str, Any]:
+    """What the radios message says of a radio's source: its kind, the
+    receiver it reads, the tuner and the status."""
+    described = source.describe()
+    if source.kind == "rtl_sdr":
+        device = source.reopen.get("device")
+    elif source.kind == "rtl_tcp":
+        device = described.get("address")
+    elif source.kind == "soapy":
+        device = source.settings_key.removeprefix("soapy ")
+    else:
+        device = None
+    return {"kind": source.kind, "device": device, "tuner": described.get("tuner"), "status": described.get("status")}
 
 
 def _open_saved(sources: SourceOpener, saved: object) -> Source:

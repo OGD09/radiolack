@@ -33,7 +33,8 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RTL_TCP, FakeRtlTcp, FakeRtlTcpRun
                          plug_usb_device)
 
 # The states a stream of this computer's interface starts with, after hello, in this order.
-STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "scans",
+STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "radios",
+          "scans",
           "calibration", "storage", "update", "remote")
 RECORDING_NAME = "2026-11-06_21-20-00Z_145.500000MHz_NFM.wav"
 IQ_RECORDING_NAME = "2026-11-06_21-20-00Z_145.000000MHz_2.400000MSps.sigmf-data"
@@ -262,7 +263,9 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
                                              {"id": "france", "name": "France (metropolitan)"},
                                              {"id": "americas", "name": "Americas (ITU Region 2)"},
                                              {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
-                          "listings": []})
+                          "listings": [],
+                          "radios": [{"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming",
+                                      "scan": None, "recording": []}]})
             self.assertEqual(PROTOCOL_VERSION, 6)
             self.assertEqual(ws.compress, 0)    # deflate, which browsers offer, is not worth it on the loopback
             state = await ws.receive_json(timeout=5)
@@ -279,6 +282,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await ws.receive_json(timeout=5),
                              {"type": "recording", "audio": None, "iq": None, "stopped": None, "folder": None,
                               "default_folder": None})
+            self.assertEqual((await ws.receive_json(timeout=5))["type"], "radios")
             self.assertEqual(await ws.receive_json(timeout=5), {"type": "scans", "scans": []})
             self.assertEqual((await ws.receive_json(timeout=5))["type"], "calibration")
             # Without a settings folder, nothing is saved.
@@ -923,12 +927,16 @@ def is_peaks(message) -> bool:
     return message.type == aiohttp.WSMsgType.TEXT and json.loads(message.data).get("type") == "peaks"
 
 
-async def next_text(ws) -> dict:
-    """The next JSON message, skipping frames and the signals found."""
+async def next_text(ws, keep: tuple[str, ...] = ()) -> dict:
+    """The next JSON message, skipping frames, the signals found and the
+    radios' summaries, which follow a radio's source, scans and recordings,
+    unless ``keep`` names them."""
     while True:
         message = await ws.receive(timeout=5)
         if message.type == aiohttp.WSMsgType.TEXT and not is_peaks(message):
-            return json.loads(message.data)
+            data = json.loads(message.data)
+            if data.get("type") != "radios" or "radios" in keep:
+                return data
         if message.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
             raise AssertionError(f"the stream ended: {message}")
 
@@ -1065,7 +1073,7 @@ class SourceSwitchStreamTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def next_of(ws, kind: str) -> dict:
         """The next JSON message of type ``kind``."""
-        while (message := await next_text(ws))["type"] != kind:
+        while (message := await next_text(ws, keep=(kind,)))["type"] != kind:
             pass
         return message
 
@@ -1090,6 +1098,39 @@ class SourceSwitchStreamTest(unittest.IsolatedAsyncioTestCase):
             for ws in (first, second):
                 while (await self.next_of(ws, "source"))["kind"] != "synthetic":
                     pass
+            deadline = time.monotonic() + 5
+            while self.runs.stopping() != {pid}:
+                self.assertLess(time.monotonic(), deadline, "rtl_tcp still runs")
+                await asyncio.sleep(0.05)
+
+
+    async def test_an_interface_adds_a_radio_that_it_alone_shows(self):
+        async with self.connect() as first, self.connect() as second:
+            for ws in (first, second):
+                hello = await ws.receive_json(timeout=5)
+                self.assertEqual([radio["kind"] for radio in hello["radios"]], ["synthetic"])
+            await second.send_json({"type": "radio", "add": {"kind": "rtl_sdr"}})
+            radios = await self.next_of(second, "radios")     # first the summary sent at the start
+            while len(radios["radios"]) < 2:
+                radios = await self.next_of(second, "radios")
+            self.assertEqual(([radio["kind"] for radio in radios["radios"]], radios["shown"]),
+                             (["synthetic", "rtl_sdr"], 2))
+            state = await self.next_of(second, "source")
+            while (state["kind"], state["status"]) != ("rtl_sdr", "streaming"):
+                state = await self.next_of(second, "source")
+            [(pid, _)] = self.runs.started()
+            # The first interface learns of it, and still shows the simulated band.
+            radios = await self.next_of(first, "radios")
+            while len(radios["radios"]) < 2:
+                radios = await self.next_of(first, "radios")
+            self.assertEqual(radios["shown"], 1)
+            await first.send_json({"type": "radio", "add": {"kind": "synthetic"}})
+            self.assertEqual(await self.next_of(first, "error"), {
+                "type": "error", "command": "radio", "message": "radio 1 reads this receiver already"})
+            # Removed, its receiver is released, and its interface shows the first radio.
+            await first.send_json({"type": "radio", "remove": 2})
+            while (await self.next_of(second, "source"))["kind"] != "synthetic":
+                pass
             deadline = time.monotonic() + 5
             while self.runs.stopping() != {pid}:
                 self.assertLess(time.monotonic(), deadline, "rtl_tcp still runs")

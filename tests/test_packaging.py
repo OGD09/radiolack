@@ -322,8 +322,8 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(command[0], "/usr/bin/radiolack")
         options = cli.build_parser().parse_args(command[1:])
         # Remote access on the port it used last, this computer's interface on a port that SSH can reach.
-        self.assertEqual((options.ui, options.rtl_sdr, options.remote, options.port, options.scan),
-                         ("none", "0", 0, 8080, None))
+        self.assertEqual((options.ui, options.radios, options.remote, options.port, options.scan),
+                         ("none", [("rtl_sdr", "0")], 0, 8080, None))
         for key, values in {
             # Once the network is up, again 10 s after a failure, and only once the administrator enables it.
             "Unit.Wants": ["network-online.target"], "Unit.After": ["network-online.target"],

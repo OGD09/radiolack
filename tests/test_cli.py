@@ -101,8 +101,8 @@ class ParserTest(unittest.TestCase):
 
     def test_defaults(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual((args.ui, args.port, args.remote, args.scan, args.bias_tee, args.rtl_sdr, args.rtl_tcp),
-                         ("window", 0, None, None, False, None, None))
+        self.assertEqual((args.ui, args.port, args.remote, args.scan, args.bias_tee, args.radios),
+                         ("window", 0, None, None, False, None))
 
     def test_remote_ports(self):
         for argv, port in ((["--remote"], 0), (["--remote", "--ui", "none"], 0),     # 0: the port used last
@@ -123,11 +123,28 @@ class ParserTest(unittest.TestCase):
         for argv, device in ((["--rtl-sdr"], "0"), (["--rtl-sdr", "1"], "1"),
                              (["--rtl-sdr", "00000001"], "00000001")):
             with self.subTest(argv=argv):
-                self.assertEqual(cli.build_parser().parse_args(argv).rtl_sdr, device)
+                self.assertEqual(cli.build_parser().parse_args(argv).radios, [("rtl_sdr", device)])
 
-    def test_rejects_invalid_receivers_and_two_receivers(self):
-        for argv in (["--rtl-sdr", ""], ["--rtl-sdr", " "], ["--rtl-sdr", "--rtl-tcp"],
-                     ["--rtl-tcp", "--rtl-sdr"]):
+    def test_several_receivers_each_a_radio_in_order(self):
+        argv = ["--rtl-sdr", "--soapy", "driver=hackrf", "--rtl-tcp", "40000", "--rtl-sdr", "00000001"]
+        self.assertEqual(cli.build_parser().parse_args(argv).radios, [
+            ("rtl_sdr", "0"), ("soapy", "driver=hackrf"), ("rtl_tcp", (LOOPBACK_HOST, 40000)),
+            ("rtl_sdr", "00000001")])
+
+    def test_refuses_more_than_four_receivers_two_rtl_tcp_servers_and_one_twice(self):
+        for argv, refusal in (
+                (["--rtl-sdr", "0", "--rtl-sdr", "1", "--rtl-sdr", "2", "--rtl-sdr", "3", "--rtl-sdr", "4"],
+                 "4 receivers at most"),
+                (["--rtl-tcp", "--rtl-tcp", "40000"], "one rtl_tcp server at most"),
+                (["--rtl-sdr", "--rtl-sdr", "0"], "a receiver is given twice")):
+            with self.subTest(argv=argv), mock.patch.object(cli, "LocalServer") as server:
+                with self.assertRaises(SystemExit) as raised:
+                    run_main("--ui", "none", *argv)
+                self.assertEqual(raised.exception.code, 2)
+                server.assert_not_called()
+
+    def test_rejects_invalid_receivers(self):
+        for argv in (["--rtl-sdr", ""], ["--rtl-sdr", " "]):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as raised:
                     cli.build_parser().parse_args(argv)
@@ -146,7 +163,7 @@ class ParserTest(unittest.TestCase):
         for value, address in addresses.items():
             with self.subTest(value=value):
                 argv = ["--rtl-tcp"] if value is None else ["--rtl-tcp", value]
-                self.assertEqual(cli.build_parser().parse_args(argv).rtl_tcp, address)
+                self.assertEqual(cli.build_parser().parse_args(argv).radios, [("rtl_tcp", address)])
 
     def test_rejects_invalid_rtl_tcp_addresses(self):
         for value in ("", "0", "65536", "host:", ":40000", "host:port", "::1", "[::1", "[::1]40000", "[]:40000"):
@@ -455,6 +472,21 @@ class MainTest(unittest.TestCase):
         source = server.call_args.kwargs["source"]
         self.assertIsInstance(source, RtlSdrSource)
         self.assertEqual((source.device, source.status), ("1", "idle"))
+        self.assertEqual(server.call_args.kwargs["more_sources"], [])
+
+    def test_the_receivers_after_the_first_each_get_a_radio(self):
+        safe_source = functools.partial(RtlSdrSource, program=("/nonexistent/rtl_tcp",))
+        with mock.patch.object(cli.shutil, "which", return_value="/usr/bin/rtl_tcp"), own_settings() as settings, \
+                mock.patch.object(cli, "RtlSdrSource", side_effect=safe_source), \
+                mock.patch.object(cli, "LocalServer", wraps=cli.LocalServer) as server:
+            code, out, err = run_main("--ui", "none", "--rtl-sdr", "1", "--rtl-sdr", "00000002")
+            saved = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual((code, err), (0, ""))
+        [more] = server.call_args.kwargs["more_sources"]
+        self.assertEqual((server.call_args.kwargs["source"].device, more.device), ("1", "00000002"))
+        # Opened again at the next start, without the options.
+        self.assertEqual((saved["source"], [radio["source"] for radio in saved["radios"]]),
+                         ({"kind": "rtl_sdr", "device": "1"}, [{"kind": "rtl_sdr", "device": "00000002"}]))
 
     def test_rtl_sdr_needs_rtl_tcp_installed(self):
         with mock.patch.object(cli.shutil, "which", return_value=None), \
@@ -548,7 +580,7 @@ class SignalTest(unittest.TestCase):
 
 class SoapyOptionTest(unittest.TestCase):
     """--soapy: a receiver read through SoapySDR, by device arguments that
-    name a driver; never with another receiver, and only
+    name a driver, and only
     with SoapySDR's Python module, here the stand-in, whose devices no
     test declares: nothing reads them before an interface listens."""
 
@@ -556,12 +588,11 @@ class SoapyOptionTest(unittest.TestCase):
         for text, expected in (("driver=rtlsdr", "driver=rtlsdr"), (" driver=sdrplay,serial=1234 ",
                                                                      "driver=sdrplay,serial=1234")):
             with self.subTest(text=text):
-                self.assertEqual(cli.build_parser().parse_args(["--soapy", text]).soapy, expected)
+                self.assertEqual(cli.build_parser().parse_args(["--soapy", text]).radios, [("soapy", expected)])
 
-    def test_refuses_arguments_without_a_driver_and_other_receivers(self):
+    def test_refuses_arguments_without_a_driver(self):
         for argv in (["--soapy"], ["--soapy", ""], ["--soapy", "serial=1234"], ["--soapy", "driver="],
-                     ["--soapy", "driver"], ["--soapy", "driver=rtlsdr,driver=hackrf"],
-                     ["--soapy", "driver=rtlsdr", "--rtl-sdr"], ["--rtl-tcp", "--soapy", "driver=rtlsdr"]):
+                     ["--soapy", "driver"], ["--soapy", "driver=rtlsdr,driver=hackrf"]):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as raised:
                     cli.build_parser().parse_args(argv)

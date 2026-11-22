@@ -23,7 +23,7 @@ from radiolack.carrier import CarrierMeasure
 from radiolack.converter import Conversion
 from radiolack.demod import AUDIO_HEADER, AUDIO_VERSION, FRAME_KIND_AUDIO, MODES, Demodulator
 from radiolack import __version__, bandplan, r82xx, recordings
-from radiolack.engine import Engine, Source, Subscription
+from radiolack.engine import MAX_RADIOS, Engine, Source, Subscription
 from radiolack.recordings import meta_name, wav_header
 from radiolack.remote import REMOTE_FILE, RemoteAccess
 from radiolack.rtltcp import RtlTcpSource
@@ -37,7 +37,8 @@ from tests.fakes import (FAKE_CENTRE_HZ, FAKE_RATE_HZ, FAKE_TONE_BIN, LOOPBACK, 
 DC_BIN = 4096       # the centre frequency, with 8192-point FFTs
 FAKE_TONE_HZ = FAKE_CENTRE_HZ + (FAKE_TONE_BIN - DC_BIN) * FAKE_RATE_HZ / 8192
 # What a new client gets first; a remote client, without the last two.
-STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "scans",
+STATES = ("source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences", "recording", "radios",
+          "scans",
           "calibration", "storage", "update")
 
 # The calibration state before any calibration ran.
@@ -202,6 +203,10 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         # Without a recordings folder, nothing is recorded.
         self.assertEqual(subscription.get_nowait(), {"type": "recording", "audio": None, "iq": None, "stopped": None,
                                                      "folder": None, "default_folder": None})
+        # One radio, which it shows.
+        self.assertEqual(subscription.get_nowait(), {"type": "radios", "radios": [
+            {"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming", "scan": None,
+             "recording": []}], "shown": 1, "max": 4})
         self.assertEqual(subscription.get_nowait(), {"type": "scans", "scans": []})
         self.assertEqual(subscription.get_nowait(), CALIBRATION_IDLE)     # no calibration ran
         # Without a store, nothing is saved.
@@ -657,6 +662,218 @@ class SourceSwitchTest(unittest.IsolatedAsyncioTestCase):
         while FRAME_HEADER.unpack_from(await next_frame(subscription))[4] != OtherSource.centre_hz:
             pass
         self.assertGreater(sources.opened[1].reads, 0)
+
+
+class ThirdSource(FakeSource):
+    """A third kind of fake source, on yet another frequency."""
+
+    kind = "third"
+    centre_hz = FAKE_CENTRE_HZ + 2e6
+
+
+def radios_of(engine: Engine) -> list[tuple[int, str]]:
+    return [(radio["id"], radio["kind"]) for radio in engine.radios_state()["radios"]]
+
+
+async def frame_from(subscription: Subscription, centre_hz: float) -> None:
+    """Wait for a frame of the receiver at ``centre_hz``."""
+    while FRAME_HEADER.unpack_from(await next_frame(subscription))[4] != centre_hz:
+        pass
+
+
+class SeveralRadiosTest(unittest.IsolatedAsyncioTestCase):
+    """An engine with several radios, each reading a fake source of its own
+    (later-milestones.md, section 5)."""
+
+    async def asyncSetUp(self):
+        self.sources = FakeSources(third=ThirdSource)
+        self.sources.kinds = ("test", "other", "third")
+
+    def running(self, engine: Engine) -> Engine:
+        runner = asyncio.ensure_future(engine.run())
+
+        async def stop() -> None:
+            engine.close()
+            await asyncio.wait_for(engine.wait_closed(), timeout=5)
+            await asyncio.wait_for(runner, timeout=5)
+        self.addAsyncCleanup(stop)
+        return engine
+
+    async def test_a_client_shows_the_first_radio_until_it_chooses_another(self):
+        first, second = FakeSource(), OtherSource()
+        engine = self.running(Engine(first, more_sources=[second], sources=self.sources))
+        self.assertEqual(radios_of(engine), [(1, "test"), (2, "other")])
+        subscription = engine.subscribe()
+        states = {message["type"]: message for message in ready_messages(subscription) if isinstance(message, dict)}
+        self.assertEqual((states["source"]["kind"], states["radios"]["shown"], states["radios"]["max"]),
+                         ("test", 1, MAX_RADIOS))
+        await frame_from(subscription, FAKE_CENTRE_HZ)
+        engine.configure_radios({"id": 2}, subscription)
+        states = {message["type"]: message for message in waiting(subscription) if isinstance(message, dict)}
+        self.assertEqual({kind for kind in states} >= {"source", "demod", "scanner", "peaks", "recording",
+                                                       "calibration", "radios"}, True)
+        self.assertEqual((states["source"]["kind"], states["radios"]["shown"]), ("other", 2))
+        self.assertEqual(states["demod"]["frequency_hz"], OtherSource.centre_hz + FAKE_RATE_HZ / 4)
+        await frame_from(subscription, OtherSource.centre_hz)
+        # The first radio, which no client shows, stops reading.
+        await asyncio.sleep(0.1)
+        reads = first.reads
+        await asyncio.sleep(0.2)
+        self.assertEqual(first.reads, reads)
+        for refused in ({"id": 3}, {"id": "2"}, {"id": True}, {"id": 1, "remove": 2}, {}, {"show": 1}):
+            with self.subTest(refused=refused), self.assertRaises(ValueError):
+                engine.configure_radios(refused, subscription)
+        self.assertIs(subscription.radio, engine.radios[1])
+
+    async def test_each_radio_keeps_its_own_settings_and_clients(self):
+        engine = Engine(FakeSource(), more_sources=[OtherSource()], sources=self.sources)
+        self.addAsyncCleanup(self.close, engine)
+        on_first, on_second = engine.subscribe(), engine.subscribe()
+        engine.configure_radios({"id": 2}, on_second)
+        for subscription in (on_first, on_second):
+            ready_messages(subscription)
+        engine.radios[1].configure_demod({"mode": "AM"})
+        self.assertEqual(engine.radios[0].demod_state()["mode"], "NFM")
+        self.assertEqual(of_type(waiting(on_first), "demod"), [])
+        [demod] = of_type(waiting(on_second), "demod")
+        self.assertEqual(demod["mode"], "AM")
+        # Bookmarks are common to the radios.
+        engine.edit_bookmarks({"action": "add", **CALLING})
+        for subscription in (on_first, on_second):
+            self.assertEqual(len(of_type(waiting(subscription), "bookmarks")), 1)
+
+    async def test_any_client_adds_a_radio_from_the_sources_not_in_use(self):
+        engine = self.running(Engine(sources=self.sources))
+        subscription, other = engine.subscribe(), engine.subscribe()
+        for client in (subscription, other):
+            ready_messages(client)
+        engine.configure_radios({"add": {"kind": "other"}}, subscription)
+        self.assertEqual(radios_of(engine), [(1, "test"), (2, "other")])
+        self.assertIs(subscription.radio, engine.radios[1])
+        await frame_from(subscription, OtherSource.centre_hz)       # the new radio reads
+        # Every client learns of it; the other still shows the first.
+        [state] = of_type(waiting(other), "radios")
+        self.assertEqual((len(state["radios"]), state["shown"]), (2, 1))
+        # A receiver belongs to one radio: the first reads "test".
+        with self.assertRaisesRegex(ValueError, "radio 1 reads this receiver already"):
+            engine.configure_radios({"add": {"kind": "test"}}, subscription)
+        with self.assertRaisesRegex(ValueError, "radio 1 reads this receiver already"):
+            engine.radios[1].configure({"kind": "test"})
+        self.assertEqual(engine.radios[1].source.kind, "other")
+        for refused in ({"kind": "radio"}, {"kind": 3}, "other", {"device": "0"}):
+            with self.subTest(refused=refused), self.assertRaises(ValueError):
+                engine.add_radio(refused)
+        engine.add_radio({"kind": "third"})
+        self.assertEqual(radios_of(engine), [(1, "test"), (2, "other"), (3, "third")])
+
+    async def test_four_radios_at_most(self):
+        sources = FakeSources(**{str(index): type(f"Source{index}", (FakeSource,), {"kind": str(index)})
+                                 for index in range(5)})
+        sources.kinds = ("test", "0", "1", "2", "3", "4")
+        engine = Engine(sources=sources)
+        self.addAsyncCleanup(self.close, engine)
+        for index in range(MAX_RADIOS - 1):
+            engine.add_radio({"kind": str(index)})
+        with self.assertRaisesRegex(ValueError, "4 radios at most"):
+            engine.add_radio({"kind": "4"})
+        self.assertEqual(len(engine.radios), MAX_RADIOS)
+        with self.assertRaisesRegex(ValueError, "4 radios at most"):
+            Engine(FakeSource(), more_sources=[OtherSource() for _ in range(MAX_RADIOS)])
+        with self.assertRaisesRegex(ValueError, "radio 2 reads this receiver already"):
+            Engine(FakeSource(), more_sources=[OtherSource(), OtherSource()])
+        # Without sources to open, a client adds none.
+        fixed = Engine(FakeSource())
+        self.addAsyncCleanup(self.close, fixed)
+        with self.assertRaisesRegex(ValueError, "reads one receiver"):
+            fixed.add_radio({"kind": "test"})
+
+    async def test_removing_a_radio_moves_its_clients_to_the_first_and_releases_its_receiver(self):
+        engine = self.running(Engine(sources=self.sources))
+        subscription = engine.subscribe()
+        engine.configure_radios({"add": {"kind": "other"}}, subscription)
+        added = engine.radios[1]
+        await frame_from(subscription, OtherSource.centre_hz)
+        engine.radios[1].configure_demod({"mode": "AM"})
+        engine.configure_radios({"remove": 2}, subscription)
+        self.assertEqual(radios_of(engine), [(1, "test")])
+        self.assertIs(subscription.radio, engine.radios[0])
+        self.assertTrue(added.source.closed)
+        await frame_from(subscription, FAKE_CENTRE_HZ)
+        with self.assertRaisesRegex(ValueError, "the first radio stays"):
+            engine.configure_radios({"remove": 1}, subscription)
+        with self.assertRaisesRegex(ValueError, "no such radio"):
+            engine.configure_radios({"remove": 2}, subscription)
+        # Its receiver comes back with its settings, on a new radio.
+        engine.configure_radios({"add": {"kind": "other"}}, subscription)
+        self.assertEqual([radio.id for radio in engine.radios], [1, 3])
+        self.assertEqual(engine.radios[1].demod_state()["mode"], "AM")
+
+    @staticmethod
+    async def close(engine: Engine) -> None:
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+
+class SeveralRadiosPersistenceTest(unittest.IsolatedAsyncioTestCase):
+    """The radios used last come back at start, unless sources are given."""
+
+    async def asyncSetUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "radiolack"
+        self.sources = FakeSources(third=ThirdSource)
+        self.sources.kinds = ("test", "other", "third")
+
+    def read(self) -> dict:
+        return json.loads((self.directory / SETTINGS_FILE).read_text(encoding="utf-8"))
+
+    async def closed(self, engine: Engine) -> None:
+        engine.close()
+        await asyncio.wait_for(engine.wait_closed(), timeout=5)
+
+    async def test_the_radios_used_last_come_back_with_their_scanner_settings(self):
+        engine = Engine(sources=self.sources, store=Store(self.directory))
+        engine.add_radio({"kind": "third"})
+        engine.radios[1].configure_scanner({"threshold_db": 20.0})
+        engine.radios[1].configure_demod({"mode": "AM"})
+        await self.closed(engine)
+        saved = self.read()
+        self.assertEqual(saved["source"], {"kind": "test"})
+        # Each radio's receiver as it stood, not the first radio's alone.
+        self.assertEqual(saved["receivers"][engine.radios[1].source.settings_key]["demod"]["mode"], "AM")
+        self.assertEqual([radio["source"] for radio in saved["radios"]], [{"kind": "third"}])
+        self.assertEqual(saved["radios"][0]["scanner"]["threshold_db"], 20.0)
+        again = Engine(sources=self.sources, store=Store(self.directory))
+        self.addAsyncCleanup(self.closed, again)
+        self.assertEqual(radios_of(again), [(1, "test"), (2, "third")])
+        self.assertEqual(again.radios[1].scanner_state()["threshold_db"], 20.0)
+        self.assertEqual(again.radios[1].demod_state()["mode"], "AM")
+        self.assertNotEqual(again.radios[0].scanner_state()["threshold_db"], 20.0)
+
+    async def test_sources_given_at_start_replace_them(self):
+        engine = Engine(sources=self.sources, store=Store(self.directory))
+        engine.add_radio({"kind": "third"})
+        await self.closed(engine)
+        given = Engine(OtherSource(), sources=self.sources, store=Store(self.directory))
+        await self.closed(given)
+        self.assertEqual(radios_of(given), [(1, "other")])
+        self.assertNotIn("radios", self.read())
+        more = Engine(FakeSource(), more_sources=[ThirdSource()], sources=self.sources,
+                      store=Store(self.directory))
+        await self.closed(more)
+        self.assertEqual([radio["source"] for radio in self.read()["radios"]], [{"kind": "third"}])
+
+    async def test_saved_radios_that_cannot_open_are_left_out(self):
+        self.directory.mkdir()
+        (self.directory / SETTINGS_FILE).write_text(json.dumps({"version": 1, "source": {"kind": "test"}, "radios": [
+            {"source": {"kind": "lost"}}, "radio", {"source": {"kind": "test"}}, {"source": {"kind": "other"}},
+            {"source": {"kind": "third"}}, {"source": {"kind": "other"}}]}), encoding="utf-8")
+        with self.assertLogs("radiolack", "WARNING") as logs:
+            engine = Engine(sources=self.sources, store=Store(self.directory))
+        self.addAsyncCleanup(self.closed, engine)
+        # Those that cannot open, or read a receiver in use, are left out.
+        self.assertEqual(radios_of(engine), [(1, "test"), (2, "other"), (3, "third")])
+        self.assertEqual(len(logs.output), 4)
 
 
 CALLING = {"frequency_hz": 145_500_000.0, "name": "FM calling", "mode": "NFM", "scan": True}
@@ -2481,7 +2698,7 @@ class KeptScanTest(unittest.IsolatedAsyncioTestCase):
         engine.radios[0].configure_scanner({"scan": "sweep"})
         [running] = engine.scans_state()["scans"]
         self.assertRegex(running["name"], r"^144\.910-145\.090 MHz, \d{4}-\d\d-\d\d \d\d:\d\d$")
-        await eventually(lambda: engine.kept.running is not None and engine.kept.running.channels)
+        await eventually(lambda: engine.kept.running and engine.kept.running[0].channels)
         engine.configure_scans({"rename": running["id"], "name": "Calling"}, subscription)
         refused = ({}, {"get": 9}, {"delete": running["id"]}, {"rename": running["id"], "name": ""},
                    {"rename": running["id"]}, {"clear_all": False}, {"clear_all": True, "get": 1}, {"forget": 1})
@@ -2513,7 +2730,7 @@ class KeptScanTest(unittest.IsolatedAsyncioTestCase):
         engine = Engine(TonesSource({37_500: 0.1}), store=Store(self.directory), save_delay_s=0.01)
         task = asyncio.ensure_future(engine.run())
         engine.radios[0].configure_scanner({"scan": "signals", "name": "Before"})
-        await eventually(lambda: engine.kept.running is not None and engine.kept.running.channels)
+        await eventually(lambda: engine.kept.running and engine.kept.running[0].channels)
         engine.close()
         await asyncio.wait_for(task, timeout=5)
         await asyncio.wait_for(engine.wait_closed(), timeout=5)

@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
@@ -177,14 +177,14 @@ class DeviceSearch:
         if self.running and not self._closed:
             self._set(*self._before)
 
-    async def run(self, skip: str | None = None) -> None:
-        """Search every listed driver but ``skip``, the driver of the device
-        in use, whose devices stay as the previous search found them, in a
-        thread of its own; the state then holds what it found. Cancelled,
-        the thread goes on, and what it finds is dropped."""
+    async def run(self, skip: Collection[str] = ()) -> None:
+        """Search every listed driver but those of ``skip``, the drivers of
+        the devices in use, whose devices stay as the previous search found
+        them, in a thread of its own; the state then holds what it found.
+        Cancelled, the thread goes on, and what it finds is dropped."""
         loop = asyncio.get_running_loop()
         done: asyncio.Future[Found] = loop.create_future()
-        drivers = tuple(driver for driver in self.drivers if driver != skip)
+        drivers = tuple(driver for driver in self.drivers if driver not in skip)
 
         def finish(found: Found) -> None:
             if not done.done():
@@ -216,7 +216,7 @@ class DeviceSearch:
             self.devices = ()
             self._set("unavailable", found.problem)
             return
-        kept = tuple(entry for entry in self.devices if entry.driver == skip)
+        kept = tuple(entry for entry in self.devices if entry.driver in skip)
         self.devices = kept + tuple(entry for entry in found.devices if entry not in kept)
         detail = "; ".join(f"the {driver} search failed: {text}" for driver, text in found.failures)
         self._set("failed" if found.failures else "done", detail)

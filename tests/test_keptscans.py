@@ -27,17 +27,18 @@ class KeptScansTest(unittest.TestCase):
     def test_keeps_the_channels_found_and_the_time_heard(self):
         scans = KeptScans()
         scan = started(scans)
-        self.assertIs(scans.running, scan)
-        self.assertTrue(scans.record([(145_600_000, 20.0), (145_725_000, 14.0)], START_S + 1))
-        self.assertTrue(scans.record([(145_600_400, 25.0)], START_S + 2))     # within 1.5 kHz: the same channel
-        self.assertFalse(scans.record([], START_S + 3))
-        scans.listened(145_600_000, 1.5)
-        scans.listened(145_900_000, 1.0)        # never found: nothing to add to
-        self.assertTrue(scans.progress(1))
-        self.assertFalse(scans.progress(1))
-        self.assertTrue(scans.end(START_S + 10, "done"))
-        self.assertIsNone(scans.running)
-        self.assertFalse(scans.end(START_S + 11, "stopped"))
+        self.assertEqual(scans.running, (scan,))
+        self.assertTrue(scans.record(scan, [(145_600_000, 20.0), (145_725_000, 14.0)], START_S + 1))
+        self.assertTrue(scans.record(scan, [(145_600_400, 25.0)], START_S + 2))     # within 1.5 kHz: the same channel
+        self.assertFalse(scans.record(scan, [], START_S + 3))
+        scans.listened(scan, 145_600_000, 1.5)
+        scans.listened(scan, 145_900_000, 1.0)        # never found: nothing to add to
+        self.assertTrue(scans.progress(scan, 1))
+        self.assertFalse(scans.progress(scan, 1))
+        self.assertTrue(scans.end(scan, START_S + 10, "done"))
+        self.assertEqual(scans.running, ())
+        self.assertFalse(scans.end(scan, START_S + 11, "stopped"))
+        self.assertFalse(scans.end(None, START_S + 11, "stopped"))
         self.assertEqual(scans.channels(scan.id), {
             "id": 1, "name": "Repeaters", "start_s": round(START_S), "end_s": round(START_S + 10),
             "low_hz": 145_575_000, "high_hz": 145_800_000, "listen": True, "passes_set": 3, "passes": 1,
@@ -47,26 +48,34 @@ class KeptScansTest(unittest.TestCase):
                 {"frequency_hz": 145_725_000, "first_s": round(START_S + 1), "last_s": round(START_S + 1),
                  "searches": 1, "margin_db": 14.0, "open_s": 0.0}]})
         self.assertEqual(scans.summaries()[0]["channels"], 2)
-        self.assertFalse(scans.record([(145_650_000, 20.0)], START_S + 12))     # it ended
+        self.assertFalse(scans.record(scan, [(145_650_000, 20.0)], START_S + 12))     # it ended
+        scans.listened(scan, 145_600_000, 1.0)
+        self.assertFalse(scans.progress(scan, 2))
+        self.assertEqual((scan.channels[0].open_s, scan.passes), (1.5, 1))
 
     def test_the_latest_first_and_at_most_max_scans(self):
         scans = KeptScans()
+        # One radio's scan runs while another's come and go.
+        first = started(scans, "First", START_S - 1)
         for index in range(MAX_SCANS + 2):
-            started(scans, f"Scan {index}", START_S + index)
-            scans.end(START_S + index + 0.5, "stopped")
+            scans.end(started(scans, f"Scan {index}", START_S + index), START_S + index + 0.5, "stopped")
         summaries = scans.summaries()
         self.assertEqual(len(summaries), MAX_SCANS)
-        self.assertEqual((summaries[0]["name"], summaries[-1]["name"]), (f"Scan {MAX_SCANS + 1}", "Scan 2"))
-        # A new scan ends the one that runs.
-        first = started(scans, "First", START_S + 1000)
-        started(scans, "Second", START_S + 1001)
-        self.assertEqual((first.ended, first.end_s), ("stopped", START_S + 1001))
+        self.assertEqual((summaries[0]["name"], summaries[-2]["name"], summaries[-1]["name"]),
+                         (f"Scan {MAX_SCANS + 1}", "Scan 3", "First"))     # the scan that runs stays
+        # Each radio's scan runs until it ends, and Radiolack's stop ends them all.
+        second = started(scans, "Second", START_S + 1001)
+        self.assertEqual(scans.running, (first, second))
+        self.assertTrue(scans.end_all(START_S + 1002, "closed"))
+        self.assertEqual([(scan.ended, scan.end_s) for scan in (first, second)],
+                         [("closed", START_S + 1002)] * 2)
+        self.assertFalse(scans.end_all(START_S + 1003, "closed"))
 
     def test_at_most_max_channels_the_latest_found(self):
         scans = KeptScans()
         scan = started(scans)
         for index in range(MAX_CHANNELS + 5):
-            scans.record([(100_000_000 + 10_000 * index, 10.0)], START_S + index)
+            scans.record(scan, [(100_000_000 + 10_000 * index, 10.0)], START_S + index)
         frequencies = [channel.frequency_hz for channel in scan.channels]
         self.assertEqual(len(frequencies), MAX_CHANNELS)
         self.assertEqual(frequencies[0], 100_050_000)       # the five found first left
@@ -75,7 +84,7 @@ class KeptScansTest(unittest.TestCase):
     def test_rename_delete_and_clear_all(self):
         scans = KeptScans()
         old = started(scans, "Old")
-        scans.end(START_S + 5, "stopped")
+        scans.end(old, START_S + 5, "stopped")
         running = started(scans, None, START_S + 60)
         self.assertEqual(running.name, default_name(145_575_000.0, 145_800_000.0, START_S + 60))
         scans.rename(running.id, "  2 m repeaters  ")
@@ -92,30 +101,30 @@ class KeptScansTest(unittest.TestCase):
             scans.delete(old.id)
         self.assertFalse(scans.clear_all())     # the one that runs stays
         self.assertEqual([scan["id"] for scan in scans.summaries()], [running.id])
-        scans.end(START_S + 70, "tuned")
+        scans.end(running, START_S + 70, "tuned")
         self.assertTrue(scans.clear_all())
         self.assertEqual(scans.summaries(), [])
         self.assertEqual(started(scans).id, 1)
 
     def test_comes_back_from_the_file_and_one_that_ran_is_interrupted(self):
         scans = KeptScans()
-        started(scans, "Done")
-        scans.record([(145_600_000, 20.0)], START_S + 1)
-        scans.end(START_S + 10, "done")
-        started(scans, "Cut", START_S + 20)
-        scans.record([(145_725_000, 18.0)], START_S + 25)
+        done = started(scans, "Done")
+        scans.record(done, [(145_600_000, 20.0)], START_S + 1)
+        scans.end(done, START_S + 10, "done")
+        cut = started(scans, "Cut", START_S + 20)
+        scans.record(cut, [(145_725_000, 18.0)], START_S + 25)
         again = KeptScans(scans.stored())
         summaries = again.summaries()
         self.assertEqual([(scan["name"], scan["ended"], scan["end_s"]) for scan in summaries],
                          [("Cut", "interrupted", round(START_S + 25)), ("Done", "done", round(START_S + 10))])
-        self.assertIsNone(again.running)
+        self.assertEqual(again.running, ())
         self.assertEqual(again.channels(1), scans.channels(1))
 
     def test_leaves_out_what_is_not_valid(self):
         good = KeptScans()
-        started(good, "Good")
-        good.record([(145_600_000, 20.0)], START_S + 1)
-        good.end(START_S + 2, "stopped")
+        scan = started(good, "Good")
+        good.record(scan, [(145_600_000, 20.0)], START_S + 1)
+        good.end(scan, START_S + 2, "stopped")
         entry = good.stored()["scans"][0]
         bad_channel = dict(entry["channels"][0], searches=0)
         broken = [
@@ -177,8 +186,8 @@ class DecodeTest(unittest.TestCase):
     def test_the_interface_decodes_what_the_engine_sends(self):
         scans = KeptScans()
         scan = started(scans)
-        scans.record([(145_600_000, 20.0)], START_S + 1)
-        scans.listened(145_600_000, 2.0)
+        scans.record(scan, [(145_600_000, 20.0)], START_S + 1)
+        scans.listened(scan, 145_600_000, 2.0)
         state = {"type": "scans", "scans": scans.summaries()}
         reply = {"type": "scan", **scans.channels(scan.id)}
         done = subprocess.run([NODE, "--input-type=module", "-e", DECODE_SCRIPT, (WEB_DIR / "stream.js").as_uri(),

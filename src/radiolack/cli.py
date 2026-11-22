@@ -16,6 +16,7 @@ from .recordings import default_folder
 from .remote import DEFAULT_PORT, MIN_PORT, private_addresses
 from .rtltcp import DEFAULT_ADDRESS, RTL_TCP_PROGRAM, RtlSdrSource, RtlTcpSource, parse_address
 from .scanners import SCAN_NAMES, SCANS
+from .engine import MAX_RADIOS, Source
 from .server import LOOPBACK_HOST, InterfaceUnreadable, LocalServer
 from .soapy import SoapySource, module_problem, parse_args
 from .sources import Sources
@@ -62,12 +63,35 @@ def _soapy_args(text: str) -> str:
     return text.strip()
 
 
+class _AddRadio(argparse.Action):
+    """--rtl-sdr, --rtl-tcp and --soapy: each adds a radio reading its
+    receiver to ``radios``, in the order given, as (kind, value)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        kind = option_string.lstrip("-").replace("-", "_")
+        radios = list(getattr(namespace, self.dest) or [])
+        radios.append((kind, values))
+        setattr(namespace, self.dest, radios)
+
+
+def _checked_radios(parser: argparse.ArgumentParser, radios: list[tuple[str, object]]) -> None:
+    """Exit through ``parser`` for more than MAX_RADIOS receivers, two rtl_tcp
+    servers, or a receiver given twice."""
+    if len(radios) > MAX_RADIOS:
+        parser.error(f"{MAX_RADIOS} receivers at most")
+    if sum(kind == "rtl_tcp" for kind, _ in radios) > 1:
+        parser.error("one rtl_tcp server at most: the Receiver menu keeps one address")
+    if len(set(radios)) < len(radios):
+        parser.error("a receiver is given twice")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radiolack",
-        description="Receive-only SDR receiver. Without --rtl-sdr, --rtl-tcp or --soapy, it opens the "
-                    "receiver used last, the simulated 2 m band the first time; the Receiver menu "
-                    "switches between them. Settings, bookmarks and history are saved in "
+        description="Receive-only SDR receiver. --rtl-sdr, --rtl-tcp and --soapy may come together and "
+                    f"more than once, up to {MAX_RADIOS} receivers, each read by a radio of its own, in the "
+                    "order given; without them, it opens the receivers used last, the simulated 2 m band "
+                    "the first time; the Receiver menu switches between them and adds radios. Settings, bookmarks and history are saved in "
                     "$XDG_CONFIG_HOME/radiolack (by default ~/.config/radiolack), and recordings, "
                     "made only from the interface, in $XDG_DATA_HOME/radiolack/recordings (by default "
                     "~/.local/share/radiolack/recordings) unless Settings chooses another folder. "
@@ -94,32 +118,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scan", choices=SCANS,
-        help="start a scan at start, which goes on without any interface: memory, the memory scan, or sweep, "
+        help="start a scan at start, on the first radio, which goes on without any interface: memory, the "
+             "memory scan, or sweep, "
              "the range scan, with their saved settings, or signals, the range scan over the current window, "
              "stopping to listen; when it cannot start, say why and run on without it",
     )
     parser.add_argument(
         "--bias-tee", action="store_true",
         help="turn the antenna power (bias tee: 4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, "
-             "or a SoapySDR device's own) on at start, for the receiver given or reopened; off otherwise, "
+             "or a SoapySDR device's own) on at start, for the first receiver given or reopened; off otherwise, "
              "and never saved",
     )
-    sources = parser.add_mutually_exclusive_group()
-    sources.add_argument(
-        "--rtl-sdr", nargs="?", const="0", type=_device, metavar="DEVICE",
+    parser.add_argument(
+        "--rtl-sdr", nargs="?", const="0", type=_device, metavar="DEVICE", action=_AddRadio, dest="radios",
         help="read the RTL-SDR receiver plugged into this computer, through an rtl_tcp that "
              "Radiolack starts while an interface is open or a scan runs: DEVICE is its index "
              "or serial number (default: 0, the first one)",
     )
     # Without ADDRESS, an empty address: the source takes the saved one.
-    sources.add_argument(
-        "--rtl-tcp", nargs="?", const=(), type=_rtl_tcp_address, metavar="ADDRESS",
+    parser.add_argument(
+        "--rtl-tcp", nargs="?", const=(), type=_rtl_tcp_address, metavar="ADDRESS", action=_AddRadio,
+        dest="radios",
         help="read an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS: HOST, "
              "PORT or HOST:PORT (default: the address used last, the first time "
              f"{DEFAULT_ADDRESS[0]}:{DEFAULT_ADDRESS[1]}); the Receiver menu can change it",
     )
-    sources.add_argument(
-        "--soapy", type=_soapy_args, metavar="ARGS",
+    parser.add_argument(
+        "--soapy", type=_soapy_args, metavar="ARGS", action=_AddRadio, dest="radios",
         help="read a receiver through SoapySDR (python3-soapysdr and the driver's module), such as an "
              "SDRplay, a HackRF or an RTL-SDR, while an interface is open or a scan runs: ARGS are its "
              "device arguments, KEY=VALUE separated by commas, which must name a driver, such as "
@@ -131,24 +156,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    radios = args.radios or []
+    _checked_radios(parser, radios)
     report.keep_recent_messages()   # for the reports that the interface offers to share
-    source: RtlTcpSource | SoapySource | None = None
-    if args.rtl_sdr is not None:
-        if shutil.which(RTL_TCP_PROGRAM) is None:
-            print(f"radiolack: {RTL_TCP_PROGRAM} is not installed (on Debian or Ubuntu: "
-                  "sudo apt install rtl-sdr)", file=sys.stderr)
-            return 1
-        source = RtlSdrSource(args.rtl_sdr)
-    elif args.rtl_tcp is not None:
-        source = RtlTcpSource(*args.rtl_tcp)
-    elif args.soapy is not None:
-        problem = module_problem()
-        if problem is not None:
-            print(f"radiolack: {problem}", file=sys.stderr)
-            return 1
-        source = SoapySource(args.soapy)
+    kinds = {kind for kind, _ in radios}
+    if "rtl_sdr" in kinds and shutil.which(RTL_TCP_PROGRAM) is None:
+        print(f"radiolack: {RTL_TCP_PROGRAM} is not installed (on Debian or Ubuntu: "
+              "sudo apt install rtl-sdr)", file=sys.stderr)
+        return 1
+    if "soapy" in kinds and (problem := module_problem()) is not None:
+        print(f"radiolack: {problem}", file=sys.stderr)
+        return 1
+    given = [_source(kind, value) for kind, value in radios]
     try:
-        server = LocalServer(args.port, source=source, sources=Sources(), store=Store(settings_dir()),
+        server = LocalServer(args.port, source=given[0] if given else None, more_sources=given[1:],
+                             sources=Sources(), store=Store(settings_dir()),
                              updates=UpdateCheck(), remote_addresses=private_addresses,
                              recordings=default_folder())
     except InterfaceUnreadable as error:
@@ -181,6 +203,15 @@ def main(argv: list[str] | None = None) -> int:
             while not stop.wait(0.5):
                 continue
     return 0
+
+
+def _source(kind: str, value: object) -> Source:
+    """The source of a receiver given at start."""
+    if kind == "rtl_sdr":
+        return RtlSdrSource(str(value))
+    if kind == "rtl_tcp":
+        return RtlTcpSource(*value)     # an address, or none: the saved one
+    return SoapySource(str(value))
 
 
 def _turn_on_remote(server: LocalServer, port: int | None) -> bool:
