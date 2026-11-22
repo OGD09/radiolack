@@ -393,7 +393,7 @@ class ChildEngine:
     def check_free(self, source: Any, radio: Any = None) -> None:
         for other in self._others:
             if other.source.settings_key == source.settings_key or other.source.reopen == source.reopen:
-                raise ValueError(f"radio {other.id} reads this receiver already")
+                raise ValueError(f"receiver {other.id} reads this device already")
 
     def check_no_search(self) -> None:
         if self.device_search is not None and self.device_search.running:

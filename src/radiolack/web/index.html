@@ -37,7 +37,7 @@
     <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Drag or wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
       <svg viewBox="0 0 15 15" aria-hidden="true"><path d="M3 1.5c1.7 0 2.7.8 3.4 2.4l5.1 9.6M7.5 6 3 13.5"/></svg>
     </button></div>
-    <div id="meta"><b id="m-mode"></b><span id="m-lock" hidden></span><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span></div>
+    <div id="meta"><b id="m-mode"></b><span id="m-lock" hidden></span><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span><button type="button" id="radio-chip" aria-haspopup="dialog" aria-controls="menu" hidden></button></div>
     <!-- The wheel over the S-meter, or a click or a tap on its bar, sets the squelch; the Radio menu sets it too. -->
     <div id="smeter" aria-hidden="true" title="Squelch: wheel or click"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
   </div>
@@ -55,7 +55,7 @@
       <button type="button" data-menu="scan" aria-keyshortcuts="3" title="Scan (3)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M16 12a4 4 0 1 1-1.17-2.83M12 12l6.5-6.5"/></svg><span>Scan</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="record" aria-keyshortcuts="4" title="Record (4)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.4" class="fill"/></svg><span>Record</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <hr>
-      <button type="button" data-menu="receiver" aria-keyshortcuts="5" title="Receiver (5)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 11v10M8.5 21h7M8.8 7.8a4.5 4.5 0 0 1 6.4 0M6.3 5.3a8 8 0 0 1 11.4 0"/><circle cx="12" cy="11" r="1.4" class="fill"/></svg><span>Receiver</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
+      <button type="button" data-menu="receiver" aria-keyshortcuts="5" title="Receivers (5)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 11v10M8.5 21h7M8.8 7.8a4.5 4.5 0 0 1 6.4 0M6.3 5.3a8 8 0 0 1 11.4 0"/><circle cx="12" cy="11" r="1.4" class="fill"/></svg><span>Receivers</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="display" aria-keyshortcuts="6" title="Display (6)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19.5h18M4 17l3.5-4 2.5 2.5 3.5-10 3.5 10 2-2 1.5 3.5"/></svg><span>Display</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <button type="button" data-menu="settings" aria-keyshortcuts="7" title="Settings (7)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Settings</span><svg class="ico chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg></button>
       <hr>
@@ -235,35 +235,69 @@
 
       <section data-menu="receiver" hidden>
         <div class="menu-scroll">
-          <!-- From an engine with several radios: each reads a receiver of its own. -->
-          <div class="field" id="radio-field" hidden>
-            <label for="radio-list">Radio</label>
-            <select id="radio-list" aria-describedby="radio-note"></select>
+          <!-- From an engine with several receivers (the protocol's radios): one card each, then the settings of the one shown. -->
+          <div id="radio-cards-part" hidden>
+            <ul class="list receiver-cards" id="radio-cards" aria-label="Receivers"></ul>
+            <button type="button" class="add-receiver" id="radio-add" aria-expanded="false" aria-controls="radio-add-list" disabled><span>+ Add a receiver</span><span class="note" id="radio-add-detail"></span></button>
+            <ul class="list" id="radio-add-list" aria-label="Devices to add" hidden></ul>
             <p class="note" id="radio-note" role="status"></p>
+            <div class="receiver-title" id="receiver-title"><b id="receiver-title-text"></b><span class="note">settings</span></div>
           </div>
-          <div class="field" id="radio-add-field" hidden>
-            <label for="radio-add">Add a radio</label>
-            <select id="radio-add" disabled></select>
+          <h3>Device</h3>
+          <p class="note device-line" id="src-note"></p>
+          <div class="row"><button type="button" class="btn" id="src-change" aria-expanded="false" aria-controls="src-device-choice">Change device…</button><button type="button" class="btn danger" id="radio-remove" hidden disabled>Remove</button></div>
+          <div id="src-device-choice" hidden>
+            <div class="field">
+              <label for="src-device">Device</label>
+              <select id="src-device" disabled>
+                <option value="synthetic">Synthetic band (2 m)</option>
+                <option value="rtl_sdr">RTL-SDR · this computer</option>
+                <option value="rtl_tcp">RTL-SDR · rtl_tcp</option>
+                <option value="soapy">SoapySDR device</option>
+              </select>
+            </div>
+            <div class="field" id="src-soapy-field" hidden>
+              <label for="src-soapy">SoapySDR device</label>
+              <select id="src-soapy" aria-describedby="src-soapy-note" disabled></select>
+              <p class="note" id="src-soapy-note"></p>
+            </div>
+            <div class="row" id="src-soapy-search-row" hidden><button type="button" class="btn" id="src-soapy-search" disabled>Search again</button></div>
+            <div class="field" id="src-soapy-args-field" hidden><label for="src-soapy-args">SoapySDR device arguments</label><input id="src-soapy-args" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="driver=rtlsdr" disabled></div>
           </div>
-          <div class="row" id="radio-remove-row" hidden><button type="button" class="btn" id="radio-remove" disabled>Remove this radio</button></div>
-          <div class="field">
-            <label for="src-device">Receiver</label>
-            <select id="src-device" disabled>
-              <option value="synthetic">Synthetic band (2 m)</option>
-              <option value="rtl_sdr">RTL-SDR · this computer</option>
-              <option value="rtl_tcp">RTL-SDR · rtl_tcp</option>
-              <option value="soapy">SoapySDR device</option>
-            </select>
-            <p class="note" id="src-note"></p>
-          </div>
-          <div class="field" id="src-soapy-field" hidden>
-            <label for="src-soapy">SoapySDR device</label>
-            <select id="src-soapy" aria-describedby="src-soapy-note" disabled></select>
-            <p class="note" id="src-soapy-note"></p>
-          </div>
-          <div class="row" id="src-soapy-search-row" hidden><button type="button" class="btn" id="src-soapy-search" disabled>Search again</button></div>
-          <div class="field" id="src-soapy-args-field" hidden><label for="src-soapy-args">SoapySDR device arguments</label><input id="src-soapy-args" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="driver=rtlsdr" disabled></div>
           <div class="field" id="src-address-field" hidden><label for="src-address">Server address</label><input id="src-address" type="text" inputmode="url" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="host:port" disabled></div>
+          <h3>Tuning</h3>
+          <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" aria-describedby="src-center-note" disabled><p class="note" id="src-center-note" hidden></p></div>
+          <div class="field">
+            <label for="src-rate">Sample rate</label>
+            <select id="src-rate" disabled>
+              <option value="240000">0.240 MS/s</option>
+              <option value="300000">0.300 MS/s</option>
+              <option value="1024000">1.024 MS/s</option>
+              <option value="1536000">1.536 MS/s</option>
+              <option value="2048000">2.048 MS/s</option>
+              <option value="2400000">2.400 MS/s</option>
+              <option value="2880000">2.880 MS/s</option>
+            </select>
+          </div>
+          <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.01" value="0" disabled></div>
+          <div class="row"><button type="button" class="btn" id="src-calibrate" aria-haspopup="dialog" aria-controls="calibrate-dialog" disabled>Calibrate</button><span class="note" id="src-calibrate-note"></span></div>
+          <div class="field" id="src-driver-field" hidden>
+            <label for="src-driver">rtl-sdr driver</label>
+            <select id="src-driver" aria-describedby="src-driver-note" disabled>
+              <option value="unknown">Unknown</option>
+              <option value="truncating">rtl-sdr up to 2.0.1, RTL-SDR Blog</option>
+              <option value="rounding">rtl-sdr 2.0.2 and later</option>
+            </select>
+            <p class="note" id="src-driver-note"></p>
+          </div>
+          <h3>Gain</h3>
+          <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1" disabled></div>
+          <label class="check"><input id="src-agc" type="checkbox" disabled> Tuner AGC</label>
+          <p class="note" id="src-gain-note" hidden></p>
+          <label class="check" id="src-rtl-agc-row" hidden><input id="src-rtl-agc" type="checkbox" disabled> RTL2832 AGC while sampling directly</label>
+          <h3>Input</h3>
+          <div class="field" id="src-antenna-field" hidden><label for="src-antenna">Antenna socket</label><select id="src-antenna" disabled></select></div>
+          <div class="row" id="src-power-row" hidden><span id="src-power-name">Antenna power (bias tee): <output id="src-power-v"></output></span><button type="button" class="btn" id="src-power" disabled></button></div>
           <div class="field" id="src-hf-field" hidden>
             <label for="src-hf">Shortwave</label>
             <select id="src-hf" disabled>
@@ -288,36 +322,6 @@
             <label for="src-converter-lo">Converter oscillator (MHz)</label>
             <input id="src-converter-lo" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" disabled>
             <p class="note" id="src-converter-lo-note"></p>
-          </div>
-          <div class="field" id="src-antenna-field" hidden><label for="src-antenna">Antenna socket</label><select id="src-antenna" disabled></select></div>
-          <div class="row" id="src-power-row" hidden><span id="src-power-name">Antenna power (bias tee): <output id="src-power-v"></output></span><button type="button" class="btn" id="src-power" disabled></button></div>
-          <label class="check" id="src-rtl-agc-row" hidden><input id="src-rtl-agc" type="checkbox" disabled> RTL2832 AGC while sampling directly</label>
-          <div class="field"><label for="src-gain">Tuner gain <output id="src-gain-v"></output></label><input id="src-gain" type="range" min="0" step="1" disabled></div>
-          <label class="check"><input id="src-agc" type="checkbox" disabled> Tuner AGC</label>
-          <p class="note" id="src-gain-note" hidden></p>
-          <div class="field">
-            <label for="src-rate">Sample rate</label>
-            <select id="src-rate" disabled>
-              <option value="240000">0.240 MS/s</option>
-              <option value="300000">0.300 MS/s</option>
-              <option value="1024000">1.024 MS/s</option>
-              <option value="1536000">1.536 MS/s</option>
-              <option value="2048000">2.048 MS/s</option>
-              <option value="2400000">2.400 MS/s</option>
-              <option value="2880000">2.880 MS/s</option>
-            </select>
-          </div>
-          <div class="field"><label for="src-center">Centre frequency (MHz)</label><input id="src-center" type="text" inputmode="decimal" aria-describedby="src-center-note" disabled><p class="note" id="src-center-note" hidden></p></div>
-          <div class="field"><label for="src-ppm">Frequency correction (ppm)</label><input id="src-ppm" type="number" min="-100" max="100" step="0.01" value="0" disabled></div>
-          <div class="row"><button type="button" class="btn" id="src-calibrate" aria-haspopup="dialog" aria-controls="calibrate-dialog" disabled>Calibrate</button><span class="note" id="src-calibrate-note"></span></div>
-          <div class="field" id="src-driver-field" hidden>
-            <label for="src-driver">rtl-sdr driver</label>
-            <select id="src-driver" aria-describedby="src-driver-note" disabled>
-              <option value="unknown">Unknown</option>
-              <option value="truncating">rtl-sdr up to 2.0.1, RTL-SDR Blog</option>
-              <option value="rounding">rtl-sdr 2.0.2 and later</option>
-            </select>
-            <p class="note" id="src-driver-note"></p>
           </div>
           <label class="check"><input id="src-dc" type="checkbox" disabled> Remove the DC spike</label>
           <div id="src-advanced" hidden>

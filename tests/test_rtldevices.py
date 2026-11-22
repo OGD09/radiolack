@@ -173,7 +173,7 @@ class EngineListTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(device["device"], device["in_use"], device["radio"])
                           for device in self.listed(engine, subscription)["devices"]],
                          [("RTLSDR1", False, None), ("59196661", False, second.id)])
-        with self.assertRaisesRegex(ValueError, "reads this receiver already"):
+        with self.assertRaisesRegex(ValueError, "reads this device already"):
             engine.radios[0].configure_rtl_devices({"choose": "59196661"}, subscription)
         self.assertEqual(engine.radios[0].source.kind, "synthetic")
 

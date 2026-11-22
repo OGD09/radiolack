@@ -258,7 +258,7 @@ the history under the tag `v0.1.0`.
   device's driver, serial number and label alone, in memory only; the
   search's state, a failed driver's and the missing module's),
   `sources` (opens each kind of source from its saved
-  record, for the Receiver list and at start, and lists the RTL-SDR
+  record, for the device list and at start, and lists the RTL-SDR
   receivers plugged in from its sysfs folder), `synthetic` (simulated 2 m
   band), `window` (GTK 3 and WebKitGTK through PyGObject; the main thread
   runs GTK; an ephemeral WebKit context writes nothing to disk; downloads
@@ -286,17 +286,20 @@ the history under the tag `v0.1.0`.
   bins), `bandplan.js`
   (band plan loader, and the mode the plan gives, SAM counting as AM), `antenna.js` (antenna lengths for the VFO's
   frequency), `frequency.js` (the one formatter and the one reader of
-  exact frequencies), `shortwave.js` (the Receiver menu's shortwave
+  exact frequencies), `shortwave.js` (the Receivers menu's shortwave
   input), `power.js` (the antenna power's second press), `converter.js`
-  (the Receiver menu's converter, and the view that follows its change), `tunerpll.js` (the
-  Receiver menu's rtl-sdr driver, the centre in use, and the grid's point
+  (the Receivers menu's converter, and the view that follows its change), `tunerpll.js` (the
+  Receivers menu's rtl-sdr driver, the centre in use, and the grid's point
   a retune takes to keep the VFO's channel clear of the centre), `tuning.js` (the
-  Automatic step), `rtldevices.js` (the Receiver list's entries: one per
+  Automatic step), `rtldevices.js` (the device list's entries: one per
   RTL-SDR receiver plugged in, what they say of those that cannot be
   chosen, and the entry that opens the one used last without a list),
-  `radios.js` (the Receiver menu's radios: the radio list, the receivers
-  a radio may be added from, the second press that removes a busy one,
-  the menu dot across the radios, and the radio a device chose last),
+  `radios.js` (the Receivers menu's receivers, the protocol's radios:
+  one card each, its device's name as the lists name it, its state and
+  what runs on it, the one shown framed; the "Add a receiver" row and
+  the devices a receiver may be added from, the second press that
+  removes a busy one, the chip beside the frequency, the menu dot across
+  the receivers, and the receiver a device chose last),
   `categories.js` (the Bookmarks menu's categories: the
   list's sections, a category's box, the questions that moving bookmarks
   and removing a category ask, and a category's name's check),
@@ -313,7 +316,7 @@ the history under the tag `v0.1.0`.
   (the Calibrate dialog: the calibration on the stations, its stations'
   table, its proposal and why none; the correction from a carrier
   measured and its true frequency, with its derivation, the driver's
-  check and what the dialog shows), `devices.js` (the Receiver menu's SoapySDR devices:
+  check and what the dialog shows), `devices.js` (the Receivers menu's SoapySDR devices:
   the list, Search again and the arguments field, this computer's alone
   for the last two, and when the first search is asked) and `advanced.js`
   (a SoapySDR device's antenna sockets and Advanced section: a slider per
@@ -582,7 +585,7 @@ the history under the tag `v0.1.0`.
   `tests/fake_rtl_tcp.py` instead. `radiolack --soapy ARGS` searches for
   and opens a SoapySDR device, an RTL-SDR included with `driver=rtlsdr`,
   just as `--rtl-sdr` opens its receiver, and so do choosing a device in
-  the Receiver menu's SoapySDR list and its "SoapySDR device arguments"
+  the Receivers menu's SoapySDR list and its "SoapySDR device arguments"
   field; the menu's search, at its first showing and on "Search again",
   opens no stream but has each listed driver's module talk to the devices
   plugged in, some opening them to read their serial number: never run
@@ -596,7 +599,7 @@ the history under the tag `v0.1.0`.
   `radiolack` without any of these options
   reopens the source used last, which may be a receiver, a SoapySDR device
   included, read at start
-  with `--scan`, and choosing a receiver in the Receiver menu's list opens
+  with `--scan`, and choosing a receiver in the Receivers menu's device list opens
   it: a check started with a temporary `XDG_CONFIG_HOME` begins on the
   simulated band. That list shows the RTL-SDR receivers plugged in, read
   from sysfs, which opens none and is always fine; choosing one opens it.

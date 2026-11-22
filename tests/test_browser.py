@@ -68,7 +68,7 @@ MENU_BUTTON = "#menu-button"
 RECORDING = re.compile(r"(^|\s)recording(\s|$)")
 SCANNING = re.compile(r"(^|\s)scanning(\s|$)")
 # The menus, in the order of the keys 1 to 8, with their titles (index.html).
-MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receiver",
+MENUS = {"radio": "Radio", "bookmarks": "Bookmarks", "scan": "Scan", "record": "Record", "receiver": "Receivers",
          "display": "Display", "settings": "Settings", "about": "About"}
 # The controls that did nothing, which the menu left out on 2026-11-15 (docs/design/scoping.md); the
 # notch and the noise blanker came back, working, with the listening tools (later-milestones.md,
@@ -494,7 +494,7 @@ class BrowserTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def interfaces(self, browser: str, url: str, count: int, **options) -> Iterator[list[Page]]:
-        """``count`` interfaces at ``url``, each with the Receiver menu open:
+        """``count`` interfaces at ``url``, each with the Receivers menu open:
         clicks, which let the audio start. ``self.audio[page]`` counts the
         audio frames each one receives, ``self.signals[page]`` the lists of
         signals found, ``self.fine[page]`` the centres of the fine frames,
@@ -547,6 +547,14 @@ class BrowserTest(unittest.TestCase):
         page.locator(f'#menu nav button[data-menu="{name}"]').click()
         expect(page.locator(f'#menu section[data-menu="{name}"]')).to_be_visible()
         expect(page.locator("#menu-title")).to_have_text(MENUS[name])
+
+    @staticmethod
+    def choose_device(page: Page, *args, **kwargs) -> None:
+        """Choose a device for the receiver shown, in the Receivers menu:
+        "Change device\N{HORIZONTAL ELLIPSIS}" shows the list first."""
+        if page.locator("#src-device-choice").is_hidden():
+            page.locator("#src-change").click()
+        page.locator("#src-device").select_option(*args, **kwargs)
 
     @contextlib.contextmanager
     def remote_device(self, browser: str, allowed: tuple[str, ...] = ()) -> Iterator[Page]:
@@ -902,7 +910,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(FRAME_RATE)
-                first.keyboard.press("Escape")      # the Receiver menu lies over the readout
+                first.keyboard.press("Escape")      # the Receivers menu lies over the readout
                 first.locator("#freq").dblclick()
                 first.locator("#freq input").fill("145.2")
                 first.locator("#freq input").press("Enter")
@@ -944,7 +952,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(first.evaluate(PLAN_MODE_PROBE), ["SAM", "AM", "NFM", "USB", "SAM", "AM", "AM"])
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    page.keyboard.press("Escape")   # the Receivers menu lies over the readout
                 first.locator("#freq").dblclick()
                 first.locator("#freq input").fill("145.0095")
                 first.locator("#freq input").press("Enter")
@@ -976,7 +984,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(FRAME_RATE)
-                first.keyboard.press("Escape")      # the Receiver menu lies over the readout
+                first.keyboard.press("Escape")      # the Receivers menu lies over the readout
                 first.locator("#freq").dblclick()
                 first.locator("#freq input").fill("145.2")
                 first.locator("#freq input").press("Enter")
@@ -1023,7 +1031,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                 self.wait_for_audio(first)
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    page.keyboard.press("Escape")   # the Receivers menu lies over the readout
                 first.locator("#freq").dblclick()
                 first.locator("#freq input").fill("145.0085")
                 first.locator("#freq input").press("Enter")
@@ -1051,7 +1059,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(FRAME_RATE)
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    page.keyboard.press("Escape")   # the Receivers menu lies over the readout
                     self.open_menu(page, "radio")
                 box, note = first.locator("#dm-nb"), first.locator("#dm-nb-note")
                 expect(first.locator('label:has(#dm-nb)')).to_have_text("Noise blanker")
@@ -1085,7 +1093,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Receiver menu lies over the readout
+                    page.keyboard.press("Escape")   # the Receivers menu lies over the readout
                     self.open_menu(page, "radio")
                 expect(second.locator("#dm-nb-note")).to_be_hidden()
                 first.locator("#dm-nb").check()
@@ -1130,7 +1138,7 @@ class BrowserTest(unittest.TestCase):
                 expect(icon).to_have_attribute("title", "Antenna length for this frequency")
                 dialog = first.locator("#antenna-dialog")
                 expect(dialog).to_be_hidden()
-                icon.focus()        # from the keyboard, as the Receiver menu lies over the readout
+                icon.focus()        # from the keyboard, as the Receivers menu lies over the readout
                 first.keyboard.press("Enter")
                 expect(dialog).to_be_visible()
                 expect(first.locator("#antenna-for")).to_have_text(f"145.600 MHz {DOT} 2 m amateur")
@@ -1142,7 +1150,7 @@ class BrowserTest(unittest.TestCase):
                 first.keyboard.press("Escape")
                 expect(dialog).to_be_hidden()
                 expect(icon).to_be_focused()
-                expect(first.locator("#menu")).to_be_visible()      # the Receiver menu, open behind it
+                expect(first.locator("#menu")).to_be_visible()      # the Receivers menu, open behind it
                 first.keyboard.press("Escape")      # closes the menu in turn
                 expect(first.locator("#menu")).to_be_hidden()
                 icon.click()
@@ -1224,7 +1232,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 freq, entry = page.locator("#freq"), page.locator("#freq input")
                 freq.dblclick()
                 expect(entry).to_have_value("145.600")
@@ -1267,7 +1275,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 freq = page.locator("#freq")
                 x, y = self.centre(page.locator('#freq .d[data-m="1000"]'))
                 page.mouse.move(x, y)
@@ -1296,7 +1304,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 meta, freq = page.locator("#m-seg"), page.locator("#freq")
                 expect(meta).to_have_text(re.compile(rf" {DOT} step 12\.5 kHz$"))
                 for _ in range(11):                 # 27.7 kHz wide: still two channels
@@ -1339,7 +1347,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 meta, freq, band = page.locator("#m-seg"), page.locator("#freq"), page.locator("#band")
                 expect(meta).to_have_text(f"{RV48_NAME} {DOT} step 12.5 kHz")
                 freq.focus()
@@ -1441,7 +1449,7 @@ class BrowserTest(unittest.TestCase):
             url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # 2.4 MHz around 145 MHz, the VFO on 145.6
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 freq = page.locator("#freq")
                 for expected in ("146600000", "147600000"):
                     # The readout shows the frequency asked at once, and writes its
@@ -1850,7 +1858,7 @@ class BrowserTest(unittest.TestCase):
                 menu, title, icon = page.locator("#menu"), page.locator("#menu-title"), page.locator(MENU_BUTTON)
                 for selector in REMOVED_CONTROLS:
                     expect(page.locator(selector)).to_have_count(0)
-                expect(title).to_have_text("Receiver")      # which interfaces() opened
+                expect(title).to_have_text("Receivers")     # which interfaces() opened
                 expect(icon).to_have_attribute("aria-expanded", "true")
                 for key, name in enumerate(MENUS, start=1):
                     page.keyboard.press(str(key))
@@ -1896,7 +1904,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 1, **NARROW) as [page]:
                 nav, title = page.locator("#menu nav"), page.locator("#menu-title")
                 back = page.get_by_role("button", name="Back to the menus", exact=True)
-                expect(nav).to_be_hidden()      # the Receiver menu, alone
+                expect(nav).to_be_hidden()      # the Receivers menu, alone
                 back.click()
                 expect(nav).to_be_visible()
                 expect(title).to_be_hidden()
@@ -2607,7 +2615,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
-                page.keyboard.press("Escape")       # the Receiver menu lies over the readout
+                page.keyboard.press("Escape")       # the Receivers menu lies over the readout
                 page.locator("#freq").dblclick()
                 page.locator("#freq input").fill("145.0095")
                 page.locator("#freq input").press("Enter")
@@ -2858,30 +2866,30 @@ class BrowserTest(unittest.TestCase):
                 receiver = first.locator("#src-device")
                 expect(receiver).to_be_enabled()
                 expect(receiver).to_have_value("synthetic")
-                expect(first.locator("#src-note")).to_contain_text("Choose a receiver in the list above.")
+                expect(first.locator("#src-note")).to_contain_text("Choose a receiver with Change device.")
                 expect(first.locator("#src-hf-field")).to_be_hidden()     # the simulated band has no shortwave
                 expect(first.locator("#src-power-row")).to_be_hidden()    # nor antenna power
                 expect(first.locator("#src-driver-field")).to_be_hidden()     # nor a tuner on a grid
                 expect(first.locator("#src-center-note")).to_be_hidden()
-                receiver.select_option("rtl_sdr")
+                self.choose_device(first, "rtl_sdr")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("rtl_sdr")
                     expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
                     expect(page.locator("#src-hf-field")).to_be_visible()
                     expect(page.locator("#src-driver-field")).to_be_visible()
-                receiver.select_option("rtl_tcp")
+                self.choose_device(first, "rtl_tcp")
                 for page in (first, second):
                     expect(page.locator("#status")).to_contain_text(
                         f"Waiting for rtl_tcp at {address}: connection refused\N{HORIZONTAL ELLIPSIS}")
                     expect(page.locator("#src-address")).to_have_value(address)
-                second.locator("#src-device").select_option("synthetic")
+                self.choose_device(second, "synthetic")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("synthetic")
                     expect(page.locator("#src-address")).to_be_hidden()
                 # No SoapySDR device chosen yet: the entry shows the devices
                 # to choose from, and switches nothing. Without the module
                 # (tests/__init__.py hides it), the search says what brings it.
-                first.locator("#src-device").select_option("soapy")
+                self.choose_device(first, "soapy")
                 expect(first.locator("#src-note")).to_have_text("Choose a SoapySDR device below, or give its arguments.")
                 expect(first.locator("#src-device")).to_have_value("soapy")
                 expect(first.locator("#src-soapy-note")).to_have_text(
@@ -2890,7 +2898,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-soapy-args")).to_be_enabled()
                 expect(second.locator("#src-device")).to_have_value("synthetic")
                 expect(second.locator("#src-soapy-field")).to_be_hidden()
-                first.locator("#src-device").select_option("synthetic")
+                self.choose_device(first, "synthetic")
                 expect(first.locator("#src-soapy-field")).to_be_hidden()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
@@ -2909,7 +2917,7 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     expect(page.locator("#src-device option")).to_have_text(listed)
                     expect(page.locator("#src-device")).to_have_value("synthetic")
-                first.locator("#src-device").select_option(label="RTL-SDR · NESDR SMArt v5 · 59196661")
+                self.choose_device(first, label="RTL-SDR · NESDR SMArt v5 · 59196661")
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("rtl_sdr:1")
                     expect(page.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
@@ -2926,10 +2934,10 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#menu")).to_be_hidden()
                 first.wait_for_timeout(2500)
                 self.assertEqual(sum('"rtl_devices"' in message for message in self.sent[first][sent:]), 0)
-                second.locator("#src-device").select_option("synthetic")
+                self.choose_device(second, "synthetic")
                 expect(second.locator("#src-device")).to_have_value("synthetic")
 
-    def test_a_radio_added_in_the_receiver_menu_reads_its_own_receiver(self):
+    def test_a_receiver_added_in_the_receivers_menu_reads_its_own_device(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program and the radio's process import from
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         usb = directory / "usb"
@@ -2939,33 +2947,66 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 for page in (first, second):
-                    expect(page.locator("#radio-list option")).to_have_text(["Radio 1 · Synthetic band"])
-                    expect(page.locator("#radio-remove-row")).to_be_hidden()
-                expect(first.locator("#radio-add option")).to_have_text(
-                    ["Choose a receiver", "RTL-SDR · RTL2838UHIDIR · RTLSDR1", "RTL-SDR · rtl_tcp"])
-                first.locator("#radio-add").select_option(label="RTL-SDR · RTL2838UHIDIR · RTLSDR1")
-                # The first interface shows the new radio, read in a process of its own; the other stays.
+                    cards = page.locator("#radio-cards > li")
+                    expect(cards).to_have_count(1)
+                    expect(cards.first).to_have_attribute("aria-label", "Receiver 1")
+                    expect(cards.first).to_contain_text("Synthetic band")
+                    expect(cards.first.locator(".tag.here")).to_be_visible()
+                    expect(page.locator("#receiver-title-text")).to_have_text(f"Receiver 1 {DOT} Synthetic band")
+                    expect(page.locator("#radio-remove")).to_be_hidden()
+                    expect(page.locator("#radio-chip")).to_be_hidden()
+                expect(first.locator("#radio-add-detail")).to_have_text(f"1 more plugged in {DOT} up to 4")
+                expect(first.locator("#radio-add-list")).to_be_hidden()
+                first.locator("#radio-add").click()
+                expect(first.locator("#radio-add-list button")).to_have_text(
+                    [f"RTL-SDR {DOT} RTL2838UHIDIR {DOT} RTLSDR1", f"RTL-SDR {DOT} rtl_tcp"])
+                first.locator("#radio-add-list button", has_text="RTLSDR1").click()
+                # The first interface shows the new receiver, read in a process of its own; the other stays.
                 expect(first.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
-                radio_ids = []
+                expect(first.locator("#radio-add-list")).to_be_hidden()
+                labels = []
                 for page in (first, second):
-                    expect(page.locator("#radio-list option")).to_have_count(2)
-                    radio_ids.append(page.locator("#radio-list option").nth(1).get_attribute("value"))
-                self.assertEqual(radio_ids[0], radio_ids[1])
-                expect(first.locator("#radio-list")).to_have_value(radio_ids[0])
-                expect(second.locator("#radio-list")).to_have_value("1")
+                    expect(page.locator("#radio-cards > li")).to_have_count(2)
+                    labels.append(page.locator("#radio-cards > li").nth(1).get_attribute("aria-label"))
+                self.assertEqual(labels[0], labels[1])
+                added = labels[0].removeprefix("Receiver ")
+                shown = first.locator("#radio-cards > li.shown")
+                expect(shown).to_have_attribute("aria-label", labels[0])
+                expect(shown.locator(".card-name")).to_have_text("RTL2838UHIDIR RTLSDR1")     # the name, then the serial
+                expect(shown.locator(".state")).to_have_text(f"Receiving {DOT} 145.000 MHz")
+                expect(first.locator("#receiver-title-text")).to_have_text(f"{labels[0]} {DOT} RTL2838UHIDIR")
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
+                expect(first.locator("#radio-remove")).to_be_enabled()
+                expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", "Receiver 1")
+                expect(second.locator("#radio-chip")).to_have_text("1 Synthetic band")
                 expect(second.locator("#src-device option").nth(1)).to_have_text(
-                    f"RTL-SDR · RTL2838UHIDIR · RTLSDR1 · read by radio {radio_ids[0]}")
+                    f"RTL-SDR {DOT} RTL2838UHIDIR {DOT} RTLSDR1 {DOT} read by receiver {added}")
                 expect(second.locator("#src-device option").nth(1)).to_be_disabled()
-                expect(second.locator("#radio-remove")).to_be_disabled()
-                # A page loaded again shows again the radio it showed.
+                expect(second.locator("#radio-remove")).to_be_visible()
+                expect(second.locator("#radio-remove")).to_be_disabled()     # receiver 1 stays
+                # A page loaded again shows again the receiver it showed. Its
+                # device's name comes once the Receivers menu lists the
+                # receivers plugged in: its kind's until then. The chip opens
+                # the menu.
                 first.wait_for_timeout(1500)    # the preferences are saved every second
                 first.reload()
-                expect(first.locator("#radio-list")).to_have_value(radio_ids[0])
-                self.open_menu(first, "receiver")
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL-SDR")
+                expect(first.locator("#menu")).to_be_hidden()
+                first.locator("#radio-chip").click()
+                expect(first.locator('#menu section[data-menu="receiver"]')).to_be_visible()
+                expect(first.locator("#radio-chip")).to_have_text(f"{added} RTL2838UHIDIR")
+                expect(first.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
+                # Show here moves an interface to another receiver, and back.
+                second.get_by_role("button", name=f"Show receiver {added} here", exact=True).click()
+                expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", labels[0])
+                expect(second.locator("#src-note")).to_contain_text("Rafael Micro R820T on this computer")
+                second.get_by_role("button", name="Show receiver 1 here", exact=True).click()
+                expect(second.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", "Receiver 1")
                 first.locator("#radio-remove").click()
                 for page in (first, second):
-                    expect(page.locator("#radio-list option")).to_have_count(1)
-                    expect(page.locator("#radio-list")).to_have_value("1")
+                    expect(page.locator("#radio-cards > li")).to_have_count(1)
+                    expect(page.locator("#radio-cards > li.shown")).to_have_attribute("aria-label", "Receiver 1")
+                    expect(page.locator("#radio-chip")).to_be_hidden()
 
     def test_the_receiver_menu_searches_and_opens_soapysdr_devices(self):
         # Stand-in devices only: the search and the devices are the stand-in's.
@@ -2979,7 +3020,7 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-device")).to_be_enabled()
                 if browser == BROWSERS[0]:
                     self.assertEqual(soapy.searches, [])        # nothing searched before the part shows
-                    first.locator("#src-device").select_option("soapy")
+                    self.choose_device(first, "soapy")
                     expect(first.locator("#src-soapy-note")).to_have_text(f"Searched: {searched}.")
                     self.assertEqual(soapy.searches, [{"driver": driver} for driver in LISTED_DRIVERS])
                     devices = first.locator("#src-soapy")
@@ -2992,9 +3033,9 @@ class BrowserTest(unittest.TestCase):
                     expect(arguments).to_have_value("")
                     devices.select_option(label="HackRF One 0001")
                 else:
-                    first.locator("#src-device").select_option("synthetic")
+                    self.choose_device(first, "synthetic")
                     expect(first.locator("#src-device")).to_have_value("synthetic")
-                    first.locator("#src-device").select_option("soapy")      # the device chosen last, at once
+                    self.choose_device(first, "soapy")      # the device chosen last, at once
                 for page in (first, second):
                     expect(page.locator("#src-device")).to_have_value("soapy")
                     expect(page.locator("#src-note")).to_contain_text("test-tuner through SoapySDR, driver hackrf.")
@@ -3068,7 +3109,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
-                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                page.keyboard.press("Escape")       # the Receivers menu lies over the spectrum
                 (low, low_text), (high, high_text) = self.readout_at(page, 0), self.readout_at(page, 1)
                 self.assertAlmostEqual(low, 143.8, delta=0.01)
                 self.assertAlmostEqual(high, 146.2, delta=0.01)
@@ -3114,7 +3155,7 @@ class BrowserTest(unittest.TestCase):
             with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
                 expect(first.locator("#status")).to_contain_text(f"RTL-SDR {DOT} 2.400 MS/s")
                 for page in (first, second):
-                    page.keyboard.press("Escape")   # the Receiver menu lies over the spectrum
+                    page.keyboard.press("Escape")   # the Receivers menu lies over the spectrum
                 for _ in range(7):
                     first.keyboard.press("-")       # about 35.6 MHz wide, from 118.9 MHz
                 view = self.view_edges(first)
@@ -3252,7 +3293,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                page.keyboard.press("Escape")       # the Receivers menu lies over the spectrum
                 resolution, freq = page.locator("#ds-resolution"), page.locator("#freq")
                 expect(resolution).to_have_text(WIDE_RESOLUTION)
                 freq.dblclick()
@@ -3310,7 +3351,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                page.keyboard.press("Escape")       # the Receivers menu lies over the spectrum
                 for _ in range(30):
                     page.keyboard.press("+")
                 low, high = self.view_edges(page)
@@ -3342,7 +3383,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                page.keyboard.press("Escape")       # the Receivers menu lies over the spectrum
                 fit = page.get_by_role("button", name="Show the whole span")
                 expect(fit).to_be_hidden()          # the view frames the span
                 span = self.view_edges(page)
@@ -3384,7 +3425,7 @@ class BrowserTest(unittest.TestCase):
         for browser in BROWSERS:
             with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
                 expect(page.locator("#status")).to_contain_text(FRAME_RATE)
-                page.keyboard.press("Escape")       # the Receiver menu lies over the spectrum
+                page.keyboard.press("Escape")       # the Receivers menu lies over the spectrum
                 span = self.view_edges(page)
                 page.keyboard.press("-")            # one step out passes the detent at the span's width
                 low, high = self.view_edges(page)

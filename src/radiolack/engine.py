@@ -650,7 +650,7 @@ class Engine:
         if self.sources is None:
             raise ValueError("this Radiolack reads one receiver")
         if len(self.radios) >= MAX_RADIOS:
-            raise ValueError(f"{MAX_RADIOS} radios at most: remove one first")
+            raise ValueError(f"{MAX_RADIOS} receivers at most: remove one first")
         if not isinstance(described, dict) or not isinstance(described.get("kind"), str):
             raise ValueError("add describes a source, starting with its kind")
         if described["kind"] not in self.sources.kinds:
@@ -676,7 +676,7 @@ class Engine:
         recordings stop and its receiver is released, its settings saved
         for when it comes back; its clients show the first radio."""
         if radio is self.radios[0]:
-            raise ValueError("the first radio stays: choose another receiver for it instead")
+            raise ValueError("the first receiver stays: change its device instead")
         self.receivers[radio.source.settings_key] = radio.receiver_settings()
         self.radios.remove(radio)
         for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
@@ -698,7 +698,7 @@ class Engine:
         for other in self.radios:
             if other is not radio and (other.source.settings_key == source.settings_key
                                        or other.source.reopen == source.reopen):
-                raise ValueError(f"radio {other.id} reads this receiver already")
+                raise ValueError(f"receiver {other.id} reads this device already")
 
     def bookmarks_state(self) -> dict[str, Any]:
         """The bookmarks message (docs/design/protocol.md)."""
@@ -1140,7 +1140,7 @@ class Engine:
         self._tasks.pop(radio, None)
         for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
             self._show(subscription, self.radios[0])
-            subscription.reply({"type": "error", "command": "radio", "message": f"radio {radio.id} stopped: {reason}"})
+            subscription.reply({"type": "error", "command": "radio", "message": f"receiver {radio.id} stopped: {reason}"})
         self.radios_changed()
         self.settings_changed()
 
@@ -1185,7 +1185,7 @@ class Engine:
         for radio in self.radios:
             if radio.id == radio_id:
                 return radio
-        raise ValueError("no such radio: it may have been removed")
+        raise ValueError("no such receiver: it may have been removed")
 
     def _show(self, subscription: Subscription, radio: AnyRadio) -> None:
         """``subscription`` shows ``radio`` from now on."""

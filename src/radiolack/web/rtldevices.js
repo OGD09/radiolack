@@ -49,7 +49,7 @@ export function choosable(device) {
  */
 function holder(device) {
   if (device.inUse) return '';
-  if (device.radio !== null) return `read by radio ${device.radio}`;
+  if (device.radio !== null) return `read by receiver ${device.radio}`;
   if (device.drivers.includes('usbfs')) return 'in use by another program';
   const dvb = device.drivers.find((driver) => driver.startsWith('dvb_usb'));
   if (dvb) return 'held by the DVB driver';
@@ -113,7 +113,7 @@ export function receiverList(source, listed, soapyPicked, open, others = []) {
   /** @param {string} kind */
   const kindOption = (kind, /** @type {string} */ label) => {
     const reader = kind === 'synthetic' || kind === 'rtl_tcp' ? others.find((other) => other.kind === kind) : undefined;
-    return reader ? { value: kind, label: `${label} · read by radio ${reader.id}`, disabled: true }
+    return reader ? { value: kind, label: `${label} · read by receiver ${reader.id}`, disabled: true }
       : { value: kind, label, disabled: !kinds.includes(kind) };
   };
   const devices = listed && listed.listing === 'sysfs' ? listed.devices : [];

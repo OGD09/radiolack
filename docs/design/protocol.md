@@ -1494,9 +1494,10 @@ a refusal of a message to such a radio (`source`, `demod`, `scanner`,
 `rtl_devices` with `choose`) comes as its `error` once that process has
 read it, after messages sent meanwhile. Should that process end unasked,
 the radio goes away: the interfaces that showed it receive an `error`
-whose `command` is `radio` and whose message begins "radio N stopped",
-then show the first radio, and every interface receives the radios'
-summary without it.
+whose `command` is `radio` and whose message begins "receiver N
+stopped", as the interface calls the radios receivers, then show the
+first radio, and every interface receives the radios' summary without
+it.
 
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
 `scans`, `observations`, `preferences`, `recording`, `recordings`, `carrier`,

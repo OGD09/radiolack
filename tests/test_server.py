@@ -1126,7 +1126,7 @@ class SourceSwitchStreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(radios["shown"], 1)
             await first.send_json({"type": "radio", "add": {"kind": "synthetic"}})
             self.assertEqual(await self.next_of(first, "error"), {
-                "type": "error", "command": "radio", "message": "radio 1 reads this receiver already"})
+                "type": "error", "command": "radio", "message": "receiver 1 reads this device already"})
             # Removed, its receiver is released, and its interface shows the first radio.
             await first.send_json({"type": "radio", "remove": 2})
             while (await self.next_of(second, "source"))["kind"] != "synthetic":

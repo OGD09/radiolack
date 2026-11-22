@@ -107,12 +107,12 @@ class RtlDevicesModuleTest(unittest.TestCase):
         self.assertEqual(out["inUse"]["options"][2]["label"], "RTL-SDR · NESDR SMArt v5 · 59196661")
         self.assertEqual(out["inUse"]["note"], "")
         self.assertEqual([(o["label"], o["disabled"]) for o in out["sibling"]["options"][1:3]], [
-            ("RTL-SDR · RTL2838UHIDIR · RTLSDR1 · read by radio 2", True),
+            ("RTL-SDR · RTL2838UHIDIR · RTLSDR1 · read by receiver 2", True),
             ("RTL-SDR · NESDR SMArt v5 · 59196661", False)])
         self.assertEqual(out["sibling"]["value"], "rtl_sdr:1")
         self.assertEqual(out["siblingKinds"], [
-            "synthetic|Synthetic band (2 m) · read by radio 2|true", "rtl_sdr|RTL-SDR · this computer|false",
-            "rtl_tcp|RTL-SDR · rtl_tcp · read by radio 3|true", "soapy|SoapySDR device|false"])
+            "synthetic|Synthetic band (2 m) · read by receiver 2|true", "rtl_sdr|RTL-SDR · this computer|false",
+            "rtl_tcp|RTL-SDR · rtl_tcp · read by receiver 3|true", "soapy|SoapySDR device|false"])
         self.assertEqual(out["picked"], "soapy")
         self.assertEqual(out["stale"], "")      # a list from before the switch: asked again
         self.assertEqual(out["held"], ["RTL-SDR · NESDR SMArt v5 · A · in use by another program",

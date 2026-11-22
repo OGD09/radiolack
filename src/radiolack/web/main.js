@@ -25,8 +25,8 @@ import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { RTL_LIST_MS, receiverList, rtlDeviceAt } from './rtldevices.js';
-import { REMOVE_CONFIRM_MS, addOptions, radioKey, radioLabel, radioToRestore, radiosBadge, removePress,
-  removeView } from './radios.js';
+import { REMOVE_CONFIRM_MS, addOptions, addRow, learnNames, radioKey, radioToRestore, radiosBadge, receiverCards,
+  removePress, removeView, shownReceiver } from './radios.js';
 import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
 import { CATEGORY_NAME_MAX, UNCATEGORIZED, bookmarkSections, checkedCategoryName, moveRequest, removeQuestion, sectionName,
   sectionScanChange } from './categories.js';
@@ -328,6 +328,8 @@ let radioRestored = false;  // this connection showed again the radio this devic
 let radioAsked = null;      // the id of the radio this interface asked to show, until the engine shows it or refuses
 let radioAdding = false;    // this interface asked for a new radio, which it shows once added, until refused
 let radioNote = '';         // why the engine refused this interface's last radio message
+const deviceNames = new Map();  // the devices' names learned from the lists (radios.js learnNames), for the cards and the chip
+let addOpen = false;        // "Add a receiver" shows its list
 let removeArmed = 0;        // a first press on Remove waits for the second: its timer
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
@@ -535,10 +537,12 @@ const stream = new EngineStream({
   },
   onDevices: (state) => {
     devices = state;
+    learnNames(deviceNames, null, state);
     syncSource();
   },
   onRtlDevices: (state) => {
     rtlListed = state;
+    learnNames(deviceNames, state, null);
     syncSource();
   },
   onRadios: (state) => {
@@ -555,9 +559,11 @@ const stream = new EngineStream({
     if (added) radioAdding = false;
     restoreRadio();
     if (before !== null && before !== state.shown) {
-      soapyPicked = false;  // the Receiver list's choices were the other radio's
+      soapyPicked = false;  // the device list's choices were the other receiver's
       sourceError = '';
       disarmRemove();
+      showDeviceChoice(false);
+      addOpen = false;
       if (rtlTimer) stream.listRtlDevices();    // which receiver this radio reads
     }
     syncSource();
@@ -692,6 +698,7 @@ const stream = new EngineStream({
       radioAsked = null;
       radioAdding = false;
       radioNote = '';
+      addOpen = false;
       disarmRemove();
     }
     streamState = state;
@@ -2425,7 +2432,7 @@ function sourceNote() {
   if (!source) return '';
   let text = '';
   if (source.kind === 'synthetic') {
-    text = source.kinds.length > 1 ? '2 m band simulated by the engine. Choose a receiver in the list above.'
+    text = source.kinds.length > 1 ? '2 m band simulated by the engine. Choose a receiver with Change device.'
       : '2 m band simulated by the engine. Start Radiolack with --rtl-sdr to use the RTL-SDR receiver '
         + 'plugged into this computer, or with --rtl-tcp for one served by rtl_tcp.';
   } else if (source.kind === 'rtl_sdr' || source.kind === 'rtl_tcp') {
@@ -2650,46 +2657,147 @@ for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-co
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
 }
-// The radios, from an engine with several: the radio list switches this
-// interface to another radio, "Add a radio" opens a receiver that no radio
-// reads in a new radio, which this interface then shows, and Remove takes
-// the radio shown away, the first excepted, with a second press while a
-// scan or a recording runs on it. The engine's radios message is the
-// reference: a choice shows once the engine sends it back.
+// The receivers, which the protocol calls radios, from an engine with
+// several: one card each, saying what it reads and runs, the one this
+// interface shows framed and the others with Show here; "Add a receiver"
+// lists the devices that no receiver reads, and one pressed opens in a new
+// receiver, which this interface then shows; Remove takes the receiver
+// shown away, the first excepted, with a second press while a scan or a
+// recording runs on it. The engine's radios message is the reference: a
+// choice shows once the engine sends it back. The chip beside the
+// frequency names the receiver shown while there are several.
 function syncRadios() {
   const open = streamState === 'open';
   const shown = open && stream.severalRadios && radios !== null;
-  $('#radio-field').hidden = !shown;
-  $('#radio-add-field').hidden = !shown;
-  $('#radio-remove-row').hidden = !shown || radios.radios.length < 2;
-  if (!shown) return;
-  const listEl = $('#radio-list');
-  const entries = radios.radios.map((radio) => `${radio.id}\n${radioLabel(radio)}`).join('\n');
-  if (listEl.dataset.options !== entries) {
-    listEl.replaceChildren(...radios.radios.map((radio) => new Option(radioLabel(radio), String(radio.id))));
-    listEl.dataset.options = entries;
-  }
-  if (listEl.value !== String(radios.shown)) listEl.value = String(radios.shown);
-  if (listEl.disabled !== radios.radios.length < 2) listEl.disabled = radios.radios.length < 2;
-  const adding = addOptions(radios, source, rtlListed, devices, open);
-  const addEl = $('#radio-add');
-  const placeholder = radios.radios.length >= radios.max ? `${radios.max} radios at most`
-    : adding.length ? 'Choose a receiver' : 'No receiver left to add';
-  const addEntries = [placeholder, ...adding.map((option) => option.label)].join('\n');
-  if (addEl.dataset.options !== addEntries) {
-    addEl.replaceChildren(new Option(placeholder, ''),
-      ...adding.map((option, index) => new Option(option.label, String(index))));
-    addEl.dataset.options = addEntries;
-    addEl.dataset.sources = JSON.stringify(adding.map((option) => option.source));
-  }
-  if (addEl.value !== '') addEl.value = '';
-  if (addEl.disabled !== !adding.length) addEl.disabled = !adding.length;
-  const remove = removeView(radios, removeArmed !== 0);
+  const part = $('#radio-cards-part');
+  if (part.hidden !== !shown) part.hidden = !shown;
+  syncRadioChip(shown);
+  const remove = removeView(shown ? radios : null, removeArmed !== 0);
   const removeEl = $('#radio-remove');
+  if (removeEl.hidden !== !remove.shown) removeEl.hidden = !remove.shown;
   if (removeEl.textContent !== remove.button) removeEl.textContent = remove.button;
   if (removeEl.disabled !== !remove.enabled) removeEl.disabled = !remove.enabled;
+  if (removeEl.title !== remove.title) removeEl.title = remove.title;
+  if (!shown) return;
+  // The cards are built again only when more than their states change, as
+  // the centre frequency does while a scan runs: a button keeps its focus.
+  const cards = receiverCards(radios, deviceNames, source ? source.centreHz : null);
+  const listEl = $('#radio-cards');
+  const entries = JSON.stringify(cards.map(({ state, stateText, ...rest }) => rest));
+  if (listEl.dataset.cards !== entries) {
+    listEl.replaceChildren(...cards.map(cardItem));
+    listEl.dataset.cards = entries;
+  }
+  cards.forEach((card, index) => {
+    const stateEl = listEl.children[index].querySelector('.state');
+    const className = `state ${card.state}`;
+    if (stateEl.className !== className) stateEl.className = className;
+    if (stateEl.textContent !== card.stateText) stateEl.textContent = card.stateText;
+  });
+  const adding = addOptions(radios, source, rtlListed, devices, open);
+  const row = addRow(radios, adding);
+  if (!row.enabled) addOpen = false;
+  const addEl = $('#radio-add');
+  if (addEl.disabled !== !row.enabled) addEl.disabled = !row.enabled;
+  addEl.setAttribute('aria-expanded', String(addOpen));
+  const detailEl = $('#radio-add-detail');
+  if (detailEl.textContent !== row.detail) detailEl.textContent = row.detail;
+  const addList = $('#radio-add-list');
+  if (addList.hidden !== !addOpen) addList.hidden = !addOpen;
+  const addEntries = JSON.stringify(adding);
+  if (addList.dataset.options !== addEntries) {
+    addList.replaceChildren(...adding.map((option, index) => {
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'item';
+      button.dataset.add = String(index);
+      button.textContent = option.label;
+      item.append(button);
+      return item;
+    }));
+    addList.dataset.options = addEntries;
+  }
   const noteEl = $('#radio-note');
   if (noteEl.textContent !== radioNote) noteEl.textContent = radioNote;
+  noteEl.hidden = !radioNote;
+  const heading = shownReceiver(radios, deviceNames);
+  const title = heading ? `Receiver ${heading.id} · ${heading.name}` : '';
+  const titleEl = $('#receiver-title-text');
+  if (titleEl.textContent !== title) titleEl.textContent = title;
+}
+// One receiver's card: its number, device and serial, its state and what
+// runs on it, and either "Shown here" or the button that shows it here.
+function cardItem(card) {
+  const item = document.createElement('li');
+  item.className = card.shown ? 'card shown' : 'card';
+  item.setAttribute('aria-label', `Receiver ${card.id}`);
+  if (card.shown) item.setAttribute('aria-current', 'true');
+  const num = document.createElement('span');
+  num.className = 'card-num';
+  num.textContent = String(card.id);
+  num.setAttribute('aria-hidden', 'true');
+  const name = document.createElement('span');
+  name.className = 'card-name';
+  name.textContent = card.name;
+  if (card.serial) {
+    const serial = document.createElement('span');
+    serial.className = 'card-serial';
+    serial.textContent = card.serial;
+    name.append(' ', serial);
+  }
+  const act = document.createElement('span');
+  act.className = 'card-act';
+  if (card.shown) {
+    const here = document.createElement('span');
+    here.className = 'tag here';
+    here.textContent = 'Shown here';
+    act.append(here);
+  } else {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn';
+    button.dataset.show = String(card.id);
+    button.textContent = 'Show here';
+    button.setAttribute('aria-label', `Show receiver ${card.id} here`);
+    act.append(button);
+  }
+  const sub = document.createElement('span');
+  sub.className = 'card-sub';
+  const state = document.createElement('span');
+  state.className = 'state';     // its class and text follow the card's state (syncRadios)
+  sub.append(state);
+  for (const tag of card.tags) {
+    const el = document.createElement('span');
+    el.className = `tag ${tag.kind}`;
+    el.textContent = tag.text;
+    sub.append(el);
+  }
+  item.append(num, name, act, sub);
+  return item;
+}
+// The chip beside the frequency: the receiver shown, with several.
+function syncRadioChip(shown) {
+  const chip = $('#radio-chip');
+  const heading = shown && radios.radios.length > 1 ? shownReceiver(radios, deviceNames) : null;
+  if (chip.hidden !== !heading) chip.hidden = !heading;
+  if (!heading) return;
+  const key = `${heading.id}\n${heading.name}`;
+  if (chip.dataset.key === key) return;
+  chip.dataset.key = key;
+  const number = document.createElement('b');
+  number.textContent = String(heading.id);
+  const name = document.createElement('span');
+  name.className = 'chip-name';
+  name.textContent = ` ${heading.name}`;
+  chip.replaceChildren(number, name);
+  chip.setAttribute('aria-label', `Receiver ${heading.id}, ${heading.name}: open the Receivers menu`);
+  chip.title = `Receiver ${heading.id} shown here: open the Receivers menu`;
+}
+// "Change device…" shows the device list, and the SoapySDR devices' part under it.
+function showDeviceChoice(shown) {
+  $('#src-device-choice').hidden = !shown;
+  $('#src-change').setAttribute('aria-expanded', String(shown));
 }
 // The radio this device chose last, shown again once per connection, when
 // the engine still runs it.
@@ -2703,19 +2811,30 @@ function disarmRemove() {
   if (removeArmed) clearTimeout(removeArmed);
   removeArmed = 0;
 }
-$('#radio-list').addEventListener('change', (e) => {
-  const id = Number(e.target.value);
+$('#radio-cards').addEventListener('click', (e) => {
+  const button = e.target.closest('button[data-show]');
+  if (!button) return;
+  const id = Number(button.dataset.show);
   radioNote = '';
-  if (!radios || id === radios.shown || !stream.showRadio(id)) syncRadios();
-  else radioAsked = id;
-});
-$('#radio-add').addEventListener('change', (e) => {
-  const el = e.target;
-  const sources = JSON.parse(el.dataset.sources || '[]');
-  const chosen = el.value === '' ? undefined : sources[Number(el.value)];
-  radioNote = '';
-  if (chosen && stream.addRadio(chosen)) radioAdding = true;
+  if (radios && id !== radios.shown && stream.showRadio(id)) radioAsked = id;
   syncRadios();
+});
+$('#radio-add').addEventListener('click', () => {
+  addOpen = !addOpen;
+  syncRadios();
+});
+$('#radio-add-list').addEventListener('click', (e) => {
+  const button = e.target.closest('button[data-add]');
+  if (!button) return;
+  const chosen = JSON.parse(e.currentTarget.dataset.options || '[]')[Number(button.dataset.add)];
+  radioNote = '';
+  addOpen = false;
+  if (chosen && stream.addRadio(chosen.source)) radioAdding = true;
+  syncRadios();
+});
+$('#radio-chip').addEventListener('click', () => showMenu('receiver'));
+$('#src-change').addEventListener('click', () => {
+  showDeviceChoice($('#src-device-choice').hidden);
 });
 $('#radio-remove').addEventListener('click', () => {
   const press = removePress(radios, removeArmed !== 0);
