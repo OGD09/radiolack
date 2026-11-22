@@ -401,3 +401,27 @@ class FakeRtlTcpRuns:
         except FileNotFoundError:
             return []
         return [(int(pid), rest) for pid, _, rest in (line.partition(" ") for line in lines)]
+
+
+def plug_usb_device(root: Path, name: str, vendor: str = "0bda", product_id: str = "2838", *,
+                    manufacturer: str | None = "Realtek", product: str | None = "RTL2838UHIDIR",
+                    serial: str | None = "00000001", drivers: tuple[str | None, ...] = (None,)) -> Path:
+    """A USB device in a fake sysfs tree at ``root``, as /sys/bus/usb/devices
+    shows one (rtldevices.py): its folder ``name``, such as "1-2", its IDs and
+    strings, a string that is None being missing, and one interface per entry
+    of ``drivers``, each bound to the driver named, or to none. Returns its
+    folder; removing it unplugs the device."""
+    device = root / name
+    device.mkdir(parents=True)
+    for attribute, value in (("idVendor", vendor), ("idProduct", product_id), ("manufacturer", manufacturer),
+                             ("product", product), ("serial", serial)):
+        if value is not None:
+            (device / attribute).write_text(f"{value}\n")
+    for number, driver in enumerate(drivers):
+        interface = device / f"{name}:1.{number}"
+        interface.mkdir()
+        if driver is not None:
+            target = root / "drivers" / driver
+            target.mkdir(parents=True, exist_ok=True)
+            (interface / "driver").symlink_to(target)
+    return device

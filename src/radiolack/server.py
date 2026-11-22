@@ -9,7 +9,8 @@ interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for the fine spectrum, for an update check, for the observations,
 for the list of the recordings, for the measure of a carrier, for the
-automatic calibration and for the SoapySDR devices. It serves the recordings that
+automatic calibration, for the SoapySDR devices and for the RTL-SDR
+receivers plugged in. It serves the recordings that
 the engine lists, and the I/Q recordings' metadata, to download
 (``/recordings/NAME``).
 
@@ -74,7 +75,7 @@ _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "band_plan", "scanner", "observations", "scans",
              "preferences", "recording", "recordings", "update", "remote", "report", "carrier", "calibration",
-             "devices")
+             "devices", "rtl_devices")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS, "devices": LOCAL_DEVICE_FIELDS}
@@ -249,7 +250,8 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
         await ws.send_json({"type": "hello", "protocol": PROTOCOL_VERSION, "version": __version__,
                             "remote": device is not None, "scanners": list(SCANNERS),
                             "recording": list(RECORDING_KINDS), "measures": list(MEASURES),
-                            "spectra": list(SPECTRA), "band_plans": plan_choices()})
+                            "spectra": list(SPECTRA), "band_plans": plan_choices(),
+                            "listings": ["rtl_sdr"] if engine.lists_rtl_devices else []})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -350,6 +352,8 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
             radio.calibrate(changes)
         elif kind == "devices":
             radio.configure_devices(changes)
+        elif kind == "rtl_devices":
+            radio.configure_rtl_devices(changes, subscription)
         else:
             on = changes.pop("on", None)
             what = "audio" if kind == "audio" else "the fine spectrum"

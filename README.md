@@ -301,14 +301,48 @@ red, or that the memory scan or the range scan runs, in green.
 
 Radiolack reads RTL-SDR receivers through rtl_tcp. The Receiver menu's
 list switches between the simulated band ("Synthetic band (2 m)"),
-a receiver plugged into this computer ("RTL-SDR · this computer") and a
-receiver behind an rtl_tcp server ("RTL-SDR · rtl_tcp"), for every open
-interface, and a receiver read through SoapySDR ("SoapySDR device",
+each receiver plugged into this computer, such as "RTL-SDR · NESDR SMArt
+v5 · 59196661" (its name and serial number), a receiver behind an rtl_tcp
+server ("RTL-SDR · rtl_tcp"), for every open interface, and a receiver
+read through SoapySDR ("SoapySDR device",
 [SoapySDR receivers](#soapysdr-receivers)). Each keeps its own
 settings, demodulation included, and Radiolack opens the one used last at
-the next start. "RTL-SDR · this computer" opens the receiver used last, the
-first one plugged in the first time, and "RTL-SDR · rtl_tcp" connects to
-the address used last. The options below choose one on the command line.
+the next start. "RTL-SDR · rtl_tcp" connects to the address used last. The
+options below choose one on the command line.
+
+The receivers plugged in:
+
+- Radiolack lists them each time the Receiver menu shows, and again every
+  2 seconds while it shows, so that a receiver plugged in meanwhile
+  appears; never otherwise. It reads what Linux tells of the USB devices
+  (`/sys/bus/usb/devices`) and opens none of them, so the list never
+  disturbs a receiver that another program uses. It knows the receivers
+  that librtlsdr opens, by their USB IDs.
+- Choosing one opens it by its serial number, and its settings are kept
+  under it: the next start without an option opens that receiver again,
+  wherever it is plugged in. The first time you choose the only receiver
+  plugged in, it starts from the settings kept for the first receiver,
+  `--rtl-sdr` without a device, which were its own.
+- A receiver that another program holds stays listed, with "in use by
+  another program" (Gqrx or an rtl_tcp, for instance), or "held by the DVB
+  driver" when Linux took it as a TV tuner (the rtl-sdr package's
+  blacklist file prevents that). Choosing it makes Radiolack wait until
+  the receiver is free. The receiver in use stays listed even unplugged,
+  with "not found".
+- rtl_tcp finds a receiver by its serial number only when no other has the
+  same, and when the number cannot be read as an index: with two
+  receivers plugged in, rtl_tcp reads `00000001` as the second receiver.
+  Such receivers stay listed but cannot be chosen, and the menu says why:
+  give each its own serial number with `rtl_eeprom -s`, from the rtl-sdr
+  package, with one receiver plugged in at a time (it writes the
+  receiver's EEPROM; unplug and plug it in again afterwards). Radiolack
+  never guesses which index is which: librtlsdr's order need not follow
+  the list's.
+- A device that remote access serves sees the same list and may choose
+  among the receivers, as it may switch between receivers.
+- When none can be chosen (none plugged in, receivers that rtl_tcp cannot
+  tell apart, or a system other than Linux), "RTL-SDR · this computer"
+  opens the receiver used last, the first one plugged in the first time.
 
 For a receiver plugged into this computer, Radiolack runs rtl_tcp itself:
 
@@ -323,7 +357,9 @@ radiolack --rtl-sdr
   should Radiolack end without stopping rtl_tcp, killed for instance, the
   system stops it (through setpriv, from util-linux).
 - `--rtl-sdr 1` reads the second receiver, and `--rtl-sdr SERIAL` the one
-  with that serial number, as rtl_tcp's `-d` option takes them.
+  with that serial number, as rtl_tcp's `-d` option takes them. The
+  Receiver menu lists the receivers plugged in with their serial
+  numbers.
 - When rtl_tcp cannot open the receiver, the status line says why: no
   receiver found, in use by another program, or no permission (the udev
   rules of the rtl-sdr package give it). Radiolack tries again by itself,
@@ -903,8 +939,8 @@ radiolack --soapy driver=sdrplay
   receiver refuses keeps its value, and the note under the Receiver list
   says why. Radiolack leaves out the settings that are free text, which
   the module would read as it likes, those named for transmission, and
-  more than 32. For shortwave on an RTL-SDR, the "RTL-SDR · this computer"
-  and "RTL-SDR · rtl_tcp" entries' Shortwave list does more than the
+  more than 32. For shortwave on an RTL-SDR, the Receiver list's RTL-SDR
+  entries' Shortwave list does more than the
   module's direct sampling ([Shortwave](#shortwave)).
 - Antenna power: a setting whose key or name speaks of a bias tee or
   antenna power, such as `biastee`, `bias_tx` or `biasT_ctrl`, is the
@@ -2334,6 +2370,9 @@ src/radiolack/
   demod.py      one VFO: channel level, squelch and the audio of each mode
   dsp.py        FIR filter design and FFT filters that shift and resample
   fine.py       the fine spectrum of the VFO's channel, for the deep zoom
+  rtldevices.py the RTL-SDR receivers plugged in, read from sysfs without
+                opening them, with librtlsdr's table of their USB IDs
+                (GPL-2.0-or-later)
   rtltcp.py     RTL-SDR receivers through rtl_tcp, run by Radiolack or by you,
                 an R820T's or R828D's grid, and their raw samples for an I/Q
                 recording

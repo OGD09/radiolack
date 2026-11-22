@@ -75,6 +75,7 @@ from .radio import FRAME_RATE, Radio
 from .recordings import check_folder, chosen_folder, delete_recording, is_recording_file, is_recording_name, \
     list_recordings
 from .remote import REMOTE_FILE, RemoteAccess
+from .rtldevices import RtlDevice
 from .soapysearch import DeviceSearch
 from .scanners import checked_frequency
 from .spectrum import SpectrumAnalyzer
@@ -430,6 +431,11 @@ class Engine:
             self.device_search = DeviceSearch()
             self.device_search.on_change = self._follow_devices
             self._states["devices"] = lambda subscription: subscription.radio.devices_state(subscription.remote)
+        # The RTL-SDR receivers plugged in, read from sysfs when a client asks, never otherwise.
+        self.rtl_listing: Callable[[], Sequence[RtlDevice] | None] | None = None
+        if sources is not None and "rtl_sdr" in sources.kinds:
+            # Sources lists them (rtldevices.py); a test's opener may not.
+            self.rtl_listing = getattr(sources, "rtl_devices", None)
         self._states["scans"] = lambda _: self.scans_state()
         self._states["calibration"] = lambda subscription: subscription.radio.calibration_state()
         self._states["storage"] = lambda _: self.storage_state()
@@ -534,6 +540,12 @@ class Engine:
         self._clients.discard(subscription)
         if subscription.radio is not None:
             subscription.radio.detach(subscription)
+
+    @property
+    def lists_rtl_devices(self) -> bool:
+        """Whether the engine lists the RTL-SDR receivers plugged in (the
+        hello's ``listings``)."""
+        return self.rtl_listing is not None
 
     def bookmarks_state(self) -> dict[str, Any]:
         """The bookmarks message (docs/design/protocol.md)."""
