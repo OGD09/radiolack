@@ -1865,6 +1865,27 @@ ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080 --scan mem
 The service's command leaves out `--bias-tee`: for an active antenna that
 needs the receiver's power, add it there.
 
+With several receivers ([Several receivers](#several-receivers)), give
+each in the service's command, an RTL-SDR by its serial number, which the
+Receiver menu's list shows: the receivers given at start replace the
+radios used last, so a radio added from an interface lasts until the
+service restarts. `--scan` and `--bias-tee` apply to the first receiver
+given:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/radiolack --ui none --rtl-sdr 00000001 --rtl-sdr 00000002 --remote --port 8080 --scan memory
+```
+
+Each radio after the first runs in a process of its own, under the
+service's user and within its sandbox; stopping the service stops them
+all, each releasing its receiver first. Two receivers at 2.4 MS/s, each
+with a listener, took 56% of one core of a Core i7-7500U in all (spike 9
+in [docs/design/scoping.md](docs/design/scoping.md)), and each radio added
+takes 56 MB of memory before it reads a sample. Several receivers are not
+yet checked under the service.
+
 For a receiver read through SoapySDR, install SoapySDR's packages first
 ([SoapySDR, for other receivers](#soapysdr-for-other-receivers)), then put
 `--soapy ARGS` in place of `--rtl-sdr`, with the receiver's device

@@ -11,6 +11,8 @@ After=network-online.target
 
 [Service]
 Type=exec
+# One receiver; for several, each by its serial number (README.md, As a
+# service): the receivers given replace the radios used last.
 ExecStart=/usr/bin/radiolack --ui none --rtl-sdr --remote --port 8080
 # Again 10 s after a failure, such as remote access without an address yet.
 Restart=on-failure
