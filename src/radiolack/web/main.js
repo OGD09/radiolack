@@ -25,6 +25,8 @@ import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { RTL_LIST_MS, receiverList, rtlDeviceAt } from './rtldevices.js';
+import { REMOVE_CONFIRM_MS, addOptions, radioKey, radioLabel, radioToRestore, radiosBadge, removePress,
+  removeView } from './radios.js';
 import { advancedView, nearestIndex, renderAdvanced } from './advanced.js';
 import { CATEGORY_NAME_MAX, UNCATEGORIZED, bookmarkSections, checkedCategoryName, moveRequest, removeQuestion, sectionName,
   sectionScanChange } from './categories.js';
@@ -142,6 +144,7 @@ const S = {
   sql: -80, sqlAuto: true, notch: false, blanker: false, volume: 70,    // notch, blanker: the engine's, null from an engine without them
   peakMarks: true,
   autoHide: true,
+  radio: '',      // the receiver of the radio this device chose last (radios.js radioKey), shown again at each connection
 };
 const view = { f0: 0, f1: 0 };
 let plan = { name: '', ranges: [], bands: [], channels: [], spots: [] };    // band plan, empty until loaded
@@ -320,6 +323,12 @@ let soapyPicked = false;    // "SoapySDR device" picked in the Receiver list, no
 let firstSearchAsked = false;   // this connection asked for the first search of SoapySDR devices
 let rtlListed = null;       // the RTL-SDR receivers plugged in (stream.js RtlDevicesState), as the engine answered last
 let rtlTimer = 0;           // asks for them again while the Receiver menu shows
+let radios = null;          // the engine's radios (stream.js RadiosState), once received from an engine with several
+let radioRestored = false;  // this connection showed again the radio this device chose last, or found it gone
+let radioAsked = null;      // the id of the radio this interface asked to show, until the engine shows it or refuses
+let radioAdding = false;    // this interface asked for a new radio, which it shows once added, until refused
+let radioNote = '';         // why the engine refused this interface's last radio message
+let removeArmed = 0;        // a first press on Remove waits for the second: its timer
 let demodError = '';        // why the engine refused this interface's last demodulation change
 let bookmarkNote = '';      // why this interface's last bookmark change did not happen
 let scanner = null;         // the engine's signal detection (stream.js ScannerState), once received
@@ -532,6 +541,28 @@ const stream = new EngineStream({
     rtlListed = state;
     syncSource();
   },
+  onRadios: (state) => {
+    const before = radios ? radios.shown : null;
+    const known = radios ? radios.radios.map((radio) => radio.id) : [];
+    radios = state;
+    // The device remembers the radio that this interface chose, or added, by
+    // its receiver: this computer's windows share their preferences, and a
+    // window that chose nothing leaves another's choice alone.
+    const shown = state.radios.find((radio) => radio.id === state.shown);
+    const added = radioAdding && shown !== undefined && !known.includes(state.shown);
+    if (shown && (radioAsked === state.shown || added)) S.radio = radioKey(shown);
+    if (radioAsked === state.shown) radioAsked = null;
+    if (added) radioAdding = false;
+    restoreRadio();
+    if (before !== null && before !== state.shown) {
+      soapyPicked = false;  // the Receiver list's choices were the other radio's
+      sourceError = '';
+      disarmRemove();
+      if (rtlTimer) stream.listRtlDevices();    // which receiver this radio reads
+    }
+    syncSource();
+    syncMenuBadge();
+  },
   onReport: (report) => {
     $('#ab-report-msg').textContent = '';
     $('#report-msg').textContent = '';
@@ -626,6 +657,13 @@ const stream = new EngineStream({
       renderCalibration();
       return;
     }
+    if (command === 'radio') {
+      radioAsked = null;
+      radioAdding = false;
+      radioNote = `Refused: ${message}.`;
+      syncRadios();
+      return;
+    }
     if (command === 'devices') {
       sourceError = message;    // shown under the Receiver list, as the source's refusals
       syncSource();
@@ -648,6 +686,14 @@ const stream = new EngineStream({
     if (state === 'open') streamOpened = true;
     if (state === 'open') firstSearchAsked = false;     // asked again if the engine has still not searched
     if (state !== 'open') rtlListed = null;     // the engine may be another once the stream opens again
+    if (state !== 'open') {
+      radios = null;          // sent again once the stream opens, showing the first radio
+      radioRestored = false;
+      radioAsked = null;
+      radioAdding = false;
+      radioNote = '';
+      disarmRemove();
+    }
     streamState = state;
     followRtlList();
     if (state !== 'open') {
@@ -2339,9 +2385,11 @@ function followRtlList() {
   }
 }
 function toggleMenu(name) { if (openName === name) closeMenu(true); else showMenu(name); }
-// The dot on the menu's icon: red while a recording runs, green while a scan does.
+// The dot on the menu's icon: red while a recording runs, green while a scan does, on any radio.
 function syncMenuBadge() {
-  const recordingNow = recordingRuns() || iqRuns(), scanningNow = memoryRuns() || sweepRuns();
+  const others = radios ? radiosBadge(radios.radios) : { recording: false, scanning: false };
+  const recordingNow = recordingRuns() || iqRuns() || others.recording;
+  const scanningNow = memoryRuns() || sweepRuns() || others.scanning;
   if (menuButton.classList.contains('recording') !== recordingNow) menuButton.classList.toggle('recording', recordingNow);
   if (menuButton.classList.contains('scanning') !== scanningNow) menuButton.classList.toggle('scanning', scanningNow);
 }
@@ -2415,7 +2463,9 @@ function syncSource() {
   const deviceEl = $('#src-device');
   const kinds = streamState === 'open' && source ? source.kinds : [];
   // No entry is selected before the engine answers; "SoapySDR device" while one is to be chosen.
-  const receivers = receiverList(source, rtlListed, soapyPicked, streamState === 'open');
+  syncRadios();     // the receivers a radio may be added from follow the same states
+  const others = radios ? radios.radios.filter((radio) => radio.id !== radios.shown) : [];
+  const receivers = receiverList(source, rtlListed, soapyPicked, streamState === 'open', others);
   const entries = receivers.options.map((o) => `${o.value}\n${o.label}\n${o.disabled}`).join('\n');
   if (deviceEl.dataset.options !== entries) {
     deviceEl.replaceChildren(...receivers.options.map((o) => {
@@ -2600,6 +2650,85 @@ for (const el of [$('#src-address'), $('#src-center'), $('#src-ppm'), $('#src-co
   el.addEventListener('change', () => typingIn.delete(el));
   el.addEventListener('blur', () => { if (typingIn.delete(el)) syncSource(); });
 }
+// The radios, from an engine with several: the radio list switches this
+// interface to another radio, "Add a radio" opens a receiver that no radio
+// reads in a new radio, which this interface then shows, and Remove takes
+// the radio shown away, the first excepted, with a second press while a
+// scan or a recording runs on it. The engine's radios message is the
+// reference: a choice shows once the engine sends it back.
+function syncRadios() {
+  const open = streamState === 'open';
+  const shown = open && stream.severalRadios && radios !== null;
+  $('#radio-field').hidden = !shown;
+  $('#radio-add-field').hidden = !shown;
+  $('#radio-remove-row').hidden = !shown || radios.radios.length < 2;
+  if (!shown) return;
+  const listEl = $('#radio-list');
+  const entries = radios.radios.map((radio) => `${radio.id}\n${radioLabel(radio)}`).join('\n');
+  if (listEl.dataset.options !== entries) {
+    listEl.replaceChildren(...radios.radios.map((radio) => new Option(radioLabel(radio), String(radio.id))));
+    listEl.dataset.options = entries;
+  }
+  if (listEl.value !== String(radios.shown)) listEl.value = String(radios.shown);
+  if (listEl.disabled !== radios.radios.length < 2) listEl.disabled = radios.radios.length < 2;
+  const adding = addOptions(radios, source, rtlListed, devices, open);
+  const addEl = $('#radio-add');
+  const placeholder = radios.radios.length >= radios.max ? `${radios.max} radios at most`
+    : adding.length ? 'Choose a receiver' : 'No receiver left to add';
+  const addEntries = [placeholder, ...adding.map((option) => option.label)].join('\n');
+  if (addEl.dataset.options !== addEntries) {
+    addEl.replaceChildren(new Option(placeholder, ''),
+      ...adding.map((option, index) => new Option(option.label, String(index))));
+    addEl.dataset.options = addEntries;
+    addEl.dataset.sources = JSON.stringify(adding.map((option) => option.source));
+  }
+  if (addEl.value !== '') addEl.value = '';
+  if (addEl.disabled !== !adding.length) addEl.disabled = !adding.length;
+  const remove = removeView(radios, removeArmed !== 0);
+  const removeEl = $('#radio-remove');
+  if (removeEl.textContent !== remove.button) removeEl.textContent = remove.button;
+  if (removeEl.disabled !== !remove.enabled) removeEl.disabled = !remove.enabled;
+  const noteEl = $('#radio-note');
+  if (noteEl.textContent !== radioNote) noteEl.textContent = radioNote;
+}
+// The radio this device chose last, shown again once per connection, when
+// the engine still runs it.
+function restoreRadio() {
+  if (radioRestored || !preferencesLoaded || !radios) return;
+  radioRestored = true;
+  const id = radioToRestore(radios, S.radio);
+  if (id !== null && stream.showRadio(id)) radioAsked = id;
+}
+function disarmRemove() {
+  if (removeArmed) clearTimeout(removeArmed);
+  removeArmed = 0;
+}
+$('#radio-list').addEventListener('change', (e) => {
+  const id = Number(e.target.value);
+  radioNote = '';
+  if (!radios || id === radios.shown || !stream.showRadio(id)) syncRadios();
+  else radioAsked = id;
+});
+$('#radio-add').addEventListener('change', (e) => {
+  const el = e.target;
+  const sources = JSON.parse(el.dataset.sources || '[]');
+  const chosen = el.value === '' ? undefined : sources[Number(el.value)];
+  radioNote = '';
+  if (chosen && stream.addRadio(chosen)) radioAdding = true;
+  syncRadios();
+});
+$('#radio-remove').addEventListener('click', () => {
+  const press = removePress(radios, removeArmed !== 0);
+  if (press === 'arm') {
+    removeArmed = setTimeout(() => { removeArmed = 0; syncRadios(); }, REMOVE_CONFIRM_MS);
+  } else if (press === 'remove') {
+    disarmRemove();
+    radioNote = '';
+    stream.removeRadio(radios.shown);
+  }
+  syncRadios();
+});
+
 // Another receiver: the engine closes the one in use and opens the new one
 // with its saved settings, for every interface.
 // "SoapySDR device" before any was chosen shows the devices to choose from,
@@ -4078,7 +4207,7 @@ function syncStorage() {
 // squelch, receiver, remote access) and which menu shows.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
   'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'showChannels', 'split', 'volume',
-  'peakMarks', 'autoHide'];
+  'peakMarks', 'autoHide', 'radio'];
 const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
 const PREFERENCES_SAVE_MS = 1000;
 let preferencesLoaded = false;      // the engine's applied: nothing is saved before
@@ -4092,6 +4221,7 @@ function preferenceValue(key, value) {
     const el = rangeInputs.get(key);
     return el && Number.isFinite(value) ? clamp(value, Number(el.min), Number(el.max)) : undefined;
   }
+  if (key === 'radio') return value.length <= 100 ? value : undefined;     // a receiver, which the radios tell
   if (typeof value === 'string') {
     const el = PREFERENCE_SELECTS[key] && $(PREFERENCE_SELECTS[key]);
     return el && Array.from(el.options).some((o) => o.value === value) ? value : undefined;
@@ -4109,6 +4239,7 @@ function applyPreferences(values) {
   }
   S.wfMin = Math.min(S.wfMin, S.wfMax - 5);     // as the waterfall controls keep them
   savedPreferences = JSON.stringify(preferencesNow());
+  restoreRadio();
   syncDisplay();
   syncDemod();
   updateMeta();

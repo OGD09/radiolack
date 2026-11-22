@@ -226,9 +226,10 @@ stops Radiolack.
 and `--soapy` more than once, up to four receivers: each receiver given
 gets a radio of its own, in the order given, with its own spectrum, VFO,
 scans and recordings, and `--scan` and `--bias-tee` apply to the first.
-Without them, Radiolack opens the radios used last. An interface shows the
-first radio for now; the bookmarks and the History are common to the
-radios. Each radio after the first runs in a process of its own, so that
+Without them, Radiolack opens the radios used last. The Receiver menu
+adds and removes radios and chooses the one an interface shows
+([Several receivers](#several-receivers)); the bookmarks and the History
+are common to the radios. Each radio after the first runs in a process of its own, so that
 two receivers at 2.4 MS/s fit on a laptop's processor; the first radio
 stays as long as Radiolack runs. Should a radio's process stop, its radio
 goes away and Radiolack says so.
@@ -306,7 +307,36 @@ nothing. Escape, a click outside the menu or its close button closes it,
 and the icon opens the last menu shown again. In a window 600 px wide or
 less, the list of menus comes first, and a menu takes its place with an
 arrow back to the list. A dot on the icon tells that a recording runs, in
-red, or that the memory scan or the range scan runs, in green.
+red, or that the memory scan or the range scan runs, in green, on any
+radio.
+
+## Several receivers
+
+Radiolack reads up to four receivers at once, each in a radio of its own,
+with its own spectrum, VFO, scans and recordings; the bookmarks and the
+History are common to them. An interface shows one radio at a time: two
+windows, or a window and a phone, show two radios side by side. The
+Receiver menu, at its top:
+
+- "Radio" lists the radios, each with its number, what it reads, and the
+  scan or the recordings that run on it, such as "Radio 2 · RTL-SDR ·
+  RTLSDR1 · recording audio". Choosing one shows it in this interface
+  alone; the others go on with their scans and recordings.
+- "Add a radio" lists the receivers that no radio reads: the simulated
+  band, each RTL-SDR receiver plugged in, an rtl_tcp server and the
+  SoapySDR devices found. Choosing one opens it in a new radio, which this
+  interface then shows, with the settings kept for that receiver.
+- "Remove this radio" stops its scan and its recordings, releases its
+  receiver and keeps its settings; the interfaces that showed it show the
+  first radio, which stays as long as Radiolack runs. While a scan or a
+  recording runs on it, a second press confirms, saying what stops.
+
+The "Receiver" list below then applies to the radio shown: a receiver that
+another radio reads shows "read by radio N" and cannot be chosen. Each
+device remembers the receiver of the radio it chose or added last, and
+shows that radio again at its next connection while Radiolack still runs
+it; this computer's windows share that choice, the last one made. Radiolack
+reopens the radios at its next start, unless a receiver option is given.
 
 ## RTL-SDR receivers
 
@@ -334,7 +364,9 @@ The receivers plugged in:
   wherever it is plugged in. The first time you choose the only receiver
   plugged in, it starts from the settings kept for the first receiver,
   `--rtl-sdr` without a device, which were its own.
-- A receiver that another program holds stays listed, with "in use by
+- A receiver that another of Radiolack's radios reads shows "read by
+  radio N" ([Several receivers](#several-receivers)). A receiver that
+  another program holds stays listed, with "in use by
   another program" (Gqrx or an rtl_tcp, for instance), or "held by the DVB
   driver" when Linux took it as a TV tuner (the rtl-sdr package's
   blacklist file prevents that). Choosing it makes Radiolack wait until

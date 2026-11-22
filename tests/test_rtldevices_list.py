@@ -21,7 +21,7 @@ const kinds = ['synthetic', 'rtl_sdr', 'rtl_tcp', 'soapy'];
 const synthetic = { kind: 'synthetic', kinds };
 const rtl = { kind: 'rtl_sdr', kinds };
 const device = (serial, more = {}) => ({ device: serial, name: 'NESDR SMArt v5', manufacturer: 'Nooelec', drivers: [],
-  shared: false, readsAsIndex: false, inUse: false, found: true, ...more });
+  shared: false, readsAsIndex: false, inUse: false, radio: null, found: true, ...more });
 const nesdr = device('59196661');
 const blog = device('RTLSDR1', { name: 'RTL2838UHIDIR', manufacturer: 'Realtek' });
 const listed = (...devices) => ({ listing: 'sysfs', devices });
@@ -35,6 +35,12 @@ const out = {
   two: entries(r.receiverList(synthetic, listed(blog, nesdr), false, true)),
   twoValue: r.receiverList(synthetic, listed(blog, nesdr), false, true).value,
   inUse: r.receiverList(rtl, listed(blog, { ...nesdr, inUse: true, drivers: ['usbfs'] }), false, true),
+  // Another of Radiolack's radios reads the V3: named, and not chosen here.
+  sibling: r.receiverList(rtl, listed({ ...blog, radio: 2, drivers: ['usbfs'] }, { ...nesdr, inUse: true, radio: 1 }),
+    false, true),
+  // The simulated band and the rtl_tcp server that other radios read.
+  siblingKinds: entries(r.receiverList(rtl, null, false, true, [{ id: 2, kind: 'synthetic' }, { id: 3, kind: 'rtl_tcp' },
+    { id: 4, kind: 'soapy' }])),
   picked: r.receiverList(rtl, listed(blog, { ...nesdr, inUse: true }), true, true).value,
   stale: r.receiverList(rtl, listed(blog, nesdr), false, true).value,
   held: [['usbfs'], ['dvb_usb_rtl28xxu'], ['other_driver'], []].map((drivers) => r.rtlLabel(device('A', { drivers }))),
@@ -57,8 +63,8 @@ console.log(JSON.stringify(out));
 DECODE_SCRIPT = """
 const s = await import(process.argv[1]);
 const device = { device: '59196661', name: 'NESDR SMArt v5', manufacturer: 'Nooelec', drivers: ['usbfs'], shared: false,
-  reads_as_index: false, in_use: true, found: true };
-const valid = { type: 'rtl_devices', listing: 'sysfs', devices: [device, { ...device, device: null }] };
+  reads_as_index: false, in_use: true, radio: 1, found: true };
+const valid = { type: 'rtl_devices', listing: 'sysfs', devices: [device, { ...device, device: null, radio: 0 }] };
 const out = {
   valid: s.decodeRtlDevices(valid),
   refused: [
@@ -100,6 +106,13 @@ class RtlDevicesModuleTest(unittest.TestCase):
         self.assertEqual(out["inUse"]["value"], "rtl_sdr:1")
         self.assertEqual(out["inUse"]["options"][2]["label"], "RTL-SDR · NESDR SMArt v5 · 59196661")
         self.assertEqual(out["inUse"]["note"], "")
+        self.assertEqual([(o["label"], o["disabled"]) for o in out["sibling"]["options"][1:3]], [
+            ("RTL-SDR · RTL2838UHIDIR · RTLSDR1 · read by radio 2", True),
+            ("RTL-SDR · NESDR SMArt v5 · 59196661", False)])
+        self.assertEqual(out["sibling"]["value"], "rtl_sdr:1")
+        self.assertEqual(out["siblingKinds"], [
+            "synthetic|Synthetic band (2 m) · read by radio 2|true", "rtl_sdr|RTL-SDR · this computer|false",
+            "rtl_tcp|RTL-SDR · rtl_tcp · read by radio 3|true", "soapy|SoapySDR device|false"])
         self.assertEqual(out["picked"], "soapy")
         self.assertEqual(out["stale"], "")      # a list from before the switch: asked again
         self.assertEqual(out["held"], ["RTL-SDR · NESDR SMArt v5 · A · in use by another program",
@@ -137,9 +150,9 @@ class RtlDevicesModuleTest(unittest.TestCase):
         out = self.run_script(DECODE_SCRIPT, "stream.js")
         self.assertEqual(out["valid"], {"listing": "sysfs", "devices": [
             {"device": "59196661", "name": "NESDR SMArt v5", "manufacturer": "Nooelec", "drivers": ["usbfs"],
-             "shared": False, "readsAsIndex": False, "inUse": True, "found": True},
+             "shared": False, "readsAsIndex": False, "inUse": True, "radio": 1, "found": True},
             {"device": None, "name": "NESDR SMArt v5", "manufacturer": "Nooelec", "drivers": ["usbfs"],
-             "shared": False, "readsAsIndex": False, "inUse": True, "found": True}]})
+             "shared": False, "readsAsIndex": False, "inUse": True, "radio": None, "found": True}]})
         self.assertEqual(out["refused"], [None] * 7)
 
 

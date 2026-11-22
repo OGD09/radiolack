@@ -44,7 +44,8 @@ const HF_INPUTS = ['none', 'q', 'i', 'tuner'];
 const DRIVER_PLLS = ['unknown', 'truncating', 'rounding'];
 const CONVERTERS = ['none', 'up', 'down', 'down_inverted'];
 const COMMANDS = ['source', 'demod', 'audio', 'fine', 'bookmark', 'scanner', 'observations', 'scans', 'preferences',
-  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices', 'calibration', 'rtl_devices'];
+  'recording', 'recordings', 'update', 'remote', 'report', 'carrier', 'devices', 'calibration', 'rtl_devices',
+  'radio'];
 const DEVICE_SEARCHES = ['never', 'searching', 'done', 'failed', 'unavailable'];
 const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed', 'failed', 'unavailable'];
 
@@ -514,7 +515,31 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  * @property {boolean} shared        another receiver listed has the same serial number
  * @property {boolean} readsAsIndex  rtl_tcp would read `device` as an index among those listed
  * @property {boolean} inUse         the source in use reads it
+ * @property {number | null} radio   the radio that reads it, this interface's or another; null from an
+ *                                   engine older than several radios, or when none does
  * @property {boolean} found         false for the receiver in use when the list does not hold it
+ */
+
+/**
+ * One of the engine's radios, each reading a receiver of its own.
+ * @typedef {object} Radio
+ * @property {number} id
+ * @property {string} kind               its source's kind
+ * @property {string | null} device      the receiver it reads: an RTL-SDR's index or serial number, an rtl_tcp
+ *                                       server's address, a SoapySDR device's driver and serial number; null
+ *                                       for the simulated band
+ * @property {string | null} tuner
+ * @property {string} status             its source state's
+ * @property {string | null} scan        the scan that runs on it, as the scanner state's
+ * @property {string[]} recording        what it records: "audio", "iq", both or neither
+ */
+
+/**
+ * The engine's radios, and the one this interface shows.
+ * @typedef {object} RadiosState
+ * @property {Radio[]} radios   the first first
+ * @property {number} shown     the id of the radio this interface shows
+ * @property {number} max       the most radios the engine runs at once
  */
 
 /**
@@ -527,7 +552,7 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
 /**
  * @typedef {'source' | 'demod' | 'audio' | 'fine' | 'bookmark' | 'scanner' | 'observations' | 'scans'
  *   | 'preferences' | 'recording' | 'recordings' | 'update' | 'remote' | 'report' | 'carrier' | 'devices'
- *   | 'calibration' | 'rtl_devices'} Command
+ *   | 'calibration' | 'rtl_devices' | 'radio'} Command
  */
 
 /**
@@ -678,6 +703,8 @@ const UPDATE_STATUSES = ['idle', 'checking', 'current', 'available', 'installed'
  *   with sources that open SoapySDR devices: sent after the recording state, then at every change
  * @property {(devices: RtlDevicesState) => void} [onRtlDevices]
  *   the RTL-SDR receivers plugged in: sent when this interface asks for them, or chose one
+ * @property {(radios: RadiosState) => void} [onRadios]
+ *   from an engine with several radios: sent after the other states, then at every change
  * @property {(report: ProblemReport) => void} onReport     sent when this interface asks for one
  * @property {(measure: CarrierMeasure) => void} onCarrier  sent when this interface asks for one
  * @property {(check: DriverCheck) => void} onDriverCheck   sent when this interface asks for one
@@ -1417,6 +1444,32 @@ export function decodeRemote(message) {
 }
 
 /**
+ * Decode a radios message. Returns null when a field is missing or
+ * malformed, or when it does not hold the radio shown.
+ * @param {any} message  a parsed JSON message of type "radios"
+ * @returns {RadiosState | null}
+ */
+export function decodeRadios(message) {
+  /** @param {unknown} value */
+  const whole = (value) => Number.isInteger(value) && /** @type {number} */ (value) > 0;
+  /** @param {unknown} value */
+  const textOrNull = (value) => value === null || typeof value === 'string';
+  /** @param {any} r */
+  const radio = (r) => r !== null && typeof r === 'object' && whole(r.id) && typeof r.kind === 'string'
+    && textOrNull(r.device) && textOrNull(r.tuner) && typeof r.status === 'string' && textOrNull(r.scan)
+    && Array.isArray(r.recording) && r.recording.every((/** @type {unknown} */ kind) => typeof kind === 'string');
+  const m = message;
+  if (!Array.isArray(m.radios) || !m.radios.length || !m.radios.every(radio) || !whole(m.shown) || !whole(m.max)) return null;
+  if (!m.radios.some((/** @type {any} */ r) => r.id === m.shown)) return null;
+  return {
+    radios: m.radios.map((/** @type {any} */ r) => ({ id: r.id, kind: r.kind, device: r.device, tuner: r.tuner,
+      status: r.status, scan: r.scan, recording: r.recording.slice() })),
+    shown: m.shown,
+    max: m.max,
+  };
+}
+
+/**
  * Decode a SoapySDR devices message. Returns null when a field is missing
  * or malformed.
  * @param {any} message  a parsed JSON message of type "devices"
@@ -1461,7 +1514,8 @@ export function decodeRtlDevices(message) {
   return {
     listing: m.listing,
     devices: m.devices.map((/** @type {any} */ d) => ({ device: d.device, name: d.name, manufacturer: d.manufacturer,
-      drivers: d.drivers.slice(), shared: d.shared, readsAsIndex: d.reads_as_index, inUse: d.in_use, found: d.found })),
+      drivers: d.drivers.slice(), shared: d.shared, readsAsIndex: d.reads_as_index, inUse: d.in_use,
+      radio: Number.isInteger(d.radio) && d.radio > 0 ? d.radio : null, found: d.found })),
   };
 }
 
@@ -1506,6 +1560,7 @@ export class EngineStream {
   #measures = [];         // what the engine measures, as its last hello listed it
   /** @type {string[]} */
   #listings = [];         // the receivers the engine lists, as its last hello listed them
+  #severalRadios = false; // the engine runs several radios, as its last hello said by listing them
   /** @type {string[]} */
   #spectra = [];          // the spectra the engine sends when asked, as its last hello listed them
   /** @type {BandPlanChoice[]} */
@@ -1579,6 +1634,15 @@ export class EngineStream {
    */
   get listings() {
     return this.#listings.slice();
+  }
+
+  /**
+   * Whether the engine runs several radios, as its last hello said by
+   * listing them: an older engine has one.
+   * @returns {boolean}
+   */
+  get severalRadios() {
+    return this.#severalRadios;
   }
 
   /**
@@ -2101,6 +2165,42 @@ export class EngineStream {
   }
 
   /**
+   * Show the radio with this id: this interface then receives its states,
+   * its frames, its audio and its fine frames if it asked for them, and the
+   * radios again, or an error. Returns false, sending nothing, when the
+   * stream is not open or the engine runs one radio.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  showRadio(id) {
+    if (!this.#severalRadios) return false;
+    return this.#send({ type: 'radio', id });
+  }
+
+  /**
+   * Add a radio reading this source, as the radio message's `add` takes
+   * it, such as {kind: "rtl_sdr", device: "59196661"}: this interface then
+   * shows it, or receives an error.
+   * @param {Record<string, string>} source
+   * @returns {boolean}
+   */
+  addRadio(source) {
+    if (!this.#severalRadios) return false;
+    return this.#send({ type: 'radio', add: source });
+  }
+
+  /**
+   * Remove the radio with this id: its scan and recordings stop, its
+   * receiver is released, and the interfaces that showed it show the first.
+   * @param {number} id
+   * @returns {boolean}
+   */
+  removeRadio(id) {
+    if (!this.#severalRadios) return false;
+    return this.#send({ type: 'radio', remove: id });
+  }
+
+  /**
    * Ask the engine to read the SoapySDR device that device arguments name,
    * such as "driver=rtlsdr", as `chooseDevice` does. This computer's
    * interfaces only.
@@ -2276,6 +2376,9 @@ export class EngineStream {
     } else if (message.type === 'rtl_devices') {
       const listed = decodeRtlDevices(message);
       if (listed && this.#handlers.onRtlDevices) this.#handlers.onRtlDevices(listed);
+    } else if (message.type === 'radios') {
+      const radios = decodeRadios(message);
+      if (radios && this.#handlers.onRadios) this.#handlers.onRadios(radios);
     } else if (message.type === 'calibration') {
       const calibration = decodeCalibration(message);
       if (calibration && this.#handlers.onCalibration) this.#handlers.onCalibration(calibration);
@@ -2308,6 +2411,7 @@ export class EngineStream {
     this.#recordings = names(message.recording);
     this.#measures = names(message.measures);
     this.#listings = names(message.listings);
+    this.#severalRadios = Array.isArray(message.radios);
     this.#spectra = names(message.spectra);
     this.#bandPlans = decodeBandPlans(message.band_plans);
     this.#remoteOff = false;

@@ -235,6 +235,17 @@
 
       <section data-menu="receiver" hidden>
         <div class="menu-scroll">
+          <!-- From an engine with several radios: each reads a receiver of its own. -->
+          <div class="field" id="radio-field" hidden>
+            <label for="radio-list">Radio</label>
+            <select id="radio-list" aria-describedby="radio-note"></select>
+            <p class="note" id="radio-note" role="status"></p>
+          </div>
+          <div class="field" id="radio-add-field" hidden>
+            <label for="radio-add">Add a radio</label>
+            <select id="radio-add" disabled></select>
+          </div>
+          <div class="row" id="radio-remove-row" hidden><button type="button" class="btn" id="radio-remove" disabled>Remove this radio</button></div>
           <div class="field">
             <label for="src-device">Receiver</label>
             <select id="src-device" disabled>
