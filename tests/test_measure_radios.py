@@ -66,6 +66,10 @@ class PlaybackTest(unittest.TestCase):
             playback.frame(index / 30, index * 400, 12_000.0, 400)
         playback.frame(10 / 30 + 0.3, 4000, 12_000.0, 400)
         self.assertEqual(playback.dry, 1)
+        self.assertEqual(playback.lowest_s, 0.0)
+        [(at, short)] = playback.dry_at                 # when, from the first frame here, and how short
+        self.assertAlmostEqual(at, 10 / 30 + 0.3)
+        self.assertAlmostEqual(short, 1 / 30 + 0.3 - 5 * 400 / 12_000)  # five frames buffered
         self.assertAlmostEqual(playback.longest_gap_s, 1 / 30 + 0.3)
         playback.frame(10 / 30 + 0.31, 4400, 12_000.0, 400)     # 67 ms buffered: not playing yet
         playback.frame(10 / 30 + 0.9, 4800, 12_000.0, 400)
@@ -85,6 +89,7 @@ class PlaybackTest(unittest.TestCase):
         self.assertEqual(playback.dry, 1)
         playback.counted_from(1.01)
         self.assertEqual((playback.frames, playback.dry, playback.samples), (0, 0, 0))
+        self.assertEqual(playback.dry_at, [])
         self.assertIsNone(playback.lowest_s)
 
     def test_audio_frames_are_told_from_the_others(self):
@@ -137,6 +142,7 @@ class MeasureTest(unittest.TestCase):
             self.assertGreater(int(cells[6]), 30, row)      # spectrum frames
         self.assertIn("| event loop (main thread) |", text)
         self.assertIn("Commands refused: 0.", text)
+        self.assertRegex(text, r"The measuring process's own longest pause: \d+ ms\.")
         self.assertRegex(text, r"Rule: .*: (passed|failed)\.")
 
     def test_a_receiver_sends_on_time_and_drops_what_a_client_behind_cannot_take(self):

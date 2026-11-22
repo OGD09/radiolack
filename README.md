@@ -721,6 +721,14 @@ synthetic samples, without a receiver; it takes about three minutes,
 `--output FILE` keeps its table and `--without-impulses` leaves the
 scene's impulses out, the usual case for the blanker.
 
+`tools/measure_radios.py` measures several radios in one Radiolack (the
+Several receivers at once milestone,
+[docs/design/later-milestones.md](docs/design/later-milestones.md),
+section 5): each reads synthetic samples at 2.4 MS/s with a listener
+playing its audio, for ten minutes, and the tool reports Radiolack's
+processor time and whether the audio ran dry; `--radios` sets how many,
+one to four. Linux only.
+
 Three more developer tools prepare SoapySDR receivers (the Any receiver
 milestone, [docs/design/later-milestones.md](docs/design/later-milestones.md),
 section 1). `tools/measure_rates.py` measures the processor time of the
@@ -2404,7 +2412,8 @@ tools/          measure_pll.py: measures how well Radiolack labels an
                 engine holds; check_search.py: whether a SoapySDR search
                 stays off the network; measure_reader.py: whether a
                 Python thread reads a SoapySDR receiver without losing
-                samples; run from a checkout
+                samples; measure_radios.py: several radios in one
+                Radiolack; run from a checkout
 docs/design/    design documents
 docs/identity/  the logo for this README and the social preview
 packaging/      Debian package (build script, manual page, menu entry,

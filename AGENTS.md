@@ -426,7 +426,13 @@ the history under the tag `v0.1.0`.
   them, the last against `tests/soapysdr/SoapySDR.py`, the stand-in for
   SoapySDR's Python module (`tests.fakes.stand_in_soapysdr`), which fails
   a test that asks it for a transmit direction, and whose wall clock a
-  test may replace.
+  test may replace. `measure_radios.py` (spike 9, later-milestones.md,
+  section 5) runs one to four engines in one Radiolack process, each
+  reading a stand-in rtl_tcp at 2.4 MS/s from a process of its own, with
+  a listener that plays its audio as the AudioWorklet does, for ten
+  minutes, and reports Radiolack's processor time from /proc and whether
+  the audio ran dry, needing no receiver; `tests/test_measure_radios.py`
+  runs it briefly, never reading its figures.
 
 ## Commands
 
@@ -466,6 +472,10 @@ the history under the tag `v0.1.0`.
   conversation, on the receiver the owner names: `python3
   tools/measure_reader.py ARGS [--rate MS/S] [--seconds S] [--output
   FILE]`. It opens and reads that receiver.
+- Several radios' cost: `python3 tools/measure_radios.py [--radios N]
+  [--seconds S] [--output FILE]`, synthetic samples only, Linux; ten
+  minutes with its defaults. Two runs of `--radios 1` at once measure a
+  process per radio.
 - Listening tools' cost: `python3 tools/measure_listening.py [--runs N]
   [--seconds S] [--without-impulses] [--output FILE]`, synthetic samples only; about three
   minutes with its defaults. Figures depend on the computer's other work:

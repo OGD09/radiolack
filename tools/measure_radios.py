@@ -24,7 +24,9 @@ as the interface's AudioWorklet does (audio-worklet.js): it starts once
 TARGET_S of audio is buffered, plays at the audio rate, runs dry when the
 buffer empties, then waits for TARGET_S again; a gap in the frames'
 positions is audio the engine dropped for a client behind. The clocks are
-one computer's, so no drift needs following.
+one computer's, so no drift needs following. The report says when each
+listener ran dry, and the longest pause of this tool's own event loop,
+which delays the listeners' frames as a pause in Radiolack would.
 
 Radiolack's processor time is read from /proc every second, the whole
 process and each of its threads, after ``--warmup-s`` that are not counted,
@@ -32,7 +34,8 @@ for ``--seconds``: ten minutes by default, as the design asks. The rule
 fixed beforehand: the radios pass when no listener's audio runs dry and
 Radiolack stays under 60% of two cores, 120% of one core as a system
 monitor counts it, in every 10 s of the measure. If they fail, each radio
-gets a process of its own.
+gets a process of its own: two measures of ``--radios 1`` run at once are
+two radios that each have one.
 
 The scene: white noise at -40 dBFS, an NFM station at -30 dBFS 300 kHz
 above the centre frequency, the VFO on it, its 1 kHz tone at 2.5 kHz of
@@ -199,6 +202,7 @@ class Playback:
     frames: int = 0
     samples: int = 0            # received
     dry: int = 0                # times playback ran dry
+    dry_at: list[tuple[float, float]] = field(default_factory=list)    # when, from the count's start, and how short
     missing_s: float = 0.0      # audio the engine dropped, gaps in the positions
     lowest_s: float | None = None   # the least audio left buffered while playing, before a frame came
     longest_gap_s: float = 0.0  # the longest time between two frames
@@ -207,6 +211,7 @@ class Playback:
     _playing: bool = False
     _at: float | None = None    # when the buffer was last brought up to date
     _next: int | None = None    # the position the next frame should have
+    _counted_at: float = 0.0    # when the count started
 
     def frame(self, now: float, position: int, rate_hz: float, count: int) -> None:
         """A frame of ``count`` samples at ``position`` came at ``now``."""
@@ -236,6 +241,8 @@ class Playback:
                 self._buffered -= (now - self._at) * self.rate_hz
                 if self._buffered < 0:
                     self.dry += 1
+                    self.dry_at.append((now - self._counted_at, -self._buffered / self.rate_hz))
+                    self.lowest_s = 0.0
                     self._buffered = 0.0
                     self._playing = False
         self._at = now
@@ -244,8 +251,29 @@ class Playback:
         """Forget the warm-up's figures, keeping the buffer as it is."""
         self.advance(now)
         self.frames = self.samples = self.dry = 0
+        self.dry_at = []
         self.missing_s = self.longest_gap_s = 0.0
         self.lowest_s = None
+        self._counted_at = now
+
+
+@dataclass
+class Pauses:
+    """How late the measuring process's own event loop woke up: a pause
+    there delays the listeners' frames as one in Radiolack would."""
+
+    longest_s: float = 0.0
+
+
+async def probe(pauses: Pauses, period_s: float = 0.01) -> None:
+    """Note the measuring process's longest pause until cancelled."""
+    loop = asyncio.get_running_loop()
+    last = loop.time()
+    while True:
+        await asyncio.sleep(period_s)
+        now = loop.time()
+        pauses.longest_s = max(pauses.longest_s, now - last - period_s)
+        last = now
 
 
 def parse_audio(message: bytes) -> tuple[int, float, int] | None:
@@ -410,6 +438,7 @@ class Result:
     receivers: list[Receiver]
     warnings: list[str]
     load: tuple[str, str]
+    own_pause_s: float = 0.0    # the measuring process's longest pause
 
     @property
     def windows(self) -> list[float]:
@@ -464,8 +493,11 @@ async def measure(radios: int, seconds: float, warmup_s: float, seed: int,
             tasks += [asyncio.ensure_future(listen(listener, ready)) for listener, ready in zip(listeners, readies)]
             await asyncio.wait_for(asyncio.gather(*(ready.wait() for ready in readies)), START_TIMEOUT_S)
             progress(f"{radios} radios on Radiolack's process {process.pid}, warming up for {warmup_s:g} s")
+            pauses = Pauses()
+            prober = asyncio.ensure_future(probe(pauses))
             await _watch(tasks, warmup_s)
             loop = asyncio.get_running_loop()
+            pauses.longest_s = 0.0
             for listener in listeners:
                 listener.playback.counted_from(loop.time())
                 listener.spectra = 0
@@ -480,8 +512,9 @@ async def measure(radios: int, seconds: float, warmup_s: float, seed: int,
                     progress(f"  {elapsed:.0f} s of {seconds:g}, {mean_pct(samples):.1f}% of one core so far")
             for listener in listeners:
                 listener.playback.advance(loop.time())
+            prober.cancel()
             return Result(radios, samples[-1].at - started, samples, process.pid, listeners, receivers,
-                          warnings, (first_load, load()))
+                          warnings, (first_load, load()), pauses.longest_s)
         finally:
             for task in tasks[1:]:
                 task.cancel()
@@ -574,6 +607,12 @@ def report(result: Result, options: argparse.Namespace, started: datetime) -> li
         lowest = "never played" if playback.lowest_s is None else f"{playback.lowest_s * 1e3:.0f}"
         lines.append(f"| {number} | {playback.frames} | {playback.dry} | {playback.missing_s:.2f} | {lowest}"
                      f" | {playback.longest_gap_s * 1e3:.0f} | {listener.spectra} | {receiver.dropped_s:.2f} |")
+    for number, listener in enumerate(result.listeners, 1):
+        if listener.playback.dry_at:
+            lines.append("")
+            lines.append(f"Radio {number} ran dry at " + ", ".join(
+                f"{at:.1f} s ({short * 1e3:.0f} ms short)" for at, short in listener.playback.dry_at[:10]) + ".")
+    lines += ["", f"The measuring process's own longest pause: {result.own_pause_s * 1e3:.0f} ms."]
     errors = [error for listener in result.listeners for error in listener.errors]
     lines += ["", f"Radiolack's warnings and errors: {len(result.warnings)}."
               + "".join(f"\n- {line}" for line in result.warnings[:10]),

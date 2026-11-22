@@ -1470,6 +1470,15 @@ They pass when the audio never runs dry and Radiolack stays under 60% of
 two cores. If they fail, each radio gets a process of its own, and the
 spike's report says what that changes before the refactoring starts.
 
+Measured on 2026-11-22 with `tools/measure_radios.py` (scoping.md,
+[Spike 9 result](scoping.md#spike-9-result-2026-11-22)): on the computer
+next to the receivers two radios pass, 29% of two cores, the audio never
+short; on the owner's laptop, busy with its desktop, they are at the
+limit, a listener running dry once in ten minutes in two measures of
+three, and two radios in a process each run there as one radio alone
+does. Whether the radios share one process or each gets its own is the
+owner's decision.
+
 ### Pull requests
 
 1. The spike and its figures.

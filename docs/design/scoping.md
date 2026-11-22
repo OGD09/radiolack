@@ -582,7 +582,7 @@ band.
 | 6 | Does a carrier's measured frequency move with the centre frequency, as the tuner's PLL steps predict from the driver's code? | It decides whether Radiolack places its centre frequencies where the PLL is exact. | Answered on 2026-11-16: yes. The carrier moves by 203 Hz across centre frequencies 48 kHz apart, as the driver's older computation predicts within 0.13 Hz ([Spike 6 result](#spike-6-result-2026-11-16)). Placing the centre frequencies does not make that computation exact: decided the same day, the grid and the compensation (see Decisions). |
 | 7 | Which sample rates above 3.2 MS/s does the engine hold under 50% of one core? Does a SoapySDR search by driver stay off the network? Does a Python thread read 2.4 MS/s without losing samples? | They set the rates offered, the drivers listed and where the reader runs. | Answered on 2026-11-18 on the owner's laptop: the engine and the samples' intake hold 4 to 8 MS/s under 50% of one core back to back, 33 to 38% at 8 MS/s in two measures, and 10 MS/s, 48 to 54%, on the limit, is not offered; the searches of `hackrf`, `airspy`, `lime` and `bladerf` make no socket, `airspyhf` stays by its code and `sdrplay` waits for its module; and a thread read the owner's V3 at 2.4 MS/s for 60 s without losing a sample, so the reader stays a thread. Paced as a receiver delivers its blocks, the engine takes a third to 45% of one core at every rate on that laptop, whose processor slows down between blocks, and a few blocks take longer than their 33 ms, most at 8 and 10 MS/s: 8 MS/s is to confirm on the RSPdx-R2 ([Spike 7 result](#spike-7-result-2026-11-18)). |
 | 8 | What do synchronous AM, the notch, the blanker and the fine spectrum cost? | 6% of one core together. | Answered on 2026-11-17: 3.2 to 3.3% of one core together on the owner's laptop, against 12.5% for the engine itself, once synchronous AM and the blanker, over their 1.5% each, were reworked once; the blanker stays at its share, 1.40 and 1.54% in two measures, and is kept with that cost, by the owner's decision of 2026-11-16 ([Spike 8 result](#spike-8-result-2026-11-17)). |
-| 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Several receivers at once, first pull request. |
+| 9 | Do two radios run in one Radiolack under 60% of two cores without the audio running dry? | Otherwise each radio gets a process of its own. | Measured on 2026-11-22: yes on the computer next to the receivers, 29% of two cores, the audio never short; on the owner's laptop, busy with its desktop, not quite: in two ten-minute measures of three, one listener ran dry once, and one 10 s window reached 64% of two cores. Two radios in a process each ran there as one radio alone does ([Spike 9 result](#spike-9-result-2026-11-22)). One process or a process per radio: the owner's decision. |
 | 10 | Which libraries decode DRM's audio codings under a licence that fits, and does a real broadcast decode in real time? | The DRM milestone goes on, or closes on the report. | DRM, first pull request. |
 
 ### Spike 1 result (2026-11-08)
@@ -1159,6 +1159,74 @@ in, `airspyhf` and `sdrplay` searched; the reading thread with another
 device than the V3, another module's timestamps, a rate above 2.4 MS/s
 from a real device, or for longer than a minute; and a paced block's time
 on another governor or computer.
+
+### Spike 9 result (2026-11-22)
+
+Measured with `tools/measure_radios.py` (later-milestones.md, section 5,
+pull request 1) before the engine is split into radios: two radios are
+two engines in one process, on one event loop, as the radios will be. Each
+reads an rtl_tcp source at 2.4 MS/s from a stand-in for rtl_tcp in a
+process of its own, which sends a synthetic scene on the wall clock, keeps
+its VFO in NFM on the scene's station with detection on, and has a
+listener: an interface's stream over the WebSocket that takes its spectrum
+frames and plays its audio as the AudioWorklet does, starting once 150 ms
+are buffered. Ten minutes after 5 s that are not counted; Radiolack's
+processor time read from /proc every second, the rule fixed beforehand:
+no listener's audio runs dry and every 10 s window stays under 120% of one
+core, 60% of two.
+
+| Computer, radios | Mean, % of one core | 10 s windows, lowest to highest | Ran dry | Least buffered (ms) | Longest between frames (ms) | Rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| Computer next to the receivers, 2 in one process | 57.8 | 27.3 to 62.3 | 0, 0 | 121, 120 | 48, 47 | passed |
+| Computer next to the receivers, 4 in one process | 104.1 | 74.2 to 138.2 | 0 each | 96 to 108 | 49 to 55 | failed (processor) |
+| Owner's laptop, 2 in one process, first | 85.6 | 59.0 to 116.6 | 0, 0 | 20, 14 | 147, 154 | passed |
+| Owner's laptop, 2 in one process, second | 91.5 | 68.6 to 114.8 | 1, 1 | 23, 17 | 145, 149 | failed (audio) |
+| Owner's laptop, 2 in one process, third | 113.2 | 90.3 to 127.3 | 1, 0 | 0, 36 | 131, 128 | failed (both) |
+| Owner's laptop, 1 radio | 45.4 | 42.3 to 47.3 | 0 | 59 | 83 | passed |
+| Owner's laptop, 2 in a process each, at once | 28.5 + 27.9 | 26.1 to 30.5, 25.4 to 29.7 | 0, 0 | 90, 88 | 79, 82 | passed |
+
+The computer next to the receivers has an Intel Core i7-1280P, 20 logical
+processors; the owner's laptop an i7-7500U, two cores and four logical
+processors, busy throughout with its desktop and other programs, a load
+average of 1.0 to 3.5. The first runs Python 3.14.4, NumPy 2.3.5 and
+aiohttp 3.13.3, the laptop Python 3.11.2, NumPy 1.24.2 and aiohttp 3.8.4,
+both with the powersave governor. Radiolack logged no warning, refused no
+command, and no receiver fell behind in any measure.
+
+- **Where the radios run, they pass.** On the computer next to the
+  receivers, the one the design's "Done when" names, two radios take 29%
+  of two cores and the audio never comes near running dry: 120 ms
+  buffered at the least, frames at most 48 ms apart.
+- **On the owner's laptop, two radios in one process are at the limit.**
+  With one radio, frames come at most 83 ms apart; with two in one
+  process, 128 to 154 ms, against the 150 ms the interface buffers: in two
+  measures of three, a listener ran dry once in ten minutes, 20 ms short
+  in the one measure that timed it, 74 s into it. The measuring process,
+  which plays the listeners, paused 25 ms at most then: the frames came
+  late from Radiolack. The third measure also went over the processor's
+  limit in one 10 s window, 127% of one core.
+- **What a process per radio changes.** Two Radiolacks of one radio each,
+  run at once on the laptop, kept the frames as close as one radio alone,
+  82 ms apart at most, 88 ms buffered at the least, and took 56% of one
+  core together, half what two radios took in one process. The frames'
+  gaps point at the two radios' Python work taking turns under one
+  interpreter lock; the processor's share also moves with its frequency,
+  which the powersave governor raises with the load, so the half is not
+  a measure of the work alone (spike 7). In practice, a process per radio
+  means the radios in child processes, the engine in the parent relaying
+  their frames, audio and states, and the radios reaching what they share
+  (bookmarks, band plan, observations, kept scans, the store) through
+  messages: pull request 3 grows by that layer, and each radio adds a
+  Python interpreter with NumPy and Radiolack's modules, 56 MB before it
+  reads a sample.
+- **Four radios** in one process keep their audio on the computer next to
+  the receivers but go over the processor's limit, 52% of two cores on
+  average and 69% at the highest.
+
+Not measured: the radios once split (the measure runs engines), the native
+window's own work on the laptop, another listener than the tool's model of
+the AudioWorklet, three radios, and a process per radio on the computer
+next to the receivers.
 
 ## Preparing a public release
 
