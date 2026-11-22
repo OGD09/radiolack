@@ -835,15 +835,19 @@ class SeveralRadiosPersistenceTest(unittest.IsolatedAsyncioTestCase):
         engine = Engine(sources=self.sources, store=Store(self.directory))
         engine.add_radio({"kind": "third"})
         engine.radios[1].configure_scanner({"threshold_db": 20.0})
+        engine.radios[1].configure_demod({"mode": "AM"})
         await self.closed(engine)
         saved = self.read()
         self.assertEqual(saved["source"], {"kind": "test"})
+        # Each radio's receiver as it stood, not the first radio's alone.
+        self.assertEqual(saved["receivers"][engine.radios[1].source.settings_key]["demod"]["mode"], "AM")
         self.assertEqual([radio["source"] for radio in saved["radios"]], [{"kind": "third"}])
         self.assertEqual(saved["radios"][0]["scanner"]["threshold_db"], 20.0)
         again = Engine(sources=self.sources, store=Store(self.directory))
         self.addAsyncCleanup(self.closed, again)
         self.assertEqual(radios_of(again), [(1, "test"), (2, "third")])
         self.assertEqual(again.radios[1].scanner_state()["threshold_db"], 20.0)
+        self.assertEqual(again.radios[1].demod_state()["mode"], "AM")
         self.assertNotEqual(again.radios[0].scanner_state()["threshold_db"], 20.0)
 
     async def test_sources_given_at_start_replace_them(self):
