@@ -8,7 +8,12 @@
  *
  * Messages from audio.js: {type: 'frame', position, rateHz, pcm}, the
  * stream's audio frames (stream.js), and {type: 'reset'}, which drops what
- * is buffered.
+ * is buffered. To audio.js, at each loss, the losses since the start:
+ * {type: 'losses', dry, missingS, skippedS}, the times playback ran dry,
+ * the seconds of silence put in place of frames the engine dropped for this
+ * interface, and the seconds skipped once the device fell behind. A gap
+ * longer than MAX_GAP_S, which starts again, is not counted: the engine may
+ * have started its count again.
  */
 
 const PROCESSOR_NAME = 'radiolack-audio';
@@ -79,6 +84,9 @@ class Playback extends Processor {
   playing = false;
   level = TARGET_S;                 // average buffered audio, seconds
   drift = 0;
+  dry = 0;                          // losses since the start, as audio.js receives them
+  missingS = 0;
+  skippedS = 0;
 
   constructor() {
     super();
@@ -97,12 +105,27 @@ class Playback extends Processor {
       this.restart(rateHz);
     } else if (this.expected !== null) {
       const gap = (position - this.expected) >>> 0;     // positions wrap at 2^32
-      if (gap > MAX_GAP_S * rateHz) this.restart(rateHz);
-      else this.silence(gap);                            // frames the engine dropped for this client
+      if (gap > MAX_GAP_S * rateHz) {
+        this.restart(rateHz);
+      } else if (gap > 0) {
+        this.silence(gap);                               // frames the engine dropped for this client
+        this.missingS += gap / rateHz;
+        this.report();
+      }
     }
     this.append(pcm);
     this.expected = (position + pcm.byteLength / 2) >>> 0;
-    if (this.written - this.readAt > MAX_S * rateHz) this.readAt = this.written - TARGET_S * rateHz;
+    if (this.written - this.readAt > MAX_S * rateHz) {
+      const readAt = this.written - TARGET_S * rateHz;
+      this.skippedS += (readAt - this.readAt) / rateHz;
+      this.readAt = readAt;
+      this.report();
+    }
+  }
+
+  /** Tell audio.js the losses since the start. */
+  report() {
+    this.port.postMessage({ type: 'losses', dry: this.dry, missingS: this.missingS, skippedS: this.skippedS });
   }
 
   /**
@@ -171,6 +194,8 @@ class Playback extends Processor {
       for (; i < out.length; i += 1) {
         if (Math.floor(this.readAt) + HALF >= this.written) {
           this.playing = false;     // ran dry: buffer again
+          this.dry += 1;
+          this.report();
           break;
         }
         out[i] = this.sample(this.readAt);

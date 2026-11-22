@@ -10,11 +10,12 @@ interface, for a receiver plugged into this computer.
 The source connects when the engine first reads, and sends all its settings
 at each connection, since rtl_tcp keeps those of its previous client. It reads
 everything rtl_tcp sends and keeps only half a second of samples, dropping
-the oldest when the engine falls behind, so that the display stays current:
-rtl_tcp itself queues up to about 130 MB for a client that stops reading. For
-the same reason it hangs up once the engine stops reading, and connects again
-at the next read. A refused, silent or lost connection is a waiting state,
-retried with a growing delay, never an error.
+the oldest when the engine falls behind, so that the display stays current,
+and logs how many it dropped at most once a minute (``Losses``, which a
+SoapySDR source shares): rtl_tcp itself queues up to about 130 MB for a
+client that stops reading. For the same reason it hangs up once the engine
+stops reading, and connects again at the next read. A refused, silent or lost
+connection is a waiting state, retried with a growing delay, never an error.
 
 The address of an ``RtlTcpSource`` is one of its settings: the way to the
 receiver, which changes with the network the computers are on. A new address
@@ -107,6 +108,7 @@ import signal
 import socket
 import struct
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -133,6 +135,7 @@ TIMEOUT_S = 5.0         # limit for connecting, for the header and for silences
 RETRY_S = (0.5, 5.0)    # first and longest delay before connecting again
 RTL_TCP_PROGRAM = "rtl_tcp"     # what RtlSdrSource runs, found on the PATH
 STOP_S = 3.0            # rtl_tcp stops within about a second; killed after this
+REPORT_S = 60.0         # the samples dropped for an engine behind are logged at most this often
 
 _MAX_HOST = 253         # characters in the longest host name
 _CHECK_S = 0.25         # how often a connection checks its time limits
@@ -293,6 +296,68 @@ class Settings:
     tuner_grid: bool = True         # an R820T or R828D on its grid; never saved
 
 
+class Losses:
+    """What a source reports as it runs: the overflows that its device
+    reports, the samples its buffer dropped for an engine behind, the blocks
+    that took the engine longer than their period, and the samples that an
+    I/Q recording did not get, the event loop behind; logged on ``logger``
+    at most every ``interval_s``, with their counts since the previous line,
+    the samples dropped also in seconds of signal, from the sample rate each
+    count gives. An rtl_tcp source counts only the samples dropped; a
+    SoapySDR source counts them all (soapy.py)."""
+
+    def __init__(self, name: str, interval_s: float = REPORT_S, clock: Callable[[], float] = time.monotonic,
+                 logger: logging.Logger | None = None) -> None:
+        self.name = name
+        self._interval_s = interval_s
+        self._clock = clock
+        self._log = log if logger is None else logger
+        self._lock = threading.Lock()
+        self.overflows = 0          # since the previous line, as the counts below
+        self.dropped = 0
+        self.dropped_s = 0.0        # the samples dropped, in seconds of signal
+        self.late_blocks = 0
+        self.unrecorded = 0
+        self._since = clock()
+        self._logged = -math.inf
+
+    def add(self, *, overflows: int = 0, dropped: int = 0, rate_hz: float | None = None, late_blocks: int = 0,
+            unrecorded: int = 0) -> None:
+        """Count losses; ``rate_hz`` is the sample rate of the ``dropped``
+        samples, which gives their length."""
+        with self._lock:
+            self.overflows += overflows
+            self.dropped += dropped
+            if dropped and rate_hz:
+                self.dropped_s += dropped / rate_hz
+            self.late_blocks += late_blocks
+            self.unrecorded += unrecorded
+
+    def check(self, flush: bool = False) -> None:
+        """Log the counts, if any, unless a line went out less than the
+        interval ago; with ``flush``, whatever the interval."""
+        with self._lock:
+            now = self._clock()
+            if not (self.overflows or self.dropped or self.late_blocks or self.unrecorded):
+                return
+            if not flush and now - self._logged < self._interval_s:
+                return
+            parts = []
+            if self.overflows:
+                parts.append(f"{self.overflows} overflows reported by the device")
+            if self.dropped:
+                length = f" ({self.dropped_s:.1f} s)" if self.dropped_s else ""
+                parts.append(f"{self.dropped} samples dropped{length}, the engine behind")
+            if self.late_blocks:
+                parts.append(f"{self.late_blocks} blocks took the engine longer than their period")
+            if self.unrecorded:
+                parts.append(f"{self.unrecorded} samples not recorded, the event loop behind")
+            self._log.warning("%s: %s, in the last %.0f s", self.name, ", ".join(parts), now - self._since)
+            self.overflows = self.dropped = self.late_blocks = self.unrecorded = 0
+            self.dropped_s = 0.0
+            self._since = self._logged = now
+
+
 class RtlTcpSource:
     """An RTL-SDR receiver served by rtl_tcp, read like any source.
 
@@ -315,7 +380,8 @@ class RtlTcpSource:
                  centre_hz: float = DEFAULT_CENTRE_HZ, sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
                  gain_db: float | None = None, ppm: float = 0, settle_s: float = SETTLE_S,
                  buffer_s: float = BUFFER_S, idle_s: float = IDLE_S, read_wait_s: float = READ_WAIT_S,
-                 timeout_s: float = TIMEOUT_S, retry_s: tuple[float, float] = RETRY_S) -> None:
+                 timeout_s: float = TIMEOUT_S, retry_s: tuple[float, float] = RETRY_S,
+                 report_s: float = REPORT_S) -> None:
         default_host, default_port = DEFAULT_ADDRESS
         self.given = frozenset() if host is None and port is None else frozenset({"address"})
         self.host = default_host if host is None else host
@@ -326,6 +392,7 @@ class RtlTcpSource:
         self._read_wait_s = read_wait_s
         self._timeout_s = timeout_s
         self._retry_s = retry_s
+        self._losses = Losses("rtl_tcp", report_s)   # never the address: problem reports leave it out
         start = Settings(DEFAULT_CENTRE_HZ, DEFAULT_SAMPLE_RATE_HZ, None, 0.0)
         self._settings = _changed(start, {"centre_hz": centre_hz, "sample_rate_hz": sample_rate_hz,
                                           "gain_db": gain_db, "ppm": ppm}, None)
@@ -428,6 +495,7 @@ class RtlTcpSource:
             self._last_read = time.monotonic()
         data = self._buffer[:size]
         del self._buffer[:size]
+        self._losses.check()
         # The buffer only ever holds samples of the current setting.
         settings = self._settings
         tuning = _tuning(settings, self.tuner)
@@ -638,6 +706,7 @@ class RtlTcpSource:
         except Exception:
             log.exception("the rtl_tcp connection stopped")
         finally:
+            self._losses.check(flush=True)
             if not self._closed:
                 self._set_status("idle", "")
 
@@ -733,7 +802,9 @@ class RtlTcpSource:
         capacity = max(2 * round(self._buffer_s * self._settings.sample_rate_hz), self._wanted)
         excess = len(self._buffer) - capacity
         if excess > 0:
-            del self._buffer[:excess + excess % 2]
+            dropped = excess + excess % 2
+            del self._buffer[:dropped]
+            self._losses.add(dropped=dropped // 2, rate_hz=self._settings.sample_rate_hz)
         if len(self._buffer) >= self._wanted:
             self._arrived.set()
 

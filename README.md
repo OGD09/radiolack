@@ -413,6 +413,11 @@ With either option:
   such as the simulated band.
 - After a change of frequency, sample rate or frequency correction, the
   display waits 0.4 s for the receiver to settle.
+- Radiolack keeps half a second of samples for the computer to catch up.
+  When it falls further behind, the oldest samples go, and the audio skips:
+  their count, in samples and in seconds of signal, goes to the error
+  output at most once a minute, among the warnings of a [problem
+  report](#problem-reports).
 - When rtl_tcp cannot be reached, stops sending or drops the connection, the
   status line says why and Radiolack tries again by itself, keeping its
   settings: after half a second at first, then waiting longer each time, up
@@ -917,9 +922,10 @@ radiolack --soapy driver=sdrplay
   receiver is a wait too, with its reason in the Receiver menu and the
   status line, tried again by itself.
 - Radiolack opens the receiver's receive stream and nothing else. Its
-  overflows, the samples dropped when the computer falls behind, the
-  blocks that took longer than their period and the samples that an I/Q
-  recording did not get go to the error output at most once a minute.
+  overflows, the samples dropped when the computer falls behind (in
+  seconds of signal too), the blocks that took longer than their period
+  and the samples that an I/Q recording did not get go to the error output
+  at most once a minute.
 - Record I/Q keeps the receiver's samples in the format Radiolack reads
   them in, 8 or 16-bit integers or 32-bit floats, as the receiver gives
   them ([Recording](#recording)).
@@ -1883,7 +1889,11 @@ When Radiolack misbehaves, About > Report a problem, on this computer,
 prepares a report of what it runs on: its version, and whether it came from
 the Debian package; Python's, aiohttp's and NumPy's; the system and its
 kernel; GTK's and WebKitGTK's in the desktop window; the web browser, the
-views' WebGL2 and the window's size; the receiver's kind and state, with its
+views' WebGL2, the window's size and the audio it lost since it loaded
+(the times playback ran dry, its frames late or paused, as a retune pauses
+them, the seconds that the engine dropped for it, the computer or the
+network behind, and the seconds it skipped, the device behind); the
+receiver's kind and state, with its
 tuner, its shortwave input and sample rate but neither its address nor its
 frequency; how long
 Radiolack has run; and its latest 50 warnings and errors, in UTC, with your

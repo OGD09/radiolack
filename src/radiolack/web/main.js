@@ -4586,10 +4586,15 @@ $('#calibrate-cancel').addEventListener('click', (e) => {
 // the user's web browser shows, or to copy.
 const reportButton = $('#ab-report');
 const openReportDialog = bindDialog(reportDialog, reportButton);
-// The web engine, whether the views draw, and the window's size: 300 characters at most.
+// The web engine, whether the views draw, the window's size and the audio
+// lost since the page loaded: 300 characters at most, the audio's kept.
 function pageFacts() {
   const views = spectrumView ? 'WebGL2 views' : gpuError;
-  return `${navigator.userAgent}; ${views}; ${innerWidth}x${innerHeight} at ${devicePixelRatio}x`.slice(0, 300);
+  const lost = audio.losses;
+  const losses = `audio since load: ran dry ${lost.dry}, ${lost.missingS.toFixed(1)} s dropped by the engine, `
+    + `${lost.skippedS.toFixed(1)} s skipped`;
+  const rest = `; ${views}; ${innerWidth}x${innerHeight} at ${devicePixelRatio}x; ${losses}`;
+  return (navigator.userAgent.slice(0, Math.max(0, 300 - rest.length)) + rest).slice(0, 300);
 }
 reportButton.addEventListener('click', () => {
   $('#ab-report-msg').textContent = '';

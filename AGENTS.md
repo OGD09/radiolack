@@ -156,7 +156,8 @@ the history under the tag `v0.1.0`.
   filtered alone), `rtltcp` (rtl_tcp client: `RtlTcpSource` for an
   rtl_tcp the user runs, whose address the interface can change,
   `RtlSdrSource` runs rtl_tcp itself while it connects; a lost server is a
-  waiting state; direct sampling below the tuner's range for shortwave;
+  waiting state; the samples dropped for an engine behind logged at most
+  once a minute, by `Losses`, which `soapy` shares; direct sampling below the tuner's range for shortwave;
   the antenna power, off at each connection unless turned on, never saved,
   turned off before the source closes; the converter in front of the
   receiver, converting only the frequency it sends and swapping I and Q
@@ -240,7 +241,8 @@ the history under the tag `v0.1.0`.
 - `src/radiolack/web/`: interface files, served as they are: ES modules, no
   build step. `stream.js` (stream client, which decodes the fine frames it
   asks for), `audio.js` and
-  `audio-worklet.js` (audio output, AudioWorklet playback), `gl.js`,
+  `audio-worklet.js` (audio output, AudioWorklet playback, and the audio
+  lost since the page loaded, which a problem report tells), `gl.js`,
   `spectrum-gl.js` and `waterfall-gl.js` (WebGL2 views; the waterfall
   holds the wide spectrum's history and the fine spectrum's, each line
   drawn within a window of its bins), `history.js` (a spectrum's frames as
@@ -284,8 +286,9 @@ the history under the tag `v0.1.0`.
   devices state's decoding, `tests/test_categories.py` `categories.js`
   and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
-  the stations and the calibration state's decoding, and `tests/test_advanced.py` `advanced.js`,
-  the antenna power's warning and the device's fields' decoding, skipped
+  the stations and the calibration state's decoding, `tests/test_advanced.py` `advanced.js`,
+  the antenna power's warning and the device's fields' decoding, and
+  `tests/test_audio.py` `audio-worklet.js`'s losses, skipped
   where Node is missing. `bandplan-europe.json`, `bandplan-france.json`,
   `bandplan-americas.json` and `bandplan-asia-pacific.json` are the band
   plans' data, Europe's, France's, Europe's changed where France's
