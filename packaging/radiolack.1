@@ -10,8 +10,9 @@ radiolack \- receive\-only SDR receiver with band plans
 [\fB\-\-remote\fR [\fIPORT\fR]]
 [\fB\-\-scan\fR \fImemory\fR|\fIsweep\fR|\fIsignals\fR]
 [\fB\-\-bias\-tee\fR]
-[\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR] | \fB\-\-rtl\-tcp\fR [\fIADDRESS\fR] |
-\fB\-\-soapy\fR \fIARGS\fR]
+[\fB\-\-rtl\-sdr\fR [\fIDEVICE\fR]]...
+[\fB\-\-rtl\-tcp\fR [\fIADDRESS\fR]]
+[\fB\-\-soapy\fR \fIARGS\fR]...
 .br
 .B radiolack
 \fB\-\-version\fR | \fB\-h\fR | \fB\-\-help\fR
@@ -28,9 +29,15 @@ reads, such as an SDRplay or a HackRF, and labels every frequency
 with a European band plan from 0\ Hz to 10.5\ GHz, a guide rather than a
 legal reference, with the IARU Region\ 1 plans inside the amateur bands.
 .PP
-Without \fB\-\-rtl\-sdr\fR, \fB\-\-rtl\-tcp\fR or \fB\-\-soapy\fR,
-Radiolack opens the source used last: the simulated 2\ m band the first
-time.
+Radiolack reads up to four receivers at once, each on a radio of its own,
+with its own spectrum, VFO, scans and recordings; an interface shows one
+radio at a time, and the bookmarks and the History are common to them.
+\fB\-\-rtl\-sdr\fR, \fB\-\-rtl\-tcp\fR and \fB\-\-soapy\fR may
+come together, and \fB\-\-rtl\-sdr\fR and \fB\-\-soapy\fR more than
+once: each receiver given gets a radio, in the order given, the first
+shown first.
+Without them, Radiolack opens the radios used last: the simulated 2\ m
+band the first time.
 The Receiver menu switches between sources.
 Closing the window stops Radiolack; without a window, stop it with
 Ctrl+C.
@@ -112,7 +119,8 @@ Without a window, Settings stays on 127.0.0.1: reach it through an SSH
 tunnel whose two ends use the port given to \fB\-\-port\fR.
 .TP
 \fB\-\-scan\fR \fImemory\fR|\fIsweep\fR|\fIsignals\fR
-Start a scan at start: \fImemory\fR, the memory scan, or \fIsweep\fR, the
+Start a scan at start, on the first radio: \fImemory\fR, the memory scan,
+or \fIsweep\fR, the
 range scan, with its saved settings, as the Start button of an interface
 does, or \fIsignals\fR, the range scan over the current window, stopping to
 listen to each signal, its saved settings left as they are: the scan goes on
@@ -127,7 +135,8 @@ why, in its output and in its interface, and runs on without it.
 Without this option, no scan runs at start.
 .TP
 \fB\-\-bias\-tee\fR
-Turn the antenna power on at start, for the receiver given or reopened:
+Turn the antenna power on at start, for the first receiver given or
+reopened:
 4.5 V on the antenna socket of an RTL\-SDR Blog V3 or V4, for an active
 antenna or a preamplifier, or the power that a SoapySDR device puts on its
 socket, once the device opens, if its module declares such a setting.
@@ -151,7 +160,7 @@ Read an RTL\-SDR receiver through an rtl_tcp server that you run, at
 \fIADDRESS\fR: \fIHOST\fR, \fIPORT\fR or \fIHOST\fR:\fIPORT\fR.
 By default, the address used last: 127.0.0.1:1234 the first time.
 The Receiver menu can change it.
-Not with \fB\-\-rtl\-sdr\fR.
+One rtl_tcp server at a time: its address is saved once.
 .TP
 \fB\-\-soapy\fR \fIARGS\fR
 Read a receiver through SoapySDR, such as an SDRplay, a HackRF, an Airspy
@@ -165,7 +174,6 @@ It needs the python3\-soapysdr package and the driver's SoapySDR module,
 which the Debian package suggests and does not install;
 without the first, Radiolack says so and exits with status 1.
 Radiolack opens the device's receive stream alone.
-Not with \fB\-\-rtl\-sdr\fR or \fB\-\-rtl\-tcp\fR.
 .TP
 \fB\-\-version\fR
 Print the version and exit.

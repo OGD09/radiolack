@@ -9,8 +9,9 @@ interface over a WebSocket (``/stream``; see docs/design/protocol.md), which
 also carries the interfaces' changes, their preferences, their requests for
 audio, for the fine spectrum, for an update check, for the observations,
 for the list of the recordings, for the measure of a carrier, for the
-automatic calibration, for the SoapySDR devices and for the RTL-SDR
-receivers plugged in. It serves the recordings that
+automatic calibration, for the SoapySDR devices, for the RTL-SDR
+receivers plugged in and for the radio each shows, which they may add and
+remove. It serves the recordings that
 the engine lists, and the I/Q recordings' metadata, to download
 (``/recordings/NAME``).
 
@@ -26,8 +27,8 @@ this computer's private addresses, which it follows while on, to devices
 that entered the access code, and turning it off stops it without stopping
 the first. Remote devices may not change remote access, the update check,
 the rtl_tcp server's address or the recordings folder, nor search for
-SoapySDR devices or open one by its device arguments, and the preferences
-they give are their own.
+SoapySDR devices or open one by its device arguments, a radio's
+included, and the preferences they give are their own.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ _CLIENT_MESSAGE_LIMIT = 64 * 1024
 _MAX_CHANGE_ID = 2 ** 53 - 1         # the largest whole number JavaScript counts exactly
 _COMMANDS = ("source", "demod", "audio", "fine", "bookmark", "band_plan", "scanner", "observations", "scans",
              "preferences", "recording", "recordings", "update", "remote", "report", "carrier", "calibration",
-             "devices", "rtl_devices")
+             "devices", "rtl_devices", "radio")
 _LOCAL_COMMANDS = ("update", "remote", "report")     # refused to remote devices
 # The fields of other commands refused to remote devices.
 _LOCAL_FIELDS = {"source": LOCAL_SETTINGS, "recording": LOCAL_RECORDING_SETTINGS, "devices": LOCAL_DEVICE_FIELDS}
@@ -251,7 +252,8 @@ async def _serve_stream(ws: web.WebSocketResponse, engine: Engine, remote: Remot
                             "remote": device is not None, "scanners": list(SCANNERS),
                             "recording": list(RECORDING_KINDS), "measures": list(MEASURES),
                             "spectra": list(SPECTRA), "band_plans": plan_choices(),
-                            "listings": ["rtl_sdr"] if engine.lists_rtl_devices else []})
+                            "listings": ["rtl_sdr"] if engine.lists_rtl_devices else [],
+                            "radios": engine.radios_state()["radios"]})
     except ConnectionResetError:
         return
     subscription = engine.subscribe(device=device)
@@ -313,7 +315,11 @@ def _apply_command(engine: Engine, subscription: Subscription, remote: RemoteLis
     if radio is None:       # the stream is ending
         return kind, "the stream is closing"
     try:
-        if kind == "source":
+        if kind == "radio":
+            if subscription.remote and isinstance(changes.get("add"), dict) and "args" in changes["add"]:
+                return kind, "only Radiolack's interface on the computer may change this"
+            engine.configure_radios(changes, subscription)
+        elif kind == "source":
             radio.configure(changes)
         elif kind == "demod":
             change_id = changes.pop("id", None)
@@ -834,10 +840,12 @@ class LocalServer:
     that an unreadable file raises InterfaceUnreadable and a busy port
     ``OSError`` before anything starts; the server serves the files as they
     were read, until it stops. Use it as a context manager: entering starts the
-    server, leaving stops it. The engine reads ``source``, or without one the
-    source that ``sources`` opened last, and closes it when the server stops;
-    with ``sources``, an interface may switch to another kind of source.
-    Without either, it reads the synthetic band. With a ``store``, the engine
+    server, leaving stops it. The engine's first radio reads ``source``, and
+    one more radio reads each of ``more_sources``; without either, the
+    radios used last read the sources that ``sources`` opened last. The
+    engine closes them when the server stops; with ``sources``, an
+    interface may switch to another kind of source, and add a radio.
+    Without ``source`` and ``sources``, it reads the synthetic band. With a ``store``, the engine
     starts from the saved settings and saves their changes; with ``updates``,
     it checks for a newer Radiolack. It records into ``recordings``, unless
     the user chose another folder; without it, it never does. No scan runs
@@ -854,8 +862,9 @@ class LocalServer:
     def __init__(self, port: int = 0, source: Source | None = None, store: Store | None = None,
                  sources: SourceOpener | None = None, updates: UpdateChecker | None = None,
                  remote_addresses: Callable[[], Sequence[str]] | None = None, host: str | None = None,
-                 recordings: Path | None = None) -> None:
+                 recordings: Path | None = None, more_sources: Sequence[Source] = ()) -> None:
         self._source = source
+        self._more_sources = tuple(more_sources)
         self._sources = sources
         self._store = store
         self._updates = updates
@@ -980,8 +989,8 @@ class LocalServer:
     async def _serve(self) -> None:
         source = SyntheticBand() if self._source is None and self._sources is None else self._source
         access = RemoteAccess()
-        engine = Engine(source, sources=self._sources, store=self._store, updates=self._updates, remote=access,
-                        recordings=self._recordings)
+        engine = Engine(source, more_sources=self._more_sources, sources=self._sources, store=self._store,
+                        updates=self._updates, remote=access, recordings=self._recordings)
         remote = RemoteListener(engine, access, self._remote_addresses, self._host, self._interface)
         self._engine, self._access, self._remote = engine, access, remote
         runner = web.AppRunner(create_app(self.port, engine, remote, self._interface), handle_signals=False)

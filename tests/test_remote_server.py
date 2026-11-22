@@ -287,10 +287,12 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
                                          {"id": "france", "name": "France (metropolitan)"},
                                          {"id": "americas", "name": "Americas (ITU Region 2)"},
                                          {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
-                          "listings": []})
-        kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(8)]
+                          "listings": [],
+                          "radios": [{"id": 1, "kind": "test", "device": None, "tuner": None, "status": "streaming",
+                                      "scan": None, "recording": []}]})
+        kinds = [(await ws.receive_json(timeout=5))["type"] for _ in range(9)]
         self.assertEqual(kinds, ["source", "demod", "bookmarks", "band_plan", "scanner", "peaks", "preferences",
-                                 "recording"])
+                                 "recording", "radios"])
         [paired] = (await self.next_remote(lambda state: state["devices"][0]["connected"]))["devices"]
         await ws.close()
         await self.next_remote(lambda state: not state["devices"][0]["connected"])
@@ -369,7 +371,8 @@ class RemoteAccessTest(unittest.IsolatedAsyncioTestCase):
         for command in ({"type": "remote", "on": False}, {"type": "remote", "new_code": True},
                         {"type": "update", "check": True}, {"type": "source", "address": "192.168.1.2:1234"},
                         {"type": "report"}, {"type": "devices", "search": True},
-                        {"type": "devices", "args": "driver=rtlsdr"}):
+                        {"type": "devices", "args": "driver=rtlsdr"},
+                        {"type": "radio", "add": {"kind": "soapy", "args": "driver=rtlsdr"}}):
             with self.subTest(command=command):
                 await ws.send_json(command)
                 self.assertEqual(await self.next_error(ws),

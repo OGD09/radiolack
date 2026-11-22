@@ -27,7 +27,9 @@ preferences apart from this computer's.
     "band_plans": [{"id": "europe", "name": "Europe (ITU Region 1)"}, {"id": "france", "name": "France (metropolitan)"},
                    {"id": "americas", "name": "Americas (ITU Region 2)"},
                    {"id": "asia-pacific", "name": "Asia-Pacific (ITU Region 3)"}],
-    "listings": ["rtl_sdr"]}
+    "listings": ["rtl_sdr"],
+    "radios": [{"id": 1, "kind": "rtl_sdr", "device": "0", "tuner": "Rafael Micro R820T", "status": "idle",
+                "scan": null, "recording": []}]}
    ```
 
    `version` is the version of the Radiolack that runs, which About shows on
@@ -73,7 +75,9 @@ preferences apart from this computer's.
    lists the receivers that the engine lists when an interface asks:
    `rtl_sdr`, the RTL-SDR receivers plugged in (the RTL-SDR receivers,
    below), with sources that open them. An engine older than the list
-   sends no `listings`: it lists none.
+   sends no `listings`: it lists none. `radios` lists the engine's radios,
+   as the radios message does (below); an engine older than several
+   radios sends none: it has one.
 
 2. Then the source state, a JSON text message, sent again whenever it
    changes, whichever interface changed it. It also carries `dc_removal`, a
@@ -493,11 +497,48 @@ preferences apart from this computer's.
    starts at start and never runs on the simulated band; both may run at
    once.
 
-9. Then the kept scans, a JSON text message, sent again whenever they
+9. Then the radios, a JSON text message, sent again whenever one is added
+   or removed, or what one reads or runs changes, and when the interface
+   shows another radio. Each radio reads a receiver of its own; an
+   interface shows one radio at a time, the first until it chooses
+   another (the `radio` message), and receives that radio's source state,
+   demodulation settings, scanner state, signals found, recording state,
+   devices state and calibration state, its frames, its audio and its fine
+   frames. The bookmarks, the band plan, the observations, the kept scans,
+   the preferences and the other states are common to the radios:
+
+   ```json
+   {"type": "radios", "radios": [
+     {"id": 1, "kind": "rtl_sdr", "device": "59196661", "tuner": "Rafael Micro R820T", "status": "streaming",
+      "scan": "memory", "recording": []},
+     {"id": 2, "kind": "rtl_sdr", "device": "RTLSDR1", "tuner": "Rafael Micro R820T", "status": "streaming",
+      "scan": null, "recording": ["audio"]}],
+    "shown": 2, "max": 4}
+   ```
+
+   | Field | Meaning |
+   | --- | --- |
+   | `radios` | The radios, in the order they were added, the first first. |
+   | `id` | The radio's number, a whole number from 1 that the engine never gives twice while it runs: a removed radio's is not given again. |
+   | `kind`, `tuner`, `status` | Its source state's. |
+   | `device` | Which receiver it reads: an `rtl_sdr` source's index or serial number, an `rtl_tcp` source's address, a `soapy` source's driver and serial number, or its device arguments until known; null for the simulated band. |
+   | `scan` | The scan that runs on it, as the scanner state's `scan`. |
+   | `recording` | The recordings that run on it: `audio`, `iq`, both or neither. |
+   | `shown` | The `id` of the radio that this interface shows. |
+   | `max` | The most radios the engine runs at once: 4. |
+
+   A receiver, by its saved settings, belongs to one radio: the simulated
+   band, the rtl_tcp server and each RTL-SDR or SoapySDR device are read
+   by one radio at most. A radio reads its receiver only while an
+   interface shows it or one of its scans, its calibration or its
+   recordings runs. Each radio's memory scan watches the ticked bookmarks
+   within its own receiver's reach.
+
+10. Then the kept scans, a JSON text message, sent again whenever they
    change: at once when a range scan starts or ends, or an interface
-   renames or deletes one, and at most every 10 s while the running one
-   finds channels, listens or ends a pass. The latest first, the running
-   one included:
+   renames or deletes one, and at most every 10 s while one that runs
+   finds channels, listens or ends a pass. The latest first, those that
+   run included, one at most for each radio:
 
    ```json
    {"type": "scans", "scans": [
@@ -522,7 +563,7 @@ preferences apart from this computer's.
    `scans.json`, written with each change sent at once, every 10 s while
    one runs and when it stops.
 
-10. Then, when the engine opens SoapySDR devices (`soapy` among the source
+11. Then, when the engine opens SoapySDR devices (`soapy` among the source
     state's `kinds`), the SoapySDR devices, a JSON text message, sent again
     whenever it changes:
 
@@ -546,13 +587,14 @@ preferences apart from this computer's.
     The engine searches only when one of this computer's interfaces asks
     (the `devices` message, below): never at start, never for a remote
     client, never without a driver, one driver at a time and one search at a
-    time, in a thread of its own. The driver of the SoapySDR device in use is
-    not searched again, so that no search disturbs the device that streams:
-    that driver's devices stay as the previous search found them. A search
+    time, in a thread of its own. The drivers of the SoapySDR devices in
+    use, on every radio, are not searched again, so that no search disturbs
+    a device that streams: those drivers' devices stay as the previous
+    search found them. A search
     opens no stream, but each module's search talks to the devices plugged
     in. The list lives in memory only.
 
-11. Then the calibration state, a JSON text message, sent again whenever
+12. Then the calibration state, a JSON text message, sent again whenever
     it changes: as the automatic calibration starts, at each station
     measured and as it ends. The calibration that runs, or the latest
     since Radiolack started, which another replaces as it starts; another
@@ -612,7 +654,7 @@ preferences apart from this computer's.
     calibration is forgotten when Radiolack stops. The proposal is applied
     as any change of the correction (`ppm`, below).
 
-12. Then, to this computer's interfaces only, the storage state, a JSON text
+13. Then, to this computer's interfaces only, the storage state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -625,7 +667,7 @@ preferences apart from this computer's.
     | `saving` | False while some changes do not reach the disk: a file could not be written, and the engine tries again at the next change, or a file is left as it is until the next start, as it cannot be read or comes from a newer Radiolack. |
     | `problem` | What went wrong with the files, in sentences for the user, or empty. A file that could not be read and was set aside shows here while `saving` stays true. |
 
-13. Then, to this computer's interfaces only, the update state, a JSON text
+14. Then, to this computer's interfaces only, the update state, a JSON text
     message, sent again whenever it changes:
 
     ```json
@@ -640,7 +682,7 @@ preferences apart from this computer's.
     | `detail` | Why, with `failed` and `unavailable`, in a sentence for the user; otherwise empty. |
     | `check_at_start` | Whether the engine checks when it starts. |
 
-14. Then, to this computer's interfaces only, remote access's state, a JSON
+15. Then, to this computer's interfaces only, remote access's state, a JSON
     text message, sent again whenever it changes:
 
     ```json
@@ -665,7 +707,7 @@ preferences apart from this computer's.
     | `fingerprint` | The SHA-256 fingerprint of the local authority's root certificate, which devices install, as upper-case hex bytes separated by spaces; null before remote access first turns on. |
     | `problem` | Why remote access could not turn on, or, while on, why it listens nowhere, in sentences for the user; or empty. |
 
-15. Binary spectrum frames, about 30 per second while the source streams.
+16. Binary spectrum frames, about 30 per second while the source streams.
     Each frame is a 40-byte little-endian header followed by one byte per FFT
     bin:
 
@@ -708,7 +750,7 @@ preferences apart from this computer's.
     the automatic one, which is NaN while the engine has no noise estimate
     (the VFO outside the span); the squelch then stays closed.
 
-16. Binary audio frames, about 30 per second, only to an interface that asked
+17. Binary audio frames, about 30 per second, only to an interface that asked
     for audio (`audio` message). Each frame is a 16-byte little-endian header
     followed by 16-bit samples:
 
@@ -756,7 +798,7 @@ preferences apart from this computer's.
     filters' delay and the squelch's look-ahead: about 40 ms in NFM, AM, SAM
     and WFM, 45 ms in USB and LSB, 60 ms in CW.
 
-17. Binary fine frames, about 10 per second, only to an interface that asked
+18. Binary fine frames, about 10 per second, only to an interface that asked
     for the fine spectrum (`fine` message): the spectrum of the VFO's
     channel before the demodulator, at a few hertz per bin. Each frame has
     the spectrum frames' 40-byte little-endian header, of another kind,
@@ -820,7 +862,7 @@ preferences apart from this computer's.
     2048 bins, each the highest of the four it groups, so that narrow lines
     stay visible.
 
-18. The observations, a JSON text message, to one interface only, when it
+19. The observations, a JSON text message, to one interface only, when it
     asks for them (`observations` message): the channels where the engine
     found signals, the latest found first.
 
@@ -852,7 +894,7 @@ preferences apart from this computer's.
     most every 10 minutes, a second after a client clears some, and when it
     stops.
 
-19. A kept scan with its channels, a JSON text message, to one interface
+20. A kept scan with its channels, a JSON text message, to one interface
     only, when it asks for it (`scans` message's `get`): the kept scan's
     fields, as in the kept scans, with its channels, by frequency, in
     place of their count.
@@ -876,7 +918,7 @@ preferences apart from this computer's.
     the ignored frequencies never, and keeps at most 1000 channels in each
     scan, the least recently found leaving first.
 
-20. The recordings, a JSON text message, to one interface only, when it
+21. The recordings, a JSON text message, to one interface only, when it
     asks for them or deleted one (`recordings` message): the latest 500
     recordings of the recordings folder, the newest first.
 
@@ -897,7 +939,7 @@ preferences apart from this computer's.
     | `free_bytes` | The space free on the folder's disk, or on its nearest folder that exists; null when it cannot be known. |
     | `problem` | Why the folder could not be read, in a sentence for the user, or empty. A folder not made yet holds no recording. |
 
-21. The RTL-SDR receivers plugged into this computer, a JSON text
+22. The RTL-SDR receivers plugged into this computer, a JSON text
     message, to one interface only, when it asks for them or chose one
     (`rtl_devices` message), from an engine whose hello's `listings` names
     `rtl_sdr`. The engine reads them from sysfs
@@ -909,20 +951,20 @@ preferences apart from this computer's.
     ```json
     {"type": "rtl_devices", "listing": "sysfs", "devices": [
       {"device": "RTLSDR1", "name": "RTL2838UHIDIR", "manufacturer": "Realtek", "drivers": ["usbfs"],
-       "shared": false, "reads_as_index": false, "in_use": true, "found": true},
+       "shared": false, "reads_as_index": false, "in_use": true, "radio": 1, "found": true},
       {"device": "59196661", "name": "NESDR SMArt v5", "manufacturer": "Nooelec", "drivers": [],
-       "shared": false, "reads_as_index": false, "in_use": false, "found": true}]}
+       "shared": false, "reads_as_index": false, "in_use": false, "radio": null, "found": true}]}
     ```
 
     | Field | Meaning |
     | --- | --- |
     | `listing` | `sysfs`, or `unavailable` where the engine cannot read sysfs (a system other than Linux): `devices` then holds the receiver in use alone, if any. |
-    | `devices` | The receivers. `device` is what opens one, its serial number, or null for a receiver without one; for the receiver in use when the list does not hold it, what it was opened by, a serial number or an index. `name` is its USB product string, or librtlsdr's name for its IDs, and `manufacturer` its USB manufacturer string, either empty when it gives none; both are empty when not found. `drivers` lists the kernel drivers bound to its interfaces: `usbfs` while a program holds it through libusb (rtl_tcp, Gqrx, or Radiolack itself for the source in use), `dvb_usb_rtl28xxu` when the kernel's DVB driver took it. `shared` is true when another receiver listed has the same serial number, and `reads_as_index` when rtl_tcp's `-d` would read `device` as an index among the receivers listed, as C's `strtol` in base 0 reads it (`00000001` with two receivers): neither can be chosen, as rtl_tcp could open another receiver. `in_use` is true for the receiver that the source in use reads: the one with its serial number, or, opened by index 0, the only receiver listed. `found` is false for the receiver in use when the list does not hold it: unplugged, or opened by an index while several are plugged in. |
+    | `devices` | The receivers. `device` is what opens one, its serial number, or null for a receiver without one; for the receiver in use when the list does not hold it, what it was opened by, a serial number or an index. `name` is its USB product string, or librtlsdr's name for its IDs, and `manufacturer` its USB manufacturer string, either empty when it gives none; both are empty when not found. `drivers` lists the kernel drivers bound to its interfaces: `usbfs` while a program holds it through libusb (rtl_tcp, Gqrx, or Radiolack itself for the source in use), `dvb_usb_rtl28xxu` when the kernel's DVB driver took it. `shared` is true when another receiver listed has the same serial number, and `reads_as_index` when rtl_tcp's `-d` would read `device` as an index among the receivers listed, as C's `strtol` in base 0 reads it (`00000001` with two receivers): neither can be chosen, as rtl_tcp could open another receiver. `in_use` is true for the receiver that the source in use reads: the one with its serial number, or, opened by index 0, the only receiver listed. `radio` is the id of the radio that reads it, the interface's own or another (its `usbfs` driver is then Radiolack's), or null. `found` is false for the receiver in use when the list does not hold it: unplugged, or opened by an index while several are plugged in. |
 
     Remote clients may ask for the list too: it names the receivers
     plugged in, as the source state names the tuner.
 
-22. A problem report, a JSON text message, to one interface of this
+23. A problem report, a JSON text message, to one interface of this
     computer only, when it asks for one (`report` message): what its user
     may share, or not, when Radiolack misbehaves (README.md, Problem
     reports).
@@ -937,7 +979,7 @@ preferences apart from this computer's.
     | `text` | The report, in plain text: Radiolack's version, Python's, aiohttp's and NumPy's, the system, the desktop window's toolkit when the window runs, what the interface told of itself, the receiver's kind, state, tuner and sample rate, how long Radiolack has run, then its latest 50 warnings and errors, in UTC, oldest first; the home folder is written `~`. |
     | `issue_url` | GitHub's page for a new issue of Radiolack, with the report as its description, under a heading for the user's own: the oldest warnings and errors left out, as many as needed to keep the address under 7000 characters. |
 
-23. A carrier's measure, a JSON text message, to one interface only, when
+24. A carrier's measure, a JSON text message, to one interface only, when
     it asks for one (`carrier` message), about two seconds later: the
     strongest line within the VFO's filter, as the receiver gives the
     channel, before the demodulator, and unblanked whether the noise
@@ -968,7 +1010,7 @@ preferences apart from this computer's.
     away stops waiting, and once none waits nothing more is measured.
     While an automatic calibration runs, a measure waits for its end.
 
-24. A driver's check, a JSON text message, to the interfaces that asked
+25. A driver's check, a JSON text message, to the interfaces that asked
     for it (`carrier` message with the action `identify`) only: which of
     the rtl-sdr driver's two computations an R820T's or R828D's PLL
     follows, or why none was named.
@@ -1003,7 +1045,7 @@ preferences apart from this computer's.
     receiver as it is back. An interface that goes away stops waiting;
     once none waits, the check stops.
 
-25. An error, to one interface only, when the engine refuses a message from
+26. An error, to one interface only, when the engine refuses a message from
     it. `command` is the message's type, or null when it is not a JSON
     object of a known type:
 
@@ -1040,7 +1082,7 @@ are:
 
 | Field | Value |
 | --- | --- |
-| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time; the `rtl_devices` message chooses another) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. `soapy` is refused, with an error that says so, until a SoapySDR device was chosen once, by the `devices` message or `--soapy` (the devices message's `chosen`), and while a search for SoapySDR devices runs. |
+| `kind` | Another kind of source, among `kinds`, alone in its message. The source in use closes, keeping its settings for when it comes back, and the engine opens the receiver used last of that kind (the first RTL-SDR plugged in, the first time; the `rtl_devices` message chooses another) with the settings saved for it, the demodulation settings included. Frames resume once the previous receiver is released. A receiver that another radio reads is refused, saying so. `soapy` is refused, with an error that says so, until a SoapySDR device was chosen once, by the `devices` message or `--soapy` (the devices message's `chosen`), and while a search for SoapySDR devices runs. |
 | `address` | For an `rtl_tcp` source: the rtl_tcp server to read, as `HOST`, `PORT` or `HOST:PORT` (an IPv6 host in brackets), the missing part being `127.0.0.1` or `1234`. Another address hangs up and connects there with the same settings; the tuner is unknown until the server answers. |
 | `centre_hz` | Centre frequency in Hz, within `range_hz`, rounded to the Hz. |
 | `sample_rate_hz` | Sample rate in Hz. rtl_tcp takes librtlsdr's two ranges: 225001 to 300000 Hz and 900001 to 3200000 Hz; a `soapy` source the rates its device offers up to 8 MS/s, and before the device is first found any rate up to 8 MS/s, which the device then brings to the nearest it offers. Below 320000 Hz, WFM's channel rate, WFM gives no channel level and no audio. |
@@ -1421,11 +1463,36 @@ invalid field, a serial number that no receiver plugged in has, or one
 that another receiver shares or that rtl_tcp would read as an index (the
 receivers' `shared` and `reads_as_index`), saying why.
 
+A `radio` message chooses the radio that this interface shows, adds a
+radio or removes one, one field at a time:
+
+```json
+{"type": "radio", "id": 2}
+{"type": "radio", "add": {"kind": "rtl_sdr", "device": "RTLSDR1"}}
+{"type": "radio", "add": {"kind": "soapy", "driver": "sdrplay", "serial": "1234"}}
+{"type": "radio", "remove": 2}
+```
+
+| Field | Value |
+| --- | --- |
+| `id` | A radio's `id`: the interface shows it from now on, and receives its states again, then its frames. Its audio and fine frames follow if the interface asked for them: the request stays with the interface. |
+| `add` | A source, among the source state's `kinds`: `{"kind": KIND}` and, for an `rtl_sdr` source, its `device`, an index or a serial number; for a `soapy` source, a device among those found, by its `driver` and `serial`, or its device arguments, `args`. A new radio reads it, starting from the settings saved for its receiver, and the interface that added it shows it. |
+| `remove` | A radio's `id`: the radio's scan and recordings stop, its receiver is released, its settings saved for when it comes back, and the interfaces that showed it show the first radio. |
+
+The engine refuses a message without a field or with more than one, an
+unknown or invalid field, an unknown radio, a fifth radio, a source that
+cannot open, a receiver that another radio reads, a SoapySDR device while
+a search runs, and removing the last radio, saying why. The radios after
+the first are saved with their sources and scanner settings, and open
+again at the next start unless sources are given (`--rtl-sdr`,
+`--rtl-tcp`, `--soapy`).
+
 A remote client may send `source`, `demod`, `bookmark`, `scanner`,
 `scans`, `observations`, `preferences`, `recording`, `recordings`, `carrier`,
-`audio`, `fine`, `devices` and `rtl_devices` messages, but neither `update` nor `remote` messages,
+`audio`, `fine`, `devices`, `rtl_devices` and `radio` messages, but neither `update` nor `remote` messages,
 nor a `source` message that names `address`, nor a `recording` message that names
-`folder`, nor a `devices` message that names `search` or `args`: the
+`folder`, nor a `devices` message that names `search` or `args`, nor a
+`radio` message that adds a device by its `args`: the
 engine refuses them with the error "only Radiolack's
 interface on the computer may change this". It may choose among the
 SoapySDR devices found, as it may switch to another kind of source. Its `preferences` are its
@@ -1877,6 +1944,13 @@ and later.
   last, as before, which may now be one chosen by its serial number. A
   newer interface reads a hello without `listings`, an older engine's, as
   one that lists none, and shows that entry alone.
+  The same day, several receivers at once (later-milestones.md, section
+  5, pull request 3), without a new version: the hello's `radios`, the
+  radios message, the `radio` message, and a kept scan running on each
+  radio. An older interface ignores them and shows the first radio, as
+  every interface does until it chooses another. A newer interface reads
+  a hello without `radios`, an older engine's, as one with a single
+  radio.
 - 5 (2026-11-10): the update state and the `update` message.
 - 4 (2026-11-09): the bookmarks, the preferences and the storage state, and
   the `bookmark` and `preferences` messages. The same day, an `rtl_tcp`

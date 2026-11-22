@@ -7,8 +7,17 @@ share: the bookmarks, the band plan, the observations, the kept scans, the
 interfaces' preferences, remote access's state, the update check, the
 search for SoapySDR devices, the recordings folder and the store. Each
 client shows one radio, which sends it its frames, its audio and its own
-states; the shared states reach every client. For now the engine has one
-radio, which every client shows.
+states; the shared states reach every client. A new client shows the
+first radio until it chooses another (docs/design/later-milestones.md,
+section 5).
+
+The engine has MAX_RADIOS radios at most, each reading a receiver of its
+own: a receiver, by its settings (``Source.settings_key``), belongs to one
+radio, so that the simulated band, an rtl_tcp server and each RTL-SDR or
+SoapySDR device read on one radio at most. Any client may add a radio from
+the sources not in use, and remove one, unless it is the last; the
+clients of a radio removed show the first. Every client receives the
+radios' list, what each reads and runs, and which radio it shows.
 
 The engine keeps the bookmarks, shared by every client like the settings,
 the band plan in use (bandplan.py), shared and saved the same way, and the
@@ -92,6 +101,9 @@ OBSERVATIONS_FIELDS = ("clear", "clear_all")
 SCANS_FIELDS = ("get", "rename", "name", "delete", "clear_all")
 SCANS_SAVE_S = 10.0     # a running scan is kept on disk and in the clients' list at most this long after a change
 RECORDING_CLOSE_S = 10.0        # a stopping engine waits this long for each recording to reach the disk
+MAX_RADIOS = 4          # radios at once, each reading a receiver of its own
+# A radio's own states, which a client receives again when it shows another radio.
+RADIO_STATES = ("source", "demod", "scanner", "peaks", "recording", "devices", "calibration")
 LOCAL_STATES = ("storage", "update", "remote")    # states only this computer's interfaces receive
 LOCAL_DEVICE_FIELDS = ("search", "args")    # SoapySDR device requests only this computer's interfaces may make
 LOCAL_RECORDING_SETTINGS = ("folder",)      # recording settings only this computer's interfaces may change
@@ -372,6 +384,17 @@ class Subscription:
             self._due.add(kind)
             self._ready.set()
 
+    def show(self, radio: Radio) -> None:
+        """Show ``radio`` from now on: the previous radio's frames, audio
+        and fine frames that wait go, and the client receives its new
+        radio's states again."""
+        self.radio = radio
+        self._frames.clear()
+        self._audio.clear()
+        self._fine.clear()
+        for kind in (*RADIO_STATES, "radios"):
+            self.changed(kind)
+
     def reply(self, message: dict[str, Any]) -> None:
         """Answer this client only, such as with the reason for a refused change."""
         self._replies.append(message)
@@ -390,15 +413,21 @@ class Subscription:
 class Engine:
     """Hold the radios and what they share, for any number of clients.
 
-    The engine's radio reads ``source``, or without one the source that
-    ``sources`` opened last, and switches between the kinds of ``sources``
-    when a client asks. It checks for updates with ``updates``; without it,
-    it never does. With ``remote``, it shares and saves remote access's
+    The engine's first radio reads ``source``, and one more radio reads
+    each of ``more_sources``, in order. Without either, the first radio
+    reads the source that ``sources`` opened last and the others reopen
+    the radios used last. Each radio switches between the kinds of
+    ``sources`` when a client asks, and a client may add a radio reading
+    any of them. The engine checks for updates with ``updates``; without
+    it, it never does. With ``remote``, it shares and saves remote access's
     state. Its radios record into ``recordings``, unless the user chose
     another folder; without it, they never do. ``frame_rate`` and
-    ``analyzer`` are the radio's (radio.py)."""
+    ``analyzer`` are the radios' (radio.py), the analyzer the first's.
+    Raises ValueError for more than MAX_RADIOS sources, or two that read
+    one receiver."""
 
-    def __init__(self, source: Source | None = None, *, sources: SourceOpener | None = None,
+    def __init__(self, source: Source | None = None, *, more_sources: Sequence[Source] = (),
+                 sources: SourceOpener | None = None,
                  store: Store | None = None, updates: UpdateChecker | None = None,
                  remote: RemoteAccess | None = None, recordings: Path | None = None,
                  frame_rate: float = FRAME_RATE, analyzer: SpectrumAnalyzer | None = None,
@@ -410,6 +439,11 @@ class Engine:
         self._queue_size = queue_size
         self._clients: set[Subscription] = set()
         self._closed = False
+        self._stopped = asyncio.Event()     # set once closed, which ends ``run``
+        self._tasks: dict[Radio, asyncio.Future] = {}  # each radio's reading, while the engine runs
+        self._frame_rate = frame_rate
+        self._next_radio = 1        # the id of the next radio added
+        self._radios_sent: list[dict[str, Any]] | None = None   # the radios' list as the clients last learnt it
         self.closing: set[asyncio.Future] = set()   # sources switched away from, until they release their receiver
         # What each client receives first, in this order, then again whenever
         # it changes: its radio's states and the shared ones; remote
@@ -423,6 +457,7 @@ class Engine:
             "peaks": lambda subscription: subscription.radio.peaks_state(),
             "preferences": lambda subscription: self.preferences_state(subscription.device),
             "recording": lambda subscription: subscription.radio.recording_state(subscription.remote),
+            "radios": lambda subscription: self.radios_state(subscription),
         }
         # The search for SoapySDR devices, with sources that open them.
         self.device_search: DeviceSearch | None = None
@@ -494,9 +529,18 @@ class Engine:
         self._chosen_recordings = _saved_recordings_folder(settings.get("recordings"))
         self.unfinished: set[Any] = set()
         self._requests: set[asyncio.Future] = set()
-        radio = Radio(self, source, saved_choice=saved_choice, saved_scanner=settings.get("scanner"),
-                      frame_rate=frame_rate, analyzer=analyzer)
-        self.radios = [radio]
+        if len(more_sources) >= MAX_RADIOS:
+            raise ValueError(f"{MAX_RADIOS} radios at most")
+        self.radios: list[Radio] = []
+        radio = self._new_radio(source, saved_choice=saved_choice, saved_scanner=settings.get("scanner"),
+                                analyzer=analyzer)
+        saved_radios = settings.get("radios")
+        if source is None and not more_sources and sources is not None and isinstance(saved_radios, list):
+            self._reopen_radios(sources, saved_radios)
+        for more in more_sources:
+            self.check_free(more)
+            self._new_radio(more, saved_scanner=_saved_scanner(saved_radios, more.reopen))
+        self._radios_sent = [radio.summary() for radio in self.radios]
         self._preferences = saved_preferences(settings.get("interface")) or {}     # this computer's
         # Updates: whether to check at start, what the latest check found, and the check running.
         self._updates = updates
@@ -511,19 +555,20 @@ class Engine:
             default_choice = {"kind": self.sources.kinds[0]} if self.sources is not None else None
             if (_given_differ(radio.state(), saved_source, radio.source.given)
                     or self.sources is not None
-                    and (saved_choice if saved_choice is not None else default_choice) != radio.source.reopen):
+                    and (saved_choice if saved_choice is not None else default_choice) != radio.source.reopen
+                    or self._saved[SETTINGS_FILE].get("radios") != saved_radios):
                 del self._saved[SETTINGS_FILE]
             self._store = store
 
     def subscribe(self, device: str | None = None) -> Subscription:
-        """The messages for a new client, which shows the engine's radio:
+        """The messages for a new client, which shows the first radio:
         starting with the source state, the demodulation settings, the
         bookmarks, the scanner state, the signals found, the preferences,
-        the recording state and, with sources that open SoapySDR devices,
-        the devices state, the kept scans and the calibration state, then,
-        unless it is a paired ``device`` that remote access serves, named by
-        its id, the storage state, the update state and remote access's
-        state."""
+        the recording state, the radios' list and, with sources that open
+        SoapySDR devices, the devices state, the kept scans and the
+        calibration state, then, unless it is a paired ``device`` that
+        remote access serves, named by its id, the storage state, the update
+        state and remote access's state."""
         states = {kind: describe for kind, describe in self._states.items()
                   if device is None or kind not in LOCAL_STATES}
         subscription = Subscription(states, self._queue_size, device=device)
@@ -546,6 +591,104 @@ class Engine:
         """Whether the engine lists the RTL-SDR receivers plugged in (the
         hello's ``listings``)."""
         return self.rtl_listing is not None
+
+    def radios_state(self, subscription: Subscription | None = None) -> dict[str, Any]:
+        """The radios message (docs/design/protocol.md): each radio, what it
+        reads and runs, and which one ``subscription`` shows."""
+        shown = None if subscription is None or subscription.radio is None else subscription.radio.id
+        return {"type": "radios", "radios": [radio.summary() for radio in self.radios], "shown": shown,
+                "max": MAX_RADIOS}
+
+    def radios_changed(self) -> None:
+        """What a radio reads or runs may have changed: every client
+        receives the radios' list again, if it changed."""
+        radios = [radio.summary() for radio in self.radios]
+        if radios == self._radios_sent:
+            return
+        self._radios_sent = radios
+        for subscription in self._clients:
+            subscription.changed("radios")
+
+    def configure_radios(self, changes: Mapping[str, object], subscription: Subscription) -> None:
+        """Answer a client's radio message, which asks for one thing: show
+        the radio whose ``id`` it gives, ``add`` a radio reading the source
+        that it describes, which the client then shows, or ``remove`` the
+        radio whose id it gives. Raises ValueError, changing nothing, when
+        refused. Only this computer's interfaces may give a SoapySDR
+        device's arguments (server.py)."""
+        if len(changes) != 1:
+            raise ValueError("a radio message asks for one thing: id, add or remove")
+        name, value = next(iter(changes.items()))
+        if name == "id":
+            self._show(subscription, self._radio(value))
+        elif name == "add":
+            self._show(subscription, self.add_radio(value))
+        elif name == "remove":
+            self.remove_radio(self._radio(value))
+        else:
+            raise ValueError(f"unknown radio field: {str(name)[:40]}")
+
+    def add_radio(self, described: object) -> Radio:
+        """A new radio, reading the source that ``described`` gives as
+        ``sources.open`` takes it, such as {"kind": "rtl_sdr", "device":
+        "1"}, or for a SoapySDR device among those found, its ``driver``
+        and ``serial``. It starts from the settings saved for its receiver.
+        Raises ValueError, adding none, for MAX_RADIOS radios, a source
+        that cannot open, or a receiver that another radio reads."""
+        if self._closed:
+            raise ValueError("Radiolack is stopping")
+        if self.sources is None:
+            raise ValueError("this Radiolack reads one receiver")
+        if len(self.radios) >= MAX_RADIOS:
+            raise ValueError(f"{MAX_RADIOS} radios at most: remove one first")
+        if not isinstance(described, dict) or not isinstance(described.get("kind"), str):
+            raise ValueError("add describes a source, starting with its kind")
+        if described["kind"] not in self.sources.kinds:
+            raise ValueError(f"unknown kind of source: {described['kind'][:40]!r}")
+        if described["kind"] == "soapy":
+            self.check_no_search()
+            described = self._soapy_found(described)
+        source = self.sources.open(described)
+        try:
+            self.check_free(source)
+        except ValueError:
+            source.close()      # it never read: nothing to release
+            raise
+        radio = self._new_radio(source)
+        self.reopen[source.kind] = source.reopen
+        log.info("radio %d added", radio.id)
+        self.radios_changed()
+        self.settings_changed()
+        return radio
+
+    def remove_radio(self, radio: Radio) -> None:
+        """Remove ``radio``, unless it is the last: its scan and its
+        recordings stop and its receiver is released, its settings saved
+        for when it comes back; its clients show the first radio."""
+        if len(self.radios) == 1:
+            raise ValueError("the last radio cannot be removed")
+        self.receivers[radio.source.settings_key] = radio.receiver_settings()
+        self.radios.remove(radio)
+        for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
+            self._show(subscription, self.radios[0])
+        if radio.end_kept_scan("closed"):
+            self.scans_changed(soon=True)
+        radio.close()
+        self.closing.add(asyncio.ensure_future(radio.wait_closed()))
+        task = self._tasks.pop(radio, None)
+        if task is not None:
+            task.cancel()
+        log.info("radio %d removed", radio.id)
+        self.radios_changed()
+        self.settings_changed()
+
+    def check_free(self, source: Source, radio: Radio | None = None) -> None:
+        """Raises ValueError when a radio other than ``radio`` reads the
+        receiver that ``source`` would read."""
+        for other in self.radios:
+            if other is not radio and (other.source.settings_key == source.settings_key
+                                       or other.source.reopen == source.reopen):
+                raise ValueError(f"radio {other.id} reads this receiver already")
 
     def bookmarks_state(self) -> dict[str, Any]:
         """The bookmarks message (docs/design/protocol.md)."""
@@ -768,6 +911,7 @@ class Engine:
         for radio in self.radios:
             radio.close()
         self._closed = True
+        self._stopped.set()
         for subscription in self._clients:
             subscription.end()
         self._clients.clear()
@@ -809,16 +953,26 @@ class Engine:
         if self._saver is not None:
             await asyncio.gather(self._saver, return_exceptions=True)
         self._observations_due = True
-        self.kept.end(time.time(), "closed")
+        self.kept.end_all(time.time(), "closed")
         self._scans_due = True
         await self._save()      # also what a failed write left unsaved, the observations and the kept scans
 
     async def run(self) -> None:
-        """Run the radios until closed or cancelled, having started the
-        update check unless it is turned off at start or cannot run."""
+        """Run the radios, those added meanwhile too, until closed or
+        cancelled, having started the update check unless it is turned off
+        at start or cannot run."""
         if self._check_at_start and self._update.status != "unavailable":
             self.check_updates()
-        await asyncio.gather(*(radio.run() for radio in self.radios))
+        for radio in self.radios:
+            self._tasks[radio] = asyncio.ensure_future(radio.run())
+        try:
+            await self._stopped.wait()
+        finally:
+            tasks = list(self._tasks.values())
+            self._tasks.clear()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def settings_changed(self) -> None:
         """Save soon. ``wait_closed`` saves what changes after ``close``."""
@@ -905,6 +1059,67 @@ class Engine:
             subscription.changed("remote")
         self.settings_changed()
 
+    def _new_radio(self, source: Source | None, *, saved_choice: object = None, saved_scanner: object = None,
+                   analyzer: SpectrumAnalyzer | None = None) -> Radio:
+        """A new radio reading ``source``, which runs at once if the engine
+        does."""
+        radio = Radio(self, source, radio_id=self._next_radio, saved_choice=saved_choice,
+                      saved_scanner=saved_scanner, frame_rate=self._frame_rate, analyzer=analyzer)
+        self._next_radio += 1
+        self.radios.append(radio)
+        if self._tasks or (self.radios and self.radios[0] in self._tasks):
+            self._tasks[radio] = asyncio.ensure_future(radio.run())
+        return radio
+
+    def _reopen_radios(self, sources: SourceOpener, saved: list[object]) -> None:
+        """Reopen the radios used last after the first, as saved, leaving
+        out those that cannot open or read a receiver that another reads."""
+        for entry in saved:
+            if len(self.radios) >= MAX_RADIOS:
+                log.warning("only %d saved radios are used", MAX_RADIOS)
+                return
+            if not isinstance(entry, dict):
+                log.warning("a saved radio is not used: it is not described")
+                continue
+            try:
+                source = sources.open(entry.get("source") if isinstance(entry.get("source"), dict) else {})
+                self.check_free(source)
+            except ValueError as error:
+                log.warning("a saved radio is not used: %s", error)
+                continue
+            self._new_radio(source, saved_scanner=entry.get("scanner"))
+
+    def _radio(self, radio_id: object) -> Radio:
+        if isinstance(radio_id, bool) or not isinstance(radio_id, int):
+            raise ValueError("a radio's id must be a whole number")
+        for radio in self.radios:
+            if radio.id == radio_id:
+                return radio
+        raise ValueError("no such radio: it may have been removed")
+
+    def _show(self, subscription: Subscription, radio: Radio) -> None:
+        """``subscription`` shows ``radio`` from now on."""
+        old = subscription.radio
+        if old is radio or self._closed:
+            return
+        if old is not None:
+            old.detach(subscription)
+        subscription.show(radio)
+        radio.attach(subscription)
+
+    def _soapy_found(self, described: Mapping[str, object]) -> dict[str, Any]:
+        """A SoapySDR device to add, as ``sources.open`` takes it: by its
+        device arguments, or among those found by its driver and serial."""
+        if set(described) == {"kind", "args"}:
+            return dict(described)
+        if set(described) != {"kind", "driver", "serial"}:
+            raise ValueError("a SoapySDR device to add is one found, by its driver and serial, or its arguments")
+        search = self.device_search
+        found = None if search is None else search.find(described["driver"], described["serial"])
+        if found is None:
+            raise ValueError("this device is not among those found: search again")
+        return {"kind": "soapy", "args": found.args}
+
     def _follow_devices(self) -> None:
         """The search's state changed: each radio's clients learn it."""
         for radio in self.radios:
@@ -988,8 +1203,8 @@ class Engine:
         try:
             if self.closing:
                 await asyncio.wait(set(self.closing))       # a device still closing is not searched
-            in_use = self.radios[0].soapy_in_use()
-            await search.run(in_use.driver if in_use is not None else None)
+            await search.run({device.driver for radio in self.radios
+                              if (device := radio.soapy_in_use()) is not None})
         except asyncio.CancelledError:
             pass        # the engine stops
         except Exception:
@@ -1000,11 +1215,15 @@ class Engine:
         """What the settings, bookmarks and remote access files hold, as
         things stand, with ``observations`` the observations file and with
         ``scans`` the kept scans' file: with
-        sources to open, which source opens at the next start."""
+        sources to open, which sources open at the next start."""
         radio = self.radios[0]
         settings: dict[str, Any] = {} if self.sources is None else {"source": radio.source.reopen}
         settings["receivers"] = {**self.receivers, radio.source.settings_key: radio.receiver_settings()}
         settings["scanner"] = radio.scanner_settings()
+        if self.sources is not None and len(self.radios) > 1:
+            # The radios after the first, which an older Radiolack leaves out.
+            settings["radios"] = [{"source": other.source.reopen, "scanner": other.scanner_settings()}
+                                  for other in self.radios[1:]]
         settings["band_plan"] = self._band_plan
         settings["interface"] = dict(self._preferences)
         settings["updates"] = {"check_at_start": self._check_at_start}
@@ -1068,6 +1287,15 @@ def _given_differ(state: Mapping[str, Any], saved: object, given: frozenset[str]
     """Whether a setting the source was given differs from the saved one."""
     saved_values = saved if isinstance(saved, dict) else {}
     return any(name in state["settable"] and saved_values.get(name) != state[name] for name in given)
+
+
+def _saved_scanner(saved_radios: object, reopen: Mapping[str, Any]) -> object:
+    """The scanner settings saved for the radio that read the receiver
+    that ``reopen`` opens, if any."""
+    for entry in saved_radios if isinstance(saved_radios, list) else ():
+        if isinstance(entry, dict) and entry.get("source") == reopen:
+            return entry.get("scanner")
+    return None
 
 
 def _saved_recordings_folder(saved: object) -> Path | None:

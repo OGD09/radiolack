@@ -11,8 +11,9 @@ the squelch stayed open there. Never audio or samples. Detections within
 MERGE_HZ of a channel count for it.
 
 At most MAX_SCANS are kept, the oldest leaving first, and MAX_CHANNELS in
-each, the least recently found leaving first. One scan at a time runs: its
-``end_s`` and ``ended`` are None until it ends. A scan saved while it ran,
+each, the least recently found leaving first, never a scan that runs. A
+scan runs on one radio, and each radio runs one at a time: its ``end_s``
+and ``ended`` are None until it ends. A scan saved while it ran,
 before a power cut for instance, is read back as ``interrupted`` at its
 latest finding.
 """
@@ -126,36 +127,37 @@ class KeptScans:
         return len(self._scans)
 
     @property
-    def running(self) -> KeptScan | None:
-        """The scan that runs, if any: the latest, while it has not ended."""
-        latest = self._scans[-1] if self._scans else None
-        return latest if latest is not None and latest.ended is None else None
+    def running(self) -> tuple[KeptScan, ...]:
+        """The scans that run, one at most on each radio: those that have
+        not ended."""
+        return tuple(scan for scan in self._scans if scan.ended is None)
 
     def start(self, name: str | None, now: float, low_hz: float, high_hz: float, listen: bool,
               passes_set: int | None) -> KeptScan:
-        """Keep a new scan, which runs from ``now``; the oldest leaves when
-        MAX_SCANS are kept. One that still runs ends first, as stopped."""
-        if self.running is not None:
-            self.end(now, "stopped")
+        """Keep a new scan, which runs from ``now``, until ``end``; the
+        oldest that does not run leaves when MAX_SCANS are kept."""
         scan_id = max((scan.id for scan in self._scans), default=0) + 1
         if scan_id > _MAX_ID:     # never in practice: ids start again above the ones kept
             scan_id = 1
         scan = KeptScan(scan_id, name or default_name(low_hz, high_hz, now), now, None, low_hz, high_hz, listen,
                         passes_set, 0, None)
         self._scans.append(scan)
-        del self._scans[:-MAX_SCANS]
+        ended = [kept for kept in self._scans if kept.ended is not None]
+        for kept in ended[:max(0, len(self._scans) - MAX_SCANS)]:
+            self._scans.remove(kept)
         return scan
 
-    def record(self, found: Iterable[tuple[int, float]], now: float) -> bool:
-        """Record, for the scan that runs, the channels found in one search,
-        each as its frequency and margin. Returns whether any was recorded."""
-        scan = self.running
-        if scan is None:
+    @staticmethod
+    def record(scan: KeptScan | None, found: Iterable[tuple[int, float]], now: float) -> bool:
+        """Record, for ``scan`` while it runs, the channels found in one
+        search, each as its frequency and margin. Returns whether any was
+        recorded."""
+        if scan is None or scan.ended is not None:
             return False
         recorded = False
         for frequency_hz, margin_db in found:
             recorded = True
-            channel = self._nearest(scan, frequency_hz)
+            channel = KeptScans._nearest(scan, frequency_hz)
             if channel is None:
                 bisect.insort(scan.channels, KeptChannel(frequency_hz, now, now, 1, margin_db, 0.0),
                               key=lambda kept: kept.frequency_hz)
@@ -169,31 +171,39 @@ class KeptScans:
             scan.channels = sorted(latest, key=lambda kept: kept.frequency_hz)
         return recorded
 
-    def listened(self, frequency_hz: float, seconds: float) -> None:
-        """Add ``seconds`` of open squelch on the scan's channel at
-        ``frequency_hz``, as the lists show it, once found."""
-        scan = self.running
-        channel = None if scan is None else self._nearest(scan, frequency_hz)
+    @staticmethod
+    def listened(scan: KeptScan | None, frequency_hz: float, seconds: float) -> None:
+        """Add ``seconds`` of open squelch on ``scan``'s channel at
+        ``frequency_hz``, as the lists show it, once found, while it runs."""
+        if scan is None or scan.ended is not None:
+            return
+        channel = KeptScans._nearest(scan, frequency_hz)
         if channel is not None and seconds > 0:
             channel.open_s += seconds
 
-    def progress(self, passes: int) -> bool:
-        """The passes the scan that runs has done. Returns whether they changed."""
-        scan = self.running
-        if scan is None or scan.passes == passes:
+    @staticmethod
+    def progress(scan: KeptScan | None, passes: int) -> bool:
+        """The passes ``scan`` has done while it runs. Returns whether they
+        changed."""
+        if scan is None or scan.ended is not None or scan.passes == passes:
             return False
         scan.passes = passes
         return True
 
-    def end(self, now: float, ended: str) -> bool:
-        """End the scan that runs at ``now``, for ``ended`` (ENDINGS).
-        Returns whether one ran."""
-        scan = self.running
-        if scan is None:
+    @staticmethod
+    def end(scan: KeptScan | None, now: float, ended: str) -> bool:
+        """End ``scan`` at ``now``, for ``ended`` (ENDINGS). Returns whether
+        it ran."""
+        if scan is None or scan.ended is not None:
             return False
         scan.end_s = max(now, scan.start_s)
         scan.ended = ended
         return True
+
+    def end_all(self, now: float, ended: str) -> bool:
+        """End every scan that runs, as Radiolack stops. Returns whether any
+        ran."""
+        return any([self.end(scan, now, ended) for scan in self.running])
 
     def rename(self, scan_id: object, name: object) -> None:
         """Rename a kept scan, the running one included. Raises ValueError
@@ -205,25 +215,24 @@ class KeptScans:
         scan.name = checked
 
     def delete(self, scan_id: object) -> None:
-        """Forget a kept scan. Raises ValueError for an unknown scan, or the
-        one that runs."""
+        """Forget a kept scan. Raises ValueError for an unknown scan, or one
+        that runs."""
         scan = self._find(scan_id)
-        if scan is self.running:
+        if scan.ended is None:
             raise ValueError("the scan that runs cannot be deleted: stop it first")
         self._scans.remove(scan)
 
     def clear_all(self) -> bool:
-        """Forget every kept scan but the one that runs. Returns whether
-        there were any."""
-        running = self.running
-        kept = [] if running is None else [running]
+        """Forget every kept scan but those that run. Returns whether there
+        were any."""
+        kept = list(self.running)
         cleared = len(self._scans) > len(kept)
         self._scans = kept
         return cleared
 
     def summaries(self) -> list[dict[str, Any]]:
         """The kept scans as the list shows them: the latest first, the one
-        that runs among them."""
+        that run among them."""
         return [scan.summary() for scan in reversed(self._scans)]
 
     def channels(self, scan_id: object) -> dict[str, Any]:

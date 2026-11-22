@@ -216,11 +216,19 @@ stops Radiolack.
 | `--port PORT` | Listens on this port instead of any free one. |
 | `--remote [PORT]` | Turns remote access on at start, on PORT (default: the port used last, 8443 the first time), and prints the addresses that devices open, the certificate's fingerprint and the access code: see [Without a window](#without-a-window). |
 | `--scan memory`, `--scan sweep`, `--scan signals` | Starts a scan at start without waiting for an interface: the memory scan, the range scan with its saved settings (`sweep`), or the range scan over the current window, stopping to listen (`signals`): see [Without a window](#without-a-window). When it cannot start, Radiolack says why and runs on without it. |
-| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, or a SoapySDR device's own, once it opens) for the receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device without antenna power ignore it, which Radiolack says. |
-| `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the source used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
-| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the source used last. The Receiver menu can change the address. Not with `--rtl-sdr`. |
-| `--soapy ARGS` | Reads a receiver through SoapySDR instead of the source used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). Not with `--rtl-sdr` or `--rtl-tcp`. |
+| `--bias-tee` | Turns the antenna power on at start (4.5 V on the antenna socket of an RTL-SDR Blog V3 or V4, or a SoapySDR device's own, once it opens) for the first receiver given or reopened: see [Antenna power](#antenna-power). Off without it; never saved. The simulated band and a SoapySDR device without antenna power ignore it, which Radiolack says. |
+| `--rtl-sdr [DEVICE]` | Reads the RTL-SDR receiver plugged into this computer instead of the sources used last, through an rtl_tcp that Radiolack runs. DEVICE is the receiver's index or serial number (default 0, the first one): see [RTL-SDR receivers](#rtl-sdr-receivers). |
+| `--rtl-tcp [ADDRESS]` | Reads an RTL-SDR receiver through an rtl_tcp server you run, at ADDRESS (default: the address used last, 127.0.0.1:1234 the first time), instead of the sources used last. The Receiver menu can change the address. One rtl_tcp server at a time. |
+| `--soapy ARGS` | Reads a receiver through SoapySDR instead of the sources used last, by its device arguments, which must name a driver, such as `driver=sdrplay`: see [SoapySDR receivers](#soapysdr-receivers). |
 | `--version` | Prints the version. |
+
+`--rtl-sdr`, `--rtl-tcp` and `--soapy` may come together, and `--rtl-sdr`
+and `--soapy` more than once, up to four receivers: each receiver given
+gets a radio of its own, in the order given, with its own spectrum, VFO,
+scans and recordings, and `--scan` and `--bias-tee` apply to the first.
+Without them, Radiolack opens the radios used last. An interface shows the
+first radio for now; the bookmarks and the History are common to the
+radios.
 
 Without a desktop window, stop Radiolack with Ctrl+C.
 
@@ -885,7 +893,7 @@ radiolack --soapy driver=sdrplay
   by its arguments, typed in the field as `--soapy` takes them, such as
   `driver=rtlsdr`, which Radiolack checks as `--soapy` does, saying why it
   refuses them. The list shows the device in use first, whether a search
-  found it or not; a search leaves the driver of the device in use alone,
+  found it or not; a search leaves the drivers of the devices in use alone,
   so as not to disturb it, and no receiver opens while a search runs.
   Radiolack never searches at start, nor while no interface of this
   computer asks; a search opens no receiver's stream, but each driver's
