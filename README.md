@@ -911,9 +911,11 @@ The check is not made, and the calibration goes on with the driver set,
 while a scan runs or an I/Q recording is made, in direct sampling, on
 other tuners, where Radiolack does not place the tuner on its grid, or
 with the VFO within 3 kHz of the centre frequency or near the span's edge:
-the dialog says why. It names no driver when the carrier fades or moves
-during the check, or follows neither computation within 5 Hz; the driver
-set stays. An audio recording goes on through it, as through any change of
+the dialog says why. A measure spoilt at a point, by a burst of voice on
+an AM carrier or samples lost for a computer behind, is made again, for up
+to 6 s a point. It names no driver when the carrier fades or moves during
+the check, or follows neither computation within 5 Hz; the driver set
+stays. An audio recording goes on through it, as through any change of
 the centre frequency, and while the tuner is off its grid what it hears
 may sit off by the tuner's own error there, under 200 Hz at 2 m.
 

@@ -1203,8 +1203,14 @@ class Radio:
         """The carrier measured at ``measured_hz`` on the air, None when it
         was not, at the point of the driver's check that ``check`` waited
         for, from samples labelled ``label_hz``: the receiver goes to the
-        next point, or the check ends."""
+        next point, or the check ends. A measure that failed starts again
+        until the point's CHECK_POINT_TIMEOUT_S runs out: a voice's burst
+        on an AM carrier, or samples lost for an engine behind, spoil a
+        second without the carrier leaving."""
         if measured_hz is None:
+            if time.monotonic() - check.began < CHECK_POINT_TIMEOUT_S:
+                check.gatherer = CarrierMeasure()
+                return
             self._end_driver_check(LOST)
             return
         conversion = _conversion(self.source.describe())
