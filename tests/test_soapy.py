@@ -1126,7 +1126,8 @@ class IQRecordingTest(EngineCase):
                 self.assertLogs("radiolack", logging.WARNING) as logs:
             state = await next_recording(subscription, lambda state: state["iq"] is None)
         self.assertEqual(state["stopped"], {"kind": "iq", "reason": "space", "detail": ""})
-        self.assertIn("less than 2 GiB is free on its disk", logs.output[0])
+        # Among the warnings: a slow runner may log late blocks first.
+        self.assertTrue(any("less than 2 GiB is free on its disk" in line for line in logs.output), logs.output)
         await self.stops[engine]()
         _, segments = self.recorded(iq["file"], 8)
         self.assertGreaterEqual(sum(map(len, segments)), iq["bytes"] // 2)
