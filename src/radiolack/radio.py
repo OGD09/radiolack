@@ -1767,6 +1767,9 @@ class Radio:
         set are done, it stops."""
         now = time.monotonic()
         signals = self._span_signals(label, now)
+        if not self._sweep_here:    # a window reaches past the range: only the range's signals are listened to
+            signals = {channel: signal for channel, signal in signals.items()
+                       if self._sweep_low_hz <= signal[0] <= self._sweep_high_hz}
         listening = sweep.listening
         before = (sweep.window, sweep.passes, None if listening is None else (listening.state, listening.frequency_hz))
         target, channel = None, None

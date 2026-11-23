@@ -2651,6 +2651,21 @@ class ListeningSweepTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(next_scanner(subscription, until=scanning("listening", channel)), 10)
         self.assertEqual(engine.radios[0].scanner_state()["sweep"]["window"], 0)
 
+    async def test_it_listens_only_to_the_signals_within_its_range(self):
+        # The window reaches past the range, to CHANNEL_B_HZ, which the
+        # detection finds but the scan never listens to.
+        engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.1}))
+        subscription = engine.subscribe()
+        engine.radios[0].configure_scanner({"sweep_low_hz": FAKE_CENTRE_HZ - 30_000, "sweep_high_hz": FAKE_CENTRE_HZ + 90_000,
+                                  "sweep_window_s": 0.25, "sweep_listen": True, "listen_s": 2})
+        engine.radios[0].configure_scanner({"scan": "sweep"})
+        heard = []
+        while len(heard) < 3:
+            state = await asyncio.wait_for(next_scanner(subscription, until=scanning("listening")), 10)
+            heard.append(state["signals"]["frequency_hz"])
+        self.assertEqual(heard, [CHANNEL_A_HZ] * 3)
+        self.assertIn(CHANNEL_B_HZ, [peak["channel_hz"] for peak in engine.radios[0].peaks_state()["peaks"]])
+
     async def test_detection_turned_off_stops_it_and_an_ignored_signal_is_left(self):
         engine = self.engine(TonesSource({37_500: 0.1, -62_500: 0.03}))
         subscription = engine.subscribe()

@@ -24,8 +24,9 @@ documentation and tests.
 
 - **One scan for a range, listening as a switch.** The range scan replaces
   the sweep and the signals scan. "Stop to listen" off, it is the sweep of
-  today; on, it listens to each signal it finds, as the signals scan does,
-  window after window. A range within the receiver's span, which the
+  today; on, it listens to each signal it finds within the range, as the
+  signals scan does, window after window (a window reaching past the
+  range's ends leaves the signals there, as the kept scan does). A range within the receiver's span, which the
   "Current window" button gives, never tunes the receiver: the signals
   scan of today.
 - **Passes: a number, or endless.** From 1 to 99, or endless until
