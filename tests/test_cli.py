@@ -198,10 +198,15 @@ class RemoteOptionTest(unittest.TestCase):
         self.addCleanup(addresses.stop)
 
     def test_turns_remote_access_on_and_prints_what_a_device_needs(self):
-        port = ephemeral_port()
-        with own_settings():
-            runs = [run_main("--ui", "none", "--remote", str(port)),
-                    run_main("--ui", "none", "--remote")]      # the port used last
+        # An ephemeral port is free when chosen, not held: another socket, such as the local server's own on any
+        # free port, may take it before remote access listens there. Another port then, three tries at most.
+        for _ in range(3):
+            port = ephemeral_port()
+            with own_settings():
+                runs = [run_main("--ui", "none", "--remote", str(port)),
+                        run_main("--ui", "none", "--remote")]      # the port used last
+            if not any(f"Port {port} is in use by another program" in err for _, _, err in runs):
+                break
         kept = []
         for code, out, err in runs:
             self.assertEqual((code, err), (0, ""))
