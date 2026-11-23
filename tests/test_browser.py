@@ -3323,9 +3323,11 @@ class BrowserTest(unittest.TestCase):
                     expect(bar).to_have_attribute("title", title)
                     page.mouse.down()
                     page.mouse.up()
-                    edges = self.view_edges(page)     # a margin on each side, within the plan's end
-                    self.assertAlmostEqual(edges[0], low, delta=0.01)
-                    self.assertAlmostEqual(edges[1], high, delta=0.01)
+                    # A margin on each side, within the plan's end. The readout lies a pixel inside each
+                    # edge: a pixel of the 3 cm view is about 0.45 MHz.
+                    edges, pixel = self.view_edges(page), (high - low) / page.locator("#specwrap").bounding_box()["width"]
+                    self.assertAlmostEqual(edges[0], low, delta=max(0.01, 1.5 * pixel))
+                    self.assertAlmostEqual(edges[1], high, delta=max(0.01, 1.5 * pixel))
                 # From 3 cm to FM broadcast, through the bands between: the view frames FM broadcast.
                 page.mouse.move(*self.overview_point(page, 10.25e9))
                 page.mouse.down()
