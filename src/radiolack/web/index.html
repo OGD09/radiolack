@@ -20,6 +20,7 @@
     <canvas id="spec" aria-hidden="true"></canvas><canvas id="spec-axis" aria-hidden="true"></canvas><canvas id="spec-db" aria-hidden="true"></canvas>
     <div id="marks"></div>
   </div>
+  <div id="overview" hidden><canvas id="overviewc" aria-hidden="true"></canvas></div>
   <div id="band"><canvas id="bandc" aria-hidden="true"></canvas></div>
   <div id="wfwrap" class="area"><canvas id="wf" aria-hidden="true"></canvas><div id="wf-stamps" aria-hidden="true"></div>
     <div id="wf-scale" role="slider" tabindex="0" aria-label="Time the waterfall shows" aria-orientation="vertical" aria-valuemin="10" aria-valuemax="1200"
@@ -385,6 +386,7 @@
           <p class="note">The waterfall keeps levels, not colours: palette, contrast and zoom recolour its whole history.</p>
           <h3>On the spectrum</h3>
           <label class="check"><input id="ov-plan" type="checkbox"> Band plan</label>
+          <label class="check"><input id="ov-overview" type="checkbox"> Overview bar</label>
           <label class="check"><input id="ov-marks" type="checkbox"> Bookmarks</label>
           <label class="check"><input id="ov-channels" type="checkbox"> Channels and known frequencies</label>
         </div>

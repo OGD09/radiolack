@@ -1654,3 +1654,31 @@ From any view, one click on the bar frames the 40 m band, and another the
 
 Nothing below 1 kHz shows on the bar; the view itself still starts at
 0 Hz.
+
+### Where the milestone stands
+
+On 2026-11-23, the pull request is built. `overview.js` holds the scale,
+the band under a point, the tooltip and what the bar draws, and
+`tests/test_overview.py` checks them in Node; `main.js` draws the bar on a
+canvas of its own, in a grid row between the spectrum and the band strip,
+again only when the reach, the span, the view, the VFO or the bar's size
+changes. The details the design left open:
+
+- The bands are drawn at 30% of their colour outside the reach and 90%
+  within, the span as a light box, 2 CSS px wide at least, the view as a
+  bracket, 5 CSS px wide at least, and the VFO as a line in its blue; the
+  ticks mark the decades inside the bar, 10 kHz to 10 GHz with the plans
+  so far, along its lower half.
+- A band is framed as the band strip frames it, with 8% of its width on
+  each side, within the view's limits, but a second click frames it again
+  rather than the span: a drag that comes back to a band frames it again.
+  The press frames the band under it at once, and the drag each new band
+  under the pointer; the release ends the drag.
+- The bar lies over the VFO's and the span's lines, which belong to the
+  linear views.
+- Display > "Overview bar" is greyed out while "Band plan" is off; the bar
+  also hides while no plan is loaded.
+- Narrow bands stay narrow: on a bar 1280 px wide, 40 m takes about 2 px.
+  The tooltip, or a drag, finds them; on a touch screen the drag does.
+  The bar takes no keyboard focus, as the band strip takes none: the
+  Bookmarks menu's band plan list frames a band from the keyboard.

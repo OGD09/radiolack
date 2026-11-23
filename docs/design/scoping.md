@@ -573,6 +573,10 @@ frames the band that a click picks.
 Done when one click on the bar frames the 40 m band, and another the 3 cm
 band.
 
+Built on 2026-11-23, one pull request, waiting for the owner's check
+([`later-milestones.md`](later-milestones.md), section 7, Where the
+milestone stands).
+
 ### Later milestones
 
 - v4, public release: Windows and macOS builds and installers, code signing,

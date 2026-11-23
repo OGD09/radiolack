@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import shutil
@@ -3291,6 +3292,63 @@ class BrowserTest(unittest.TestCase):
         box = page.locator("#band").bounding_box()
         page.mouse.move(box["x"] + 1 + (box["width"] - 2) * fraction, box["y"] + box["height"] / 2)
         return page.locator("#band").get_attribute("title")
+
+    @staticmethod
+    def overview_point(page: Page, frequency_hz: float) -> tuple[float, float]:
+        """The middle of the overview bar's height over ``frequency_hz``, to
+        the nearest whole px, which every browser's pointer events give as
+        it is: the bar spans the band plan from 1 kHz to its end, 10.5 GHz,
+        on a logarithmic scale, where 40 m is 2 px wide."""
+        box = page.locator("#overview").bounding_box()
+        share = (math.log10(frequency_hz) - 3) / (math.log10(10.5e9) - 3)
+        return round(box["x"] + box["width"] * share), round(box["y"] + box["height"] / 2)
+
+    def test_the_overview_bar_frames_a_band_from_any_view(self):
+        # The bar above the band strip shows the whole band plan: a click
+        # frames the band under it, whatever the view, and a drag each band
+        # it passes, the last one framed when it ends; its tooltip names the
+        # band and its edges. Display hides it, and so does the band plan.
+        url = self.serve()      # the simulated band, 2.4 MHz around 145 MHz
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#status")).to_contain_text(FRAME_RATE)
+                page.keyboard.press("Escape")       # the Receivers menu lies over the views
+                bar = page.locator("#overview")
+                expect(bar).to_be_visible()
+                self.assertEqual(bar.bounding_box()["height"], 10)        # with a mouse
+                for frequency_hz, title, (low, high) in (
+                        (math.sqrt(7e6 * 7.2e6), f"40 m amateur {DOT} 7.000\N{EN DASH}7.200 MHz", (6.984, 7.216)),
+                        (10.25e9, f"3 cm amateur {DOT} 10000.000\N{EN DASH}10500.000 MHz", (9920, 10500))):
+                    page.mouse.move(*self.overview_point(page, frequency_hz))
+                    expect(bar).to_have_attribute("title", title)
+                    page.mouse.down()
+                    page.mouse.up()
+                    # A margin on each side, within the plan's end. The readout lies a pixel inside each
+                    # edge: a pixel of the 3 cm view is about 0.45 MHz.
+                    edges, pixel = self.view_edges(page), (high - low) / page.locator("#specwrap").bounding_box()["width"]
+                    self.assertAlmostEqual(edges[0], low, delta=max(0.01, 1.5 * pixel))
+                    self.assertAlmostEqual(edges[1], high, delta=max(0.01, 1.5 * pixel))
+                # From 3 cm to FM broadcast, through the bands between: the view frames FM broadcast.
+                page.mouse.move(*self.overview_point(page, 10.25e9))
+                page.mouse.down()
+                page.mouse.move(*self.overview_point(page, 97e6), steps=8)
+                page.mouse.up()
+                low, high = self.view_edges(page)
+                self.assertAlmostEqual(low, 85.86, delta=0.02)
+                self.assertAlmostEqual(high, 109.64, delta=0.02)
+                self.open_menu(page, "display")
+                choice, band_plan = page.locator("#ov-overview"), page.locator("#ov-plan")
+                expect(choice).to_be_checked()
+                choice.uncheck()
+                expect(bar).to_be_hidden()
+                choice.check()
+                expect(bar).to_be_visible()
+                band_plan.uncheck()
+                expect(bar).to_be_hidden()
+                expect(choice).to_be_disabled()
+                band_plan.check()
+                expect(bar).to_be_visible()
+                expect(choice).to_be_enabled()
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_the_view_goes_past_the_span_of_a_receiver_that_tunes(self):
