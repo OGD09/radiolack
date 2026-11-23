@@ -24,6 +24,7 @@ import { modeRateNote } from './rates.js';
 import { presetAt, widthPresets } from './modepanel.js';
 import { VOLUME_DRAG_START_PX, draggedVolume, steppedVolume, volumeText } from './volume.js';
 import { tourNote } from './memorytour.js';
+import { signalRows } from './signalrows.js';
 import { clampSpeed, draggedSpan, sliderSpan, sliderValue, spanOf, spanText, speedFor, stampStep, stampText, wheeledSpan,
   WHEEL_FACTOR } from './wfscale.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
@@ -1999,13 +2000,13 @@ const peakSeen = (p, now) => (p === listenedPeak ? 'listening' : p.active ? 'act
 // reorders its lists as the margins move and signals start and stop. The
 // rows run by the frequency they show, the lowest first: a signal keeps its
 // place among the others, and only its margin and time change.
-let listedPeaks = [];               // the rows' signals, in the rows' order
-let shownPeaks = new Map();         // each row's shown frequency → the engine's, which Ignore sends
+// One row per channel: the signals the engine keeps there share it.
+let listedPeaks = [];               // the signal each row shows, in the rows' order
+let shownPeaks = new Map();         // each row's shown frequency → the engine's frequencies there, which Ignore sends
 function renderPeaks() {
   if (peaksHold.wait()) return;
   const list = $('#pk-body'), refocus = focusedIn(list), now = performance.now();
-  const rows = peaks.map((p) => ({ p, f: p.channelHz }))
-    .sort((a, b) => a.f - b.f || a.p.frequencyHz - b.p.frequencyHz);
+  const rows = signalRows(peaks).map((row) => ({ p: row.shown, f: row.channelHz, all: row.frequenciesHz }));
   listedPeaks = rows.map((row) => row.p);
   listenedShownHz = listenedHz();
   listenedPeak = null;
@@ -2016,8 +2017,8 @@ function renderPeaks() {
   }
   shownPeaks = new Map();
   list.innerHTML = rows.length
-    ? rows.map(({ p, f }) => {
-      shownPeaks.set(String(f), p.frequencyHz);
+    ? rows.map(({ p, f, all }) => {
+      shownPeaks.set(String(f), all);
       const classes = [p.active ? 'active' : '', p === listenedPeak ? 'listening' : ''].filter(Boolean).join(' ');
       return `<tr class="${classes}">`
         + `<td><button type="button" class="freq-link" data-tune="${f}" title="Listen">${fmtMHz(f)}</button></td>`
@@ -4226,7 +4227,9 @@ $('#pk-body').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.tune) tuneAnywhere(Number(b.dataset.tune));
-  else if (shownPeaks.has(b.dataset.ignore)) sendScanner(() => stream.ignoreFrequency(shownPeaks.get(b.dataset.ignore)));
+  else if (shownPeaks.has(b.dataset.ignore)) {
+    sendScanner(() => shownPeaks.get(b.dataset.ignore).every((hz) => stream.ignoreFrequency(hz)));
+  }
 });
 $('#pk-restore').addEventListener('click', () => sendScanner(() => stream.restoreIgnored()));
 $('#hist-body').addEventListener('click', (e) => {

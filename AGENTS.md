@@ -324,7 +324,8 @@ the history under the tag `v0.1.0`.
   `modepanel.js` (the Mode and filter panel's Narrow, Normal and Wide widths),
   `volume.js` (the volume at hand: the speaker's drag, wheel and arrow keys, and its gauge's text),
   `memorytour.js` (what the Bookmarks menu says of the memory scan's tour
-  across several windows),
+  across several windows), `signalrows.js` (the Signals list's rows, one
+  per channel),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
   the receiver's reach, and what the view draws as it widens) and
   `correction.js` (the frequency correction's field), `calibration.js`
@@ -344,7 +345,7 @@ the history under the tag `v0.1.0`.
   `rtldevices.js` and the RTL-SDR receivers message's decoding,
   `tests/test_radios.py` `radios.js` and the radios message's decoding,
   `tests/test_categories.py` `categories.js`
-  and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
+  and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`, `tests/test_signalrows.py` `signalrows.js`,
   `tests/test_modepanel.py` `modepanel.js`, `tests/test_volume.py` `volume.js`,
   `tests/test_wfscale.py` `wfscale.js` and `history.js`'s lines and rescale,
   `tests/test_overview.py` `overview.js`,

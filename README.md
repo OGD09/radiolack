@@ -1356,7 +1356,10 @@ the last 1.5 s show as active. It shows 50 signals at most: the active
 ones, the strongest of them if more than 50 are active, then the latest
 found. The list keeps the signals of the spans the receiver left, and
 empties when detection is turned off or another receiver is chosen. In a
-channelized range of the band plan, a signal shows on its channel.
+channelized range of the band plan, a signal shows on its channel, and the
+signals found on one channel share its row, as a broadcast station's
+narrow and wide signals do: the row shows the strongest active one, or
+else the one found latest, and its Ignore leaves them all out.
 
 A click on a frequency tunes to it. Ignore leaves its frequency out of the
 list, for every interface, until Restore brings the ignored frequencies
