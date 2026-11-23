@@ -742,9 +742,15 @@ class BrowserTest(unittest.TestCase):
                         down, up = (page.locator(step).bounding_box() for step in ("#tune-down", "#tune-up"))
                         self.assertTrue(down["x"] + down["width"] <= icon["x"] and icon["x"] + icon["width"] <= up["x"])
                         self.assertGreaterEqual(min(icon["width"], icon["height"]), 44)
-                    else:       # in the top left corner, at every width
+                    else:       # in the top left corner, at every width, and the speaker in the top right one
                         for got, wanted in zip((icon["x"], icon["y"], icon["width"], icon["height"]), (10, 8, 34, 32)):
                             self.assertAlmostEqual(got, wanted, delta=0.5)
+                        speaker = page.locator("#sound").bounding_box()
+                        corner = (10, 48) if width <= 420 else (width - 44, 8)      # under the icon when narrowest
+                        if speaker is not None:
+                            for got, wanted in zip((speaker["x"], speaker["y"], speaker["width"], speaker["height"]),
+                                                   (*corner, 34, 32)):
+                                self.assertAlmostEqual(got, wanted, delta=0.5)
                     if not options:
                         self.assertEqual(page.evaluate(ICONS_PROBE),
                                          {"favicon.svg": "loaded", "apple-touch-icon.png": [180, 180]})
@@ -891,7 +897,7 @@ class BrowserTest(unittest.TestCase):
                 for page in (first, second):
                     self.wait_for_audio(page)
                     expect(page.locator("#m-mode")).to_have_text("NFM")
-                    expect(page.locator("#sound")).to_be_hidden()      # the speaker is for touch input
+                    expect(page.locator("#sound")).to_be_visible()     # with a mouse too
                 self.open_menu(first, "radio")
                 first.locator('#mode-group button[data-mode="AM"]').click()
                 for page in (first, second):
@@ -1604,6 +1610,61 @@ class BrowserTest(unittest.TestCase):
                 expect(speaker).to_have_attribute("aria-pressed", "true")
                 expect(page.locator("#dm-vol")).to_have_value("70")
                 self.wait_for_audio(page, received + 3)
+
+    def test_with_a_mouse_the_speaker_mutes_on_a_click_and_sets_the_volume(self):
+        # A click mutes and unmutes; the wheel over it moves the volume a
+        # step of 5 a notch, a drag up or down 1 per 1.6 px, and its arrow
+        # keys a step, its gauge showing it while it changes. Brought down
+        # to 0 by a drag, a click brings back the volume the drag began from.
+        for browser in BROWSERS:
+            url = self.serve()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                self.wait_for_audio(page)
+                page.keyboard.press("Escape")       # a menu shown at start, whose scrim would take the presses
+                expect(page.locator("#menu")).to_be_hidden()
+                speaker = page.get_by_role("button", name="Audio")
+                volume = page.locator("#dm-vol")
+                gauge = page.locator("#volume-gauge")
+                expect(speaker).to_have_attribute("aria-pressed", "true")
+                expect(volume).to_have_value("70")
+                expect(gauge).to_have_class(re.compile(r"\bgone\b"))
+                box = speaker.bounding_box()
+                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.wheel(0, -100)
+                expect(volume).to_have_value("75")
+                expect(gauge).not_to_have_class(re.compile(r"\bgone\b"))
+                expect(gauge.locator("output")).to_have_text("75%")
+                page.mouse.wheel(0, 100)
+                expect(volume).to_have_value("70")
+                page.mouse.down()
+                page.mouse.move(x, y + 16, steps=4)
+                page.mouse.move(x, y + 32, steps=4)
+                page.mouse.up()
+                expect(volume).to_have_value("50")
+                expect(speaker).to_have_attribute("aria-pressed", "true")      # the drag's end did not mute
+                expect(gauge).to_have_class(re.compile(r"\bgone\b"))
+                page.mouse.move(x, y)       # back on the speaker
+                page.mouse.down()
+                page.mouse.move(x, y + 200, steps=5)
+                expect(gauge.locator("output")).to_have_text("Muted")
+                page.mouse.up()
+                expect(volume).to_have_value("0")
+                expect(speaker).to_have_attribute("aria-pressed", "false")
+                page.wait_for_timeout(500)      # a click sooner would be the drag's own
+                speaker.click()
+                expect(volume).to_have_value("50")
+                expect(speaker).to_have_attribute("aria-pressed", "true")
+                speaker.click()
+                expect(volume).to_have_value("0")
+                speaker.click()
+                expect(volume).to_have_value("50")
+                speaker.focus()
+                page.keyboard.press("ArrowUp")
+                expect(volume).to_have_value("55")
+                page.keyboard.press("ArrowDown")
+                page.keyboard.press("ArrowDown")
+                expect(volume).to_have_value("45")
 
     def test_the_audio_asks_safari_for_its_playback_session(self):
         # Safari plays the "playback" session with the ringer switch on

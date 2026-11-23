@@ -1216,11 +1216,17 @@ Each interface plays the audio itself, at its own volume, about a quarter of
 a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
 click, tap or key press on the page, as Safari does on an iPhone each time
-the page loads; the Radio menu then says so. On a touch screen, a speaker
-at the top right shows whether the page plays sound: crossed out while the
-browser holds the audio or the volume is 0, with waves while it plays. A
-tap on it starts held audio, mutes playing audio by setting the volume to
-0, or brings the volume back. On an iPhone, Safari keeps playing the audio
+the page loads; the Radio menu then says so. A speaker at the top right,
+mirroring the menu's icon (under it in a window 420 pixels wide or less,
+with a mouse), shows whether the page plays sound: crossed out
+while the browser holds the audio or the volume is 0, with waves while it
+plays. A click or a tap on it starts held audio, mutes playing audio by
+setting the volume to 0, or brings the volume back. It sets the volume at
+hand too, with a gauge under it while the volume changes: a press dragged up
+or down follows the gauge, the whole range in 160 pixels, and a notch of the
+wheel over it, or its Up and Down arrow keys, move the volume 5%. Brought
+down to 0 that way, a click or a tap brings back the volume the gesture began
+from. The Radio menu's Volume slider stays. On an iPhone, Safari keeps playing the audio
 with the screen locked and with the ringer switch on silent. The Record
 menu records the audio and the receiver's raw I/Q
 ([Recording](#recording)).

@@ -233,20 +233,31 @@ table.peaks tr.apart td { color: var(--muted); }
 #tunepad button:active { background: rgba(89, 167, 255, 0.25); }
 #tune-down { left: calc(12px + env(safe-area-inset-left)); }
 #tune-up { right: calc(12px + env(safe-area-inset-right)); }
-/* Shown only for touch input too, in the top right corner: whether this interface plays sound, and a
-   switch for it (main.js). The browser may hold the audio until a tap, and a tap on it is one. */
+/* In the top right corner, mirroring the menu's icon: whether this interface plays sound, a switch for it
+   and the volume at hand, a drag or the wheel (main.js), its gauge under it while it changes. For touch
+   input a round button: the browser may hold the audio until a tap, and a tap on it is one. */
 #sound {
-  display: none; position: absolute; z-index: 6; top: calc(10px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
-  width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border-radius: 50%;
-  background: rgba(14, 17, 22, 0.72); border: 1px solid var(--line); color: var(--text);
-  cursor: pointer; touch-action: manipulation; transition: opacity 0.4s;
+  position: absolute; z-index: 6; top: calc(8px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right));
+  width: 34px; height: 32px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px;
+  background: rgba(14, 17, 22, 0.72); border: 1px solid var(--line); color: var(--muted);
+  cursor: pointer; touch-action: none; transition: opacity 0.4s;
 }
+#sound[hidden] { display: none; }
 #sound:active { background: rgba(89, 167, 255, 0.25); }
-#sound svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#sound svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #sound .on, #sound[aria-pressed="true"] .off { display: none; }
 #sound[aria-pressed="true"] .on { display: block; }
+#volume-gauge {
+  position: absolute; z-index: 6; top: calc(48px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right));
+  width: 34px; padding: 6px 0; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+  background: rgba(12, 15, 19, 0.9); border: 1px solid var(--line); border-radius: 8px; transition: opacity 0.3s;
+}
+#volume-gauge.gone { opacity: 0; }
+#volume-gauge .track { position: relative; width: 6px; height: 160px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+#volume-gauge .fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent); }
+#volume-gauge output { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
-body.idle #menu-button, body.idle #status, body.idle #tunepad, body.idle #span-fit, body.idle #antenna { opacity: 0.2; }
+body.idle #menu-button, body.idle #sound, body.idle #status, body.idle #tunepad, body.idle #span-fit, body.idle #antenna { opacity: 0.2; }
 body.idle #hoverinfo { opacity: 0; }
 
 /* The menu: a card under the readout, the list of menus beside the chosen one, which scrolls; a menu's
@@ -474,7 +485,7 @@ table.peaks tr.listening .seen { color: var(--accent); }
 @media (hover: hover) {
   #freq .d:hover { background: rgba(255, 255, 255, 0.1); }
   #antenna:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
-  #menu-button:hover { color: var(--text); border-color: rgba(89, 167, 255, 0.5); }
+  #menu-button:hover, #sound:hover { color: var(--text); border-color: rgba(89, 167, 255, 0.5); }
   #menu nav button:hover:not([aria-current="true"]) { color: var(--text); background: rgba(255, 255, 255, 0.05); }
   .mark:hover { border-color: rgba(89, 167, 255, 0.6); }
   .close:hover { color: var(--text); background: var(--control-hover); }
@@ -531,6 +542,11 @@ table.peaks tr.listening .seen { color: var(--accent); }
   }
   #smeter { justify-content: flex-start; }
 }
+/* There, with a mouse, the speaker leaves the readout its width: under the menu's icon, its gauge under it. */
+@media (max-width: 420px) and (pointer: fine) {
+  #sound { top: calc(48px + env(safe-area-inset-top)); right: auto; left: calc(10px + env(safe-area-inset-left)); }
+  #volume-gauge { top: calc(88px + env(safe-area-inset-top)); right: auto; left: calc(10px + env(safe-area-inset-left)); }
+}
 
 /* Touch: larger targets, no hover-only readouts, step buttons shown, and the menu's icon between them. */
 @media (pointer: coarse) {
@@ -553,8 +569,12 @@ table.peaks tr.listening .seen { color: var(--accent); }
   #smeter .bar::after { inset: -12px -6px; }
   #status, #hoverinfo { display: none; }
   #tunepad { display: block; }
-  #sound { display: flex; }
-  #sound[hidden] { display: none; }
+  #sound {
+    top: calc(10px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+    width: 44px; height: 44px; border-radius: 50%; color: var(--text);
+  }
+  #sound svg { width: 22px; height: 22px; }
+  #volume-gauge { top: calc(62px + env(safe-area-inset-top)); right: calc(16px + env(safe-area-inset-right)); width: 36px; }
   #menu-button {
     top: auto; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom)); width: 52px; height: 52px; border-radius: 50%;
     transform: translateX(-50%); color: var(--text);
