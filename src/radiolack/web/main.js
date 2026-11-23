@@ -38,6 +38,7 @@ import { ppmText, typedPpm } from './correction.js';
 import { MEASURE_EVERY_MS, calibrateEntry, calibrationView, driverCheckAgain, driverCheckText, driverCheckWanted,
   runView, startingTrueText, tunerNoteShown } from './calibration.js';
 import { axisDecimals, bandsInView, beyondReachNote, planEnd, spanMarker, viewExtent, withinReach } from './view.js';
+import { bandUnder, overviewDrawing, overviewHeight, overviewScale, overviewTitle } from './overview.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (sel) => document.querySelector(sel);
@@ -101,9 +102,12 @@ const bandEl = $('#band');
 const specCanvas = $('#spec');
 const wfCanvas = $('#wf');
 const bandCanvas = $('#bandc');
+const overviewEl = $('#overview');
+const overviewCanvas = $('#overviewc');
 const axisCanvas = $('#spec-axis');
 const dbCanvas = $('#spec-db');
 const bandCtx = bandCanvas.getContext('2d');
+const overviewCtx = overviewCanvas.getContext('2d');
 const axisCtx = axisCanvas.getContext('2d');
 const dbCtx = dbCanvas.getContext('2d');
 const stampsEl = $('#wf-stamps');
@@ -147,7 +151,7 @@ const S = {
   vfo: 145.5e6, mode: 'NFM', bw: 10000, autoMode: true, step: 'auto',
   avg: 0.6, fill: true, peakHold: false, grid: true, autoRange: true, top: -30, range: 80,
   palette: 'classic', wfAuto: true, wfMin: -101, wfMax: -57, wfSpeed: 25, timestamps: true,
-  showPlan: true, showMarks: true, showChannels: true, split: 0.4,
+  showPlan: true, showOverview: true, showMarks: true, showChannels: true, split: 0.4,
   sql: -80, sqlAuto: true, notch: false, blanker: false, volume: 70,    // notch, blanker: the engine's, null from an engine without them
   peakMarks: true,
   autoHide: true,
@@ -1398,6 +1402,43 @@ function stripHitAt(e) {
   return stripHit(plan.bands, stripMarks, e.clientX * DPR, upper, (e.pointerType === 'mouse' ? 4 : 10) * DPR);
 }
 
+// The overview bar (overview.js): the whole band plan on a logarithmic
+// scale, its bands brighter within the receiver's reach, a tick at each
+// decade, the span, the VFO as a line and the view as a bracket; drawn
+// again only when one of them moves.
+let overviewKey = '';
+function renderOverview() {
+  if (overviewEl.hidden) return;
+  const W = overviewCanvas.width, H = overviewCanvas.height, d = DPR;
+  const scale = overviewScale(planEnd(plan.bands)), span = [fStart(), fEnd()], vfo = shownVfo();
+  const key = `${W} ${H} ${scale.high} ${reach()} ${span} ${view.f0} ${view.f1} ${vfo}`;
+  if (key === overviewKey) return;
+  overviewKey = key;
+  const drawn = overviewDrawing({ bands: plan.bands, scale, width: W, pxPerCss: d, reach: reach(), span,
+    view: [view.f0, view.f1], vfo });
+  const ctx = overviewCtx, line = Math.max(1, Math.round(d)), edge = (x) => clamp(Math.round(x), 0, W - line);
+  ctx.clearRect(0, 0, W, H);
+  for (const piece of drawn.pieces) {
+    ctx.fillStyle = `rgba(${piece.rgb},${piece.reach ? 0.9 : 0.3})`;
+    ctx.fillRect(piece.x0, 0, piece.x1 - piece.x0, H);
+  }
+  ctx.fillStyle = 'rgba(230,235,240,0.5)';
+  for (const x of drawn.ticks) ctx.fillRect(edge(x), Math.round(H * 0.55), line, H);
+  ctx.fillStyle = 'rgba(235,240,245,0.5)';
+  ctx.fillRect(drawn.span[0], 0, drawn.span[1] - drawn.span[0], H);
+  ctx.fillStyle = 'rgb(89,167,255)';
+  ctx.fillRect(edge(drawn.vfo), 0, line, H);
+  // The view's bracket: its edges, with arms along the bar's top and bottom.
+  const [a, b] = [edge(drawn.view[0]), edge(drawn.view[1])], arm = Math.max(line, Math.min(3 * d, (b - a) / 2));
+  ctx.fillStyle = 'rgba(235,240,245,0.95)';
+  for (const [x, w] of [[a, arm], [b + line - arm, arm]]) {
+    ctx.fillRect(x, 0, w, line);
+    ctx.fillRect(x, H - line, w, line);
+  }
+  ctx.fillRect(a, 0, line, H);
+  ctx.fillRect(b, 0, line, H);
+}
+
 function renderMarks() {
   marksEl.textContent = '';
   markBandCss = null;
@@ -1695,6 +1736,10 @@ function updateStatus() {
 
 // ------------------------------------------------------------------ layout and view
 const bandHeight = () => (coarseQuery.matches ? 26 : 18);   // the band strip doubles as a touch handle
+// The overview bar shows with the band plan, once loaded, unless Display hides it.
+const overviewShown = () => S.showOverview && S.showPlan && plan.bands.length > 0;
+// The rows between the spectrum and the waterfall: the overview bar, if shown, and the band strip.
+const barsHeight = () => (overviewShown() ? overviewHeight(coarseQuery.matches) : 0) + bandHeight();
 let labelTopCss = 40;               // dB labels start below this line, clear of the menu's icon and the readout
 let markBandCss = null;             // [top, bottom] of a bookmark label lying over the dB label column
 const DB_LABEL_COL = 40;            // width kept by the dB labels at the left edge, in CSS px (#spec-db in style.css)
@@ -1710,10 +1755,11 @@ function gpuScale(width, specHeight, wfRows) {
 function layout() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
   appW = window.innerWidth;
-  const H = window.innerHeight, bandH = bandHeight();
-  specH = Math.round(clamp(S.split, 0.12, 0.8) * (H - bandH));
-  appEl.style.gridTemplateRows = `${specH}px ${bandH}px minmax(0, 1fr)`;
-  wfH = Math.max(2, H - specH - bandH);
+  const H = window.innerHeight, bandH = bandHeight(), barsH = barsHeight();
+  specH = Math.round(clamp(S.split, 0.12, 0.8) * (H - barsH));
+  overviewEl.hidden = !overviewShown();
+  appEl.style.gridTemplateRows = `${specH}px ${barsH - bandH}px ${bandH}px minmax(0, 1fr)`;
+  wfH = Math.max(2, H - specH - barsH);
   GLS = gpuScale(appW, specH, wfH);
   if (spectrumView) spectrumView.resize(appW * GLS, specH * GLS);
   if (waterfallView) waterfallView.resize(appW * GLS, wfH);
@@ -1723,14 +1769,16 @@ function layout() {
   specColumns = new Float32Array(2 * columns);
   bandCanvas.width = Math.max(2, Math.round(appW * DPR));
   bandCanvas.height = Math.max(2, Math.round(bandEl.clientHeight * DPR));
+  overviewCanvas.width = Math.max(2, Math.round(appW * DPR));
+  overviewCanvas.height = Math.max(2, Math.round(overviewEl.clientHeight * DPR));
   axisCanvas.width = Math.max(2, Math.round(appW * DPR));
   axisCanvas.height = Math.round(AXIS_H * DPR);
   dbCanvas.width = Math.round(DB_LABEL_COL * DPR);
   dbCanvas.height = Math.max(2, Math.round((specH - AXIS_H) * DPR));
-  specKey = wfKey = axisKey = levelKey = '';     // resized canvases are blank
+  specKey = wfKey = axisKey = levelKey = overviewKey = '';     // resized canvases are blank
   syncSpan();                                    // a taller waterfall shows more time
   if (syncStampStep()) rebuildStamps();
-  noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
+  noticeEl.style.top = `${specH + barsH + 8}px`;   // the top of the waterfall
   vfoReturnEl.style.top = `${Math.round((specH - AXIS_H) / 2)}px`;
   spanFitEl.style.top = `${specH - AXIS_H - 6}px`;     // its bottom, just above the frequency scale
   // The labels start below what lies over their column at the top: the menu's icon with a mouse, and
@@ -1813,11 +1861,15 @@ function zoomAt(factor, anchor) {
   if (atSpanWidth(s) && anchor >= fStart() && anchor <= fEnd()) setView(fStart(), fEnd());
   else setView(anchor - r * s, anchor + (1 - r) * s, viewInSpan());
 }
+// The view that frames a range or a band, with a margin on each side.
+function rangeView(seg) {
+  const pad = (seg.to - seg.from) * 0.08;
+  return fitView((seg.from + seg.to) / 2, seg.to - seg.from + 2 * pad);
+}
 // Frame a range or a band; framing it again frames the span.
 function zoomToSegment(seg) {
   if (!seg) return;
-  const pad = (seg.to - seg.from) * 0.08;
-  const [a, b] = fitView((seg.from + seg.to) / 2, seg.to - seg.from + 2 * pad), w = b - a;
+  const [a, b] = rangeView(seg), w = b - a;
   const same = Math.abs(view.f1 - view.f0 - w) < w * 0.05 && Math.abs((view.f0 + view.f1) / 2 - (a + b) / 2) < w * 0.05;
   if (same) setView(fStart(), fEnd()); else setView(a, b);
 }
@@ -3509,7 +3561,10 @@ syncers.push(() => { scaleText = ''; syncSpan(); });
 wfSpanEl.addEventListener('input', () => previewSpan(sliderSpan(Number(wfSpanEl.value))));
 wfSpanEl.addEventListener('change', commitSpan);
 bindCheck('wf-time', 'timestamps', rebuildStamps);
-bindCheck('ov-plan', 'showPlan', drawBandStrip);
+// The overview bar hides with the band plan: its own choice waits meanwhile.
+const overviewCheck = bindCheck('ov-overview', 'showOverview', () => { layoutPending = true; });
+syncers.push(() => { overviewCheck.disabled = !S.showPlan; });
+bindCheck('ov-plan', 'showPlan', () => { overviewCheck.disabled = !S.showPlan; drawBandStrip(); layoutPending = true; });
 bindCheck('ov-marks', 'showMarks', renderMarks);
 bindCheck('ov-channels', 'showChannels', drawBandStrip);
 bindRange('ov-split', 'split', (v) => `${Math.round(v * 100)}%`, () => { layoutPending = true; });
@@ -3573,6 +3628,7 @@ function loadPlan(id) {
   }).then((current) => {
     if (!current) return;
     renderPlanList();
+    layoutPending = true;               // the overview bar shows the plan, or hides without one
     lastSeg = segmentAt(S.vfo);         // the VFO's range gives its step now
     setView(view.f0, view.f1);          // the view reaches the plan's end now, and redraws the overlays
     if (signalsShown()) renderPeaks();     // signals show on their channels now
@@ -4634,7 +4690,7 @@ function syncStorage() {
 // gives its own. They leave out the engine's settings (VFO, mode, filter,
 // squelch, receiver, remote access) and which menu shows.
 const PREFERENCES = ['autoMode', 'step', 'avg', 'fill', 'peakHold', 'grid', 'autoRange', 'top', 'range', 'palette',
-  'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showMarks', 'showChannels', 'split', 'volume',
+  'wfAuto', 'wfMin', 'wfMax', 'wfSpeed', 'timestamps', 'showPlan', 'showOverview', 'showMarks', 'showChannels', 'split', 'volume',
   'peakMarks', 'autoHide', 'radio'];
 const PREFERENCE_SELECTS = { step: '#dm-step', palette: '#wf-pal' };
 const PREFERENCES_SAVE_MS = 1000;
@@ -4915,7 +4971,7 @@ bandEl.addEventListener('pointermove', (e) => {
   if (!bandDrag) return;
   const dy = e.clientY - bandDrag.y0;
   if (Math.abs(dy) > 3) bandDrag.moved = true;
-  if (bandDrag.moved) { S.split = clamp((bandDrag.h0 + dy) / (window.innerHeight - bandHeight()), 0.12, 0.8); layoutPending = true; }
+  if (bandDrag.moved) { S.split = clamp((bandDrag.h0 + dy) / (window.innerHeight - barsHeight()), 0.12, 0.8); layoutPending = true; }
 });
 bandEl.addEventListener('pointerup', (e) => {
   if (bandDrag && !bandDrag.moved) {
@@ -4927,6 +4983,34 @@ bandEl.addEventListener('pointerup', (e) => {
 });
 bandEl.addEventListener('pointercancel', () => { bandDrag = null; });
 bandEl.addEventListener('pointerleave', () => { hideHover(); bandEl.classList.remove('on-mark'); });
+
+// A press on the overview bar frames the band under it, and a drag each band
+// it passes; the tooltip names the band and its edges.
+let overviewDrag = null;            // { band }: the band framed last while the button is down
+function overviewBandAt(e) {
+  const box = overviewEl.getBoundingClientRect();
+  if (!(box.width > 0)) return null;
+  return bandUnder(plan.bands, (e.clientX - box.left) / box.width, overviewScale(planEnd(plan.bands)));
+}
+function frameOverviewBand(band) {
+  if (!overviewDrag || !band || band === overviewDrag.band) return;
+  overviewDrag.band = band;
+  setView(...rangeView(band));
+}
+overviewEl.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  overviewDrag = { band: null };
+  overviewEl.setPointerCapture(e.pointerId);
+  e.preventDefault();
+  frameOverviewBand(overviewBandAt(e));
+});
+overviewEl.addEventListener('pointermove', (e) => {
+  const band = overviewBandAt(e), title = band ? overviewTitle(band) : '';
+  if (overviewEl.title !== title) overviewEl.title = title;
+  frameOverviewBand(band);
+});
+overviewEl.addEventListener('pointerup', () => { overviewDrag = null; });
+overviewEl.addEventListener('pointercancel', () => { overviewDrag = null; });
 
 let editingFreq = false;
 function editFreq() {
@@ -5376,6 +5460,7 @@ function loop(ts) {
   renderSpectrum();
   renderWaterfall();
   renderScales();
+  renderOverview();
   updateMeterUi(ts);
   if (ts - lastUi > 400) { lastUi = ts; liveUi(); }
   requestAnimationFrame(loop);

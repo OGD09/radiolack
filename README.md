@@ -2146,6 +2146,20 @@ plan's ranges, channel sets and known frequencies, and a click on a set
 frames it. The list holds at most 200 rows: zoom in or refine the filter
 for the others. Display > "Band plan" hides the strip.
 
+A thin bar above the strip, the overview bar, shows the whole plan at
+once, from 1 kHz to its end on a logarithmic scale, seven decades, in the
+bands' colours, with a tick at each decade: 10 kHz, 100 kHz, 1 MHz and on.
+The bands within the receiver's reach are brighter; a light box marks the
+span, a bracket the view and a blue line the VFO. Hovering the bar names
+the band under the pointer and its edges; clicking or tapping it frames
+that band, whatever the view, and dragging along it frames each band it
+passes, the last one staying framed. Narrow bands stay narrow there: on a
+bar 1280 px wide, 40 m takes about 2 px, which the tooltip, or a drag,
+finds. The bar is 10 px high with a mouse and 14 px on a touch screen.
+Display > "Overview bar" hides it, and it hides with the strip. Nothing
+below 1 kHz shows on it, though the view still starts at 0 Hz; the
+spectrum and the waterfall stay linear.
+
 The plan is a detailed guide, not a legal reference: Europe's is written by
 hand from the ITU Radio Regulations, the CEPT's European table and the IARU
 Region 1 band plans, France's from Europe's and the ANFR's national table
