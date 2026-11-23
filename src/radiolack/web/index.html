@@ -37,9 +37,29 @@
     <div class="freq-line"><div id="freq" tabindex="0" role="spinbutton" aria-label="VFO frequency" title="Drag or wheel over a digit: change it · double-click: type a frequency"></div><button type="button" id="antenna" aria-label="Antenna length" aria-haspopup="dialog" aria-controls="antenna-dialog" title="Antenna length for this frequency">
       <svg viewBox="0 0 15 15" aria-hidden="true"><path d="M3 1.5c1.7 0 2.7.8 3.4 2.4l5.1 9.6M7.5 6 3 13.5"/></svg>
     </button></div>
-    <div id="meta"><b id="m-mode"></b><span id="m-lock" hidden></span><span class="dot">·</span><span id="m-bw"></span><span class="dot">·</span><span id="m-seg"></span><button type="button" id="radio-chip" aria-haspopup="dialog" aria-controls="menu" hidden></button></div>
+    <div id="meta"><button type="button" id="mode-button" class="meta-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="mode-panel" title="Mode and filter width"><b id="m-mode"></b><svg class="ico chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 5 6 7.5 8.5 5"/></svg></button><span id="m-lock" hidden></span><span class="dot">·</span><button type="button" id="bw-button" class="meta-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="mode-panel" title="Mode and filter width"><span id="m-bw"></span></button><span class="dot">·</span><span id="m-seg"></span><button type="button" id="radio-chip" aria-haspopup="dialog" aria-controls="menu" hidden></button></div>
     <!-- The wheel over the S-meter, or a click or a tap on its bar, sets the squelch; the Radio menu sets it too. -->
     <div id="smeter" aria-hidden="true" title="Squelch: wheel or click"><div class="bar"><div class="fill"></div><div class="sql"></div></div><span id="s-text"></span></div>
+  </div>
+
+  <!-- The mode and the filter width under the frequency open this panel, the Radio menu's mode and filter width at hand. -->
+  <div id="mode-scrim" hidden></div>
+  <div id="mode-panel" role="dialog" aria-label="Mode and filter" hidden>
+    <h3>Mode</h3>
+    <div class="mode-families" role="radiogroup" aria-label="Mode">
+      <span class="family">FM</span><div class="family-modes"><button type="button" role="radio" data-mode="NFM">NFM</button><button type="button" role="radio" data-mode="WFM">WFM</button></div>
+      <span class="family">AM</span><div class="family-modes"><button type="button" role="radio" data-mode="AM">AM</button><button type="button" role="radio" data-mode="SAM" title="Synchronous AM">SAM</button></div>
+      <span class="family">Sideband</span><div class="family-modes"><button type="button" role="radio" data-mode="USB">USB</button><button type="button" role="radio" data-mode="LSB">LSB</button></div>
+      <span class="family">Morse</span><div class="family-modes"><button type="button" role="radio" data-mode="CW">CW</button></div>
+    </div>
+    <p class="note" id="mp-note" role="status" hidden></p>
+    <div class="field"><label for="mp-bw">Filter width <output id="mp-bw-v"></output></label><input id="mp-bw" type="range"></div>
+    <div class="segmented" role="radiogroup" aria-label="Filter width" id="mp-presets">
+      <button type="button" role="radio" data-width="narrow">Narrow</button>
+      <button type="button" role="radio" data-width="normal">Normal</button>
+      <button type="button" role="radio" data-width="wide">Wide</button>
+    </div>
+    <label class="check"><input id="mp-auto" type="checkbox"> Mode and step from the band plan</label>
   </div>
 
   <!-- Every menu behind one icon: in the top left corner with a mouse, between the step buttons on a touch screen. -->

@@ -901,6 +901,72 @@ class BrowserTest(unittest.TestCase):
                 first.locator('#mode-group button[data-mode="NFM"]').click()
                 expect(second.locator("#m-mode")).to_have_text("NFM")
 
+    def test_the_mode_and_its_width_open_a_panel_that_every_interface_follows(self):
+        # Where the VFO starts, the band plan names NFM: the panel marks it,
+        # a mode chosen there reaches every interface and keeps the panel
+        # open for its width, and a press outside closes it without tuning.
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 2) as [first, second]:
+                first.keyboard.press("Escape")      # the Receivers menu lies over the readout
+                panel = first.locator("#mode-panel")
+                first.locator("#mode-button").click()
+                expect(panel).to_be_visible()
+                expect(first.locator("#mode-button")).to_have_attribute("aria-expanded", "true")
+                expect(panel.locator("[data-mode]")).to_have_count(len(MODE_ORDER))
+                nfm = panel.locator('[data-mode="NFM"]')
+                expect(nfm).to_have_attribute("aria-checked", "true")
+                expect(nfm).to_have_class(re.compile(r"(^|\s)planned(\s|$)"))
+                expect(nfm).to_be_focused()
+                panel.locator('[data-mode="USB"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-mode")).to_have_text("USB")
+                    expect(page.locator("#m-bw")).to_have_text("2.7 kHz")
+                expect(panel).to_be_visible()
+                expect(first.locator("#mp-bw")).to_have_attribute("min", "1500")
+                expect(first.locator("#mp-bw")).to_have_attribute("max", "4000")
+                expect(panel.locator('[data-width="normal"]')).to_have_attribute("aria-checked", "true")
+                panel.locator('[data-width="wide"]').click()
+                for page in (first, second):
+                    expect(page.locator("#m-bw")).to_have_text("4 kHz")
+                expect(panel.locator('[data-width="wide"]')).to_have_attribute("aria-checked", "true")
+                first.keyboard.press("Escape")
+                expect(panel).to_be_hidden()
+                expect(first.locator("#mode-button")).to_be_focused()
+                # The width opens it too; the band plan's box is the Radio menu's.
+                first.locator("#bw-button").click()
+                expect(first.locator("#mp-bw")).to_be_focused()
+                first.locator("#mp-auto").uncheck()
+                vfo = first.locator("#freq").get_attribute("aria-valuenow")
+                box = first.locator("#spec").bounding_box()
+                first.mouse.click(box["x"] + box["width"] * 0.2, box["y"] + box["height"] * 0.6)
+                expect(panel).to_be_hidden()
+                expect(first.locator("#freq")).to_have_attribute("aria-valuenow", vfo)
+                self.open_menu(first, "radio")
+                expect(first.locator("#dm-auto")).not_to_be_checked()
+                first.locator("#dm-auto").check()
+                first.locator('#mode-group button[data-mode="NFM"]').click()
+                expect(second.locator("#m-mode")).to_have_text("NFM")
+
+    def test_on_a_phone_the_mode_panel_rises_from_the_bottom_edge(self):
+        url = self.serve()
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1, **PHONE) as [page]:
+                page.keyboard.press("Escape")       # the menu lies over the readout
+                page.locator("#mode-button").tap()
+                panel = page.locator("#mode-panel")
+                expect(panel).to_be_visible()
+                box = panel.bounding_box()
+                self.assertAlmostEqual(box["x"], 0, delta=0.5)
+                self.assertAlmostEqual(box["width"], PHONE["viewport"]["width"], delta=0.5)
+                self.assertAlmostEqual(box["y"] + box["height"], PHONE["viewport"]["height"], delta=0.5)
+                target = panel.locator('[data-mode="CW"]').bounding_box()
+                self.assertGreaterEqual(target["height"], 40 - 0.01)
+                panel.locator('[data-mode="CW"]').tap()
+                expect(page.locator("#m-mode")).to_have_text("CW")
+                page.locator("#mode-scrim").tap(position={"x": 20, "y": 200})
+                expect(panel).to_be_hidden()
+
     def test_sam_sits_beside_am_and_says_on_every_interface_that_noise_gives_no_lock(self):
         # At a frequency of the simulated band where only noise lies: SAM
         # takes AM's filter widths and the line under the frequency says that

@@ -272,7 +272,9 @@ remote access on, 2 for invalid options.
 ### The menu
 
 The spectrum, the waterfall and the readout, the frequency with its mode
-and its S-meter, take the whole window. Everything else is in one menu,
+and its S-meter, take the whole window. A click or a tap on the mode or the
+filter width under the frequency opens the Mode and filter panel
+([Demodulation and audio](#demodulation-and-audio)). Everything else is in one menu,
 behind an icon: a small square at the top left with a mouse, a round button
 between the step buttons at the bottom on a touch screen. The menu lists
 eight menus beside the one it shows:
@@ -1059,7 +1061,17 @@ The engine demodulates one VFO, which every interface shows: a click on the
 spectrum, the wheel, the keyboard or a bookmark tunes it, and a change made
 in one interface shows in the others, the last change winning. The Radio
 menu sets the mode, the filter width and the squelch, and every mode
-plays. NFM audio is de-emphasized, its CTCSS tone is removed and its band
+plays.
+
+The mode and the filter width under the frequency open the Mode and filter
+panel, under them, or rising from the bottom edge on a phone: the modes by
+family (FM: NFM and WFM; AM: AM and SAM; Sideband: USB and LSB; Morse: CW),
+the band plan's mode at the VFO marked "plan", then the filter width, with
+Narrow, Normal and Wide (0.6 times, once and 1.5 times the width the mode
+opens with, within its limits), and the band plan's box, the Radio menu's
+own. A mode chosen there keeps the panel open, for its width; Escape or a
+press outside it closes it, without tuning. The M key still steps to the
+next mode. NFM audio is de-emphasized, its CTCSS tone is removed and its band
 stops at 3.5 kHz. AM audio follows the carrier's level: its loudness depends
 on the modulation, not on the signal's strength. USB and LSB keep their own
 sideband, and CW sounds a carrier on the VFO at 700 Hz, through a filter
