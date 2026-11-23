@@ -39,6 +39,24 @@ html, body {
   font: 10px/12px system-ui, sans-serif; color: rgba(230, 235, 240, 0.75); text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
 }
 .wf-stamp::before { content: ""; position: absolute; left: 0; top: 0; width: 7px; height: 1px; background: rgba(255, 255, 255, 0.6); }
+/* The waterfall's time scale, along its right edge: a drag up or down or the wheel sets the time it shows. */
+#wf-scale {
+  position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; width: 28px; cursor: ns-resize; touch-action: none;
+  background: linear-gradient(270deg, rgba(14, 17, 22, 0.55), rgba(14, 17, 22, 0)); transition: opacity 0.4s;
+}
+#wf-scale .grip {
+  position: absolute; right: 6px; top: 50%; width: 16px; height: 44px; margin-top: -22px; display: grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 8px; background: rgba(14, 17, 22, 0.9); color: var(--muted);
+}
+#wf-scale .grip svg { width: 10px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#wf-scale:focus-visible { outline: none; }
+#wf-scale:focus-visible .grip { outline: 2px solid var(--accent); outline-offset: 1px; }
+#wf-scale-tip {
+  position: absolute; right: 34px; top: 50%; transform: translateY(-50%); white-space: nowrap; pointer-events: none;
+  font-size: 12px; padding: 3px 8px; color: var(--text); background: rgba(10, 12, 15, 0.88);
+  border: 1px solid var(--line); border-radius: 6px; opacity: 0; transition: opacity 0.3s; font-variant-numeric: tabular-nums;
+}
+#wf-scale-tip.shown { opacity: 1; }
 #band { position: relative; background: #0d1015; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: ns-resize; touch-action: none;
   -webkit-user-select: none; user-select: none; }
 #band.on-mark { cursor: pointer; }
@@ -257,7 +275,7 @@ table.peaks tr.apart td { color: var(--muted); }
 #volume-gauge .fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent); }
 #volume-gauge output { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
-body.idle #menu-button, body.idle #sound, body.idle #status, body.idle #tunepad, body.idle #span-fit, body.idle #antenna { opacity: 0.2; }
+body.idle #menu-button, body.idle #sound, body.idle #status, body.idle #tunepad, body.idle #span-fit, body.idle #antenna, body.idle #wf-scale { opacity: 0.2; }
 body.idle #hoverinfo { opacity: 0; }
 
 /* The menu: a card under the readout, the list of menus beside the chosen one, which scrolls; a menu's
@@ -486,6 +504,7 @@ table.peaks tr.listening .seen { color: var(--accent); }
   #freq .d:hover { background: rgba(255, 255, 255, 0.1); }
   #antenna:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
   #menu-button:hover, #sound:hover { color: var(--text); border-color: rgba(89, 167, 255, 0.5); }
+  #wf-scale:hover .grip { color: var(--text); border-color: rgba(89, 167, 255, 0.5); }
   #menu nav button:hover:not([aria-current="true"]) { color: var(--text); background: rgba(255, 255, 255, 0.05); }
   .mark:hover { border-color: rgba(89, 167, 255, 0.6); }
   .close:hover { color: var(--text); background: var(--control-hover); }
@@ -585,7 +604,11 @@ table.peaks tr.listening .seen { color: var(--accent); }
   #menu nav button { min-height: 44px; }
   #hint { bottom: calc(74px + env(safe-area-inset-bottom)); }     /* above the step buttons and the menu's icon */
   .keys-touch { order: -1; }
-  body.idle #menu-button, body.idle #tunepad, body.idle #sound, body.idle #span-fit, body.idle #antenna { opacity: 0.45; }
+  /* The time scale stops above the step button in the bottom right corner, with a grip for a finger. */
+  #wf-scale { width: 40px; bottom: calc(76px + env(safe-area-inset-bottom)); }
+  #wf-scale .grip { right: calc(8px + env(safe-area-inset-right)); width: 24px; height: 56px; margin-top: -28px; }
+  #wf-scale-tip { right: calc(46px + env(safe-area-inset-right)); }
+  body.idle #menu-button, body.idle #tunepad, body.idle #sound, body.idle #span-fit, body.idle #antenna, body.idle #wf-scale { opacity: 0.45; }
 }
 /* Phones in portrait: the readout moves to the left, the speaker on its right, and the menu rises from
    the bottom up to the readout. */

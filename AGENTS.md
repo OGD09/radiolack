@@ -284,7 +284,10 @@ the history under the tag `v0.1.0`.
   holds the wide spectrum's history and the fine spectrum's, each line
   drawn within a window of its bins), `history.js` (a spectrum's frames as
   the interface keeps them: trace, peak hold and waterfall lines with
-  their time and centre), `deepzoom.js` (the deep zoom, later-milestones.md,
+  their time and centre, the highest of their frames once a line spans
+  four, and the lines drawn again at another speed), `wfscale.js` (the
+  waterfall's time scale: the time its height shows, the handle's and
+  Display's reach and steps, and the timestamps' step), `deepzoom.js` (the deep zoom, later-milestones.md,
   section 2: when to ask for the fine frames, which spectrum shows, the
   cover, the narrowest view and where a frequency lies among a frame's
   bins), `bandplan.js`
@@ -338,6 +341,7 @@ the history under the tag `v0.1.0`.
   `tests/test_categories.py` `categories.js`
   and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
   `tests/test_modepanel.py` `modepanel.js`, `tests/test_volume.py` `volume.js`,
+  `tests/test_wfscale.py` `wfscale.js` and `history.js`'s lines and rescale,
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
   the stations and the calibration state's decoding, `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, and

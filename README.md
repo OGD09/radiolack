@@ -1287,6 +1287,24 @@ within the span only, so what leaves the span goes and the new part starts
 empty. The peak hold moves the same way. A longer move, another sample
 rate or FFT size, or another receiver starts them again.
 
+The waterfall draws a line per pixel row, newest at the top, and covers
+the time its height shows. A handle on its right edge sets that time
+without the menu: drag it down to show more time, or up for less, or
+turn the wheel over it, 15% a notch; its Up and Down arrow keys do the
+same, and a double click brings back the default, 25 lines a second.
+Display's Time shown sets it too, from 10 seconds to 20 minutes. While
+the time changes, the waterfall stretches the lines it holds; once it
+stops, it draws them again at the new speed, each new line taking the
+highest level of the lines it replaces, so that brief signals stay, and
+a shorter time after a longer one leaves the past as coarse as it was. A
+line that spans four spectrum frames or more keeps the highest level of
+each bin among them, so that a slow waterfall keeps brief signals too; a
+faster one keeps their mean, as before. The timestamps come every 10
+seconds, or at a longer step, up to 10 minutes, without the seconds from
+a minute up, when the time shown would crowd them. The speed is kept
+with each interface's preferences: a taller window shows more time. On
+a touch screen, the handle stops above the step button.
+
 Around the VFO, the zoom goes on into a fine spectrum of the VFO's
 channel, a few hertz per bin. The spectrum shows 8192 bins over the
 receiver's span, 293 Hz each at an RTL-SDR's 2.4 MS/s, and its narrowest

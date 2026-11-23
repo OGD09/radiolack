@@ -7,6 +7,8 @@
  * frequencies. The view holds two histories, each at its own resolution:
  * the wide spectrum's (layer 0) and the fine spectrum's (layer 1), and draws
  * one. A span too narrow to see shows as a marker the height of the view.
+ * While the time shown changes, a scale stretches the lines over the height
+ * until the history is drawn again at the new speed.
  */
 import { COVER_VERTEX_SHADER, createDataTexture, createProgram, getContext, uniformLocations, watchContext } from './gl.js';
 
@@ -18,6 +20,7 @@ uniform highp sampler2D u_history;  // R8: one row per line, one texel per bin o
 uniform highp sampler2D u_offsets;  // R32F, one texel per line: where its first bin lies, in bins from the capture's first bin
 uniform highp sampler2D u_colours;  // RGBA8, 256 x 1: the colour of each level code
 uniform float u_height;             // drawing buffer height, px: one line per px row, newest at the top
+uniform float u_scale;              // lines per px row: other than 1 while the time shown changes
 uniform int u_head;                 // row of the newest line
 uniform int u_lines;                // lines in the history
 uniform float u_firstTexel;         // texel position of the left edge
@@ -37,7 +40,7 @@ void main() {
     return;
   }
   ivec2 size = textureSize(u_history, 0);
-  int age = int(u_height - gl_FragCoord.y);
+  int age = int(floor(floor(u_height - gl_FragCoord.y) * u_scale));
   if (age >= u_lines) {
     colour = vec4(0.0, 0.0, 0.0, 1.0);
     return;
@@ -63,7 +66,7 @@ void main() {
 }`;
 
 const UNIFORMS = /** @type {const} */ ([
-  'u_history', 'u_offsets', 'u_colours', 'u_height', 'u_head', 'u_lines', 'u_firstTexel', 'u_texelsPerPixel', 'u_binsPerTexel',
+  'u_history', 'u_offsets', 'u_colours', 'u_height', 'u_scale', 'u_head', 'u_lines', 'u_firstTexel', 'u_texelsPerPixel', 'u_binsPerTexel',
   'u_window', 'u_marker',
 ]);
 const NO_MARKER = [0, 0];
@@ -80,6 +83,7 @@ const LAYERS = 2;
  * @property {number} lines         lines in the history
  * @property {number} firstBin      bin position of the left edge
  * @property {number} binsPerPixel
+ * @property {number} [scale]       lines per pixel row: 1, the default, but while the time shown changes
  * @property {number} [layer]       the history drawn: 0, the default, or 1
  * @property {[number, number] | null} [window]  the bins of each line that show the air, first and end; all of them by default
  * @property {[number, number] | null} [marker]  x of the edges of the marker that stands for a span too narrow to see, px
@@ -251,6 +255,7 @@ export class WaterfallView {
     gl.uniform1i(u.u_colours, 1);
     gl.uniform1i(u.u_offsets, 2);
     gl.uniform1f(u.u_height, height);
+    gl.uniform1f(u.u_scale, scene.scale ?? 1);
     gl.uniform1i(u.u_head, scene.head);
     gl.uniform1i(u.u_lines, scene.lines);
     gl.uniform1f(u.u_firstTexel, scene.firstBin / group);
