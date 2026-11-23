@@ -1445,9 +1445,11 @@ by itself after the number of passes set, from 1 to 99, and brings the
 receiver and the VFO back where they were when it started.
 
 With "Stop to listen", once a window's searches end the scan takes the
-signals active there as the window's queue and listens to each in turn,
-the strong and the weak alike, with the VFO alone, then goes on to the
-next window. It tunes the VFO to the signal that waited longest, one it
+signals active there within its range as the window's queue (a window
+reaches a little past the range's ends: the signals there are left out)
+and listens to each in turn, the strong and the weak alike, with the VFO
+alone, then goes on to the next window. It tunes the VFO to the signal
+that waited longest, one it
 never tuned to first, the lowest of them, then the one it tuned to least
 recently, so that each takes its turn; the VFO lands on the frequency the
 list shows, in the mode that the band plan gives there, as the History's
