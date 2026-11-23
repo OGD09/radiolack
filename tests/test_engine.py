@@ -4445,7 +4445,7 @@ class DriverCheckTest(unittest.IsolatedAsyncioTestCase):
                     engine.radios[0].measure_carrier({"action": "identify", "id": 1}, subscription)
                     await self.off_the_grid(engine)
                     if lost == "carrier":
-                        fake.carriers = {}      # no line: the point's measure ends at once
+                        fake.carriers = {}      # no line: each of the point's measures fails, until its time runs out
                     else:
                         fake.sending = False    # nothing more comes: the point's time runs out
                     answer = await next_driver(subscription)
@@ -4455,6 +4455,20 @@ class DriverCheckTest(unittest.IsolatedAsyncioTestCase):
                 await self.assert_back(engine)
                 engine.close()
                 fake.sending = False
+
+    async def test_a_measure_spoilt_at_a_point_is_made_again(self):
+        # The carrier leaves for a little over a second at the first point
+        # off the grid, as a voice's burst or samples lost would spoil it.
+        engine, subscription, fake = await self.start("truncating", driver_pll="rounding")
+        carriers = fake.carriers
+        engine.radios[0].measure_carrier({"action": "identify", "id": 1}, subscription)
+        await self.off_the_grid(engine)
+        fake.carriers = {}
+        await asyncio.sleep(1.2)
+        fake.carriers = carriers
+        answer = await next_driver(subscription)
+        self.assertEqual((answer["driver_pll"], answer["previous"], answer["reason"]), ("truncating", "rounding", None))
+        await self.assert_back(engine, fake)
 
     async def test_an_interface_that_leaves_brings_the_receiver_back(self):
         engine, subscription, fake = await self.start("truncating")
