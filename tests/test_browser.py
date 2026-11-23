@@ -1666,6 +1666,51 @@ class BrowserTest(unittest.TestCase):
                 page.keyboard.press("ArrowDown")
                 expect(volume).to_have_value("45")
 
+    def test_the_waterfalls_handle_sets_the_time_it_shows(self):
+        # The handle on the waterfall's right edge: the wheel over it lengthens
+        # the time shown 15% a notch, down, and Display's Time shown follows;
+        # its arrow keys move it a notch, a double click brings back 25 lines
+        # a second, and the waterfall under it neither tunes nor zooms. On a
+        # phone it stops above the step button. A server for each browser:
+        # the page saves its preferences each second.
+        for browser in BROWSERS:
+            url = self.serve()
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                page.keyboard.press("Escape")
+                handle = page.get_by_role("slider", name="Time the waterfall shows")
+                expect(handle).to_be_visible()
+                height = page.locator("#wfwrap").bounding_box()["height"]
+                default = height / 25
+                self.assertAlmostEqual(float(handle.get_attribute("aria-valuenow")), default, delta=1)
+                frequency = page.locator("#freq").text_content()
+                box = handle.bounding_box()
+                self.assertAlmostEqual(box["x"] + box["width"], page.viewport_size["width"], delta=0.5)
+                page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                for _ in range(4):
+                    page.mouse.wheel(0, 100)
+                    page.wait_for_timeout(50)
+                expect(page.locator("#wf-scale-tip")).to_contain_text("Waterfall: last")
+                page.wait_for_function("(v) => Number(document.querySelector('#wf-scale').getAttribute('aria-valuenow')) > v",
+                                       arg=default * 1.15 ** 3.5)
+                longer = float(handle.get_attribute("aria-valuenow"))
+                self.assertAlmostEqual(longer, default * 1.15 ** 4, delta=1.5)
+                self.assertEqual(page.locator("#freq").text_content(), frequency)
+                handle.focus()
+                page.keyboard.press("ArrowUp")
+                page.wait_for_function("(v) => Number(document.querySelector('#wf-scale').getAttribute('aria-valuenow')) < v",
+                                       arg=longer)
+                self.assertAlmostEqual(float(handle.get_attribute("aria-valuenow")), longer / 1.15, delta=1.5)
+                handle.dblclick()
+                expect(handle).to_have_attribute("aria-valuenow", str(round(default)))
+                self.open_menu(page, "display")
+                expect(page.locator("#wf-span-v")).to_have_text(f"{round(default)} s")
+                page.keyboard.press("Escape")
+            with self.subTest(browser=browser, viewport="phone"), self.interfaces(browser, url, 1, **PHONE) as [page]:
+                page.keyboard.press("Escape")
+                handle = page.locator("#wf-scale").bounding_box()
+                step = page.locator("#tune-up").bounding_box()
+                self.assertLessEqual(handle["y"] + handle["height"], step["y"])
+
     def test_the_audio_asks_safari_for_its_playback_session(self):
         # Safari plays the "playback" session with the ringer switch on
         # silent. The other browsers lack the API, which the test stands in

@@ -21,7 +21,9 @@
     <div id="marks"></div>
   </div>
   <div id="band"><canvas id="bandc" aria-hidden="true"></canvas></div>
-  <div id="wfwrap" class="area"><canvas id="wf" aria-hidden="true"></canvas><div id="wf-stamps" aria-hidden="true"></div></div>
+  <div id="wfwrap" class="area"><canvas id="wf" aria-hidden="true"></canvas><div id="wf-stamps" aria-hidden="true"></div>
+    <div id="wf-scale" role="slider" tabindex="0" aria-label="Time the waterfall shows" aria-orientation="vertical" aria-valuemin="10" aria-valuemax="1200"
+      title="Time the waterfall shows · Drag up or down, or wheel · Double-click: default"><div class="grip" aria-hidden="true"><svg viewBox="0 0 10 18"><path d="M2 5 5 2 8 5M2 13l3 3 3-3"/></svg></div><div id="wf-scale-tip" aria-hidden="true"></div></div></div>
   <div id="vfo"></div>
   <div id="vfo-line"></div>
   <div id="xline" hidden></div>
@@ -378,7 +380,7 @@
           <label class="check"><input id="wf-auto" type="checkbox"> Automatic contrast</label>
           <div class="field"><label for="wf-min">Floor <output id="wf-min-v"></output></label><input id="wf-min" type="range" min="-140" max="-40" step="1"></div>
           <div class="field"><label for="wf-max">Ceiling <output id="wf-max-v"></output></label><input id="wf-max" type="range" min="-110" max="-10" step="1"></div>
-          <div class="field"><label for="wf-speed">Speed <output id="wf-speed-v"></output></label><input id="wf-speed" type="range" min="2" max="30" step="1"></div>
+          <div class="field"><label for="wf-span">Time shown <output id="wf-span-v"></output></label><input id="wf-span" type="range" min="0" max="1000" step="1"></div>
           <label class="check"><input id="wf-time" type="checkbox"> Timestamps</label>
           <p class="note">The waterfall keeps levels, not colours: palette, contrast and zoom recolour its whole history.</p>
           <h3>On the spectrum</h3>

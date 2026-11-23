@@ -24,6 +24,8 @@ import { modeRateNote } from './rates.js';
 import { presetAt, widthPresets } from './modepanel.js';
 import { VOLUME_DRAG_START_PX, draggedVolume, steppedVolume, volumeText } from './volume.js';
 import { tourNote } from './memorytour.js';
+import { clampSpeed, draggedSpan, sliderSpan, sliderValue, spanOf, spanText, speedFor, stampStep, stampText, wheeledSpan,
+  WHEEL_FACTOR } from './wfscale.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
 import { RTL_LIST_MS, receiverList, rtlDeviceAt } from './rtldevices.js';
@@ -944,9 +946,10 @@ function rebuildLut() {
   lutVersion += 1;
 }
 
-// Timestamps every 10 s: text elements over the waterfall, moved down one
-// CSS px per line (one line per CSS px row), from the history shown.
-const STAMP_MS = 10000;
+// Timestamps: text elements over the waterfall, moved down one CSS px per
+// line (one line per CSS px row), from the history shown, every 10 s or a
+// longer step when the waterfall shows more time (wfscale.js).
+let stampMs = 10000;
 const stamps = [];                  // { el, row }, oldest first
 let lastStampSlot = -1;
 const ageOf = (row) => (shown.head - row + HIST_ROWS) % HIST_ROWS;
@@ -954,7 +957,7 @@ const stampLimit = () => Math.min(wfH, shown.filled, HIST_ROWS - 1);
 function addStamp(row) {
   const el = document.createElement('div');
   el.className = 'wf-stamp';
-  el.textContent = new Date(shown.histTime[row]).toTimeString().slice(0, 8);
+  el.textContent = stampText(shown.histTime[row], stampMs / 1000);
   el.style.transform = `translateY(${ageOf(row)}px)`;
   stampsEl.appendChild(el);
   stamps.push({ el, row });
@@ -971,20 +974,28 @@ function advanceStamps() {
     if (age >= limit) { el.remove(); stamps.splice(i, 1); } else el.style.transform = `translateY(${age}px)`;
   }
 }
-// From the history: a stamp on the first line of each 10 s slot.
+// The step for the time shown; whether it changed.
+function syncStampStep() {
+  const ms = stampStep(shownSpan(), wfH) * 1000;
+  if (ms === stampMs) return false;
+  stampMs = ms;
+  return true;
+}
+// From the history: a stamp on the first line of each slot.
 function rebuildStamps() {
   clearStamps();
   if (!S.timestamps) return;
   const h = shown;
   for (let age = stampLimit() - 2; age >= 0; age -= 1) {
     const row = (h.head - age + HIST_ROWS) % HIST_ROWS, older = (row - 1 + HIST_ROWS) % HIST_ROWS;
-    if (Math.floor(h.histTime[row] / STAMP_MS) !== Math.floor(h.histTime[older] / STAMP_MS)) addStamp(row);
+    if (Math.floor(h.histTime[row] / stampMs) !== Math.floor(h.histTime[older] / stampMs)) addStamp(row);
   }
-  if (h.filled) lastStampSlot = Math.floor(h.histTime[h.head] / STAMP_MS);
+  if (h.filled) lastStampSlot = Math.floor(h.histTime[h.head] / stampMs);
 }
 
 // Waterfall lines: each spectrum makes its own, at the waterfall's speed, from
-// the frames since its previous line (history.js). Frames may come slower than
+// the frames since its previous line (history.js): their highest level once a
+// line spans several frames, their mean otherwise. Frames may come slower than
 // lines, as to remote devices and as the fine frames do: a line then repeats
 // the latest frame, while frames still come, so that the waterfall keeps its
 // speed. The fine frames come about ten times a second: a line repeats one
@@ -993,15 +1004,15 @@ function rebuildStamps() {
 const LINE_REPEAT_MS = 250;
 const FINE_LINE_REPEAT_MS = 150;
 function commitLines(now) {
-  const nowMs = performance.now();
-  commitLine(wide, WIDE_LAYER, now, nowMs, LINE_REPEAT_MS);
-  commitLine(fine, FINE_LAYER, now, nowMs, FINE_LINE_REPEAT_MS);
+  const nowMs = performance.now(), periodMs = 1000 / lineSpeed();
+  commitLine(wide, WIDE_LAYER, now, nowMs, LINE_REPEAT_MS, periodMs);
+  commitLine(fine, FINE_LAYER, now, nowMs, FINE_LINE_REPEAT_MS, periodMs);
 }
-function commitLine(h, layer, now, nowMs, repeatMs) {
-  if (!h.commitLine(now, nowMs, repeatMs)) return;
+function commitLine(h, layer, now, nowMs, repeatMs, periodMs) {
+  if (!h.commitLine(now, nowMs, repeatMs, periodMs)) return;
   if (waterfallView) waterfallView.uploadRow(h.head, h.line(h.head), layer);
   if (h !== shown) return;
-  const slot = Math.floor(now / STAMP_MS);
+  const slot = Math.floor(now / stampMs);
   if (S.timestamps) {
     advanceStamps();
     if (slot !== lastStampSlot) addStamp(h.head);
@@ -1009,20 +1020,132 @@ function commitLine(h, layer, now, nowMs, repeatMs) {
   lastStampSlot = slot;
 }
 
+// The waterfall's time scale (wfscale.js): the time its height shows, at the
+// speed the preferences keep, which its handle on the right edge sets, by a
+// drag up or down, the wheel or the arrow keys, and Display's Time shown.
+// While it changes, the lines keep coming at the speed before and the
+// waterfall stretches them over its height; once it stops, each spectrum's
+// history is drawn again at the new speed (history.js), its lines keeping
+// the highest level of those they take, and the timestamps follow.
+const wfScaleEl = $('#wf-scale');
+const wfScaleTip = $('#wf-scale-tip');
+const DEFAULT_WF_SPEED = S.wfSpeed;     // which a double click brings back
+const SCALE_TIP_MS = 900;               // how long the time shown stays written after it last changed
+const SCALE_SETTLE_MS = 400;            // the wheel's gesture ends this long after its last notch
+let scaleFrom = null;                   // the speed of the lines kept, while the time shown changes
+let scaleDrag = null;                   // the press on the handle: its pointer, where and at what time shown it began
+let scaleSettle = 0;
+let scaleTipTimer = 0;
+let scaleText = '';
+const shownSpan = () => spanOf(wfH, S.wfSpeed);
+const lineSpeed = () => scaleFrom ?? S.wfSpeed;
+function syncSpan() {
+  const span = shownSpan(), text = spanText(span);
+  if (text === scaleText) return;
+  scaleText = text;
+  wfScaleTip.textContent = `Waterfall: last ${text}`;
+  wfScaleEl.setAttribute('aria-valuenow', String(Math.round(span)));
+  wfScaleEl.setAttribute('aria-valuetext', `Last ${text}`);
+  wfSpanEl.value = String(sliderValue(span));
+  wfSpanOut.textContent = text;
+}
+function showScaleTip() {
+  wfScaleTip.classList.add('shown');
+  clearTimeout(scaleTipTimer);
+  scaleTipTimer = setTimeout(() => wfScaleTip.classList.remove('shown'), SCALE_TIP_MS);
+}
+function previewSpan(spanS) {
+  if (scaleFrom === null) {
+    scaleFrom = S.wfSpeed;
+    stampsEl.hidden = true;     // written again for the new speed
+  }
+  S.wfSpeed = speedFor(wfH, spanS);
+  syncSpan();
+}
+function commitSpan() {
+  clearTimeout(scaleSettle);
+  if (scaleFrom === null) return;
+  const ratio = scaleFrom / S.wfSpeed;
+  scaleFrom = null;
+  stampsEl.hidden = false;
+  for (const [h, layer] of [[wide, WIDE_LAYER], [fine, FINE_LAYER]]) {
+    if (ratio === 1 || !h.filled) continue;
+    h.rescale(ratio);
+    if (waterfallView) {
+      waterfallView.uploadAll(h.hist, layer);
+      waterfallView.setOffsets(h.lineOffsets(), layer);
+    }
+  }
+  syncStampStep();
+  rebuildStamps();
+  wfKey = '';
+}
+function setSpan(spanS) {
+  previewSpan(spanS);
+  commitSpan();
+  showScaleTip();
+}
+// The handle keeps its gestures from the waterfall under it.
+for (const type of ['click', 'contextmenu', 'pointerup', 'pointercancel']) wfScaleEl.addEventListener(type, (e) => e.stopPropagation());
+wfScaleEl.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  if (e.button !== 0) return;
+  scaleDrag = { id: e.pointerId, y: e.clientY, span: shownSpan() };
+  wfScaleEl.setPointerCapture(e.pointerId);
+});
+wfScaleEl.addEventListener('pointermove', (e) => {
+  e.stopPropagation();
+  hideHover();
+  if (!scaleDrag || e.pointerId !== scaleDrag.id) return;
+  previewSpan(draggedSpan(scaleDrag.span, e.clientY - scaleDrag.y));   // down lengthens it
+  showScaleTip();
+});
+function endScaleDrag(e) {
+  if (!scaleDrag || e.pointerId !== scaleDrag.id) return;
+  scaleDrag = null;
+  commitSpan();
+}
+wfScaleEl.addEventListener('pointerup', endScaleDrag);
+wfScaleEl.addEventListener('pointercancel', endScaleDrag);
+wfScaleEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  poke();
+  if (e.ctrlKey || e.metaKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;    // a pinch or a sideways swipe
+  previewSpan(wheeledSpan(shownSpan(), e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY));
+  showScaleTip();
+  clearTimeout(scaleSettle);
+  scaleSettle = setTimeout(commitSpan, SCALE_SETTLE_MS);
+}, { passive: false });
+wfScaleEl.addEventListener('dblclick', (e) => {
+  e.stopPropagation();
+  setSpan(spanOf(wfH, DEFAULT_WF_SPEED));
+});
+wfScaleEl.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'ArrowUp') setSpan(shownSpan() / WHEEL_FACTOR);
+  else if (e.key === 'ArrowDown') setSpan(shownSpan() * WHEEL_FACTOR);
+  else return;
+  e.preventDefault();
+  e.stopPropagation();
+});
+
 let wfKey = '';                     // what the waterfall shows: drawn again only when it changes
 function renderWaterfall() {
   if (!waterfallView) return;
   const h = shown, W = waterfallView.width, finer = h === fine;
   const toX = (f) => ((f - view.f0) / (view.f1 - view.f0)) * W;
   const marker = spanMarker(toX(shownLo()), toX(shownHi()), GLS);
+  const scale = scaleFrom === null ? 1 : scaleFrom / S.wfSpeed;
   const key = `${finer} ${h.head} ${h.filled} ${view.f0} ${view.f1} ${W} ${waterfallView.height} ${lutVersion} ${h.bins} ${h.centreHz}`
-    + ` ${h.widthHz} ${marker}`;
+    + ` ${h.widthHz} ${marker} ${scale}`;
   if (key === wfKey) return;
   wfKey = key;
   // Bin i spans [i, i + 1) for the view: its middle lies at its centre's frequency.
   waterfallView.draw({
     head: Math.max(0, h.head), lines: h.filled, layer: finer ? FINE_LAYER : WIDE_LAYER, window: finer ? fineWindow : null,
     firstBin: binPosition(view.f0, h.centreHz, h.widthHz, h.bins) + 0.5, binsPerPixel: (view.f1 - view.f0) / h.binHz / W, marker,
+    scale,
   });
 }
 
@@ -1605,6 +1728,8 @@ function layout() {
   dbCanvas.width = Math.round(DB_LABEL_COL * DPR);
   dbCanvas.height = Math.max(2, Math.round((specH - AXIS_H) * DPR));
   specKey = wfKey = axisKey = levelKey = '';     // resized canvases are blank
+  syncSpan();                                    // a taller waterfall shows more time
+  if (syncStampStep()) rebuildStamps();
   noticeEl.style.top = `${specH + bandH + 8}px`;   // the top of the waterfall
   vfoReturnEl.style.top = `${Math.round((specH - AXIS_H) / 2)}px`;
   spanFitEl.style.top = `${specH - AXIS_H - 6}px`;     // its bottom, just above the frequency scale
@@ -3378,7 +3503,11 @@ bindCheck('wf-auto', 'wfAuto', () => {
 });
 bindRange('wf-min', 'wfMin', fmtDb, () => { S.wfMin = Math.min(S.wfMin, S.wfMax - 5); lutDirty = true; });
 bindRange('wf-max', 'wfMax', fmtDb, () => { S.wfMax = Math.max(S.wfMax, S.wfMin + 5); lutDirty = true; });
-bindRange('wf-speed', 'wfSpeed', (v) => `${v} lines/s`);
+// Time shown: a logarithmic slider over the handle's reach (wfscale.js).
+const wfSpanEl = $('#wf-span'), wfSpanOut = $('#wf-span-v');
+syncers.push(() => { scaleText = ''; syncSpan(); });
+wfSpanEl.addEventListener('input', () => previewSpan(sliderSpan(Number(wfSpanEl.value))));
+wfSpanEl.addEventListener('change', commitSpan);
 bindCheck('wf-time', 'timestamps', rebuildStamps);
 bindCheck('ov-plan', 'showPlan', drawBandStrip);
 bindCheck('ov-marks', 'showMarks', renderMarks);
@@ -4516,6 +4645,7 @@ function preferencesNow() { return Object.fromEntries(PREFERENCES.map((key) => [
 // A saved value replaces the default when it has the same type and its control takes it.
 function preferenceValue(key, value) {
   if (typeof value !== typeof S[key]) return undefined;
+  if (key === 'wfSpeed') return Number.isFinite(value) ? clampSpeed(value) : undefined;
   if (typeof value === 'number') {
     const el = rangeInputs.get(key);
     return el && Number.isFinite(value) ? clamp(value, Number(el.min), Number(el.max)) : undefined;
@@ -4544,6 +4674,7 @@ function applyPreferences(values) {
   updateMeta();
   lutDirty = true;
   layoutPending = true;
+  syncStampStep();
   rebuildStamps();
   drawBandStrip();
   renderMarks();
@@ -5238,7 +5369,7 @@ function loop(ts) {
   lastTs = ts;
   if (layoutPending) { layoutPending = false; layout(); }
   if (lutDirty) { lutDirty = false; rebuildLut(); }
-  lineAcc += dt * S.wfSpeed;
+  lineAcc += dt * lineSpeed();
   let lines = 0;
   while (lineAcc >= 1 && lines < 6) { lineAcc -= 1; lines += 1; commitLines(Date.now()); }
   if (lineAcc > 6) lineAcc = 0;
