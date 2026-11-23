@@ -1217,7 +1217,8 @@ a second after the antenna; at volume 0 it receives none. The desktop window
 plays it as soon as it opens. A web browser may hold it until the first
 click, tap or key press on the page, as Safari does on an iPhone each time
 the page loads; the Radio menu then says so. A speaker at the top right,
-mirroring the menu's icon, shows whether the page plays sound: crossed out
+mirroring the menu's icon (under it in a window 420 pixels wide or less,
+with a mouse), shows whether the page plays sound: crossed out
 while the browser holds the audio or the volume is 0, with waves while it
 plays. A click or a tap on it starts held audio, mutes playing audio by
 setting the volume to 0, or brings the volume back. It sets the volume at

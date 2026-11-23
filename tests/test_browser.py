@@ -746,9 +746,10 @@ class BrowserTest(unittest.TestCase):
                         for got, wanted in zip((icon["x"], icon["y"], icon["width"], icon["height"]), (10, 8, 34, 32)):
                             self.assertAlmostEqual(got, wanted, delta=0.5)
                         speaker = page.locator("#sound").bounding_box()
+                        corner = (10, 48) if width <= 420 else (width - 44, 8)      # under the icon when narrowest
                         if speaker is not None:
                             for got, wanted in zip((speaker["x"], speaker["y"], speaker["width"], speaker["height"]),
-                                                   (width - 44, 8, 34, 32)):
+                                                   (*corner, 34, 32)):
                                 self.assertAlmostEqual(got, wanted, delta=0.5)
                     if not options:
                         self.assertEqual(page.evaluate(ICONS_PROBE),
@@ -1643,6 +1644,7 @@ class BrowserTest(unittest.TestCase):
                 expect(volume).to_have_value("50")
                 expect(speaker).to_have_attribute("aria-pressed", "true")      # the drag's end did not mute
                 expect(gauge).to_have_class(re.compile(r"\bgone\b"))
+                page.mouse.move(x, y)       # back on the speaker
                 page.mouse.down()
                 page.mouse.move(x, y + 200, steps=5)
                 expect(gauge.locator("output")).to_have_text("Muted")

@@ -538,9 +538,14 @@ table.peaks tr.listening .seen { color: var(--accent); }
 @media (max-width: 420px) {
   #readout {
     left: calc(54px + env(safe-area-inset-left)); transform: none; text-align: left;
-    max-width: calc(100% - 108px - env(safe-area-inset-left) - env(safe-area-inset-right));
+    max-width: calc(100% - 64px - env(safe-area-inset-left) - env(safe-area-inset-right));
   }
   #smeter { justify-content: flex-start; }
+}
+/* There, with a mouse, the speaker leaves the readout its width: under the menu's icon, its gauge under it. */
+@media (max-width: 420px) and (pointer: fine) {
+  #sound { top: calc(48px + env(safe-area-inset-top)); right: auto; left: calc(10px + env(safe-area-inset-left)); }
+  #volume-gauge { top: calc(88px + env(safe-area-inset-top)); right: auto; left: calc(10px + env(safe-area-inset-left)); }
 }
 
 /* Touch: larger targets, no hover-only readouts, step buttons shown, and the menu's icon between them. */
