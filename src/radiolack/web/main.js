@@ -3171,10 +3171,13 @@ $('#src-address').addEventListener('change', (e) => {
 });
 $('#src-center').addEventListener('change', (e) => {
   const hz = parseFrequency(e.target.value);
-  if (!source || hz === null || hz === source.centreHz) { syncSource(); return; }
+  // The centre asked, the one on its way if any: a retune waits for frames
+  // from its centre before it moves the VFO.
+  const asked = pendingTune ? pendingTune.centre : source?.centreHz;
+  if (!source || hz === null || hz === asked) { syncSource(); return; }
   // The VFO keeps its place from the centre asked, not from the one in use:
   // a tuner placed on its grid would otherwise move it by their difference.
-  if (!requestCentre(hz, hz + (S.vfo - source.centreHz), {})) syncSource();
+  if (!requestCentre(hz, hz + (shownVfo() - asked), {})) syncSource();
 });
 $('#src-rate').addEventListener('change', (e) => { if (!stream.sendSource({ rateHz: Number(e.target.value) })) syncSource(); });
 $('#src-gain').addEventListener('input', () => { const g = sliderGain(); if (g !== undefined) $('#src-gain-v').textContent = `${g.toFixed(1)} dB`; });
