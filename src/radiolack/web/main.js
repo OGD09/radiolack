@@ -22,6 +22,7 @@ import { PLAN_LIST_MAX, planRows } from './planlist.js';
 import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
 import { presetAt, widthPresets } from './modepanel.js';
+import { VOLUME_DRAG_START_PX, draggedVolume, steppedVolume, volumeText } from './volume.js';
 import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
@@ -87,6 +88,7 @@ const PALETTES = {
   gray: ['#000000', '#ffffff'],
 };
 const DEFAULT_BAND_PLAN = 'europe';     // the plan of an engine that offers no choice
+const VOLUME_WHEEL_PX = 50;         // wheel travel over the speaker that moves the volume one step, as one notch does
 const SQL_WHEEL_PX = 50;            // wheel travel over the S-meter that moves the squelch by 1 dB, as one notch does
 
 // ------------------------------------------------------------------ DOM
@@ -752,14 +754,26 @@ function syncAudio() {
   syncSound();
 }
 
-// The speaker, for touch input: crossed out while this interface plays no sound, because the
+// The speaker, in the top right corner: crossed out while this interface plays no sound, because the
 // browser holds the audio until a tap (Safari, at each page load; a tap on the speaker is one,
-// audio.js) or the volume is 0. A tap mutes by setting the volume to 0, as the Radio menu's
-// slider would, so that the engine stops sending audio, and unmutes by bringing it back.
+// audio.js) or the volume is 0. A press mutes by setting the volume to 0, as the Radio menu's
+// slider would, so that the engine stops sending audio, and unmutes by bringing it back. A drag up
+// or down from it, the wheel over it and its arrow keys set the volume (volume.js), which its gauge
+// shows while it changes.
 const soundEl = $('#sound');
+const gaugeEl = $('#volume-gauge');
+const gaugeFill = gaugeEl.querySelector('.fill');
+const gaugeText = gaugeEl.querySelector('output');
 const DEFAULT_VOLUME = S.volume;    // brought back when the speaker did not mute
+const GAUGE_MS = 900;               // how long the gauge stays after the volume last changed
 let volumeBeforeMute = 0;
 let soundAtPress = null;            // whether sound played as the latest press on the speaker began
+let soundDrag = null;               // the press on the speaker: its pointer, where and at what volume it began
+let soundDragEnd = -Infinity;       // when the latest drag of the volume ended
+let soundWheelAcc = 0;
+let gaugeTimer = 0;
+let gaugeFrom = null;               // the volume as the gauge appeared
+let gaugeShown = null;
 function syncSound() {
   soundEl.setAttribute('aria-pressed', String(audioWanted));
   soundEl.hidden = audioState === 'failed';
@@ -769,18 +783,86 @@ function setVolume(volume) {
   input.value = String(volume);
   input.dispatchEvent(new Event('input'));    // as the slider would: the setting, its label, the audio
 }
+function hideGaugeLater() {
+  clearTimeout(gaugeTimer);
+  gaugeTimer = setTimeout(() => { gaugeEl.classList.add('gone'); gaugeFrom = null; }, GAUGE_MS);
+}
+function showGauge() {
+  if (gaugeShown !== S.volume) {
+    gaugeShown = S.volume;
+    gaugeFill.style.height = `${S.volume}%`;
+    gaugeText.textContent = volumeText(S.volume);
+  }
+  gaugeEl.classList.remove('gone');
+  if (soundDrag?.moved) clearTimeout(gaugeTimer);    // it stays while the finger does
+  else hideGaugeLater();
+}
+// A drag, the wheel or a key: brought down to 0, the volume that the gesture began from is the
+// one that unmuting brings back.
+function changeVolume(volume) {
+  if (gaugeFrom === null) gaugeFrom = S.volume;
+  if (volume !== S.volume) {
+    setVolume(volume);
+    if (volume === 0 && gaugeFrom > 0) volumeBeforeMute = gaugeFrom;
+  }
+  showGauge();
+}
+function endSoundDrag(e) {
+  if (!soundDrag || e.pointerId !== soundDrag.id) return;
+  if (soundDrag.moved) {
+    soundDragEnd = performance.now();
+    soundAtPress = null;    // a drag on a touch screen ends without a click
+    hideGaugeLater();
+  }
+  soundDrag = null;
+}
 // The press itself may start the audio, before the click: the click acts on what played before.
-soundEl.addEventListener('pointerdown', () => { soundAtPress = audioWanted; });
-soundEl.addEventListener('pointercancel', () => { soundAtPress = null; });    // a scroll: no click follows
-soundEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') soundAtPress = audioWanted; });
+soundEl.addEventListener('pointerdown', (e) => {
+  soundAtPress = audioWanted;
+  if (e.button !== 0) return;
+  soundDrag = { id: e.pointerId, y: e.clientY, volume: S.volume, moved: false };
+  soundEl.setPointerCapture(e.pointerId);
+});
+soundEl.addEventListener('pointermove', (e) => {
+  if (!soundDrag || e.pointerId !== soundDrag.id) return;
+  const up = soundDrag.y - e.clientY;
+  if (!soundDrag.moved && Math.abs(up) < VOLUME_DRAG_START_PX) return;
+  soundDrag.moved = true;
+  changeVolume(draggedVolume(soundDrag.volume, up));
+});
+soundEl.addEventListener('pointerup', endSoundDrag);
+soundEl.addEventListener('pointercancel', (e) => { soundAtPress = null; endSoundDrag(e); });    // no click follows
+soundEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  poke();
+  if (e.ctrlKey || e.metaKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;    // a pinch or a sideways swipe
+  // A notch moves it one step, as does each VOLUME_WHEEL_PX of a touchpad's smaller steps.
+  const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+  if (Math.abs(px) >= VOLUME_WHEEL_PX) { soundWheelAcc = 0; changeVolume(steppedVolume(S.volume, px < 0 ? 1 : -1)); return; }
+  soundWheelAcc += px;
+  if (Math.abs(soundWheelAcc) >= VOLUME_WHEEL_PX) {
+    changeVolume(steppedVolume(S.volume, soundWheelAcc < 0 ? 1 : -1));
+    soundWheelAcc = 0;
+  }
+}, { passive: false });
+soundEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') soundAtPress = audioWanted;
+  else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    changeVolume(steppedVolume(S.volume, e.key === 'ArrowUp' ? 1 : -1));
+    e.preventDefault();
+  }
+});
 soundEl.addEventListener('click', () => {
   const sounding = soundAtPress ?? audioWanted;
   soundAtPress = null;
+  if (performance.now() - soundDragEnd < DRAG_CLICK_MS) return;    // the end of a drag, not a press
   if (sounding) {
     volumeBeforeMute = S.volume;
     setVolume(0);
+    showGauge();
   } else if (S.volume === 0) {
     setVolume(volumeBeforeMute || DEFAULT_VOLUME);
+    showGauge();
   }   // otherwise the browser held the audio, and the press asked it to start
 });
 
