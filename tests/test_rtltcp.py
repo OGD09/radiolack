@@ -1361,10 +1361,10 @@ class RtlSdrSourceTest(SourceTest):
         source = await self.start_sdr("stubborn", stop_s=0.5)
         await self.read(source, timeout=10)
         [(pid, _)] = self.runs.started()
-        with self.assertLogs("radiolack.rtltcp", "WARNING") as logs:
+        with self.assertLogs("radiolack.rtltcp", "INFO") as logs:     # expected: no warning
             source.close()
             await asyncio.wait_for(source.wait_closed(), 10)
-        self.assertIn("did not stop within 0.5 s", logs.output[0])
+        self.assertEqual(logs.output, ["INFO:radiolack.rtltcp:rtl_tcp did not stop within 0.5 s: killing it"])
         self.assert_ended(pid)
         self.assertEqual(self.runs.stopping(), set())
 
