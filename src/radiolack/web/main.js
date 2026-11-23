@@ -21,6 +21,7 @@ import { automaticStep } from './tuning.js';
 import { PLAN_LIST_MAX, planRows } from './planlist.js';
 import { modeAt, nameAt, snapToChannel, spotName, stepChannels, stepSetAt, stripHit, stripLayout } from './channels.js';
 import { modeRateNote } from './rates.js';
+import { presetAt, widthPresets } from './modepanel.js';
 import { tourNote } from './memorytour.js';
 import { centreInUseNote, clearedCentre, driverPllView, gridStepHz } from './tunerpll.js';
 import { SOAPY_KIND, deviceAt, devicesView, switchesAtOnce } from './devices.js';
@@ -118,6 +119,8 @@ const meterBar = $('#smeter .bar');
 const menuEl = $('#menu');
 const menuButton = $('#menu-button');
 const menuScrim = $('#menu-scrim');
+const modePanel = $('#mode-panel');
+const modeScrim = $('#mode-scrim');
 // The menus, in the order of the keys 1 to 8.
 const MENUS = $$('#menu nav button[data-menu]').map((b) => b.dataset.menu);
 const ctxEl = $('#ctx');
@@ -2322,6 +2325,7 @@ const signalsShown = () => openName === 'scan' && scanTab === 'signals';
 function openMenuCard() {
   if (!menuEl.hidden) return;
   closeCtx();
+  closeModePanel();
   menuEl.hidden = false;
   menuScrim.hidden = false;
   menuButton.setAttribute('aria-expanded', 'true');
@@ -3053,6 +3057,7 @@ function syncDemod() {
   syncSql();
   syncNotch();
   syncBlanker();
+  syncModePanel();
 }
 // The threshold set by hand, or the automatic one in use. Also refreshed
 // while the Radio menu shows: only what changed is written.
@@ -3111,12 +3116,17 @@ blankerEl.addEventListener('change', () => {
   sendDemod(before);
   syncBlanker();
 });
+// Why the mode plays nothing here, or ''.
+function modeSilenceNote() {
+  if (!audioModes.includes(S.mode)) return `${S.mode} is not demodulated yet: only ${audioModes.join(' and ')} plays.`;
+  const rate = modeRateNote(S.mode, S.fs);
+  return rate ? `${rate}.` : '';
+}
 // Why this interface plays nothing, if it does not.
 function syncAudioNote() {
   let text = '';
   if (demodError) text = `Change refused: ${demodError}.`;
-  else if (!audioModes.includes(S.mode)) text = `${S.mode} is not demodulated yet: only ${audioModes.join(' and ')} plays.`;
-  else if (modeRateNote(S.mode, S.fs)) text = `${modeRateNote(S.mode, S.fs)}.`;
+  else if (modeSilenceNote()) text = modeSilenceNote();
   else if (audioState === 'blocked') text = 'Audio starts with a click, a tap or a key press on the page.';
   else if (audioState === 'failed') text = 'Audio cannot play in this browser.';
   const el = $('#dm-audio-note');
@@ -3124,7 +3134,79 @@ function syncAudioNote() {
   el.hidden = !text;
 }
 for (const b of $$('#mode-group button')) b.addEventListener('click', () => setMode(b.dataset.mode));
-bindCheck('dm-auto', 'autoMode');
+// One setting, two boxes: the Radio menu's and the Mode and filter panel's.
+const syncAutoMode = () => { for (const s of syncers) s(); };
+bindCheck('dm-auto', 'autoMode', syncAutoMode);
+
+// The Mode and filter panel: the mode and the filter width under the
+// frequency open it, the Radio menu's mode, filter width and band plan box
+// at hand, with the band plan's mode at the VFO marked. A press outside it,
+// on its scrim, or Escape closes it; a mode chosen keeps it open for its width.
+const modeTriggers = [$('#mode-button'), $('#bw-button')];
+const panelBwEl = $('#mp-bw');
+let modePanelOpener = null;
+function openModePanel(opener) {
+  closeMenu();
+  closeCtx();
+  modePanelOpener = opener;
+  modeScrim.hidden = false;
+  modePanel.hidden = false;
+  for (const b of modeTriggers) b.setAttribute('aria-expanded', 'true');
+  syncModePanel();
+  placeModePanel();
+  const first = opener.id === 'bw-button' ? panelBwEl : modePanel.querySelector('[data-mode][aria-checked="true"]');
+  if (first) first.focus();
+  poke();
+}
+// Closed from the keyboard, the focus returns to the button that opened it;
+// otherwise it leaves the panel.
+function closeModePanel(keyboard = false) {
+  if (modePanel.hidden) return;
+  const focused = document.activeElement, hadFocus = modePanel.contains(focused);
+  modePanel.hidden = true;
+  modeScrim.hidden = true;
+  for (const b of modeTriggers) b.setAttribute('aria-expanded', 'false');
+  if (keyboard && modePanelOpener) modePanelOpener.focus();
+  else if (hadFocus) focused.blur();
+  modePanelOpener = null;
+}
+// Under the line of the mode, centred on it and within the window, scrolling
+// in a short one; a narrow window's style puts it at the bottom edge instead.
+function placeModePanel() {
+  if (modePanel.hidden) return;
+  const line = $('#meta').getBoundingClientRect(), width = modePanel.offsetWidth;
+  const top = Math.round(line.bottom + 6);
+  modePanel.style.top = `${top}px`;
+  modePanel.style.left = `${Math.round(clamp((line.left + line.right - width) / 2, 8, window.innerWidth - width - 8))}px`;
+  modePanel.style.maxHeight = `${Math.max(120, window.innerHeight - top - 8)}px`;
+}
+function syncModePanel() {
+  if (modePanel.hidden) return;
+  const m = MODES[S.mode], seg = segmentAt(shownVfo()), planned = seg ? seg.mode : null;
+  for (const b of modePanel.querySelectorAll('[data-mode]')) {
+    const mode = b.dataset.mode, label = mode === 'SAM' ? 'Synchronous AM' : '';
+    const title = mode === planned ? (label ? `${label}: the band plan's mode here` : "The band plan's mode here") : label;
+    b.setAttribute('aria-checked', String(mode === S.mode));
+    b.classList.toggle('planned', mode === planned);
+    if (b.title !== title) b.title = title;
+  }
+  const note = $('#mp-note'), text = modeSilenceNote();
+  if (note.textContent !== text) note.textContent = text;
+  note.hidden = !text;
+  panelBwEl.min = String(m.min); panelBwEl.max = String(m.max); panelBwEl.step = String(m.step); panelBwEl.value = String(S.bw);
+  $('#mp-bw-v').textContent = fmtBw(S.bw);
+  const preset = presetAt(m, S.bw);
+  for (const b of modePanel.querySelectorAll('[data-width]')) b.setAttribute('aria-checked', String(b.dataset.width === preset));
+}
+for (const b of modeTriggers) b.addEventListener('click', () => { if (modePanel.hidden) openModePanel(b); else closeModePanel(true); });
+modeScrim.addEventListener('pointerdown', (e) => { e.preventDefault(); closeModePanel(); });
+for (const b of modePanel.querySelectorAll('[data-mode]')) b.addEventListener('click', () => setMode(b.dataset.mode));
+panelBwEl.addEventListener('input', () => setBandwidth(Number(panelBwEl.value)));
+for (const b of modePanel.querySelectorAll('[data-width]')) {
+  b.addEventListener('click', () => setBandwidth(widthPresets(MODES[S.mode])[b.dataset.width]));
+}
+bindCheck('mp-auto', 'autoMode', syncAutoMode);
+window.addEventListener('resize', placeModePanel);
 bwEl.addEventListener('input', () => setBandwidth(Number(bwEl.value)));
 $('#dm-step').addEventListener('change', (e) => { S.step = e.target.value; updateMeta(); });
 $('#dm-sql-auto').addEventListener('change', (e) => {
@@ -5003,6 +5085,7 @@ window.addEventListener('keydown', (e) => {
   if (antennaDialog.open || calibrateDialog.open || reportDialog.open || legalDialog.open || confirmDialog.open) return;
   if (e.key === 'Escape') {
     if (!ctxEl.hidden) { closeCtx(); e.preventDefault(); }
+    else if (!modePanel.hidden) { closeModePanel(true); e.preventDefault(); }
     else if (!menuEl.hidden) { closeMenu(true); e.preventDefault(); }
     return;
   }

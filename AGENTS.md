@@ -313,6 +313,7 @@ the history under the tag `v0.1.0`.
   channels, what the band strip draws of them and what a press there lands
   on), `planlist.js` (the Bookmarks menu's band plan list: the view, or the
   filter across the plan, at most 200 rows), `rates.js` (what a mode needs of the sample rate),
+  `modepanel.js` (the Mode and filter panel's Narrow, Normal and Wide widths),
   `memorytour.js` (what the Bookmarks menu says of the memory scan's tour
   across several windows),
   `view.js` (the view's limits up to the band plan's end, what lies beyond
@@ -335,6 +336,7 @@ the history under the tag `v0.1.0`.
   `tests/test_radios.py` `radios.js` and the radios message's decoding,
   `tests/test_categories.py` `categories.js`
   and the bookmarks message's decoding, `tests/test_memorytour.py` `memorytour.js`,
+  `tests/test_modepanel.py` `modepanel.js`,
   `tests/test_calibration_dialog.py` `calibration.js`'s calibration on
   the stations and the calibration state's decoding, `tests/test_advanced.py` `advanced.js`,
   the antenna power's warning and the device's fields' decoding, and
