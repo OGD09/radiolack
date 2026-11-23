@@ -424,7 +424,9 @@ radiolack --rtl-sdr
 - Radiolack starts rtl_tcp, on 127.0.0.1 and a free port, when an interface
   opens or a scan starts, `--scan` at start included, and stops it once no
   interface is open and no scan runs, or when Radiolack stops:
-  the receiver then stays free for other programs, such as Gqrx. On Linux,
+  the receiver then stays free for other programs, such as Gqrx. Once it
+  has been read, rtl_tcp 0.6.0 heeds the request to stop only about 5 s
+  later: Radiolack ends it after a second instead. On Linux,
   should Radiolack end without stopping rtl_tcp, killed for instance, the
   system stops it (through setpriv, from util-linux).
 - `--rtl-sdr 1` reads the second receiver, and `--rtl-sdr SERIAL` the one

@@ -134,7 +134,7 @@ READ_WAIT_S = 0.5       # a read without samples gives up after this
 TIMEOUT_S = 5.0         # limit for connecting, for the header and for silences
 RETRY_S = (0.5, 5.0)    # first and longest delay before connecting again
 RTL_TCP_PROGRAM = "rtl_tcp"     # what RtlSdrSource runs, found on the PATH
-STOP_S = 3.0            # rtl_tcp stops within about a second; killed after this
+STOP_S = 1.0            # rtl_tcp asked to stop is killed after this: once read, rtl-sdr 0.6.0's takes about 5 s
 REPORT_S = 60.0         # the samples dropped for an engine behind are logged at most this often
 
 _MAX_HOST = 253         # characters in the longest host name
@@ -1055,7 +1055,7 @@ class _Child:
         return cls(process)
 
     def terminate(self) -> None:
-        """Ask rtl_tcp to stop, which it does within about a second."""
+        """Ask rtl_tcp to stop, which it does at once unless it has served a connection."""
         if not self.exited.done():
             with contextlib.suppress(ProcessLookupError):
                 self._process.terminate()
@@ -1065,7 +1065,10 @@ class _Child:
         self.terminate()
         _, running = await asyncio.wait({self.exited}, timeout=timeout_s)
         if running:
-            log.warning("rtl_tcp did not stop within %g s: killing it", timeout_s)
+            # Expected after a connection: rtl-sdr 0.6.0 takes the request
+            # for the end of the session, and stops only on one received
+            # once it listens again, about 5 s later.
+            log.info("rtl_tcp did not stop within %g s: killing it", timeout_s)
             with contextlib.suppress(ProcessLookupError):
                 self._process.kill()
             _, running = await asyncio.wait({self.exited}, timeout=timeout_s)
