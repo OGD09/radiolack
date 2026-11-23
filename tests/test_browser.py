@@ -2989,6 +2989,22 @@ class BrowserTest(unittest.TestCase):
                 expect(first.locator("#src-driver")).to_have_value("unknown")
 
     @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
+    def test_the_centre_field_moves_the_vfo_with_the_centre_asked_through_the_tuner_s_grid(self):
+        # The tuner sits 2.5 kHz below 145 MHz, on its grid: the VFO keeps
+        # its place from the centre asked, so it comes back where it was.
+        FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
+        url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))     # 2.4 MHz around 145 MHz, the VFO on 145.6
+        for browser in BROWSERS:
+            with self.subTest(browser=browser), self.interfaces(browser, url, 1) as [page]:
+                expect(page.locator("#src-center-note")).to_have_text("In use: 144.9975 MHz, where the tuner sits.")
+                freq, centre = page.locator("#freq"), page.locator("#src-center")
+                expect(freq).to_have_attribute("aria-valuenow", "145600000")
+                for asked, vfo in (("145.3", "145900000"), ("145", "145600000")):
+                    centre.fill(asked)
+                    centre.press("Enter")
+                    expect(freq).to_have_attribute("aria-valuenow", vfo)
+
+    @unittest.skipUnless(os.name == "posix", "the fake rtl_tcp program stops on SIGTERM")
     def test_a_converter_moves_the_frequencies_shown_and_the_receiver_stays_where_it_is_tuned(self):
         FakeRtlTcpRuns(self)    # where the fake rtl_tcp program imports from
         url = self.serve(RtlSdrSource(program=FAKE_RTL_TCP))

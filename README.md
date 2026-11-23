@@ -733,7 +733,9 @@ So Radiolack asks such a tuner for the nearest centre frequency on that
 grid, at most 56.25 kHz from the one you set, and shows it under the
 Receivers menu's centre frequency ("In use: 144.9975 MHz, where the tuner
 sits"). The spectrum, the VFO, the scans and the recordings follow it: you
-tune as before.
+tune as before. A new centre frequency set there moves the VFO by the
+difference between the centres you set, so that it comes back where it was
+with the centre.
 
 The Receivers menu's "rtl-sdr driver" tells Radiolack which driver runs,
 and Radiolack saves it with the receiver:

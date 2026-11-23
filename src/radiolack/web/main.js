@@ -3172,7 +3172,9 @@ $('#src-address').addEventListener('change', (e) => {
 $('#src-center').addEventListener('change', (e) => {
   const hz = parseFrequency(e.target.value);
   if (!source || hz === null || hz === source.centreHz) { syncSource(); return; }
-  if (!requestCentre(hz, hz + (S.vfo - S.fc), {})) syncSource();     // the VFO keeps its place in the span
+  // The VFO keeps its place from the centre asked, not from the one in use:
+  // a tuner placed on its grid would otherwise move it by their difference.
+  if (!requestCentre(hz, hz + (S.vfo - source.centreHz), {})) syncSource();
 });
 $('#src-rate').addEventListener('change', (e) => { if (!stream.sendSource({ rateHz: Number(e.target.value) })) syncSource(); });
 $('#src-gain').addEventListener('input', () => { const g = sliderGain(); if (g !== undefined) $('#src-gain-v').textContent = `${g.toFixed(1)} dB`; });
