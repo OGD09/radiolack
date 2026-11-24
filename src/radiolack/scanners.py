@@ -15,7 +15,9 @@ dBFS bin powers: not calibrated, and not comparable with the channel meter.
 signal is listed once found in two averaged spectra in a row, so that a
 stray peak of noise is not, and detections close to an entry update it,
 following a slow drift. Ignored frequencies are never listed, nor the
-signals that show on an ignored frequency's channel. The listed
+signals that show on an ignored frequency's channel, nor, in the band
+plan's WFM ranges, those within half the WFM filter's width of it, where
+a broadcast station's detections may split. The listed
 signals found in each search are what the engine records as observations
 (observations.py).
 
@@ -82,6 +84,7 @@ from typing import Any
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
+from .bandplan import BandPlan
 from .bookmarks import Bookmark
 from .demod import MODE_BANDWIDTHS_HZ, noise_clearance_hz, passband_hz
 
@@ -239,13 +242,14 @@ def same_signal(frequency_hz: float, width_hz: float, other_hz: float, other_wid
 class Signals:
     """The signals found while Radiolack runs, at most MAX_SIGNALS, the
     latest found, and the frequencies the interfaces chose to ignore.
-    ``channel`` gives the frequency that a signal, at a frequency and that
-    wide, shows on (bandplan.BandPlan.channel): an ignored frequency also
-    leaves out the signals that show on its channel, as the lists show one
-    row per channel. Without it, only the signals close to it."""
+    ``plan`` gives the band plan in use: an ignored frequency also leaves
+    out the signals that show on its channel, as the lists show one row per
+    channel, and those its station spreads over
+    (bandplan.BandPlan.station_reach_hz). Without it, only the signals
+    close to it."""
 
-    def __init__(self, channel: Callable[[float, float], int] | None = None) -> None:
-        self._channel = channel
+    def __init__(self, plan: Callable[[], BandPlan] | None = None) -> None:
+        self._plan = plan
         self._signals: list[Signal] = []
         self._candidates: list[Detection] = []      # found in the latest search only
         self._ignored: list[float] = []             # lowest first
@@ -263,9 +267,9 @@ class Signals:
         listed signals found in this search, as they stand now."""
         candidates = []
         found: list[Signal] = []
-        ignored_channels = self._ignored_channels()
+        stations = self._ignored_stations()
         for detection in detections:
-            if self._is_ignored(detection.frequency_hz, detection.width_hz, ignored_channels):
+            if self._is_ignored(detection.frequency_hz, detection.width_hz, stations):
                 continue
             signal = self._nearest(detection)
             if signal is not None:
@@ -320,28 +324,40 @@ class Signals:
 
     def covers(self, ignored_hz: float, frequency_hz: float, width_hz: float) -> bool:
         """Whether ignoring ``ignored_hz`` leaves out a signal at
-        ``frequency_hz``, ``width_hz`` wide: one close to it, or one that
-        shows on its channel."""
-        return (same_signal(frequency_hz, width_hz, ignored_hz, 0.0)
-                or (self._channel is not None
-                    and self._channel(frequency_hz, width_hz) == self._channel(ignored_hz, 0.0)))
+        ``frequency_hz``, ``width_hz`` wide: one close to it, one that shows
+        on its channel, or one within the reach of its station."""
+        if same_signal(frequency_hz, width_hz, ignored_hz, 0.0):
+            return True
+        if self._plan is None:
+            return False
+        plan = self._plan()
+        return (abs(frequency_hz - ignored_hz) <= plan.station_reach_hz(ignored_hz)
+                or plan.channel(frequency_hz, width_hz) == plan.channel(ignored_hz, 0.0))
 
-    def _ignored_channels(self) -> set[int]:
-        """The channels of the ignored frequencies, computed once for a
-        search's detections."""
-        if self._channel is None:
-            return set()
-        return {self._channel(ignored, 0.0) for ignored in self._ignored}
+    def _ignored_stations(self) -> tuple[BandPlan | None, set[int], list[tuple[float, float]]]:
+        """What the ignored frequencies cover beyond the signals close to
+        them, computed once for a search's detections: the band plan in use,
+        their channels, and each one whose station spreads, with its reach."""
+        if self._plan is None:
+            return None, set(), []
+        plan = self._plan()
+        reaches = [(ignored, plan.station_reach_hz(ignored)) for ignored in self._ignored]
+        return (plan, {plan.channel(ignored, 0.0) for ignored in self._ignored},
+                [(ignored, reach) for ignored, reach in reaches if reach > 0])
 
-    def _is_ignored(self, frequency_hz: float, width_hz: float, ignored_channels: set[int]) -> bool:
+    def _is_ignored(self, frequency_hz: float, width_hz: float,
+                    stations: tuple[BandPlan | None, set[int], list[tuple[float, float]]]) -> bool:
         if any(same_signal(frequency_hz, width_hz, ignored, 0.0) for ignored in self._ignored):
             return True
-        return (self._channel is not None and bool(ignored_channels)
-                and self._channel(frequency_hz, width_hz) in ignored_channels)
+        plan, channels, reaches = stations
+        if plan is None:
+            return False
+        return (any(abs(frequency_hz - ignored) <= reach for ignored, reach in reaches)
+                or (bool(channels) and plan.channel(frequency_hz, width_hz) in channels))
 
     def ignore(self, frequency_hz: float) -> None:
-        """Ignore a frequency: the signals there, and on its channel, leave the
-        list and are not listed again. Raises ValueError when MAX_IGNORED are ignored already."""
+        """Ignore a frequency: the signals there, on its channel and within
+        its station's reach leave the list and are not listed again. Raises ValueError when MAX_IGNORED are ignored already."""
         if not any(abs(frequency_hz - ignored) <= MERGE_HZ for ignored in self._ignored):
             if len(self._ignored) >= MAX_IGNORED:
                 raise ValueError(f"at most {MAX_IGNORED} frequencies may be ignored")

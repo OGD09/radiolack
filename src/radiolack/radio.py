@@ -238,7 +238,7 @@ class Radio:
         self._detector = Detector()         # used by one block at a time, like the demodulator
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
-        self._signals = Signals(lambda frequency_hz, width_hz: self._engine.plan.channel(frequency_hz, width_hz))
+        self._signals = Signals(lambda: self._engine.plan)
         self._resume_s = DEFAULT_RESUME_S
         self._listen_s = DEFAULT_LISTEN_S
         self._watch = ChannelWatch()        # used by one block at a time, like the demodulator

@@ -34,7 +34,7 @@ import math
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .demod import MODES, WFM_DEEMPHASIS_S
+from .demod import MODE_BANDWIDTHS_HZ, MODES, WFM_DEEMPHASIS_S
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,8 @@ WIDE_HZ = 4_000                 # a signal this wide or wider on the nearest cha
 REACH_HZ = 1_500                # a narrower one when it lies this close to it,
                                 # and any in a WFM range, where a station's detection narrows as its sound does
 SHOWN_HZ = 100                  # elsewhere, signals show to this
+STATION_REACH_HZ = MODE_BANDWIDTHS_HZ["WFM"] / 2    # what an ignored frequency covers in a WFM range: a station
+                                                    # spreads over the WFM filter's width, and its detections may split
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,6 +175,14 @@ class BandPlan:
             if found.mode == "WFM" or width_hz >= WIDE_HZ or abs(frequency_hz - channel) <= REACH_HZ:
                 return _round(channel)
         return _round(frequency_hz / SHOWN_HZ) * SHOWN_HZ
+
+    def station_reach_hz(self, frequency_hz: float) -> float:
+        """How far from ``frequency_hz`` a station there spreads: in a WFM
+        range, STATION_REACH_HZ, half the WFM filter's width, as a broadcast
+        station's detections may split across it; elsewhere 0, its channel
+        alone counting."""
+        found = self.range_at(frequency_hz)
+        return STATION_REACH_HZ if found is not None and found.mode == "WFM" else 0.0
 
     def _set_at(self, frequency_hz: float) -> ChannelSet | None:
         index = bisect.bisect_right(self._set_starts, frequency_hz) - 1

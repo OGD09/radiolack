@@ -601,6 +601,13 @@ class EnginePlanTest(unittest.TestCase):
                 self.assertEqual(plan.channel(frequency, width), shown)
                 self.assertIsInstance(plan.channel(frequency, width), int)
 
+    def test_a_station_spreads_over_half_the_wfm_filter_s_width_in_a_wfm_range_alone(self):
+        plan = bandplan.load_plan("europe")
+        self.assertEqual(plan.station_reach_hz(100_200_000), 90_000)
+        self.assertEqual(plan.station_reach_hz(145_500_000), 0)        # NFM
+        self.assertEqual(plan.station_reach_hz(50_000), 0)              # no mode there, or outside the plan
+        self.assertEqual(BandPlan().station_reach_hz(100_200_000), 0)
+
     def test_every_signal_of_a_wfm_range_shows_on_its_nearest_channel(self):
         plan = bandplan.load_plan("europe")
         cases = [

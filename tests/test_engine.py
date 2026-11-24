@@ -1776,12 +1776,13 @@ class ScannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kinds_of(waiting(subscription)), ["scanner"])     # the list is the same, until found again
         await next_peaks(subscription, until=bool)
 
-    async def test_an_ignored_frequency_takes_its_channel_in_the_band_plan_in_use(self):
+    async def test_an_ignored_frequency_takes_its_station_in_the_band_plan_in_use(self):
         engine = self.engine(FakeSource())
         radio = engine.radios[0]
         radio.configure_scanner({"ignore": 100_200_000})
         self.assertTrue(radio._signals.covers(100_200_000, 100_196_200, 3_200))      # a station's narrow detection
-        self.assertFalse(radio._signals.covers(100_200_000, 100_250_000, 3_200))     # the next channel
+        self.assertTrue(radio._signals.covers(100_200_000, 100_228_000, 7_000))      # its upper part, next channel
+        self.assertFalse(radio._signals.covers(100_200_000, 100_300_000, 3_200))     # the next station
 
     async def test_detection_turned_off_empties_the_list_and_finds_nothing(self):
         source = FakeSource()
