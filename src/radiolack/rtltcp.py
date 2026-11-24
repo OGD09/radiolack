@@ -14,7 +14,9 @@ the oldest when the engine falls behind, so that the display stays current,
 and logs how many it dropped at most once a minute (``Losses``, which a
 SoapySDR source shares): rtl_tcp itself queues up to about 130 MB for a
 client that stops reading. For the same reason it hangs up once the engine
-stops reading, and connects again at the next read. A refused, silent or lost
+stops reading, and connects again at the next read. The samples dropped
+count once the engine reads again: those dropped after its last read, while
+the source waits to hang up, were missed by nobody. A refused, silent or lost
 connection is a waiting state, retried with a growing delay, never an error.
 
 The address of an ``RtlTcpSource`` is one of its settings: the way to the
@@ -413,6 +415,7 @@ class RtlTcpSource:
         self._task: asyncio.Task | None = None
         self._buffer = bytearray()  # bytes of the current setting, starting with an I byte
         self._wanted = 0            # bytes the latest read needs
+        self._unread: dict[float, int] = {}     # samples dropped since the latest read, by sample rate
         self._arrived = asyncio.Event()
         self._settle_until = 0.0
         self._last_read = -math.inf     # when the latest read ended
@@ -500,6 +503,9 @@ class RtlTcpSource:
             self._last_read = time.monotonic()
         data = self._buffer[:size]
         del self._buffer[:size]
+        for rate_hz, dropped in self._unread.items():     # the engine read again: they were missed
+            self._losses.add(dropped=dropped, rate_hz=rate_hz)
+        self._unread.clear()
         self._losses.check()
         # The buffer only ever holds samples of the current setting.
         settings = self._settings
@@ -725,6 +731,7 @@ class RtlTcpSource:
             while not connection.ended.done():
                 await asyncio.wait({connection.ended}, timeout=_CHECK_S)
                 if self._closed or self._idle():
+                    self._unread.clear()    # dropped after the engine's last read: nobody missed them
                     return
                 if time.monotonic() - connection.last_data >= self._timeout_s:
                     connection.close("no samples" if connection.tuner
@@ -767,6 +774,7 @@ class RtlTcpSource:
         if self._task is not None:
             self._task.cancel()
         self._buffer.clear()
+        self._unread.clear()
 
     def _idle(self) -> bool:
         """Nobody has read for a while: the engine has no client."""
@@ -809,7 +817,8 @@ class RtlTcpSource:
         if excess > 0:
             dropped = excess + excess % 2
             del self._buffer[:dropped]
-            self._losses.add(dropped=dropped // 2, rate_hz=self._settings.sample_rate_hz)
+            rate_hz = self._settings.sample_rate_hz
+            self._unread[rate_hz] = self._unread.get(rate_hz, 0) + dropped // 2
         if len(self._buffer) >= self._wanted:
             self._arrived.set()
 

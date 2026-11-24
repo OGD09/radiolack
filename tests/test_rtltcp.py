@@ -197,6 +197,16 @@ class StreamingTest(SourceTest):
             await source.wait_closed()          # its last count goes out as it stops
         self.assertRegex(logs.records[-1].getMessage(), r"^rtl_tcp: [1-9]\d* samples dropped \(\d+\.\d s\)")
 
+    async def test_the_samples_dropped_after_the_last_read_were_missed_by_nobody(self):
+        source = await self.start(buffer_s=0.01, idle_s=0.5)
+        with self.assertNoLogs("radiolack.rtltcp", logging.WARNING):
+            await self.read(source)
+            # Nobody reads now: the buffer drops samples until the source hangs up.
+            await eventually(lambda: source.status == "idle")
+            await self.read(source)
+            source.close()
+            await source.wait_closed()
+
 
 class SettingsTest(SourceTest):
     async def test_retunes_and_drops_the_samples_of_the_previous_setting(self):
