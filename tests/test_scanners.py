@@ -311,6 +311,37 @@ class SignalsTest(unittest.TestCase):
         self.assertTrue(signals.covers(100_200_000, 100_110_000, 600))      # half the WFM filter's width below
         self.assertFalse(signals.covers(100_200_000, 100_109_000, 600))
 
+    def test_a_broadcast_station_s_parts_make_one_signal_at_its_strongest(self):
+        plan = bandplan.load_plan("europe")
+        signals = Signals(lambda: plan)
+        main, upper, next_station = (carrier(100_197_000, 25.0, 14_000), carrier(100_228_000, 13.0, 7_000),
+                                     carrier(100_300_000, 20.0, 14_000))
+        for now in (0.0, 0.3):
+            signals.update([upper, main, next_station], now)
+        self.assertEqual(self.listed(signals, 0.3), [(100_197_000, True), (100_300_000, True)])
+        found = signals.update([upper], 3.0)        # the upper part alone keeps the station active, where it was
+        self.assertEqual([(round(signal.frequency_hz), signal.margin_db) for signal in found], [(100_197_000, 25.0)])
+        self.assertEqual(self.listed(signals, 3.0), [(100_197_000, True), (100_300_000, False)])
+        signals.update([carrier(100_197_000, 10.0, 14_000)], 3.3)       # the station fades
+        signals.update([upper], 3.6)        # stronger than its latest detection, not than its strongest
+        self.assertEqual(self.listed(signals, 3.6)[0], (100_197_000, True))
+
+    def test_a_broadcast_station_found_by_a_weak_part_moves_to_a_stronger_one(self):
+        plan = bandplan.load_plan("europe")
+        signals = Signals(lambda: plan)
+        for now in (0.0, 0.3):
+            signals.update([carrier(100_228_000, 13.0, 7_000)], now)
+        self.assertEqual(self.listed(signals, 0.3), [(100_228_000, True)])
+        signals.update([carrier(100_197_000, 25.0, 14_000)], 0.6)
+        self.assertEqual(self.listed(signals, 0.6), [(100_197_000, True)])
+
+    def test_signals_outside_a_wfm_range_stay_apart(self):
+        plan = bandplan.load_plan("europe")
+        signals = Signals(lambda: plan)
+        for now in (0.0, 0.3):
+            signals.update([carrier(145_500_000, 25.0), carrier(145_520_000, 13.0)], now)
+        self.assertEqual(self.listed(signals, 0.3), [(145_500_000, True), (145_520_000, True)])
+
     def test_without_channels_an_ignored_frequency_leaves_out_the_signals_close_to_it(self):
         signals = Signals()
         self.assertTrue(signals.covers(100_200_000, 100_201_500, 600))

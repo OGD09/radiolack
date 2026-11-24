@@ -392,7 +392,12 @@ preferences apart from this computer's.
    -150 dBFS. A signal is listed once found in two searches in a row;
    a later detection within 1.5 kHz of it, or within a quarter of its
    width, updates it, its frequency moving 30% of the way to the
-   detection's. The engine keeps the 200 signals found last, in the spans
+   detection's. In a range of the band plan whose mode is WFM, where a
+   broadcast station's detections may split across the WFM filter's
+   width, a detection within 90 kHz of a signal there, half that width,
+   belongs to it: it keeps the signal active, and moves it to its own
+   frequency only when stronger than any detection that placed it. The
+   engine keeps the 200 signals found last, in the spans
    the receiver left too, and sends 50: the active ones first, strongest
    first, then the others, latest found first. The list changes when a
    signal comes or goes, becomes active or inactive, or moves by 100 Hz or
