@@ -1370,7 +1370,10 @@ a station whose sound goes quiet narrows as it does.
 A click on a frequency tunes to it. Ignore leaves its frequency out of the
 list, for every interface, until Restore brings the ignored frequencies
 back, with the signals found later on its channel, a station's narrow
-ones included; the spectrum's context menu ignores a frequency too. Whether detection
+ones included; in the FM broadcast band, it leaves out the whole station,
+90 kHz on either side of it, half the WFM filter's width, as a station's
+signals may split across it. The spectrum's context menu ignores a
+frequency too. Whether detection
 is on, its threshold and the ignored frequencies, up to 200, are the same
 for every interface, a paired device's included, and kept for the next
 start. "Mark on the spectrum" is each interface's own: it marks the signals

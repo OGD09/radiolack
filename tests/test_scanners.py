@@ -287,7 +287,7 @@ class SignalsTest(unittest.TestCase):
 
     def test_an_ignored_frequency_leaves_out_the_signals_on_its_channel(self):
         plan = bandplan.load_plan("europe")
-        signals = Signals(plan.channel)
+        signals = Signals(lambda: plan)
         for now in (0.0, 0.3):
             signals.update([carrier(100_198_000, width_hz=12_000), carrier(100_300_000, width_hz=12_000),
                             carrier(145_500_000), carrier(145_506_000)], now)
@@ -298,8 +298,18 @@ class SignalsTest(unittest.TestCase):
             signals.update([carrier(100_196_200, width_hz=3_200), carrier(100_300_000, width_hz=12_000)], now)
         self.assertEqual(self.listed(signals, 2.3), [(100_300_000, True), (145_506_000, False)])
         self.assertTrue(signals.covers(100_200_000, 100_224_900, 600))
-        self.assertFalse(signals.covers(100_200_000, 100_225_100, 600))     # the next channel
         self.assertFalse(signals.covers(145_500_000, 145_506_000, 600))     # beyond an NFM channel's reach
+
+    def test_an_ignored_broadcast_station_leaves_out_what_it_spreads_over(self):
+        plan = bandplan.load_plan("europe")
+        signals = Signals(lambda: plan)
+        signals.ignore(100_200_000)
+        for now in (0.0, 0.3):      # the station's upper part, on the next channel, and the next station
+            signals.update([carrier(100_228_000, width_hz=7_000), carrier(100_290_000), carrier(100_300_000),
+                            carrier(100_109_000)], now)
+        self.assertEqual(self.listed(signals, 0.3), [(100_300_000, True), (100_109_000, True)])
+        self.assertTrue(signals.covers(100_200_000, 100_110_000, 600))      # half the WFM filter's width below
+        self.assertFalse(signals.covers(100_200_000, 100_109_000, 600))
 
     def test_without_channels_an_ignored_frequency_leaves_out_the_signals_close_to_it(self):
         signals = Signals()

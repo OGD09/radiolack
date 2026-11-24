@@ -219,7 +219,7 @@ preferences apart from this computer's.
    | --- | --- |
    | `detection` | Whether the engine looks for signals in its spectra. |
    | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 50 dB. |
-   | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width, or when it shows on one's channel (`channel_hz` below, the ignored frequency taken as a signal narrower than 4 kHz). |
+   | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width, or when it shows on one's channel (`channel_hz` below, the ignored frequency taken as a signal narrower than 4 kHz), or, when one lies in a range whose mode is WFM, within half the WFM filter's width of it, 90 kHz, over which a broadcast station spreads. |
    | `resume_s` | How long the memory scan and the listening sweep wait, once the squelch closed, before they watch again, from 0 to 8 s. |
    | `listen_s` | How long the listening sweep stays on a signal of a window at most, from 2 to 60 s. |
    | `sweep_low_hz`, `sweep_high_hz` | The range the sweep steps the receiver across, the lowest below the highest, each a whole number of Hz from 1 Hz to 100 GHz: 430 to 440 MHz until an interface changes it. |
