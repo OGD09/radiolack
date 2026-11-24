@@ -406,6 +406,14 @@ export function runView({ state, source, measures, open, recording }) {
       view.note = agreeing === 1
         ? 'From one station alone, though well above the noise: confirm it with a second calibration if you can.'
         : `${agreeing} stations agree on it.`;
+      // Harmonics of one local oscillator all imply the same correction:
+      // stations that agree can still be a nearby device's.
+      const change = Math.round(Math.abs(ppm - (source.ppm ?? 0)) * 100) / 100;
+      if (change > LARGE_CHANGE_PPM) {
+        view.note += ` It moves the correction by ${ppmText(change)} ppm, more than a crystal drifts: the `
+          + 'stations may be the harmonics of a device nearby. Check it first on a broadcast carrier, under '
+          + '"On a known carrier".';
+      }
     }
   } else if (state.reason !== null) {
     view.note = Object.hasOwn(RUN_REASONS, state.reason) ? RUN_REASONS[state.reason] : 'Nothing is proposed.';
