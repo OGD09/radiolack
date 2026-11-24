@@ -219,7 +219,7 @@ preferences apart from this computer's.
    | --- | --- |
    | `detection` | Whether the engine looks for signals in its spectra. |
    | `threshold_db` | How far a signal's highest bin must rise above the local noise, from 6 to 50 dB. |
-   | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width. |
+   | `ignored_hz` | Frequencies whose signals are not listed, lowest first, each a whole number of Hz: at most 200. A signal is left out when its centre lies within 1.5 kHz of one, or within a quarter of its width, or when it shows on one's channel (`channel_hz` below, the ignored frequency taken as a signal narrower than 4 kHz). |
    | `resume_s` | How long the memory scan and the listening sweep wait, once the squelch closed, before they watch again, from 0 to 8 s. |
    | `listen_s` | How long the listening sweep stays on a signal of a window at most, from 2 to 60 s. |
    | `sweep_low_hz`, `sweep_high_hz` | The range the sweep steps the receiver across, the lowest below the highest, each a whole number of Hz from 1 Hz to 100 GHz: 430 to 440 MHz until an interface changes it. |
@@ -374,7 +374,7 @@ preferences apart from this computer's.
    | Field | Meaning |
    | --- | --- |
    | `frequency_hz` | The signal's centre of power, a whole number of Hz. |
-   | `channel_hz` | The frequency it shows on, a whole number of Hz: where the band plan's step is 12.5 kHz or more, the nearest channel of that step, for a signal 4 kHz wide or more, or within 1.5 kHz of it; elsewhere its frequency to the 100 Hz. |
+   | `channel_hz` | The frequency it shows on, a whole number of Hz: where the band plan's step is 12.5 kHz or more, the nearest channel of that step, for a signal 4 kHz wide or more, within 1.5 kHz of it, or in a range whose mode is WFM; elsewhere its frequency to the 100 Hz. |
    | `width_hz` | The width of the bins it covered, in Hz, when last found. |
    | `margin_db` | How far its highest bin rose above the local noise when last found, in dB. |
    | `active` | Whether it was found within the last 1.5 s. |
@@ -1208,7 +1208,7 @@ range scan (the sweep), the same for every interface:
 | `sweep_window_s` | A number from 0.25 to 2. A running sweep takes it at once. |
 | `sweep_listen` | `true` or `false`. A running sweep takes it at once: turned off while it listens, it goes on to the next window. |
 | `sweep_passes` | A whole number from 1 to 99, or null for endless. A running sweep takes it at once, the passes done counting: it stops at the end of a pass once they reach it. |
-| `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
+| `ignore` | A frequency from 1 Hz to 100 GHz, rounded to the Hz: the signals within 1.5 kHz of it, or within a quarter of their width, and those that show on its channel (`ignored_hz`), leave the list and are not listed again. A frequency within 1.5 kHz of one already ignored adds none. |
 | `restore` | `true`: no frequency is ignored any more. The signals left out come back once found again. |
 | `scan` | `memory` starts the memory scan, `sweep` the sweep with its saved settings, `signals` the sweep over the current window, listening, without end (above), unless it runs, stopping the scan that runs; null stops the scan that runs, if any. |
 | `name` | With `scan` value `sweep` or `signals` alone: the name the sweep that starts is kept under (the kept scans, above), 60 characters at most, on one line, with no control character; an empty one, or none, gives its range and start. |

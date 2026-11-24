@@ -14,7 +14,7 @@ from unittest import mock
 
 import numpy as np
 
-from radiolack import r82xx
+from radiolack import bandplan, r82xx
 from radiolack.bookmarks import Bookmark
 from radiolack.scanners import (ACTIVE_S, CHECK_S, DC_GAP_HZ, DEFAULT_THRESHOLD_DB, GIVE_UP_S, HOLD_S, MAX_IGNORED,
                                 MAX_SIGNALS, MERGE_HZ, SWEEP_SEARCHES, USABLE_FRACTION, VISIT_S, ChannelWatch,
@@ -284,6 +284,28 @@ class SignalsTest(unittest.TestCase):
         self.assertEqual(len(signals.describe(2.3)), 1)      # the signals left out stay out until found again
         signals.clear()
         self.assertEqual(signals.describe(2.3), [])
+
+    def test_an_ignored_frequency_leaves_out_the_signals_on_its_channel(self):
+        plan = bandplan.load_plan("europe")
+        signals = Signals(plan.channel)
+        for now in (0.0, 0.3):
+            signals.update([carrier(100_198_000, width_hz=12_000), carrier(100_300_000, width_hz=12_000),
+                            carrier(145_500_000), carrier(145_506_000)], now)
+        signals.ignore(100_200_000)
+        signals.ignore(145_500_000)
+        self.assertEqual(self.listed(signals, 0.3), [(100_300_000, True), (145_506_000, True)])
+        for now in (2.0, 2.3):      # the station narrows, 3.8 kHz off its channel
+            signals.update([carrier(100_196_200, width_hz=3_200), carrier(100_300_000, width_hz=12_000)], now)
+        self.assertEqual(self.listed(signals, 2.3), [(100_300_000, True), (145_506_000, False)])
+        self.assertTrue(signals.covers(100_200_000, 100_224_900, 600))
+        self.assertFalse(signals.covers(100_200_000, 100_225_100, 600))     # the next channel
+        self.assertFalse(signals.covers(145_500_000, 145_506_000, 600))     # beyond an NFM channel's reach
+
+    def test_without_channels_an_ignored_frequency_leaves_out_the_signals_close_to_it(self):
+        signals = Signals()
+        self.assertTrue(signals.covers(100_200_000, 100_201_500, 600))
+        self.assertFalse(signals.covers(100_200_000, 100_196_200, 3_200))
+        self.assertTrue(signals.covers(100_200_000, 100_196_200, 16_000))   # within a quarter of its width
 
     def test_at_most_max_ignored_frequencies(self):
         signals = Signals()

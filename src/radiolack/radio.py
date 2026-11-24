@@ -137,7 +137,7 @@ from .scanners import (DC_GAP_HZ, DEFAULT_LISTEN_S, DEFAULT_RESUME_S, DEFAULT_SW
                        ChannelWatch, Detection, Detector, MemoryScan, MemoryTour, Placement, Signal, Signals,
                        SignalScan, Sweep, SweepWindows, checked_frequency, checked_listen, checked_passes,
                        checked_resume, checked_sweep_range, checked_threshold, checked_window, memory_window,
-                       memory_windows, range_window, same_signal, search_blocks, sweep_windows, watched_channels)
+                       memory_windows, range_window, search_blocks, sweep_windows, watched_channels)
 from .spectrum import SpectrumAnalyzer, encode_frame, fewer_bins
 from .store import shown_path
 
@@ -238,7 +238,7 @@ class Radio:
         self._detector = Detector()         # used by one block at a time, like the demodulator
         self._detection = True
         self._threshold_db = DEFAULT_THRESHOLD_DB
-        self._signals = Signals()
+        self._signals = Signals(lambda frequency_hz, width_hz: self._engine.plan.channel(frequency_hz, width_hz))
         self._resume_s = DEFAULT_RESUME_S
         self._listen_s = DEFAULT_LISTEN_S
         self._watch = ChannelWatch()        # used by one block at a time, like the demodulator
@@ -613,7 +613,7 @@ class Radio:
             ignored = checked_frequency(changes["ignore"], "an ignored frequency")
             self._signals.ignore(ignored)
             scan = self._listening()
-            if scan is not None and scan.frequency_hz is not None and same_signal(*self._signal_tuned, ignored, 0.0):
+            if scan is not None and scan.frequency_hz is not None and self._signals.covers(ignored, *self._signal_tuned):
                 scan.leave()
         elif "restore" in changes:
             if changes["restore"] is not True:

@@ -14,7 +14,8 @@ dBFS bin powers: not calibrated, and not comparable with the channel meter.
 ``Signals`` keeps one entry for each signal found while Radiolack runs: a
 signal is listed once found in two averaged spectra in a row, so that a
 stray peak of noise is not, and detections close to an entry update it,
-following a slow drift. Ignored frequencies are never listed. The listed
+following a slow drift. Ignored frequencies are never listed, nor the
+signals that show on an ignored frequency's channel. The listed
 signals found in each search are what the engine records as observations
 (observations.py).
 
@@ -237,9 +238,14 @@ def same_signal(frequency_hz: float, width_hz: float, other_hz: float, other_wid
 
 class Signals:
     """The signals found while Radiolack runs, at most MAX_SIGNALS, the
-    latest found, and the frequencies the interfaces chose to ignore."""
+    latest found, and the frequencies the interfaces chose to ignore.
+    ``channel`` gives the frequency that a signal, at a frequency and that
+    wide, shows on (bandplan.BandPlan.channel): an ignored frequency also
+    leaves out the signals that show on its channel, as the lists show one
+    row per channel. Without it, only the signals close to it."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel: Callable[[float, float], int] | None = None) -> None:
+        self._channel = channel
         self._signals: list[Signal] = []
         self._candidates: list[Detection] = []      # found in the latest search only
         self._ignored: list[float] = []             # lowest first
@@ -257,8 +263,9 @@ class Signals:
         listed signals found in this search, as they stand now."""
         candidates = []
         found: list[Signal] = []
+        ignored_channels = self._ignored_channels()
         for detection in detections:
-            if self.is_ignored(detection.frequency_hz, detection.width_hz):
+            if self._is_ignored(detection.frequency_hz, detection.width_hz, ignored_channels):
                 continue
             signal = self._nearest(detection)
             if signal is not None:
@@ -311,21 +318,39 @@ class Signals:
         self._listed = listed
         return True
 
-    def is_ignored(self, frequency_hz: float, width_hz: float = 0.0) -> bool:
-        return any(same_signal(frequency_hz, width_hz, ignored, 0.0) for ignored in self._ignored)
+    def covers(self, ignored_hz: float, frequency_hz: float, width_hz: float) -> bool:
+        """Whether ignoring ``ignored_hz`` leaves out a signal at
+        ``frequency_hz``, ``width_hz`` wide: one close to it, or one that
+        shows on its channel."""
+        return (same_signal(frequency_hz, width_hz, ignored_hz, 0.0)
+                or (self._channel is not None
+                    and self._channel(frequency_hz, width_hz) == self._channel(ignored_hz, 0.0)))
+
+    def _ignored_channels(self) -> set[int]:
+        """The channels of the ignored frequencies, computed once for a
+        search's detections."""
+        if self._channel is None:
+            return set()
+        return {self._channel(ignored, 0.0) for ignored in self._ignored}
+
+    def _is_ignored(self, frequency_hz: float, width_hz: float, ignored_channels: set[int]) -> bool:
+        if any(same_signal(frequency_hz, width_hz, ignored, 0.0) for ignored in self._ignored):
+            return True
+        return (self._channel is not None and bool(ignored_channels)
+                and self._channel(frequency_hz, width_hz) in ignored_channels)
 
     def ignore(self, frequency_hz: float) -> None:
-        """Ignore a frequency: the signals there leave the list and are not
-        listed again. Raises ValueError when MAX_IGNORED are ignored already."""
+        """Ignore a frequency: the signals there, and on its channel, leave the
+        list and are not listed again. Raises ValueError when MAX_IGNORED are ignored already."""
         if not any(abs(frequency_hz - ignored) <= MERGE_HZ for ignored in self._ignored):
             if len(self._ignored) >= MAX_IGNORED:
                 raise ValueError(f"at most {MAX_IGNORED} frequencies may be ignored")
             self._ignored.append(frequency_hz)
             self._ignored.sort()
         self._signals = [signal for signal in self._signals
-                         if not same_signal(signal.frequency_hz, signal.width_hz, frequency_hz, 0.0)]
+                         if not self.covers(frequency_hz, signal.frequency_hz, signal.width_hz)]
         self._candidates = [detection for detection in self._candidates
-                            if not same_signal(detection.frequency_hz, detection.width_hz, frequency_hz, 0.0)]
+                            if not self.covers(frequency_hz, detection.frequency_hz, detection.width_hz)]
 
     def restore(self) -> None:
         """Ignore no frequency any more."""
