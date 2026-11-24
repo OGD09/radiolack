@@ -87,7 +87,8 @@ What the source reports: the overflows that the device reports, the
 samples that the buffer dropped for an engine behind, and the blocks that
 took the engine longer than their period, counted between the end of one
 read and the next, are logged at most once a minute, with their counts
-since the previous line. The device's timestamps are not used: not every
+since the previous line; the blocks that took longer only beside a loss,
+as the buffer absorbs them alone. The device's timestamps are not used: not every
 module counts samples with them (SoapySDR's rtlsdr module 0.3.3 counts the
 I and Q bytes, spike 7), and the source needs them for nothing that the
 overflows and its own buffer do not tell; ``tools/measure_reader.py``

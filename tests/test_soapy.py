@@ -339,6 +339,31 @@ class LossesTest(unittest.TestCase):
             "SoapySDR test: 5 samples dropped, the engine behind, in the last 0 s",
             "SoapySDR test: 1712000 samples dropped (1.0 s), the engine behind, in the last 0 s"])
 
+    def test_late_blocks_alone_are_not_logged_and_are_forgotten_after_a_minute(self):
+        clock = FakeClock()
+        losses = Losses("SoapySDR test", 60.0, clock, soapy_source.log)
+        with self.assertNoLogs("radiolack.soapy", logging.WARNING):
+            losses.add(late_blocks=5)
+            losses.check()
+            clock.now += 59
+            losses.add(late_blocks=2)
+            losses.check()
+            losses.check(flush=True)        # a source that stops says nothing of them either
+            self.assertEqual(losses.late_blocks, 7)
+            clock.now += 1
+            losses.check()                  # a minute without a loss: the buffer absorbed them
+            self.assertEqual(losses.late_blocks, 0)
+            clock.now += 30
+            losses.add(late_blocks=1)
+            losses.check()
+        with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
+            clock.now += 10
+            losses.add(dropped=100)
+            losses.check()
+        self.assertEqual([record.getMessage() for record in logs.records], [
+            "SoapySDR test: 100 samples dropped, the engine behind, 1 blocks took the engine longer than their "
+            "period, in the last 40 s"])
+
 
 class SourceCase(unittest.IsolatedAsyncioTestCase):
     """A SoapySDR source on the stand-in module, closed after each test,
@@ -589,15 +614,19 @@ class SourceTest(SourceCase):
     async def test_blocks_longer_than_their_period_are_counted(self):
         self.device()
         clock = FakeClock()
-        source = self.source(clock=clock)
+        source = self.source(clock=clock, idle_s=5.0)
         await self.samples(source, 1024)        # a period of 1 ms
         clock.now += 0.5                        # the engine took half a second over it
+        with self.assertNoLogs("radiolack.soapy", logging.WARNING):     # alone, nothing was lost
+            await self.samples(source, 1024)
+        self.assertEqual(source._losses.late_blocks, 1)
+        clock.now += 10                         # a pause, not a block
+        await self.samples(source, 1024)
+        self.assertEqual(source._losses.late_blocks, 1)
+        source._losses.add(dropped=10)
         with self.assertLogs("radiolack.soapy", logging.WARNING) as logs:
             await self.samples(source, 1024)
         self.assertIn("1 blocks took the engine longer than their period", logs.output[0])
-        clock.now += 60                         # a pause, not a block
-        await self.samples(source, 1024)
-        self.assertEqual(source._losses.late_blocks, 0)
 
     async def test_an_unplugged_device_waits_and_comes_back(self):
         for unplugged, detail in (("error", "the stream failed: STREAM_ERROR"),
