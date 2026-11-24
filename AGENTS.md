@@ -249,8 +249,8 @@ the history under the tag `v0.1.0`.
   a reading thread per session that alone calls the device, into a
   `NativeBuffer` that drops the oldest, and closes the stream and the
   device whatever ends it; settings under driver and serial number, the
-  engine restoring them once the device is found; overflows, drops and
-  late blocks logged at most once a minute; pull request 5: the samples
+  engine restoring them once the device is found; overflows, drops and,
+  beside a loss, late blocks logged at most once a minute; pull request 5: the samples
   kept, in the device's format, handed to an I/Q recording's tap through
   the event loop, a second at most waiting for it, those beyond left out
   and counted, I and Q swapped behind an inverted converter, and

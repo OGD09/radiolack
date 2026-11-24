@@ -316,7 +316,10 @@ additions); pull requests 3 to 6 rely on these:
   that took the engine longer than their period (the time between one read
   that gave samples and the next, under 2 s, a longer one being a pause)
   are logged at most once a minute, with their counts since the previous
-  line, and once more when the source stops. The device's timestamps are
+  line, and once more when the source stops. The blocks that took longer
+  join a line only beside a loss (decided 2026-11-24): alone, the buffer
+  absorbs them, and about one block in twenty took longer on the owner's
+  laptop in WFM without losing a sample, a warning that said nothing. The device's timestamps are
   not used (module docstring).
 - **I/Q recordings** are refused by the source's `tap`, which the engine
   calls before any file is written: the interface shows the refusal, and

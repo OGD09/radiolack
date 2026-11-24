@@ -303,8 +303,10 @@ class Losses:
     I/Q recording did not get, the event loop behind; logged on ``logger``
     at most every ``interval_s``, with their counts since the previous line,
     the samples dropped also in seconds of signal, from the sample rate each
-    count gives. An rtl_tcp source counts only the samples dropped; a
-    SoapySDR source counts them all (soapy.py)."""
+    count gives. The blocks that took longer join a line only beside a
+    loss: alone, the buffer absorbed them, and they are forgotten once
+    ``interval_s`` has passed. An rtl_tcp source counts only the samples
+    dropped; a SoapySDR source counts them all (soapy.py)."""
 
     def __init__(self, name: str, interval_s: float = REPORT_S, clock: Callable[[], float] = time.monotonic,
                  logger: logging.Logger | None = None) -> None:
@@ -334,11 +336,14 @@ class Losses:
             self.unrecorded += unrecorded
 
     def check(self, flush: bool = False) -> None:
-        """Log the counts, if any, unless a line went out less than the
+        """Log the counts, if any loss, unless a line went out less than the
         interval ago; with ``flush``, whatever the interval."""
         with self._lock:
             now = self._clock()
-            if not (self.overflows or self.dropped or self.late_blocks or self.unrecorded):
+            if not (self.overflows or self.dropped or self.unrecorded):
+                if self.late_blocks and now - self._since >= self._interval_s:
+                    self.late_blocks = 0        # absorbed by the buffer: nothing lost
+                    self._since = now
                 return
             if not flush and now - self._logged < self._interval_s:
                 return

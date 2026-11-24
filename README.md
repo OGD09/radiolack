@@ -1044,9 +1044,10 @@ radiolack --soapy driver=sdrplay
   status line, tried again by itself.
 - Radiolack opens the receiver's receive stream and nothing else. Its
   overflows, the samples dropped when the computer falls behind (in
-  seconds of signal too), the blocks that took longer than their period
-  and the samples that an I/Q recording did not get go to the error output
-  at most once a minute.
+  seconds of signal too) and the samples that an I/Q recording did not get
+  go to the error output at most once a minute, with the blocks that took
+  longer than their period in that minute: alone, those lose nothing, the
+  receiver's buffer absorbing them, and are not reported.
 - Record I/Q keeps the receiver's samples in the format Radiolack reads
   them in, 8 or 16-bit integers or 32-bit floats, as the receiver gives
   them ([Recording](#recording)).
