@@ -844,6 +844,9 @@ class EngineTest(EngineCase):
         self.device(serial="0001")
         engine = self.engine(self.source(), store=Store(directory))
         engine.radios[0].start_given_scan("sweep")
+        # The reading thread learns the serial number before the loop
+        # applies the device's settings; "streaming" is posted after them.
+        await eventually(lambda: engine.radios[0].state()["status"] == "streaming")
         await eventually(lambda: engine.radios[0].source.settings_key == "soapy test 0001")
         self.assertEqual(engine.radios[0].scanner_state()["scan"], "sweep")
         self.assertEqual(engine.radios[0].state()["ppm"], 12.5)
