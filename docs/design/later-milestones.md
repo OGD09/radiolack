@@ -1344,6 +1344,17 @@ after Apply proposes a change under 0.1 ppm.
   500 kHz.
 - It measures the crystal: on the tuner, a centre frequency's PLL error is
   not in it.
+- A device nearby whose oscillator's harmonics fall within a station's
+  window passes for the stations: most standard frequencies are multiples
+  of 2.5 MHz, and all the harmonics of one oscillator imply the same
+  correction, so they agree as true stations do. Seen on 2026-11-24 with
+  the V3 indoors: lines at 10 and 15 MHz, 42.6 ppm below, proposed 38 ppm
+  where broadcast carriers gave -4.6. Decided that day: the dialog warns
+  when a proposal moves the correction by more than 10 ppm, more than a
+  crystal drifts, as the measure on a known carrier already did, and
+  sends the user to a broadcast carrier; nothing tells such lines apart
+  automatically (checking the proposal against broadcast carriers is the
+  fix, should it come back).
 
 ## 4. Band plans for other regions
 

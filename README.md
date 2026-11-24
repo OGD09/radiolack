@@ -844,10 +844,15 @@ far it stands above the noise, and the correction it implies, or why it
 gave none. "Proposed correction" is the median of the corrections that
 agree within 0.3 ppm, from two stations at least, or from one alone, the
 only one received, standing 30 dB or more above the noise, which the
-dialog flags; stations outside that group show greyed. "Apply the
-proposal" sends it as a change in the Receivers menu would. Otherwise it
-says why it proposes nothing: no station received, one too weak, stations
-that disagree, or a correction beyond -100 to 100 ppm. A run stopped with
+dialog flags; stations outside that group show greyed. A proposal that
+moves the correction by more than 10 ppm, more than a crystal drifts, comes
+with a warning: a device nearby, such as a computer, can put the harmonics
+of its oscillator on the stations' frequencies, most of them multiples of
+2.5 MHz, and they then agree as true stations do. Check such a proposal
+first on a broadcast carrier, as below. "Apply the proposal" sends it as a
+change in the Receivers menu would. Otherwise it says why it proposes
+nothing: no station received, one too weak, stations that disagree, or a
+correction beyond -100 to 100 ppm. A run stopped with
 Stop proposes from the stations it measured; one ended by a change of the
 receiver's settings, other than its gains, antenna and DC spike, or of the
 VFO, by a scan or a recording, proposes nothing; choosing another receiver

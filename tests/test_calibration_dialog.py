@@ -46,6 +46,12 @@ const out = {
   apart: view(state({ ...done, results: [received(2500000, 2500012.5, 31, 9.0, false), ...done.results.slice(1)] }))
     .rows.map((row) => row.apart),
   inUse: view(done, { source: { ...source, ppm: 4.21 } }),
+  // A local comb, 38 ppm off, while -4 is in use; a change of 10 ppm, not more; a single station far off.
+  far: view(state({ ...done, proposal: { ppm: 38, stations: 2 } }), { source: { ...source, ppm: -4 } }).note,
+  edge: [view(state({ ...done, proposal: { ppm: 6.2, stations: 2 } }), { source: { ...source, ppm: -3.8 } }).note,
+    view(state({ ...done, proposal: { ppm: 6.21, stations: 2 } }), { source: { ...source, ppm: -3.8 } }).note],
+  farSingle: view(state({ results: [received(2500000, 2499905, 35, 38.0, true)], proposal: { ppm: 38, stations: 1 },
+    ended: 'done' })).note,
   single: view(state({ results: [received(2500000, 2499990, 35, 4.0, true)], proposal: { ppm: 4, stations: 1 },
     ended: 'stopped' })),
   reasons: ['none', 'weak', 'disagree', 'range', 'later'].map((reason) => view(state({ reason, ended: 'done' })).note),
@@ -128,6 +134,16 @@ class CalibrationDialogTest(unittest.TestCase):
         self.assertEqual(found["apart"], [True, False, False])
         in_use = found["inUse"]
         self.assertEqual((in_use["note"], in_use["apply"]), ("This is the correction in use: nothing to change.", None))
+
+        # Stations that agree far from the correction in use may be a nearby device's harmonics.
+        warning = ("more than a crystal drifts: the stations may be the harmonics of a device nearby. Check it "
+                   "first on a broadcast carrier, under \"On a known carrier\".")
+        self.assertEqual(found["far"], f"2 stations agree on it. It moves the correction by 42.00 ppm, {warning}")
+        self.assertEqual(found["edge"], ["2 stations agree on it.",
+                                         f"2 stations agree on it. It moves the correction by 10.01 ppm, {warning}"])
+        self.assertTrue(found["farSingle"].startswith("From one station alone"))
+        self.assertTrue(found["farSingle"].endswith(f"It moves the correction by 38.00 ppm, {warning}"))
+        self.assertNotIn("device nearby", done["note"])
 
         single = found["single"]
         self.assertEqual(single["status"], "Stopped after 1 of 3 stations: 1 received.")
