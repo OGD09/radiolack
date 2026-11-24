@@ -2032,7 +2032,7 @@ class Radio:
         saved for its receiver."""
         old = self.source
         # Saved before the scan or the calibration stops: those of its start.
-        self._engine.receivers[old.settings_key] = self.receiver_settings()
+        self._engine.receivers[self._settings_key] = self.receiver_settings()
         self._forget_calibration(back=False)
         self._stop_scan("source")
         self._stop_recording("iq", "receiver")      # while the source in use still holds its tap
@@ -2146,6 +2146,13 @@ class Radio:
             self._kept_resumed = False
         if self._sweep is None and KeptScans.end(self._kept, time.time(), "stopped"):
             self._engine.scans_changed(soon=True)
+
+    @property
+    def settings_key(self) -> str:
+        """The key that this radio's settings are saved under: its source's,
+        once the radio has taken up the settings saved for it. A source
+        learns which receiver it reads in its own thread, a moment before."""
+        return self._settings_key
 
     def receiver_settings(self) -> dict[str, Any]:
         """The settings saved for the receiver in use: while a scan or a

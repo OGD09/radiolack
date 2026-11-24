@@ -385,7 +385,7 @@ class ChildEngine:
         device = radio.soapy_in_use()
         self._channel.post({"op": "summary", "summary": radio.summary(),
                             "kind": radio.source.kind, "reopen": radio.source.reopen,
-                            "settings_key": radio.source.settings_key,
+                            "settings_key": radio.settings_key,
                             "running_files": sorted(radio.running_files()),
                             "recording_runs": radio.recording_runs(),
                             "soapy": None if device is None else [device.driver, device.serial, device.label]})

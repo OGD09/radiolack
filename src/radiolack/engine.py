@@ -704,7 +704,7 @@ class Engine:
         for when it comes back; its clients show the first radio."""
         if radio is self.radios[0]:
             raise ValueError("the first receiver stays: change its device instead")
-        self.receivers[radio.source.settings_key] = radio.receiver_settings()
+        self.receivers[radio.settings_key] = radio.receiver_settings()
         self.radios.remove(radio)
         for subscription in [subscription for subscription in self._clients if subscription.radio is radio]:
             self._show(subscription, self.radios[0])
@@ -1338,7 +1338,7 @@ class Engine:
         radio = self.radios[0]
         settings: dict[str, Any] = {} if self.sources is None else {"source": radio.source.reopen}
         # Every radio's receiver as it stands, which that radio starts from again.
-        settings["receivers"] = {**self.receivers, **{each.source.settings_key: each.receiver_settings()
+        settings["receivers"] = {**self.receivers, **{each.settings_key: each.receiver_settings()
                                                       for each in self.radios}}
         settings["scanner"] = radio.scanner_settings()
         if self.sources is not None and len(self.radios) > 1:
