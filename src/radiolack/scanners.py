@@ -14,7 +14,11 @@ dBFS bin powers: not calibrated, and not comparable with the channel meter.
 ``Signals`` keeps one entry for each signal found while Radiolack runs: a
 signal is listed once found in two averaged spectra in a row, so that a
 stray peak of noise is not, and detections close to an entry update it,
-following a slow drift. Ignored frequencies are never listed, nor the
+following a slow drift. In the band plan's WFM ranges, a broadcast
+station's detections may split across the WFM filter's width: one within
+half that width of an entry belongs to it, and moves it only when
+stronger than any detection that placed it, so that a station keeps one
+entry, where its strongest part lies. Ignored frequencies are never listed, nor the
 signals that show on an ignored frequency's channel, nor, in the band
 plan's WFM ranges, those within half the WFM filter's width of it, where
 a broadcast station's detections may split. The listed
@@ -230,6 +234,7 @@ class Signal:
     width_hz: float
     margin_db: float    # in the latest detection
     last_s: float       # when last found, in ``time.monotonic()``
+    strongest_db: float = -math.inf     # the highest margin of the detections that placed it
 
 
 def same_signal(frequency_hz: float, width_hz: float, other_hz: float, other_width_hz: float) -> bool:
@@ -262,20 +267,33 @@ class Signals:
 
     def update(self, detections: Sequence[Detection], now: float) -> list[Signal]:
         """Add the detections of one search. A detection close to a listed
-        signal updates it; one close to a detection of the previous search
-        lists a new signal; others wait for the next search. Returns the
-        listed signals found in this search, as they stand now."""
+        signal updates it; one within the reach of a listed broadcast
+        station keeps it active, and takes its place when stronger than any
+        that placed it; one
+        close to a detection of the previous search lists a new signal;
+        others wait for the next search. Returns the listed signals found in
+        this search, as they stand now."""
         candidates = []
         found: list[Signal] = []
-        stations = self._ignored_stations()
+        plan = None if self._plan is None else self._plan()
+        ignored = self._ignored_stations(plan)
         for detection in detections:
-            if self._is_ignored(detection.frequency_hz, detection.width_hz, stations):
+            if self._is_ignored(detection.frequency_hz, detection.width_hz, plan, ignored):
                 continue
             signal = self._nearest(detection)
             if signal is not None:
                 signal.frequency_hz += DRIFT * (detection.frequency_hz - signal.frequency_hz)
                 signal.width_hz = detection.width_hz
                 signal.margin_db = detection.margin_db
+                signal.strongest_db = max(signal.strongest_db, detection.margin_db)
+            else:
+                signal = self._station(detection, plan)
+                if signal is not None and detection.margin_db > signal.strongest_db:
+                    # The station's strongest part: a weaker one only keeps it active.
+                    signal.frequency_hz = detection.frequency_hz
+                    signal.width_hz = detection.width_hz
+                    signal.margin_db = signal.strongest_db = detection.margin_db
+            if signal is not None:
                 signal.last_s = now
                 if not any(signal is other for other in found):     # two detections may update one signal
                     found.append(signal)
@@ -286,7 +304,7 @@ class Signals:
                 continue
             self._candidates.remove(earlier)
             self._signals.append(Signal((earlier.frequency_hz + detection.frequency_hz) / 2, detection.width_hz,
-                                        detection.margin_db, now))
+                                        detection.margin_db, now, detection.margin_db))
             found.append(self._signals[-1])
         self._candidates = candidates
         if len(self._signals) > MAX_SIGNALS:
@@ -334,25 +352,24 @@ class Signals:
         return (abs(frequency_hz - ignored_hz) <= plan.station_reach_hz(ignored_hz)
                 or plan.channel(frequency_hz, width_hz) == plan.channel(ignored_hz, 0.0))
 
-    def _ignored_stations(self) -> tuple[BandPlan | None, set[int], list[tuple[float, float]]]:
+    def _ignored_stations(self, plan: BandPlan | None) -> tuple[set[int], list[tuple[float, float]]]:
         """What the ignored frequencies cover beyond the signals close to
-        them, computed once for a search's detections: the band plan in use,
-        their channels, and each one whose station spreads, with its reach."""
-        if self._plan is None:
-            return None, set(), []
-        plan = self._plan()
+        them in ``plan``, computed once for a search's detections: their
+        channels, and each one whose station spreads, with its reach."""
+        if plan is None:
+            return set(), []
         reaches = [(ignored, plan.station_reach_hz(ignored)) for ignored in self._ignored]
-        return (plan, {plan.channel(ignored, 0.0) for ignored in self._ignored},
+        return ({plan.channel(ignored, 0.0) for ignored in self._ignored},
                 [(ignored, reach) for ignored, reach in reaches if reach > 0])
 
-    def _is_ignored(self, frequency_hz: float, width_hz: float,
-                    stations: tuple[BandPlan | None, set[int], list[tuple[float, float]]]) -> bool:
-        if any(same_signal(frequency_hz, width_hz, ignored, 0.0) for ignored in self._ignored):
+    def _is_ignored(self, frequency_hz: float, width_hz: float, plan: BandPlan | None,
+                    ignored: tuple[set[int], list[tuple[float, float]]]) -> bool:
+        if any(same_signal(frequency_hz, width_hz, other, 0.0) for other in self._ignored):
             return True
-        plan, channels, reaches = stations
+        channels, reaches = ignored
         if plan is None:
             return False
-        return (any(abs(frequency_hz - ignored) <= reach for ignored, reach in reaches)
+        return (any(abs(frequency_hz - other) <= reach for other, reach in reaches)
                 or (bool(channels) and plan.channel(frequency_hz, width_hz) in channels))
 
     def ignore(self, frequency_hz: float) -> None:
@@ -383,6 +400,21 @@ class Signals:
             gap = abs(signal.frequency_hz - detection.frequency_hz)
             if gap < distance and same_signal(signal.frequency_hz, signal.width_hz,
                                               detection.frequency_hz, detection.width_hz):
+                found, distance = signal, gap
+        return found
+
+    def _station(self, detection: Detection, plan: BandPlan | None) -> Signal | None:
+        """The listed signal nearest ``detection`` within the reach of a
+        broadcast station (bandplan.BandPlan.station_reach_hz), if any."""
+        if plan is None:
+            return None
+        reach = plan.station_reach_hz(detection.frequency_hz)
+        if reach <= 0:
+            return None
+        found, distance = None, math.inf
+        for signal in self._signals:
+            gap = abs(signal.frequency_hz - detection.frequency_hz)
+            if gap < distance and gap <= reach and plan.station_reach_hz(signal.frequency_hz) > 0:
                 found, distance = signal, gap
         return found
 

@@ -1365,7 +1365,10 @@ signals found on one channel share its row, as a broadcast station's
 narrow and wide signals do: the row shows the strongest active one, or
 else the one found latest, and its Ignore leaves them all out. In the FM
 broadcast band, every signal shows on its nearest channel, however narrow:
-a station whose sound goes quiet narrows as it does.
+a station whose sound goes quiet narrows as it does. A station there keeps
+one row: the parts of its spectrum that show apart, up to 90 kHz from its
+strongest, half the WFM filter's width, count for it, so that the range
+scan listens to it once and the History keeps one channel for it.
 
 A click on a frequency tunes to it. Ignore leaves its frequency out of the
 list, for every interface, until Restore brings the ignored frequencies
