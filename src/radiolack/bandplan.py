@@ -46,7 +46,8 @@ DEEMPHASIS_US = (50, 75)        # the WFM de-emphasis that a plan may name, in Â
 SPOT_TOLERANCE_HZ = 50          # a frequency this close to a known frequency is on it, as in channels.js
 CHANNEL_STEP_HZ = 12_500        # ranges whose step is this or more show their signals on their channels:
 WIDE_HZ = 4_000                 # a signal this wide or wider on the nearest channel,
-REACH_HZ = 1_500                # a narrower one when it lies this close to it
+REACH_HZ = 1_500                # a narrower one when it lies this close to it,
+                                # and any in a WFM range, where a station's detection narrows as its sound does
 SHOWN_HZ = 100                  # elsewhere, signals show to this
 
 
@@ -164,12 +165,12 @@ class BandPlan:
         """The frequency, in whole Hz, that a signal found at
         ``frequency_hz``, ``width_hz`` wide, shows on: its range's nearest
         channel, in a range whose step is CHANNEL_STEP_HZ or more, when the
-        signal is WIDE_HZ wide or more, or lies within REACH_HZ of it;
-        otherwise its frequency to SHOWN_HZ."""
+        signal is WIDE_HZ wide or more, lies within REACH_HZ of it, or lies
+        in a WFM range; otherwise its frequency to SHOWN_HZ."""
         found = self.range_at(frequency_hz)
         if found is not None and found.step_hz is not None and found.step_hz >= CHANNEL_STEP_HZ:
             channel = _round(frequency_hz / found.step_hz) * found.step_hz
-            if width_hz >= WIDE_HZ or abs(frequency_hz - channel) <= REACH_HZ:
+            if found.mode == "WFM" or width_hz >= WIDE_HZ or abs(frequency_hz - channel) <= REACH_HZ:
                 return _round(channel)
         return _round(frequency_hz / SHOWN_HZ) * SHOWN_HZ
 

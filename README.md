@@ -1363,11 +1363,14 @@ empties when detection is turned off or another receiver is chosen. In a
 channelized range of the band plan, a signal shows on its channel, and the
 signals found on one channel share its row, as a broadcast station's
 narrow and wide signals do: the row shows the strongest active one, or
-else the one found latest, and its Ignore leaves them all out.
+else the one found latest, and its Ignore leaves them all out. In the FM
+broadcast band, every signal shows on its nearest channel, however narrow:
+a station whose sound goes quiet narrows as it does.
 
 A click on a frequency tunes to it. Ignore leaves its frequency out of the
 list, for every interface, until Restore brings the ignored frequencies
-back; the spectrum's context menu ignores a frequency too. Whether detection
+back, with the signals found later on its channel, a station's narrow
+ones included; the spectrum's context menu ignores a frequency too. Whether detection
 is on, its threshold and the ignored frequencies, up to 200, are the same
 for every interface, a paired device's included, and kept for the next
 start. "Mark on the spectrum" is each interface's own: it marks the signals

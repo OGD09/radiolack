@@ -601,6 +601,19 @@ class EnginePlanTest(unittest.TestCase):
                 self.assertEqual(plan.channel(frequency, width), shown)
                 self.assertIsInstance(plan.channel(frequency, width), int)
 
+    def test_every_signal_of_a_wfm_range_shows_on_its_nearest_channel(self):
+        plan = bandplan.load_plan("europe")
+        cases = [
+            (100_196_200, 3_200, 100_200_000),      # a station's narrow detection, 3.8 kHz off its channel
+            (100_224_900, 600, 100_200_000),        # within half the 50 kHz step
+            (100_225_100, 600, 100_250_000),        # beyond it: the next channel
+            (145_506_000, 600, 145_506_000),        # an NFM range keeps its reach
+        ]
+        for frequency, width, shown in cases:
+            with self.subTest(frequency=frequency, width=width):
+                self.assertEqual(plan.range_at(frequency).mode, "WFM" if frequency < 108e6 else "NFM")
+                self.assertEqual(plan.channel(frequency, width), shown)
+
     def test_the_vfo_s_mode_where_the_plan_names_one(self):
         self.assertEqual(plan_mode(None, "USB"), "USB")
         self.assertEqual(plan_mode("NFM", "USB"), "NFM")
