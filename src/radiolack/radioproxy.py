@@ -108,6 +108,10 @@ class RadioProcess:
     def summary(self) -> dict[str, Any]:
         return dict(self._summary)
 
+    @property
+    def settings_key(self) -> str:
+        return self.source.settings_key     # the process's radio's, sent with its summary
+
     def receiver_settings(self) -> dict[str, Any]:
         return dict(self._receiver)
 

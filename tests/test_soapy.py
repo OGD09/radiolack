@@ -855,6 +855,31 @@ class EngineTest(EngineCase):
         engine.radios[0].configure_scanner({"scan": None})
         await eventually(lambda: engine.radios[0].state()["centre_hz"] == 433e6)
 
+    async def test_a_save_before_the_device_is_identified_keeps_its_saved_settings(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
+        directory.mkdir()
+        settings = directory / SETTINGS_FILE
+        original = json.dumps({"version": 1, "receivers": {"soapy test 0001": {"source": {"ppm": 12.5}}}})
+        settings.write_text(original, encoding="utf-8")
+        self.device(serial="0001")
+        source = self.source()
+        engine = self.engine(source, store=Store(directory), save_delay_s=0.0)
+        # The reading thread learns the serial number, then posts the
+        # notice that has the radio take up the device's settings: held
+        # here, a save comes in between.
+        radio = engine.radios[0]
+        source.on_change = mock.Mock()
+        engine.subscribe()      # the device opens for a client
+        await eventually(lambda: source.settings_key == "soapy test 0001")
+        self.assertEqual(radio.settings_key, "soapy driver=test")
+        engine.settings_changed()
+        await eventually(lambda: settings.read_text(encoding="utf-8") != original)
+        saved = json.loads(settings.read_text(encoding="utf-8"))["receivers"]
+        self.assertEqual(saved["soapy test 0001"], {"source": {"ppm": 12.5}})
+        source.on_change = radio._source_changed
+        radio._source_changed()
+        self.assertEqual((radio.settings_key, radio.state()["ppm"]), ("soapy test 0001", 12.5))
+
     async def test_a_devices_controls_are_saved_and_its_antenna_power_never(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "radiolack"
         self.soapy.rspdx_r2()
